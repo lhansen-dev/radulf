@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # `make check` below runs the real sandbox suite, same as CI.
       - uses: ./.github/actions/linux-sandbox-deps
       - uses: actions/setup-node@v4
