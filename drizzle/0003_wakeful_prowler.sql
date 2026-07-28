@@ -1,0 +1,1 @@
+ALTER TABLE `cards` ADD `auto_approve` integer DEFAULT 0 NOT NULL;

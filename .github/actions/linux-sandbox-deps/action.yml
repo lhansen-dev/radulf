@@ -1,0 +1,31 @@
+name: Linux sandbox dependencies
+description: >
+  Install and enable everything @anthropic-ai/sandbox-runtime needs on Linux so
+  the real sandboxed-process tests in src/server/sandbox/srt.test.ts execute for
+  real instead of failing on a missing bwrap.
+
+runs:
+  using: composite
+  steps:
+    # srt's Linux path shells out to bwrap (the sandbox itself), socat (the
+    # network proxy) and rg (expands glob deny-patterns to concrete paths for
+    # bwrap). None are present on the stock ubuntu-latest image; without them
+    # SandboxManager.checkDependencies() errors and every real-process test in
+    # the sandbox suite fails.
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bubblewrap socat ripgrep
+
+    # Ubuntu 24.04+ (what ubuntu-latest now is) ships
+    # kernel.apparmor_restrict_unprivileged_userns=1, which blocks bubblewrap's
+    # unprivileged user namespace outright — the same gate sandboxPreflight()
+    # reports to users. Runners are disposable, so flip the sysctl rather than
+    # installing an AppArmor profile for bwrap.
+    - shell: bash
+      run: |
+        if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+        bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid -- /bin/true
+        echo "bubblewrap is usable on this runner"

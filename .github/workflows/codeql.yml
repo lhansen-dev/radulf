@@ -1,0 +1,42 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    # Code scanning needs GitHub Advanced Security on a private repo; without
+    # it `analyze` does the full scan and then fails on upload with "Code
+    # scanning is not enabled for this repository". Skip while the repo is
+    # private — this turns itself on the moment the repo goes public, with no
+    # workflow edit. If you enable GHAS instead, drop this condition.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # A job-level `permissions:` block REPLACES the workflow-level one rather
+      # than merging with it, so `contents: read` has to be restated here —
+      # without it `actions/checkout` cannot read this private repo and fails
+      # with a misleading "Repository not found".
+      contents: read
+      # codeql-action reads the workflow run via the Actions API when it
+      # uploads results; on a private repo that needs an explicit grant, or
+      # analyze fails with "Resource not accessible by integration".
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # Includes TypeScript and the security-and-quality query pack.
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3

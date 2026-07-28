@@ -1,0 +1,64 @@
+{
+  "name": "radulf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first agent loop that turns a task into a reviewable diff — planner, loop, and evaluator agents run a Ralph Wiggum loop against a local git repo inside a sandboxed worktree, self-driving from queued task to merged branch.",
+  "license": "MIT",
+  "author": "Luke Hansen <contact@lhansen.dev>",
+  "homepage": "https://github.com/lhansen-dev/radulf#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lhansen-dev/radulf.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lhansen-dev/radulf/issues"
+  },
+  "keywords": [
+    "agent-loop",
+    "autonomous-agents",
+    "self-improving",
+    "ai-agents",
+    "coding-agent",
+    "ralph-loop",
+    "local-first",
+    "nextjs",
+    "git-worktree"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "//scripts": "Tasks are defined in the Makefile, the single source of truth. Run `make` to list them.",
+  "scripts": {},
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.66",
+    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.11.1",
+    "drizzle-orm": "^0.45.2",
+    "nanoid": "^5.1.16",
+    "next": "^16.2.10",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "rehype-slug": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9",
+    "eslint-config-next": "^16.2.10",
+    "jsdom": "^29.1.1",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}
