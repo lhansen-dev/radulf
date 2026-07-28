@@ -1,0 +1,392 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0b0d10;
+  --foreground: #d7dce2;
+  --accent: #fbbf24;
+  --accent-strong: #d97706;
+  --on-accent: #090b0e;
+  --surface: #0e1115;
+}
+
+[data-theme="default-light"] {
+  --background: #f7f8fa; --foreground: #1a1d23; --accent: #d97706;
+  --accent-strong: #b45309; --on-accent: #fff; --surface: #fff;
+}
+
+[data-theme="solarized-dark"] {
+  --background: #002b36; --foreground: #93a1a1;
+  --accent: #b58900; --accent-strong: #cb4b16; --on-accent: #002b36;
+  --surface: #073642;
+}
+[data-theme="solarized-light"] {
+  --background: #fdf6e3; --foreground: #657b83; --accent: #b58900;
+  --accent-strong: #cb4b16; --on-accent: #fdf6e3; --surface: #eee8d5;
+}
+[data-theme="tokyo-night"] {
+  --background: #1a1b26; --foreground: #a9b1d6;
+  --accent: #7aa2f7; --accent-strong: #bb9af7; --on-accent: #1a1b26;
+  --surface: #16161e;
+}
+[data-theme="tokyo-day"] {
+  --background: #e1e2e7; --foreground: #565a6e; --accent: #34548a;
+  --accent-strong: #8c4351; --on-accent: #e1e2e7; --surface: #c9d1e3;
+}
+[data-theme="nord"] {
+  --background: #2e3440; --foreground: #d8dee9;
+  --accent: #88c0d0; --accent-strong: #5e81ac; --on-accent: #2e3440;
+  --surface: #3b4252;
+}
+[data-theme="nord-light"] {
+  --background: #eceff4; --foreground: #2e3440; --accent: #5e81ac;
+  --accent-strong: #88c0d0; --on-accent: #eceff4; --surface: #e5e9f0;
+}
+[data-theme="gruvbox-dark"] {
+  --background: #282828; --foreground: #ebdbb2;
+  --accent: #fabd2f; --accent-strong: #d79921; --on-accent: #282828;
+  --surface: #3c3836;
+}
+
+[data-theme="gruvbox-light"] {
+  --background: #fbf1c7; --foreground: #3c3836;
+  --accent: #d79921; --accent-strong: #cc241d; --on-accent: #fbf1c7;
+  --surface: #ebdbb2;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-on-accent: var(--on-accent);
+  --color-surface: var(--surface);
+  --color-amber-300: var(--accent);
+  --color-amber-400: var(--accent);
+  --color-amber-500: var(--accent);
+  --color-amber-600: var(--accent-strong);
+  --color-amber-700: var(--accent-strong);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+button,
+a,
+select,
+input,
+textarea,
+summary {
+  outline-offset: 3px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+label:has(input[type="checkbox"]) {
+  min-height: 44px;
+}
+
+button,
+select,
+input:not([type="checkbox"]),
+a.touch-target {
+  min-height: 44px;
+}
+
+.app-shell {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+}
+
+.desktop-rail {
+  display: none;
+}
+
+.bottom-nav {
+  position: fixed;
+  z-index: 40;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 64px;
+  padding: 4px 8px env(safe-area-inset-bottom);
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.bottom-nav-link {
+  display: flex;
+  min-height: 56px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--foreground) 52%, transparent);
+  font-size: 0.7rem;
+}
+
+.bottom-nav-link-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.mobile-new-task {
+  position: fixed;
+  z-index: 45;
+  right: 20px;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  display: grid;
+  width: 56px;
+  height: 56px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.45);
+  font-size: 1.8rem;
+  font-weight: 600;
+}
+
+@media (min-width: 1024px) {
+  .app-shell {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    padding-bottom: 0;
+  }
+
+  .desktop-rail {
+    position: sticky;
+    top: 0;
+    display: flex;
+    height: 100dvh;
+    flex-direction: column;
+    gap: 20px;
+    padding: 12px 8px;
+    border-right: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+    background: var(--surface);
+  }
+
+  .brand-mark {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    margin-inline: auto;
+    place-items: center;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .rail-link,
+  .rail-new-task {
+    display: flex;
+    min-height: 52px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    border-radius: 9px;
+    color: color-mix(in srgb, var(--foreground) 50%, transparent);
+    font-size: 0.68rem;
+  }
+
+  .rail-link-active {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+  }
+
+  .rail-new-task {
+    margin-top: auto;
+    background: var(--accent-strong);
+    color: var(--on-accent);
+    font-weight: 650;
+  }
+
+  .rail-footer {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .rail-repo-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    border-radius: 9px;
+    color: color-mix(in srgb, var(--foreground) 40%, transparent);
+    font-size: 0.68rem;
+    text-decoration: none;
+  }
+
+  .bottom-nav,
+  .mobile-new-task {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Docs wiki — styles for react-markdown output (semantic tags only). Colors
+   are var-driven so every theme (dark, light, solarized, …) adapts for free. */
+.doc-prose {
+  color: color-mix(in srgb, var(--foreground) 78%, transparent);
+  font-size: 0.925rem;
+  line-height: 1.7;
+  word-wrap: break-word;
+}
+.doc-prose > :first-child {
+  margin-top: 0;
+}
+.doc-prose h1,
+.doc-prose h2,
+.doc-prose h3,
+.doc-prose h4 {
+  color: var(--foreground);
+  font-weight: 600;
+  line-height: 1.3;
+  scroll-margin-top: 1rem;
+}
+.doc-prose h1 {
+  font-size: 1.6rem;
+  margin: 0 0 1rem;
+}
+.doc-prose h2 {
+  font-size: 1.28rem;
+  margin: 2rem 0 0.75rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+.doc-prose h3 {
+  font-size: 1.08rem;
+  margin: 1.6rem 0 0.6rem;
+}
+.doc-prose h4 {
+  font-size: 0.95rem;
+  margin: 1.3rem 0 0.5rem;
+}
+.doc-prose p {
+  margin: 0.85rem 0;
+}
+.doc-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.doc-prose ul,
+.doc-prose ol {
+  margin: 0.85rem 0;
+  padding-left: 1.4rem;
+}
+.doc-prose li {
+  margin: 0.3rem 0;
+}
+.doc-prose li > ul,
+.doc-prose li > ol {
+  margin: 0.3rem 0;
+}
+.doc-prose strong {
+  color: var(--foreground);
+  font-weight: 650;
+}
+.doc-prose code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85em;
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+}
+.doc-prose pre {
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
+  line-height: 1.5;
+}
+.doc-prose pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.82rem;
+}
+.doc-prose blockquote {
+  margin: 1rem 0;
+  padding: 0.2rem 0 0.2rem 1rem;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  color: color-mix(in srgb, var(--foreground) 62%, transparent);
+}
+.doc-prose blockquote > :first-child {
+  margin-top: 0;
+}
+.doc-prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+.doc-prose hr {
+  margin: 2rem 0;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+.doc-prose img {
+  max-width: 100%;
+  height: auto;
+}
+.doc-prose .doc-table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+.doc-prose table {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  min-width: max-content;
+}
+.doc-prose th,
+.doc-prose td {
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+.doc-prose th {
+  background: color-mix(in srgb, var(--foreground) 5%, transparent);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--foreground) 18%, transparent);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -1,0 +1,224 @@
+import { execFile } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
+import type { ApprovedInstallScript } from "@/db";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * The install-script gate (spec 14) — a supply-chain AWARENESS control, not a
+ * containment one: its job is to put a human in front of "this install wants
+ * to execute code from a package you haven't approved."
+ *
+ * Detection is STRUCTURAL, not textual: npm CLI flags override env config
+ * (`npm install --ignore-scripts=false` beats `npm_config_ignore_scripts`),
+ * and pattern-matching command strings is similarly weak. The gate therefore
+ * inspects the resolved dependency tree on disk (node_modules) after the
+ * iteration, triggered by a lockfile fingerprint change — it fires regardless
+ * of how the install was invoked.
+ *
+ * This is NOT a permission prompt and decision 7 is intact: the model never
+ * sees a prompt or an approve/deny tool; the run halts into Needs Attention
+ * and a human decides out-of-band in the card UI.
+ *
+ * If a repo moves to pnpm, `onlyBuiltDependencies` is the native form of this
+ * allowlist and replaces the enumeration step below.
+ */
+
+export const LIFECYCLE_EVENTS = ["preinstall", "install", "postinstall", "prepare"] as const;
+
+export type LifecycleScriptPackage = {
+  name: string;
+  version: string;
+  /** The verbatim lifecycle script bodies, shown to the approving human. */
+  scripts: Record<string, string>;
+  scriptHash: string;
+  /** node_modules dir the package was found in, relative to the scan root. */
+  dir: string;
+};
+
+/** Stable hash of the lifecycle-script set — a version bump or edited script
+ * body changes it and re-fires the gate. */
+export function scriptHashFor(scripts: Record<string, string>): string {
+  const canonical = LIFECYCLE_EVENTS.filter((e) => e in scripts)
+    .map((e) => `${e}\n${scripts[e]}`)
+    // NUL separator: it cannot occur in a script body, so no combination of
+    // event names and bodies can collide by rearranging the join boundaries.
+    // Written as an escape, never as a literal NUL — a raw NUL byte makes the
+    // whole file "binary" to grep, file(1), and GitHub's diff renderer.
+    .join("\n\u0000");
+  return crypto.createHash("sha256").update(canonical).digest("hex");
+}
+
+const SCAN_SKIP = new Set([".git", ".ralph", ".next", "dist", "build", "out"]);
+
+/** Find every node_modules root in the tree (monorepo installs land nested),
+ * without descending into node_modules itself. */
+export function findNodeModulesRoots(rootDir: string, maxDepth = 4): string[] {
+  const roots: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(/* turbopackIgnore: true */ dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const full = path.join(/* turbopackIgnore: true */ dir, entry.name);
+      if (entry.name === "node_modules") {
+        roots.push(full);
+        continue;
+      }
+      if (SCAN_SKIP.has(entry.name) || entry.name.startsWith(".")) continue;
+      if (depth < maxDepth) walk(full, depth + 1);
+    }
+  };
+  walk(rootDir, 0);
+  return roots;
+}
+
+function readPackageScripts(pkgDir: string): LifecycleScriptPackage | null {
+  let parsed: { name?: unknown; version?: unknown; scripts?: unknown };
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(/* turbopackIgnore: true */ pkgDir, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const allScripts =
+    parsed.scripts && typeof parsed.scripts === "object"
+      ? (parsed.scripts as Record<string, unknown>)
+      : {};
+  const scripts: Record<string, string> = {};
+  for (const event of LIFECYCLE_EVENTS) {
+    if (typeof allScripts[event] === "string") scripts[event] = allScripts[event] as string;
+  }
+  if (Object.keys(scripts).length === 0) return null;
+  return {
+    name: String(parsed.name ?? path.basename(pkgDir)),
+    version: String(parsed.version ?? "0.0.0"),
+    scripts,
+    scriptHash: scriptHashFor(scripts),
+    dir: pkgDir,
+  };
+}
+
+/** Enumerate every installed package (in every node_modules root under
+ * `rootDir`) that declares a lifecycle script. */
+export function collectLifecycleScripts(rootDir: string): LifecycleScriptPackage[] {
+  const found = new Map<string, LifecycleScriptPackage>();
+  const scanNodeModules = (nmDir: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(/* turbopackIgnore: true */ nmDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name === ".bin") continue;
+      const full = path.join(/* turbopackIgnore: true */ nmDir, entry.name);
+      if (entry.name.startsWith("@")) {
+        let scoped: fs.Dirent[] = [];
+        try {
+          scoped = fs.readdirSync(/* turbopackIgnore: true */ full, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const sub of scoped) {
+          if (sub.isDirectory()) visitPackage(path.join(/* turbopackIgnore: true */ full, sub.name));
+        }
+        continue;
+      }
+      if (entry.name.startsWith(".")) continue;
+      visitPackage(full);
+    }
+  };
+  const visitPackage = (pkgDir: string) => {
+    const pkg = readPackageScripts(pkgDir);
+    if (pkg) found.set(`${pkg.name}@${pkg.version}#${pkg.scriptHash}`, pkg);
+    const nested = path.join(/* turbopackIgnore: true */ pkgDir, "node_modules");
+    if (fs.existsSync(/* turbopackIgnore: true */ nested)) scanNodeModules(nested);
+  };
+  for (const nm of findNodeModulesRoots(rootDir)) scanNodeModules(nm);
+  return [...found.values()];
+}
+
+/** The packages whose lifecycle scripts no human has approved (keyed on
+ * name + version + scriptHash — any change re-fires the gate). */
+export function unapprovedScripts(
+  found: LifecycleScriptPackage[],
+  approved: ApprovedInstallScript[],
+): LifecycleScriptPackage[] {
+  const keys = new Set(approved.map((a) => `${a.name}@${a.version}#${a.scriptHash}`));
+  return found.filter((p) => !keys.has(`${p.name}@${p.version}#${p.scriptHash}`));
+}
+
+const LOCKFILE_NAMES = [
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  path.join("node_modules", ".package-lock.json"),
+];
+
+/**
+ * Cheap per-iteration trigger: a fingerprint over every lockfile in the tree
+ * (including node_modules/.package-lock.json, which changes even for
+ * `--no-save` installs). A changed fingerprint means "an install happened —
+ * scan the resolved tree."
+ */
+export function lockfileFingerprint(rootDir: string): string {
+  const hash = crypto.createHash("sha256");
+  const dirs = [rootDir, ...findNodeModulesRoots(rootDir).map((nm) => path.dirname(nm))];
+  for (const dir of [...new Set(dirs)].sort()) {
+    for (const name of LOCKFILE_NAMES) {
+      const p = path.join(/* turbopackIgnore: true */ dir, name);
+      try {
+        const stat = fs.statSync(/* turbopackIgnore: true */ p);
+        hash.update(`${path.relative(rootDir, p)}\n${stat.size}\n${stat.mtimeMs}\n`);
+      } catch {
+        // Absent — contributes nothing.
+      }
+    }
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Run `npm rebuild <pkg>` for the approved packages ONLY (per-package
+ * granularity) — this executes the now-approved scripts. Trusted orchestrator
+ * step, like the merge.
+ */
+export async function rebuildPackages(
+  worktreePath: string,
+  names: string[],
+  runNpm: (
+    args: string[],
+    cwd: string,
+  ) => Promise<{ ok: boolean; out: string }> = async (args, cwd) => {
+    try {
+      const { stdout, stderr } = await execFileAsync("npm", args, {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      return { ok: true, out: (stdout + stderr).trim() };
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      return {
+        ok: false,
+        out: ((err.stdout ?? "") + (err.stderr ?? "") || err.message || "npm rebuild failed").trim(),
+      };
+    }
+  },
+): Promise<{ ok: boolean; out: string }> {
+  const outputs: string[] = [];
+  for (const name of names) {
+    const result = await runNpm(["rebuild", name], worktreePath);
+    outputs.push(result.out);
+    if (!result.ok) return { ok: false, out: outputs.filter(Boolean).join("\n") };
+  }
+  return { ok: true, out: outputs.filter(Boolean).join("\n") };
+}

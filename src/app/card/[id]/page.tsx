@@ -1,0 +1,793 @@
+"use client";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import { api, timeAgo } from "../../ui/api";
+import { AppShell } from "../../ui/appShell";
+import { MetricsPanel } from "./metricsPanel";
+import { describeToolCall } from "../../ui/toolDescription";
+import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
+import { useCardDetail, type CardDetailData } from "./useCardDetail";
+import { retryableFailedStep } from "@/shared/failedStep";
+
+const TABS = ["Overview", "Plan", "Activity", "Transcript"] as const;
+
+export default function CardDetail() {
+  const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const {
+    detail,
+    error,
+    setError,
+    plannerModels,
+    loopModels,
+    evaluatorModels,
+    refetch,
+  } = useCardDetail(id);
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
+  const [transcript, setTranscript] = useState<{ runId: string; iteration: number } | null>(null);
+  const [showEdit, setShowEdit] = useState(false);
+
+  useEffect(() => {
+    const readTab = () => {
+      const raw = new URLSearchParams(window.location.search).get("tab")?.toLowerCase();
+      const found = TABS.find((item) => item.toLowerCase() === raw);
+      if (found) setTab(found);
+    };
+    readTab();
+    window.addEventListener("popstate", readTab);
+    return () => window.removeEventListener("popstate", readTab);
+  }, []);
+
+  function chooseTab(next: (typeof TABS)[number]) {
+    setTab(next);
+    const query = new URLSearchParams(window.location.search);
+    if (next === "Overview") query.delete("tab"); else query.set("tab", next.toLowerCase());
+    window.history.pushState({}, "", `/card/${id}${query.size ? `?${query}` : ""}`);
+  }
+
+  if (!detail)
+    return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading task…"}</div></AppShell>;
+  const { card, repo, plans, runs } = detail;
+  const planTag = plannerModelTag(runs);
+  const latestPlan = plans[0];
+  const latestLoopRun = runs.find((r) => r.kind === "loop");
+  const latestEvaluatorRun = runs.find((r) => r.kind === "evaluate");
+  const evaluatorCleared =
+    !latestEvaluatorRun ||
+    (latestEvaluatorRun.status === "completed" &&
+      ["approve", "revise — revision limit reached"].includes(latestEvaluatorRun.exitReason ?? ""));
+  const canRetryMerge = latestLoopRun?.status === "completed" && evaluatorCleared;
+  const failedStep = retryableFailedStep(runs);
+  const canRetryFailedStep = Boolean(failedStep && card.status === "needs_attention");
+  const latestPlanRun = runs.find((r) => r.kind === "plan");
+  const questionsEvent = latestPlanRun && detail.events.find((e) => e.type === "plan.questions" && e.runId === latestPlanRun.id);
+  let plannerQuestions = "";
+  if (card.status === "needs_attention" && questionsEvent) {
+    try { plannerQuestions = JSON.parse(questionsEvent.payload).questions ?? ""; } catch {}
+  }
+  // Install-script gate (spec 14): a loop halted on unapproved lifecycle
+  // scripts — show the packages with their VERBATIM script bodies.
+  let gatePackages: GatePackage[] = [];
+  if (
+    card.status === "needs_attention" &&
+    latestLoopRun?.exitReason === "install-script gate"
+  ) {
+    const gateEvent = detail.events.find(
+      (e) => e.type === "install.gate" && e.runId === latestLoopRun.id,
+    );
+    if (gateEvent) {
+      try { gatePackages = JSON.parse(gateEvent.payload).packages ?? []; } catch {}
+    }
+  }
+
+  async function action(fn: () => Promise<unknown>) {
+    setError("");
+    try {
+      await fn();
+      refetch();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <AppShell>
+    <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 sm:p-6 lg:py-8">
+      <header className="flex min-w-0 items-center gap-3">
+        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
+          ← Work
+        </Link>
+        <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">{card.title}</h1>
+      </header>
+
+      <section className="rounded-xl border border-foreground/[0.08] bg-foreground/[0.025] p-4">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="min-w-0 grow">
+            <p className="text-sm text-foreground/75">{repo?.name ?? "Unknown repository"}</p>
+            <p className="mt-1 text-xs text-foreground/45">{plainStatus(card.status)}{card.startedAt && ` · ${timeAgo(card.startedAt)} elapsed`}</p>
+          </div>
+        {card.status === "backlog" && (
+          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/move`, { json: { to: "todo" } }))}>Add to Todo</ActionButton>
+        )}
+        {card.status === "todo" && (
+          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/move`, { json: { to: "in_progress" } }))}>Start now</ActionButton>
+        )}
+        {card.status === "needs_attention" && (
+          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/${canRetryMerge ? "retry-merge" : canRetryFailedStep ? "retry-failed-step" : "restart"}`, { json: {} }))}>{canRetryMerge ? "Retry merge" : canRetryFailedStep ? "Retry failed step" : "Restart task"}</ActionButton>
+        )}
+        {card.status === "review" && (
+          <ActionButton primary onClick={() => router.push(`/review/${id}`)}>Review changes</ActionButton>
+        )}
+        {card.status === "plan_review" && (
+          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/approve-plan`, { method: "POST" }))}>Approve plan and implement</ActionButton>
+        )}
+        {card.status === "looping" && (
+          <ActionButton onClick={() => confirm("Pause this task after the current iteration?") && action(() => api(`/api/cards/${id}/pause`, { json: {} }))}>Pause</ActionButton>
+        )}
+        {card.status === "paused" && (
+          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/resume`, { json: {} }))}>Continue</ActionButton>
+        )}
+        {card.status === "paused" && (
+          <ActionButton onClick={() => setShowEdit(true)}>Edit model overrides</ActionButton>
+        )}
+        {["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status) && <ActionButton primary onClick={() => chooseTab("Activity")}>View activity</ActionButton>}
+        {card.status === "done" && <ActionButton primary onClick={() => chooseTab("Overview")}>Open summary</ActionButton>}
+        <details className="relative">
+          <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" aria-label="More task actions">•••</summary>
+          <div className="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl">
+        {["backlog", "todo"].includes(card.status) && <button type="button" onClick={() => setShowEdit(true)} className="min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">Edit task</button>}
+        {["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"].includes(card.status) && (
+          <MenuButton
+            onClick={() =>
+              (["planning", "looping", "evaluating"].includes(card.status)
+                ? confirm("Cancel the active run and pull back to Backlog?")
+                : true) && action(() => api(`/api/cards/${id}/move`, { json: { to: "backlog" } }))
+            }
+          >
+            Move to backlog
+          </MenuButton>
+        )}
+        {["needs_attention", "review", "plan_review"].includes(card.status) && (
+          <MenuButton
+            danger
+            onClick={() =>
+              confirm("Abandon this task? Its worktree and branch will be deleted.") &&
+              action(() => api(`/api/cards/${id}/abandon`, { json: {} }))
+            }
+          >
+            Abandon task
+          </MenuButton>
+        )}
+        {["needs_attention", "review", "plan_review"].includes(card.status) && (
+          <MenuButton
+            danger
+            onClick={() =>
+              confirm("Reset all progress? This deletes the branch, worktree, and plan, and moves the card back to Backlog.") &&
+              action(() => api(`/api/cards/${id}/reset`, { json: {} }))
+            }
+          >
+            Reset all progress
+          </MenuButton>
+        )}
+        {["backlog", "todo", "done", "abandoned", "needs_attention"].includes(card.status) && (
+          <MenuButton
+            danger
+            onClick={() =>
+              confirm("Delete this task and all its history?") &&
+              action(async () => {
+                await api(`/api/cards/${id}`, { method: "DELETE" });
+                router.push("/");
+              })
+            }
+          >
+            Delete task
+          </MenuButton>
+        )}
+          </div>
+        </details>
+        </div>
+      </section>
+      {showEdit && (
+        <EditCardModal
+          detail={detail}
+          plannerModels={plannerModels}
+          loopModels={loopModels}
+          evaluatorModels={evaluatorModels}
+          onClose={() => setShowEdit(false)}
+          onSaved={() => { setShowEdit(false); refetch(); }}
+        />
+      )}
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+      {plannerQuestions && (
+        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-amber-300 mb-1">
+            The planner needs more detail before it can plan this task
+          </h3>
+          <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">
+            {plannerQuestions}
+          </pre>
+          <p className="text-xs text-amber-400/70 mt-2">
+            Edit the task description with more detail, then restart the task.
+          </p>
+        </div>
+      )}
+      {gatePackages.length > 0 && (
+        <InstallGateBanner cardId={id} packages={gatePackages} onApproved={refetch} />
+      )}
+
+      <nav className="-mx-4 overflow-x-auto border-b border-foreground/10 px-4 sm:-mx-6 sm:px-6" aria-label="Task details">
+        <div className="flex w-max min-w-full gap-1" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => chooseTab(t)}
+            className={`min-h-11 whitespace-nowrap px-3 py-2 text-sm ${
+              tab === t ? "border-b-2 border-amber-500 text-foreground" : "text-foreground/50 hover:text-foreground"
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+        </div>
+      </nav>
+
+      {tab === "Overview" && (
+        <section className="flex flex-col gap-4">
+          <div className="text-sm text-foreground/70">
+            <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
+            <span className="text-foreground/40">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
+          </div>
+          <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
+            {card.description || "(no description)"}
+          </pre>
+          <div className="text-sm text-foreground/60">
+            Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
+            minutes
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <WorkflowFlag
+              on={Boolean(card.reviewPlanBeforeImplementation)}
+              label="Review plan before implementation"
+            />
+            <WorkflowFlag
+              on={Boolean(card.autoApprove)}
+              label="Auto-approve on evaluator pass"
+              warnWhenOn
+            />
+          </div>
+          {plans.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium mb-1">Plan versions</h3>
+              {plans.map((p) => (
+                <div key={p.id} className="text-sm text-foreground/60">
+                  v{p.version} · {timeAgo(p.createdAt)} ago
+                  {p.feedback && <span className="text-amber-400"> · from feedback: &ldquo;{p.feedback.slice(0, 80)}&rdquo;</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {card.status === "plan_review" && latestPlan && (
+            <div>
+              <h3 className="text-sm font-medium mb-1 text-cyan-300">Generated plan</h3>
+              <PlanModelBadge tag={planTag} />
+              <pre className="whitespace-pre-wrap text-xs bg-cyan-950/30 border border-cyan-800/40 rounded p-3 mt-1 font-mono overflow-x-auto text-cyan-100/80">
+                {latestPlan.planMd}
+              </pre>
+            </div>
+          )}
+          {card.summary && (
+            <div>
+              <h3 className="text-sm font-medium mb-1">Changes summary</h3>
+              <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans text-green-400/80">
+                {card.summary}
+              </pre>
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "Plan" &&
+        (latestPlan ? (
+          <section className="flex flex-col gap-4">
+            <PlanModelBadge tag={planTag} />
+            {(
+              [
+                ["PLAN.md", latestPlan.planMd],
+                ["CRITERIA.md", latestPlan.acceptanceCriteria],
+                ["PROMPT.md", latestPlan.promptMd],
+              ] as const
+            ).map(([name, content]) => (
+              <details key={name} open={name === "PLAN.md"}>
+                <summary className="text-sm font-medium cursor-pointer text-foreground/80">
+                  {name} <span className="text-foreground/40">(plan v{latestPlan.version})</span>
+                </summary>
+                <pre className="whitespace-pre-wrap text-xs bg-foreground/[0.04] rounded p-3 mt-1 font-mono overflow-x-auto">
+                  {content}
+                </pre>
+              </details>
+            ))}
+          </section>
+        ) : (
+          <p className="text-foreground/50 text-sm">{card.status === "planning" ? "Plan is running…" : "No plan yet — start the task to run planning."}</p>
+        ))}
+
+      {tab === "Activity" && (
+        <section className="flex flex-col gap-4">
+          {[...runs].reverse().map((run) => (
+            <div key={run.id} className="bg-foreground/[0.04] rounded p-3">
+              <div className="text-sm flex gap-2 items-center">
+                <span className="font-medium">{run.kind === "plan" ? "◔ Planning run" : run.kind === "loop" ? "⚙ Loop run" : "🔎 Evaluator run"}</span>
+                <span
+                  className={`text-xs rounded px-1.5 py-0.5 ${
+                    run.status === "completed"
+                      ? "bg-green-900/60 text-green-300"
+                      : run.status === "running"
+                        ? "bg-amber-900/60 text-amber-300"
+                        : "bg-red-900/60 text-red-300"
+                  }`}
+                >
+                  {run.status}
+                </span>
+                {run.exitReason && <span className="text-xs text-foreground/50">{run.exitReason}</span>}
+                <span className="text-xs text-foreground/40 grow text-right">
+                  {timeAgo(run.startedAt)} ago
+                </span>
+              </div>
+              {run.kind !== "loop" ? (
+                <button
+                  className="text-xs text-amber-400 hover:underline mt-1"
+                  onClick={() => {
+                    setTranscript({ runId: run.id, iteration: 0 });
+                    chooseTab("Transcript");
+                  }}
+                >
+                  view transcript
+                </button>
+              ) : (
+                <>
+                  {run.iterations.length > 0 && <MetricsPanel run={run} />}
+                  <div className="mt-1 flex flex-col gap-0.5">
+                    {run.iterations.map((it) => (
+                    <button
+                      key={it.id}
+                      onClick={() => {
+                        setTranscript({ runId: run.id, iteration: it.n });
+                        chooseTab("Transcript");
+                      }}
+                      className="text-left text-xs text-foreground/60 hover:text-foreground flex gap-2"
+                    >
+                      <span className="text-amber-400/80 shrink-0">iter {it.n}</span>
+                      <span className={it.status === "failed" ? "text-red-400" : ""}>
+                        {(it.summary ?? it.status).slice(0, 140)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                </>
+              )}
+            </div>
+          ))}
+          <div>
+            <h3 className="text-sm font-medium mb-1">Events</h3>
+            {detail.events.map((e) => (
+              <div key={e.id} className="text-xs text-foreground/50 font-mono">
+                {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {tab === "Transcript" && (
+        <TranscriptView
+          fallback={
+            latestLoopRun
+              ? { runId: latestLoopRun.id, iteration: latestLoopRun.iterationsDone || 1 }
+              : runs[0]
+                ? { runId: runs[0].id, iteration: 0 }
+                : null
+          }
+          selected={transcript}
+          live={card.status === "looping" || card.status === "evaluating" || card.status === "planning" || card.status === "plan_review"}
+        />
+      )}
+    </div>
+    </AppShell>
+  );
+}
+
+type GatePackage = {
+  name: string;
+  version: string;
+  scriptHash: string;
+  scripts: Record<string, string>;
+};
+
+/**
+ * Install-script gate approval (spec 14): the run is paused with its state
+ * preserved; approving runs `npm rebuild` for the CHECKED packages only,
+ * remembers them for this repo, and resumes the run in place. The model never
+ * sees any of this — it is an out-of-band human decision.
+ */
+function InstallGateBanner({
+  cardId,
+  packages,
+  onApproved,
+}: {
+  cardId: string;
+  packages: GatePackage[];
+  onApproved: () => void;
+}) {
+  const [checked, setChecked] = useState<Record<string, boolean>>(
+    Object.fromEntries(packages.map((p) => [`${p.name}@${p.version}#${p.scriptHash}`, true])),
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const selected = packages.filter((p) => checked[`${p.name}@${p.version}#${p.scriptHash}`]);
+
+  async function approve() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/cards/${cardId}/approve-install`, {
+        json: {
+          packages: selected.map(({ name, version, scriptHash }) => ({ name, version, scriptHash })),
+        },
+      });
+      onApproved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="border border-red-700/60 bg-red-950/30 rounded-lg p-3">
+      <h3 className="text-sm font-medium text-red-300 mb-1">
+        This install wants to execute code from {packages.length === 1 ? "a package" : "packages"} you haven&rsquo;t approved
+      </h3>
+      <p className="text-xs text-red-200/70 mb-2">
+        The run is paused with its progress preserved. Review each package&rsquo;s install
+        scripts below — approving runs them and resumes the task where it left off.
+      </p>
+      <div className="flex flex-col gap-2">
+        {packages.map((p) => {
+          const key = `${p.name}@${p.version}#${p.scriptHash}`;
+          return (
+            <label key={key} className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={Boolean(checked[key])}
+                onChange={(e) => setChecked((c) => ({ ...c, [key]: e.target.checked }))}
+                className="mt-1"
+              />
+              <div className="min-w-0">
+                <span className="font-mono text-red-100">{p.name}@{p.version}</span>
+                <pre className="whitespace-pre-wrap text-xs bg-black/30 rounded p-2 mt-1 font-mono overflow-x-auto text-red-100/80">
+                  {Object.entries(p.scripts)
+                    .map(([event, body]) => `${event}: ${body}`)
+                    .join("\n")}
+                </pre>
+              </div>
+            </label>
+          );
+        })}
+      </div>
+      {error && <p className="text-red-400 text-sm mt-2">{error}</p>}
+      <button
+        onClick={approve}
+        disabled={busy || selected.length === 0}
+        className="mt-2 bg-red-700 hover:bg-red-600 disabled:opacity-40 text-white font-medium rounded px-3 py-1.5 text-sm"
+      >
+        {busy ? "Approving…" : `Approve ${selected.length} package${selected.length === 1 ? "" : "s"} and resume`}
+      </button>
+    </div>
+  );
+}
+
+/** Compact chip for a per-card workflow toggle. An "on" auto-approve flag is
+ * amber to flag that this card can merge without human review. */
+function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; warnWhenOn?: boolean }) {
+  const tone = on
+    ? warnWhenOn
+      ? "border-amber-600/50 bg-amber-950/30 text-amber-300"
+      : "border-foreground/15 bg-foreground/[0.06] text-foreground/75"
+    : "border-foreground/10 text-foreground/40";
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${tone}`}>
+      <span aria-hidden>{on ? "●" : "○"}</span>
+      {label}: {on ? "On" : "Off"}
+    </span>
+  );
+}
+
+function plainStatus(status: string): string {
+  return ({ backlog: "Backlog", todo: "Queued in Todo", planning: "Planning", plan_review: "Plan ready for review", ready: "Ready to run", looping: "Running", evaluating: "Evaluating", paused: "Paused", review: "Ready for review", reviewing: "Applying review", needs_attention: "Needs attention", done: "Completed", abandoned: "Abandoned" } as Record<string, string>)[status] ?? status;
+}
+
+function ActionButton({
+  children,
+  onClick,
+  primary,
+  danger,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  primary?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded px-3 py-1.5 text-sm ${
+        primary
+          ? "bg-amber-600 hover:bg-amber-500 text-on-accent font-medium"
+          : danger
+            ? "bg-red-950 hover:bg-red-900 text-red-300 border border-red-900"
+            : "bg-foreground/10 hover:bg-foreground/15"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MenuButton({ children, onClick, danger }: { children: React.ReactNode; onClick: () => void; danger?: boolean }) {
+  return <button type="button" onClick={onClick} className={`min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] ${danger ? "text-red-300" : ""}`}>{children}</button>;
+}
+
+type StreamLine = Record<string, unknown> & { t?: string };
+
+function TranscriptView({
+  selected,
+  fallback,
+  live,
+}: {
+  selected: { runId: string; iteration: number } | null;
+  fallback: { runId: string; iteration: number } | null;
+  live: boolean;
+}) {
+  const target = selected ?? fallback;
+  const [lines, setLines] = useState<StreamLine[]>([]);
+  const [showJump, setShowJump] = useState(false);
+  const [historyTruncated, setHistoryTruncated] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!target) return;
+    let stop = false;
+    let cursor = 0;
+    let first = true;
+    let inFlight = false;
+    let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
+    const load = async () => {
+      if (stop || inFlight) return;
+      inFlight = true;
+      const replace = first;
+      const cursorQuery = live || !first ? `&cursor=${cursor}` : "";
+      try {
+        const d = await api<{
+          lines: StreamLine[];
+          cursor: number;
+          hasMore: boolean;
+          truncated: boolean;
+          reset: boolean;
+        }>(`/api/runs/${target.runId}?iteration=${target.iteration}${cursorQuery}`);
+        if (stop) return;
+        first = false;
+        cursor = d.cursor;
+        const nearBottom = document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 96;
+        setLines((previous) => {
+          const next = replace || d.reset ? (d.lines ?? []) : [...previous, ...(d.lines ?? [])];
+          if (!replace && previous.length > 0 && (d.lines?.length ?? 0) > 0) {
+            if (nearBottom) requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+            else setShowJump(true);
+          }
+          return next.slice(-2_000);
+        });
+        setHistoryTruncated(d.truncated);
+        if (replace) setShowJump(false);
+        if (d.hasMore) catchUpTimer = setTimeout(() => void load(), 0);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void load();
+    const t = live ? setInterval(() => void load(), 2000) : null;
+    return () => {
+      stop = true;
+      if (t) clearInterval(t);
+      if (catchUpTimer) clearTimeout(catchUpTimer);
+    };
+  }, [target?.runId, target?.iteration, live]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!target) return <p className="text-foreground/50 text-sm">No runs yet.</p>;
+
+  return (
+    <section className="flex min-w-0 flex-col gap-1 font-mono text-xs">
+      <div className="mb-1 flex min-h-11 items-center gap-2 text-foreground/40">
+      <p>
+        run {target.runId} · {target.iteration ? `iteration ${target.iteration}` : "planning"}
+        {live && <span className="text-amber-300"> · ● Live</span>}
+      </p>
+      {showJump && <button type="button" onClick={() => { bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); setShowJump(false); }} className="ml-auto rounded-lg bg-amber-500/15 px-3 text-xs text-amber-200">Jump to latest</button>}
+      </div>
+      {historyTruncated && <p className="text-foreground/40">Showing the latest transcript chunk.</p>}
+      {lines.map((line, i) => (
+        <TranscriptLine key={i} line={line} />
+      ))}
+      {lines.length === 0 && <p className="text-foreground/40">No transcript output yet…</p>}
+      <div ref={bottomRef} />
+    </section>
+  );
+}
+
+function TranscriptLine({ line }: { line: StreamLine }) {
+  if (line.t === "text") {
+    return (
+      <div className="whitespace-pre-wrap text-foreground/85 bg-foreground/[0.04] rounded p-2 my-0.5 font-sans text-sm">
+        {String(line.content ?? "")}
+      </div>
+    );
+  }
+  if (line.t === "tool") {
+    const desc = describeToolCall(String(line.name ?? ""), line.input);
+    return (
+      <details className="text-foreground/50">
+        <summary className="cursor-pointer hover:text-foreground/80">
+          ⚒ {String(line.name ?? "")}
+          {desc && (
+            <span className="text-foreground/40 font-mono ml-2">{desc}</span>
+          )}
+        </summary>
+        <pre className="whitespace-pre-wrap pl-4 text-foreground/40 overflow-x-auto">
+          {JSON.stringify(line.input, null, 2)?.slice(0, 2000)}
+        </pre>
+      </details>
+    );
+  }
+  if (line.t === "result") {
+    const isFailed = line.exit === "failed";
+    return (
+      <div className={`${isFailed ? "text-red-400" : "text-green-500/70"} mt-1`}>
+        ■ result: {isFailed ? String(line.detail ?? "unknown error") : "ok"}
+      </div>
+    );
+  }
+  if (line.t === "usage") {
+    return (
+      <div className="text-foreground/30 mt-1">
+        ▸ tokens: {String(line.inputTokens ?? 0)} in / {String(line.outputTokens ?? 0)} out
+      </div>
+    );
+  }
+  return null;
+}
+
+function EditCardModal({
+  detail,
+  plannerModels,
+  loopModels,
+  evaluatorModels,
+  onClose,
+  onSaved,
+}: {
+  detail: CardDetailData;
+  plannerModels: { value: string; displayName: string }[];
+  loopModels: { value: string; displayName: string }[];
+  evaluatorModels: { value: string; displayName: string }[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState(detail.card.title);
+  const [description, setDescription] = useState(detail.card.description);
+  const [plannerModel, setPlannerModel] = useState(detail.card.plannerModel ?? "");
+  const [loopModel, setLoopModel] = useState(detail.card.loopModel ?? "");
+  const [evaluatorModel, setEvaluatorModel] = useState(detail.card.evaluatorModel ?? "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/cards/${detail.card.id}`, {
+        method: "PATCH",
+        json: { title, description, plannerModel: plannerModel || null, loopModel: loopModel || null, evaluatorModel: evaluatorModel || null },
+      });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="edit-task-title"
+        className="bg-surface border border-foreground/10 rounded-lg p-4 w-[32rem] max-w-[90vw]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 id="edit-task-title" className="font-medium mb-3">Edit task</h3>
+        <div className="flex flex-col gap-3">
+          <input
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Title"
+            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
+          />
+          <select
+            value={plannerModel}
+            onChange={(e) => setPlannerModel(e.target.value)}
+            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">Planner model: Default (from settings)</option>
+            {plannerModels.map((m) => (
+              <option key={m.value} value={m.value}>
+                Planner model: {m.displayName}
+              </option>
+            ))}
+          </select>
+          <select
+            value={loopModel}
+            onChange={(e) => setLoopModel(e.target.value)}
+            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">Loop model: Default (from settings)</option>
+            {loopModels.map((m) => (
+              <option key={m.value} value={m.value}>
+                Loop model: {m.displayName}
+              </option>
+            ))}
+          </select>
+          <select
+            value={evaluatorModel}
+            onChange={(e) => setEvaluatorModel(e.target.value)}
+            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">Evaluator model: Default (from settings)</option>
+            {evaluatorModels.map((m) => (
+              <option key={m.value} value={m.value}>
+                Evaluator model: {m.displayName}
+              </option>
+            ))}
+          </select>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Description — include a definition of done. The planner only sees this."
+            rows={6}
+            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm font-mono"
+          />
+          {error && <p className="text-red-400 text-sm">{error}</p>}
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={busy || !title.trim()}
+              className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-on-accent font-medium rounded px-3 py-1.5 text-sm"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

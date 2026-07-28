@@ -1,0 +1,6 @@
+[
+  { "id": 1, "title": "Fix login redirect", "status": "open", "priority": "high" },
+  { "id": 2, "title": "Update dependencies", "status": "open", "priority": "normal" },
+  { "id": 3, "title": "Write release notes", "status": "done", "priority": "normal" },
+  { "id": 4, "title": "Rotate API keys", "status": "open", "priority": "high" }
+]

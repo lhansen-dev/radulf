@@ -1,0 +1,1170 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  runHarness: vi.fn(),
+  listProviderModels: vi.fn(),
+  preflightProvider: vi.fn(),
+  createWorktree: vi.fn(),
+  mergeBranch: vi.fn(),
+  removeWorktree: vi.fn(),
+  tryGit: vi.fn(),
+  rebuildPackages: vi.fn(),
+}));
+
+vi.mock("./harness", () => ({ runHarness: mocks.runHarness }));
+// Real gate scanning/diffing, mocked `npm rebuild` (never run real npm here).
+vi.mock("./installGate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./installGate")>()),
+  rebuildPackages: mocks.rebuildPackages,
+}));
+vi.mock("./providers", () => ({
+  listProviderModels: mocks.listProviderModels,
+  normalizeProvider: (value: string) => value,
+  preflightProvider: mocks.preflightProvider,
+}));
+vi.mock("./settings", () => ({
+  getSettings: () => ({
+    plannerProvider: "anthropic",
+    plannerModel: "planner-model",
+    loopProvider: "anthropic",
+    loopModel: "loop-model",
+    evaluatorProvider: "anthropic",
+    evaluatorModel: "evaluator-model",
+    omlxBaseUrl: "http://127.0.0.1:8000",
+    omlxApiKey: "",
+    openrouterApiKey: "",
+    defaultMaxIterations: 5,
+    defaultTimeoutMinutes: 10,
+    iterationHardTimeoutMinutes: 2,
+    stallTimeoutSeconds: 60,
+    autoMode: false,
+    minimalToolset: false,
+    // Lifecycle tests use plain mkdtemp worktrees, not real git repos, and
+    // exercise bookkeeping/state-machine logic, not spec 14's sandbox
+    // wiring (that has its own dedicated tests) — sandboxEnabled: false
+    // keeps createRunSandbox from resolving a real git-common-dir against
+    // a fake worktree.
+    sandboxEnabled: false,
+    sandboxNetworkAllowlist: "",
+    sandboxWeakerIsolationForGoTls: false,
+    notificationsEnabled: false,
+    soundEnabled: false,
+    theme: "default",
+    plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
+    evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}",
+    improvePromptTemplate: "Existing cards:\n{{EXISTING_CARDS}}\n{{FOCUS}}",
+  }),
+}));
+vi.mock("./git", () => ({
+  createWorktree: mocks.createWorktree,
+  currentBranch: () => "main",
+  mergeBaseIntoWorktree: vi.fn(),
+  mergeBranch: mocks.mergeBranch,
+  removeWorktree: mocks.removeWorktree,
+  tryGit: mocks.tryGit,
+}));
+
+const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-orchestrator-"));
+process.env.RADULF_DATA_DIR = testDataDir;
+
+const {
+  db,
+  cards,
+  events,
+  iterations,
+  now,
+  plans,
+  repos,
+  reviews,
+  runs,
+  settings,
+} = await import("@/db");
+const { Orchestrator } = await import("./orchestrator");
+const { planStatePath } = await import("./bookkeeping");
+const { POST: postReview } = await import("@/app/api/reviews/route");
+const { POST: postAbandon } = await import("@/app/api/cards/[id]/abandon/route");
+const { pruneRuntimeHistory } = await import("./retention");
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function card(
+  id: string,
+  status: typeof cards.$inferInsert.status = "todo",
+  reviewPlanBeforeImplementation = 0,
+  autoApprove = 0,
+) {
+  db.insert(cards)
+    .values({
+      id,
+      repoId: "repo-1",
+      title: `Card ${id}`,
+      description: "Lifecycle test",
+      status,
+      reviewPlanBeforeImplementation,
+      autoApprove,
+      position: 1,
+      startedAt: status === "needs_attention" ? "2026-07-16T01:00:00.000Z" : null,
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    .run();
+}
+
+function plan(cardId: string) {
+  db.insert(plans)
+    .values({
+      id: `plan-${cardId}`,
+      cardId,
+      version: 1,
+      planMd: "## Tasks\n- [ ] implement the task\n",
+      promptMd: "Implement the task.",
+      acceptanceCriteria: "The task is complete.",
+      createdAt: now(),
+    })
+    .run();
+}
+
+function getCard(id: string) {
+  return db.select().from(cards).all().find((row) => row.id === id)!;
+}
+
+function getRun(cardId: string) {
+  return db.select().from(runs).all().find((row) => row.cardId === cardId)!;
+}
+
+function completedRun(
+  cardId: string,
+  id: string,
+  options: {
+    kind?: "plan" | "loop" | "evaluate";
+    startedAt?: string;
+    endedAt?: string;
+    status?: "running" | "completed" | "failed" | "timeout" | "cancelled" | "interrupted";
+    exitReason?: string;
+  } = {},
+) {
+  const worktreePath = path.join(testDataDir, "worktrees", id);
+  fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+  db.insert(runs)
+    .values({
+      id,
+      cardId,
+      planId: options.kind === "plan" ? null : `plan-${cardId}`,
+      kind: options.kind ?? "loop",
+      status: options.status ?? "completed",
+      worktreePath,
+      branch: `ralph/${id}`,
+      baseBranch: "main",
+      startedAt: options.startedAt ?? "2026-07-16T12:00:00.000Z",
+      exitReason: options.exitReason,
+      endedAt: options.status === "running"
+        ? null
+        : options.endedAt ?? "2026-07-16T12:05:00.000Z",
+    })
+    .run();
+}
+
+const completePlannerArtifacts = {
+  "PLAN.md": "## Tasks\n- [ ] implement the task\n",
+  "PROMPT.md": "Implement the task.",
+  "CRITERIA.md": "The task is complete.",
+};
+
+function writePlannerArtifacts(
+  worktreePath: string,
+  artifacts: Record<string, string> = completePlannerArtifacts,
+) {
+  const ralphDir = path.join(worktreePath, ".ralph");
+  fs.mkdirSync(ralphDir, { recursive: true });
+  for (const [name, content] of Object.entries(artifacts)) {
+    fs.writeFileSync(path.join(ralphDir, name), content);
+  }
+}
+
+const successfulHarnessResult = {
+  timedOut: false,
+  error: "",
+  code: 0,
+  lastText: "complete",
+};
+
+function writeDone(worktreePath: string) {
+  fs.writeFileSync(path.join(worktreePath, ".ralph", "DONE"), "Implemented and verified.");
+}
+
+function writeEvaluation(worktreePath: string, content: string) {
+  fs.writeFileSync(path.join(worktreePath, ".ralph", "EVALUATION.md"), content);
+}
+
+function routeOrchestrator() {
+  const orchestrator = new Orchestrator({ autoStart: false });
+  (globalThis as typeof globalThis & { __radulfOrchestrator?: InstanceType<typeof Orchestrator> })
+    .__radulfOrchestrator = orchestrator;
+  return orchestrator;
+}
+
+function reviewRequest(runId: string, decision: "approved" | "rejected") {
+  return new Request("http://localhost/api/reviews", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runId, decision, feedback: "Please revise this." }),
+  });
+}
+
+async function settle() {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+describe("Orchestrator cancellation lifecycle", () => {
+  beforeEach(() => {
+    db.delete(reviews).run();
+    db.delete(iterations).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(events).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    db.delete(settings).run();
+    fs.rmSync(path.join(testDataDir, "worktrees"), { recursive: true, force: true });
+    fs.mkdirSync(path.join(testDataDir, "worktrees"), { recursive: true });
+
+    db.insert(repos)
+      .values({
+        id: "repo-1",
+        name: "Lifecycle repo",
+        path: path.join(testDataDir, "repo"),
+        defaultBranch: "main",
+        createdAt: now(),
+      })
+      .run();
+
+    vi.clearAllMocks();
+    mocks.createWorktree.mockImplementation((_repoPath, _base, _title, runId) => {
+      const worktreePath = path.join(testDataDir, "worktrees", String(runId));
+      fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+      return { worktreePath, branch: `ralph/${runId}` };
+    });
+    mocks.preflightProvider.mockResolvedValue(undefined);
+    mocks.tryGit.mockImplementation(async () => ({ ok: true, out: "" }));
+    mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
+    mocks.runHarness.mockResolvedValue({ timedOut: false, error: "no verdict written in test" });
+    delete (globalThis as typeof globalThis & {
+      __radulfOrchestrator?: InstanceType<typeof Orchestrator>;
+    })
+      .__radulfOrchestrator;
+  });
+
+  afterAll(() => {
+    fs.rmSync(testDataDir, { recursive: true, force: true });
+    delete process.env.RADULF_DATA_DIR;
+  });
+
+  it("uses Backlog as the storage default for new cards", () => {
+    db.insert(cards)
+      .values({
+        id: "default-backlog",
+        repoId: "repo-1",
+        title: "Default Backlog card",
+        createdAt: now(),
+        updatedAt: now(),
+      })
+      .run();
+
+    expect(getCard("default-backlog").status).toBe("backlog");
+  });
+
+  it("moves a Backlog card to the end of Todo without starting it when auto-mode is off", () => {
+    card("queued-before", "todo");
+    db.update(cards).set({ position: 4 }).where(eq(cards.id, "queued-before")).run();
+    card("backlog-card", "backlog");
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.queueCard("backlog-card");
+
+    expect(getCard("backlog-card")).toMatchObject({
+      status: "todo",
+      position: 5,
+      startedAt: null,
+    });
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+  });
+
+  it("moves a card to Backlog when planning is cancelled", async () => {
+    card("planning");
+    const harness = deferred<never>();
+    mocks.runHarness.mockReturnValueOnce(harness.promise);
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.startCard("planning");
+    expect(getCard("planning").status).toBe("planning");
+    await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+    orchestrator.cancelCard("planning");
+    expect(getCard("planning")).toMatchObject({ status: "backlog", startedAt: null });
+    expect(getRun("planning").status).toBe("cancelled");
+    expect(mocks.runHarness.mock.calls[0][0].signal.aborted).toBe(true);
+
+    harness.reject(new Error("child exited after abort"));
+    await settle();
+
+    expect(getCard("planning")).toMatchObject({ status: "backlog", startedAt: null });
+    expect(db.select().from(runs).all()).toHaveLength(1);
+  });
+
+  it("does not enter the loop after cancellation during provider preflight", async () => {
+    card("preflight");
+    plan("preflight");
+    const preflight = deferred<void>();
+    mocks.preflightProvider.mockReturnValueOnce(preflight.promise);
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.startCard("preflight");
+    await vi.waitFor(() => expect(getCard("preflight").status).toBe("looping"));
+
+    orchestrator.cancelCard("preflight");
+    preflight.resolve();
+    await settle();
+
+    expect(getCard("preflight")).toMatchObject({ status: "backlog", startedAt: null });
+    expect(getRun("preflight").status).toBe("cancelled");
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+  });
+
+  it("moves a card to Backlog when a running loop is cancelled", async () => {
+    card("loop");
+    plan("loop");
+    const harness = deferred<never>();
+    mocks.runHarness.mockReturnValueOnce(harness.promise);
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.startCard("loop");
+    await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+    orchestrator.cancelCard("loop");
+    expect(mocks.runHarness.mock.calls[0][0].signal.aborted).toBe(true);
+    harness.reject(new Error("child exited after abort"));
+    await settle();
+
+    expect(getCard("loop")).toMatchObject({ status: "backlog", startedAt: null });
+    expect(getRun("loop").status).toBe("cancelled");
+  });
+
+  it("pulls needs-attention back to Backlog", () => {
+    card("attention", "needs_attention");
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.cancelCard("attention");
+
+    expect(getCard("attention")).toMatchObject({ status: "backlog", startedAt: null });
+    expect(db.select().from(runs).all()).toHaveLength(0);
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+  });
+
+  describe("planner attempt isolation", () => {
+    it("removes stale questions before a successful retry", async () => {
+      card("question-retry", "needs_attention", 1);
+      completedRun("question-retry", "question-run", { kind: "plan" });
+      const worktreePath = getRun("question-retry").worktreePath;
+      writePlannerArtifacts(worktreePath, { "QUESTIONS.md": "Old question?" });
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writePlannerArtifacts(worktreePath);
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("question-retry");
+      await vi.waitFor(() => expect(getCard("question-retry").status).toBe("plan_review"));
+
+      expect(fs.existsSync(path.join(worktreePath, ".ralph", "QUESTIONS.md"))).toBe(false);
+      expect(db.select().from(plans).all()).toHaveLength(1);
+    });
+
+    it("does not combine partial output with a stale complete plan", async () => {
+      card("partial-retry", "needs_attention", 1);
+      completedRun("partial-retry", "partial-run", { kind: "plan" });
+      const worktreePath = getRun("partial-retry").worktreePath;
+      writePlannerArtifacts(worktreePath);
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writePlannerArtifacts(worktreePath, {
+          "PLAN.md": "## Tasks\n- [ ] only the fresh partial output\n",
+        });
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("partial-retry");
+      await vi.waitFor(() => expect(getCard("partial-retry").status).toBe("needs_attention"));
+
+      expect(db.select().from(plans).all()).toHaveLength(0);
+      expect(fs.existsSync(path.join(worktreePath, ".ralph", "PROMPT.md"))).toBe(false);
+      expect(fs.existsSync(path.join(worktreePath, ".ralph", "CRITERIA.md"))).toBe(false);
+    });
+
+    it("clears stale artifacts even when the retry times out", async () => {
+      card("timeout-retry", "needs_attention", 1);
+      completedRun("timeout-retry", "timeout-run", { kind: "plan" });
+      const worktreePath = getRun("timeout-retry").worktreePath;
+      writePlannerArtifacts(worktreePath, {
+        ...completePlannerArtifacts,
+        "QUESTIONS.md": "Stale question?",
+      });
+      mocks.runHarness.mockResolvedValueOnce({ timedOut: true, error: "" });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("timeout-retry");
+      await vi.waitFor(() => expect(getCard("timeout-retry").status).toBe("needs_attention"));
+
+      for (const name of ["QUESTIONS.md", ...Object.keys(completePlannerArtifacts)]) {
+        expect(fs.existsSync(path.join(worktreePath, ".ralph", name))).toBe(false);
+      }
+      expect(db.select().from(plans).all()).toHaveLength(0);
+    });
+
+  });
+
+  describe("failed-step retries", () => {
+    it("retries a failed planner without entering the loop", async () => {
+      card("retry-planner", "needs_attention", 1);
+      completedRun("retry-planner", "failed-plan", { kind: "plan", status: "failed" });
+      mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        writePlannerArtifacts(cwd);
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      expect(orchestrator.retryFailedStep("retry-planner")).toEqual({
+        ok: true,
+        step: "plan",
+      });
+      await vi.waitFor(() => expect(getCard("retry-planner").status).toBe("plan_review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "retry-planner");
+      expect(cardRuns.map((run) => run.kind)).toEqual(["plan", "plan"]);
+      // Spec 14 Phase 2b: the planner passes its role so it gets the
+      // web_search-bearing, bash-free tool set.
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("planner");
+    });
+
+    it("retries a failed loop without replanning", async () => {
+      card("retry-loop", "needs_attention");
+      plan("retry-loop");
+      completedRun("retry-loop", "failed-loop", { status: "failed" });
+      const retry = deferred<never>();
+      mocks.runHarness.mockReturnValueOnce(retry.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      expect(orchestrator.retryFailedStep("retry-loop")).toEqual({ ok: true, step: "loop" });
+      await vi.waitFor(() => expect(getCard("retry-loop").status).toBe("looping"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "retry-loop");
+      expect(cardRuns.map((run) => run.kind)).toEqual(["loop", "loop"]);
+      // Spec 14 Phase 2b: the loop passes its role (bash, never web_search).
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("loop");
+
+      orchestrator.cancelCard("retry-loop");
+      retry.reject(new Error("child exited after abort"));
+      await settle();
+    });
+
+    it("retries a failed evaluator without rerunning the loop", async () => {
+      card("retry-evaluator", "needs_attention");
+      plan("retry-evaluator");
+      completedRun("retry-evaluator", "completed-loop", {
+        startedAt: "2026-07-17T10:00:00.000Z",
+      });
+      completedRun("retry-evaluator", "failed-evaluator", {
+        kind: "evaluate",
+        status: "failed",
+        startedAt: "2026-07-17T10:06:00.000Z",
+      });
+      const worktreePath = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, "failed-evaluator"))
+        .get()!.worktreePath;
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writeEvaluation(worktreePath, "VERDICT: approve\n\nThe retry passed.");
+        fs.writeFileSync(path.join(worktreePath, ".ralph", "SUMMARY.md"), "Summarized after retry.");
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      expect(orchestrator.retryFailedStep("retry-evaluator")).toEqual({
+        ok: true,
+        step: "evaluate",
+      });
+      await vi.waitFor(() => expect(getCard("retry-evaluator").status).toBe("review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "retry-evaluator");
+      expect(cardRuns.filter((run) => run.kind === "loop")).toHaveLength(1);
+      expect(cardRuns.filter((run) => run.kind === "evaluate")).toHaveLength(2);
+      // The evaluator (not a separate summarizer) writes the card summary.
+      expect(getCard("retry-evaluator").summary).toBe("Summarized after retry.");
+      // Spec 14 Phase 2b: the evaluator passes its role (bash, never web_search).
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
+    });
+
+    it("commits the evaluator's approve doc edits onto the review branch", async () => {
+      card("doc-summary", "needs_attention");
+      plan("doc-summary");
+      completedRun("doc-summary", "doc-approved-loop", {
+        startedAt: "2026-07-17T10:00:00.000Z",
+      });
+      completedRun("doc-summary", "doc-failed-evaluator", {
+        kind: "evaluate",
+        status: "failed",
+        startedAt: "2026-07-17T10:07:00.000Z",
+      });
+      const worktreePath = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, "doc-failed-evaluator"))
+        .get()!.worktreePath;
+      // The evaluator approved and edited a spec, leaving the worktree dirty.
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) =>
+        args[0] === "status"
+          ? { ok: true, out: " M specs/05-ui-design.md" }
+          : { ok: true, out: "" },
+      );
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writeEvaluation(worktreePath, "VERDICT: approve\n\nCriteria pass.");
+        fs.writeFileSync(path.join(worktreePath, ".ralph", "SUMMARY.md"), "Doc summary");
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      expect(orchestrator.retryFailedStep("doc-summary")).toEqual({ ok: true, step: "evaluate" });
+      await vi.waitFor(() => expect(getCard("doc-summary").status).toBe("review"));
+
+      // The doc edits were committed onto the review branch, not merged to base.
+      expect(mocks.tryGit).toHaveBeenCalledWith(expect.any(String), "add", "-A");
+      expect(mocks.tryGit).toHaveBeenCalledWith(
+        expect.any(String),
+        "commit",
+        "-m",
+        "ralph: evaluation — approve",
+      );
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      expect(getCard("doc-summary").summary).toBe("Doc summary");
+    });
+
+    it("rejects a verdict when the evaluator edits a non-doc file", async () => {
+      card("evaluator-code-edit", "needs_attention");
+      plan("evaluator-code-edit");
+      completedRun("evaluator-code-edit", "ece-loop", {
+        startedAt: "2026-07-17T10:00:00.000Z",
+      });
+      completedRun("evaluator-code-edit", "ece-failed-evaluator", {
+        kind: "evaluate",
+        status: "failed",
+        startedAt: "2026-07-17T10:07:00.000Z",
+      });
+      const worktreePath = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, "ece-failed-evaluator"))
+        .get()!.worktreePath;
+      // The worktree is clean before the run; the evaluator dirties a source
+      // file during it — the judge must not edit what it judged.
+      let evaluatorTouchedSource = false;
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) =>
+        args[0] === "status"
+          ? { ok: true, out: evaluatorTouchedSource ? " M src/feature.ts" : "" }
+          : { ok: true, out: "" },
+      );
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writeEvaluation(worktreePath, "VERDICT: approve\n\nLooks good.");
+        evaluatorTouchedSource = true;
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      expect(orchestrator.retryFailedStep("evaluator-code-edit")).toEqual({
+        ok: true,
+        step: "evaluate",
+      });
+      await vi.waitFor(() =>
+        expect(getCard("evaluator-code-edit").status).toBe("needs_attention"),
+      );
+
+      // No verdict commit, no advance to review.
+      expect(mocks.tryGit).not.toHaveBeenCalledWith(expect.any(String), "add", "-A");
+      const evaluateRun = db
+        .select()
+        .from(runs)
+        .all()
+        .find((run) => run.id !== "ece-failed-evaluator" && run.kind === "evaluate")!;
+      expect(evaluateRun.status).toBe("failed");
+      expect(evaluateRun.exitReason).toContain("non-doc files");
+    });
+  });
+
+  describe("evaluator gate", () => {
+    it("requires evaluator approval before human review and then permits the loop merge", async () => {
+      card("evaluate-approve");
+      plan("evaluate-approve");
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: approve\n\nAll criteria passed independently.");
+          fs.writeFileSync(path.join(cwd, ".ralph", "SUMMARY.md"), "Summarized the change.");
+          return successfulHarnessResult;
+        });
+      const orchestrator = routeOrchestrator();
+
+      orchestrator.startCard("evaluate-approve");
+      await vi.waitFor(() => expect(getCard("evaluate-approve").status).toBe("review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "evaluate-approve");
+      // Approve goes straight to human review — the evaluator writes the summary.
+      expect(cardRuns.map((run) => run.kind).sort()).toEqual(["evaluate", "loop"]);
+      const loopRun = cardRuns.find((run) => run.kind === "loop")!;
+      expect(cardRuns.find((run) => run.kind === "evaluate")).toMatchObject({
+        status: "completed",
+        exitReason: "approve",
+        provider: "anthropic",
+        model: "evaluator-model",
+      });
+      expect(getCard("evaluate-approve").summary).toBe("Summarized the change.");
+
+      const response = await postReview(reviewRequest(loopRun.id, "approved"));
+      await settle();
+
+      expect(response.status).toBe(200);
+      expect(getCard("evaluate-approve").status).toBe("done");
+      expect(db.select().from(reviews).all()).toHaveLength(1);
+    });
+
+    it("auto-approves and merges without human review when the card opts in", async () => {
+      card("auto-approve", "todo", 0, 1);
+      plan("auto-approve");
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: approve\n\nAll criteria passed independently.");
+          fs.writeFileSync(path.join(cwd, ".ralph", "SUMMARY.md"), "Summarized the change.");
+          return successfulHarnessResult;
+        });
+      const orchestrator = routeOrchestrator();
+
+      orchestrator.startCard("auto-approve");
+      // No human posts a review, yet the card merges straight through to Done.
+      await vi.waitFor(() => expect(getCard("auto-approve").status).toBe("done"));
+
+      expect(mocks.mergeBranch).toHaveBeenCalledTimes(1);
+      // The merge went through the real review path, so a review row is recorded.
+      expect(db.select().from(reviews).all()).toHaveLength(1);
+      expect(db.select().from(reviews).all()[0]).toMatchObject({ decision: "approved" });
+      const autoApproveEvent = db
+        .select()
+        .from(events)
+        .all()
+        .find((event) => event.type === "card.auto_approved" && event.cardId === "auto-approve");
+      expect(autoApproveEvent).toBeTruthy();
+    });
+
+    it("still escalates an evaluator revision-limit card to a human even with auto-approve on", async () => {
+      // Auto-approve trusts a genuine `approve`; the revision-limit escalation
+      // is the evaluator giving up, so it must always land in human review.
+      card("auto-approve-limit", "todo", 0, 1);
+      plan("auto-approve-limit");
+      // Seed MAX_EVALUATOR_REVISIONS prior revise verdicts so the next one escalates.
+      for (let i = 0; i < 3; i++) {
+        completedRun("auto-approve-limit", `prior-revise-${i}`, {
+          kind: "evaluate",
+          status: "completed",
+          exitReason: "revise",
+        });
+      }
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: revise\n\nStill not handling the edge case.");
+          return successfulHarnessResult;
+        });
+      const orchestrator = routeOrchestrator();
+
+      orchestrator.startCard("auto-approve-limit");
+      await vi.waitFor(() => expect(getCard("auto-approve-limit").status).toBe("review"));
+      // The revision-limit escalation must never auto-merge.
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      expect(db.select().from(reviews).all()).toHaveLength(0);
+    });
+
+    it("turns a revise verdict into the loop's next assigned task", async () => {
+      card("evaluate-revise");
+      plan("evaluate-revise");
+      const resumedLoop = deferred<never>();
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(
+            cwd,
+            "VERDICT: revise\n\nsrc/feature.ts does not handle the empty-input case.",
+          );
+          return successfulHarnessResult;
+        })
+        .mockReturnValueOnce(resumedLoop.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("evaluate-revise");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(3));
+
+      expect(getCard("evaluate-revise").status).toBe("looping");
+      const cardPlans = db
+        .select()
+        .from(plans)
+        .all()
+        .filter((row) => row.cardId === "evaluate-revise")
+        .sort((a, b) => a.version - b.version);
+      expect(cardPlans).toHaveLength(2);
+      expect(cardPlans[1]).toMatchObject({
+        version: 2,
+        feedback: "src/feature.ts does not handle the empty-input case.",
+      });
+      expect(cardPlans[1].promptMd).toContain("Evaluator feedback — address this first");
+      expect(String(mocks.runHarness.mock.calls[2][0].prompt)).toContain(
+        "Address the feedback in the \"Evaluator feedback — address this first\" section",
+      );
+      expect(fs.readFileSync(planStatePath("evaluate-revise"), "utf8")).toContain(
+        "Address the feedback in the \"Evaluator feedback — address this first\" section",
+      );
+
+      orchestrator.cancelCard("evaluate-revise");
+      resumedLoop.reject(new Error("child exited after abort"));
+      await settle();
+      expect(getCard("evaluate-revise").status).toBe("backlog");
+    });
+
+    it("fails loudly when the evaluator writes no usable verdict", async () => {
+      card("evaluate-malformed");
+      plan("evaluate-malformed");
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockResolvedValueOnce(successfulHarnessResult);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("evaluate-malformed");
+      await vi.waitFor(() => expect(getCard("evaluate-malformed").status).toBe("needs_attention"));
+
+      const evaluationRun = db
+        .select()
+        .from(runs)
+        .all()
+        .find((run) => run.cardId === "evaluate-malformed" && run.kind === "evaluate");
+      expect(evaluationRun).toMatchObject({ status: "failed" });
+      expect(evaluationRun?.exitReason).toContain("no usable VERDICT");
+      await expect(orchestrator.retryMerge("evaluate-malformed")).rejects.toThrow(
+        "evaluator has not cleared",
+      );
+    });
+
+    it("cancels the live evaluator rather than the just-finished loop", async () => {
+      card("evaluate-cancel");
+      plan("evaluate-cancel");
+      const evaluator = deferred<never>();
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockReturnValueOnce(evaluator.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("evaluate-cancel");
+      await vi.waitFor(() => expect(getCard("evaluate-cancel").status).toBe("evaluating"));
+
+      orchestrator.cancelCard("evaluate-cancel");
+      const evaluationRun = db
+        .select()
+        .from(runs)
+        .all()
+        .find((run) => run.cardId === "evaluate-cancel" && run.kind === "evaluate");
+      expect(evaluationRun?.status).toBe("cancelled");
+      expect(mocks.runHarness.mock.calls[1][0].signal.aborted).toBe(true);
+
+      evaluator.reject(new Error("child exited after abort"));
+      await settle();
+      expect(getCard("evaluate-cancel")).toMatchObject({ status: "backlog", startedAt: null });
+    });
+
+    it("finalizes an evaluator run when the harness throws unexpectedly", async () => {
+      card("evaluate-throws");
+      plan("evaluate-throws");
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockRejectedValueOnce(new Error("harness crashed"));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("evaluate-throws");
+      await vi.waitFor(() => expect(getCard("evaluate-throws").status).toBe("needs_attention"));
+
+      const evaluationRun = db
+        .select()
+        .from(runs)
+        .all()
+        .find((run) => run.cardId === "evaluate-throws" && run.kind === "evaluate");
+      expect(evaluationRun).toMatchObject({ status: "failed" });
+      expect(evaluationRun?.exitReason).toContain("harness crashed");
+      expect(db.select().from(runs).all().some((run) => run.status === "running")).toBe(false);
+    });
+  });
+
+  describe("install-script gate (spec 14)", () => {
+    function installEvilPackage(worktreePath: string) {
+      const pkgDir = path.join(worktreePath, "node_modules", "native-dep");
+      fs.mkdirSync(pkgDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({
+          name: "native-dep",
+          version: "1.2.3",
+          scripts: { postinstall: "node-gyp rebuild" },
+        }),
+      );
+      fs.writeFileSync(path.join(worktreePath, "package-lock.json"), "{}");
+    }
+
+    it("halts a DONE run into Needs Attention with the verbatim script body", async () => {
+      card("gate-halt");
+      plan("gate-halt");
+      mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        installEvilPackage(cwd);
+        writeDone(cwd);
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-halt");
+      await vi.waitFor(() => expect(getCard("gate-halt").status).toBe("needs_attention"));
+
+      const run = getRun("gate-halt");
+      expect(run).toMatchObject({ status: "completed", exitReason: "install-script gate" });
+      // The model never saw a prompt; the human sees the verbatim script.
+      const gateEvent = db
+        .select()
+        .from(events)
+        .all()
+        .find((event) => event.type === "install.gate");
+      expect(gateEvent).toBeDefined();
+      const payload = JSON.parse(gateEvent!.payload) as {
+        packages: { name: string; version: string; scripts: Record<string, string> }[];
+      };
+      expect(payload.packages).toHaveLength(1);
+      expect(payload.packages[0]).toMatchObject({ name: "native-dep", version: "1.2.3" });
+      expect(payload.packages[0].scripts.postinstall).toBe("node-gyp rebuild");
+      // No evaluator ran — nothing unapproved reaches evaluation.
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+    });
+
+    it("approval rebuilds ONLY the approved packages, records them, and resumes in place", async () => {
+      card("gate-approve");
+      plan("gate-approve");
+      mocks.rebuildPackages.mockResolvedValue({ ok: true, out: "rebuilt" });
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          installEvilPackage(cwd);
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: approve\n\nCriteria pass.");
+          fs.writeFileSync(path.join(cwd, ".ralph", "SUMMARY.md"), "Summary.");
+          return successfulHarnessResult;
+        });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-approve");
+      await vi.waitFor(() => expect(getCard("gate-approve").status).toBe("needs_attention"));
+      const gateEvent = db
+        .select()
+        .from(events)
+        .all()
+        .find((event) => event.type === "install.gate" && event.cardId === "gate-approve")!;
+      const { packages } = JSON.parse(gateEvent.payload) as {
+        packages: { name: string; version: string; scriptHash: string }[];
+      };
+
+      await orchestrator.approveInstallScripts(
+        "gate-approve",
+        packages.map(({ name, version, scriptHash }) => ({ name, version, scriptHash })),
+      );
+      // The DONE had already exhausted the checklist, so the resume path goes
+      // straight to evaluation — never back to Todo, never a restart.
+      await vi.waitFor(() => expect(getCard("gate-approve").status).toBe("review"));
+
+      expect(mocks.rebuildPackages).toHaveBeenCalledWith(expect.any(String), ["native-dep"]);
+      const repoRow = db.select().from(repos).all().find((row) => row.id === "repo-1")!;
+      expect(JSON.parse(repoRow.approvedInstallScripts)).toEqual([
+        { name: "native-dep", version: "1.2.3", scriptHash: packages[0].scriptHash },
+      ]);
+      // One loop run, one evaluate — the loop was NOT re-run.
+      const kinds = db
+        .select()
+        .from(runs)
+        .all()
+        .filter((run) => run.cardId === "gate-approve")
+        .map((run) => run.kind)
+        .sort();
+      expect(kinds).toEqual(["evaluate", "loop"]);
+    });
+
+    it("does not re-fire for approved packages on the next run", async () => {
+      card("gate-remembered");
+      plan("gate-remembered");
+      // Pre-approve the exact triple.
+      const scripts = { postinstall: "node-gyp rebuild" };
+      const { scriptHashFor } = await import("./installGate");
+      db.update(repos)
+        .set({
+          approvedInstallScripts: JSON.stringify([
+            { name: "native-dep", version: "1.2.3", scriptHash: scriptHashFor(scripts) },
+          ]),
+        })
+        .run();
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          installEvilPackage(cwd);
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: approve\n\nFine.");
+          fs.writeFileSync(path.join(cwd, ".ralph", "SUMMARY.md"), "S.");
+          return successfulHarnessResult;
+        });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-remembered");
+      await vi.waitFor(() => expect(getCard("gate-remembered").status).toBe("review"));
+      expect(
+        db.select().from(events).all().some(
+          (event) => event.type === "install.gate" && event.cardId === "gate-remembered",
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe("review and abandon routes", () => {
+    it("rejects a wrong-kind run", async () => {
+      card("wrong-kind", "review");
+      completedRun("wrong-kind", "plan-run", { kind: "plan" });
+      routeOrchestrator();
+
+      const response = await postReview(reviewRequest("plan-run", "approved"));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "reviews require a completed loop run" });
+      expect(getCard("wrong-kind").status).toBe("review");
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    });
+
+    it("rejects a completed loop when the card is in the wrong status", async () => {
+      card("wrong-status", "needs_attention");
+      plan("wrong-status");
+      completedRun("wrong-status", "wrong-status-run");
+      routeOrchestrator();
+
+      const response = await postReview(reviewRequest("wrong-status-run", "approved"));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "cannot review a card in status needs_attention",
+      });
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    });
+
+    it("rejects a stale loop run", async () => {
+      card("stale", "review");
+      plan("stale");
+      completedRun("stale", "older-run", { startedAt: "2026-07-16T10:00:00.000Z" });
+      completedRun("stale", "current-run", { startedAt: "2026-07-16T11:00:00.000Z" });
+      routeOrchestrator();
+
+      const response = await postReview(reviewRequest("older-run", "approved"));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "run is stale; review the card's current run",
+      });
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    });
+
+    it("does not treat a later evaluator run as making its loop stale", async () => {
+      card("evaluated-review", "review");
+      plan("evaluated-review");
+      completedRun("evaluated-review", "evaluated-loop", {
+        startedAt: "2026-07-16T10:00:00.000Z",
+      });
+      completedRun("evaluated-review", "evaluated-verdict", {
+        kind: "evaluate",
+        startedAt: "2026-07-16T11:00:00.000Z",
+        exitReason: "approve",
+      });
+      routeOrchestrator();
+
+      const response = await postReview(reviewRequest("evaluated-loop", "approved"));
+      await settle();
+
+      expect(response.status).toBe(200);
+      expect(getCard("evaluated-review").status).toBe("done");
+    });
+
+    it("makes duplicate approval idempotent", async () => {
+      card("duplicate", "review");
+      plan("duplicate");
+      completedRun("duplicate", "duplicate-run");
+      routeOrchestrator();
+
+      const first = await postReview(reviewRequest("duplicate-run", "approved"));
+      const second = await postReview(reviewRequest("duplicate-run", "approved"));
+      await settle();
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(getCard("duplicate").status).toBe("done");
+      expect(db.select().from(reviews).all()).toHaveLength(1);
+      expect(
+        mocks.mergeBranch.mock.calls.filter((call) => String(call[3]).startsWith("ralph: merge")),
+      ).toHaveLength(1);
+    });
+
+    it("allows only one of two concurrent, conflicting decisions", async () => {
+      card("concurrent", "review");
+      plan("concurrent");
+      completedRun("concurrent", "concurrent-run");
+      routeOrchestrator();
+
+      const responses = await Promise.all([
+        postReview(reviewRequest("concurrent-run", "approved")),
+        postReview(reviewRequest("concurrent-run", "rejected")),
+      ]);
+      await settle();
+
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
+      expect(db.select().from(reviews).all()).toHaveLength(1);
+      expect(getCard("concurrent").status).toBe("done");
+      expect(
+        mocks.mergeBranch.mock.calls.filter((call) => String(call[3]).startsWith("ralph: merge")),
+      ).toHaveLength(1);
+    });
+
+    it("refuses to abandon a card with live work", async () => {
+      card("active-abandon", "looping");
+      plan("active-abandon");
+      completedRun("active-abandon", "active-run", { status: "running" });
+      routeOrchestrator();
+
+      const response = await postAbandon(new Request("http://localhost"), {
+        params: Promise.resolve({ id: "active-abandon" }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(getCard("active-abandon").status).toBe("looping");
+      expect(getRun("active-abandon").status).toBe("running");
+      expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("runtime history retention", () => {
+    it("removes card transcripts and events immediately on reset", async () => {
+      card("reset-history", "needs_attention");
+      plan("reset-history");
+      completedRun("reset-history", "reset-history-run");
+      const transcriptDir = path.join(testDataDir, "transcripts", "reset-history-run");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      fs.writeFileSync(path.join(transcriptDir, "plan.jsonl"), "{}\n");
+      db.insert(events)
+        .values({ cardId: "reset-history", type: "test", payload: "{}", createdAt: now() })
+        .run();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      await orchestrator.resetCard("reset-history");
+
+      expect(fs.existsSync(transcriptDir)).toBe(false);
+      expect(db.select().from(events).all()).toHaveLength(1);
+      expect(db.select().from(events).all()[0].type).toBe("card.moved");
+      expect(db.select().from(runs).all()).toHaveLength(0);
+    });
+
+    it("prunes aged terminal rows and orphan transcripts while preserving active history", () => {
+      card("old-history", "done");
+      plan("old-history");
+      completedRun("old-history", "old-run", {
+        endedAt: "2020-01-01T00:05:00.000Z",
+        startedAt: "2020-01-01T00:00:00.000Z",
+      });
+      card("active-history", "looping");
+      plan("active-history");
+      completedRun("active-history", "active-history-run", { status: "running" });
+      db.insert(iterations)
+        .values({
+          runId: "old-run",
+          n: 1,
+          transcriptPath: "data/transcripts/old-run/iter-001.jsonl",
+          startedAt: "2020-01-01T00:00:00.000Z",
+        })
+        .run();
+      db.insert(events)
+        .values([
+          { cardId: "old-history", type: "old", payload: "{}", createdAt: "2020-01-01T00:00:00.000Z" },
+          { cardId: "active-history", type: "recent", payload: "{}", createdAt: now() },
+        ])
+        .run();
+      const oldDir = path.join(testDataDir, "transcripts", "old-run");
+      const activeDir = path.join(testDataDir, "transcripts", "active-history-run");
+      fs.mkdirSync(oldDir, { recursive: true });
+      fs.mkdirSync(activeDir, { recursive: true });
+      fs.writeFileSync(path.join(oldDir, "iter-001.jsonl"), "{}\n");
+      fs.writeFileSync(path.join(activeDir, "iter-001.jsonl"), "{}\n");
+      const orphan = path.join(testDataDir, "transcripts", "planner-chat-orphan.jsonl");
+      fs.writeFileSync(orphan, "{}\n");
+      fs.utimesSync(orphan, new Date("2020-01-01"), new Date("2020-01-01"));
+
+      const result = pruneRuntimeHistory(30);
+
+      expect(result).toEqual({
+        runsDeleted: 1,
+        eventsDeleted: 1,
+        transcriptEntriesDeleted: 2,
+      });
+      expect(db.select().from(runs).all().map((run) => run.id)).toEqual(["active-history-run"]);
+      expect(db.select().from(iterations).all()).toHaveLength(0);
+      expect(db.select().from(events).all().map((event) => event.type)).toEqual(["recent"]);
+      expect(fs.existsSync(oldDir)).toBe(false);
+      expect(fs.existsSync(orphan)).toBe(false);
+      expect(fs.existsSync(activeDir)).toBe(true);
+    });
+  });
+});
