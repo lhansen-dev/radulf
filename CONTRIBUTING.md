@@ -52,6 +52,35 @@ Everything registered in the Docs tab lives in
 [`src/server/docs.ts`](src/server/docs.ts). The wiki is curated, so adding a file
 under `docs/` does not surface it — add a registry entry too.
 
+## Branches and releases
+
+Two long-lived branches:
+
+| Branch | What it is |
+|--------|------------|
+| `main` | Stable. Only ever receives a merge from `beta` at release time, so between releases it sits exactly at the last stable tag. This is what a plain `git clone` gets. |
+| `beta` | Integration. All work lands here first. **Open your PR against `beta`, not `main`.** |
+
+Releases are git tags; the [Release workflow](.github/workflows/release.yml) runs
+`make check` and publishes a GitHub Release from the tag. Tags with a hyphen
+(`v1.1.0-beta.1`) are SemVer prereleases and are published as such, so they never
+displace the current stable release as "Latest".
+
+```bash
+# Cut a beta off the integration branch
+git switch beta
+make release VERSION=1.1.0-beta.1
+
+# Promote to stable once it's proven
+git switch main && git merge --ff-only beta
+make release VERSION=1.1.0
+git switch beta && git merge main   # carry the version bump back
+```
+
+`--ff-only` is deliberate: it fails loudly if anything was committed directly to
+`main`, which is what keeps the branch honest. `make release` refuses to tag a
+stable version from anywhere but `main`, or a prerelease from anywhere but `beta`.
+
 ## Before you open a PR
 
 Run the full gate locally — this is exactly what CI runs on every push and PR:

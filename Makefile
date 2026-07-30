@@ -75,9 +75,18 @@ db-studio: ## Open Drizzle Studio
 clean: ## Remove build output and caches
 	rm -rf .next tsconfig.tsbuildinfo
 
-release: ## Cut a release: make release VERSION=1.0.0
+release: ## Cut a release: make release VERSION=1.0.0 (or 1.1.0-beta.1 from beta)
 	@test -n "$(VERSION)" || { echo "VERSION is required, e.g. make release VERSION=1.0.0"; exit 1; }
 	@git diff --quiet && git diff --cached --quiet || { echo "Working tree is dirty; commit or stash first."; exit 1; }
+	@# Enforce the branch model: stable tags come off main, prereleases off beta.
+	@# A hyphen in VERSION marks a prerelease (1.1.0-beta.1). Tagging a stable
+	@# release from beta would ship unpromoted work under a "Latest" release.
+	@branch=$$(git rev-parse --abbrev-ref HEAD); \
+	case "$(VERSION)" in \
+	  *-*) want=beta ;; \
+	  *)   want=main ;; \
+	esac; \
+	test "$$branch" = "$$want" || { echo "VERSION=$(VERSION) must be cut from '$$want', but HEAD is on '$$branch'."; exit 1; }
 	$(MAKE) check
 	npm version $(VERSION) -m "release v%s"
 	git push --follow-tags

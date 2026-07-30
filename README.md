@@ -136,6 +136,12 @@ make dev
 
 Then open **[http://localhost:3000](http://localhost:3000)** 🎉
 
+> [!NOTE]
+> `main` is the stable branch and always sits at the latest release, so the clone
+> above needs no extra flags. To try unreleased work, clone the integration
+> branch instead — `git clone -b beta https://github.com/lhansen-dev/radulf.git`
+> — or pin an exact release with `-b v1.0.0`.
+
 The SQLite database and every runtime directory (`./data`, plus the agent-writable
 `./worktrees`, `./plans` and `./runtmp` beside it) are created automatically on first
 run and are all gitignored — **no manual migration step needed**.

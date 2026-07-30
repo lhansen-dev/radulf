@@ -26,4 +26,13 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        # A hyphen in the tag marks a SemVer prerelease (v1.1.0-beta.1). `gh`
+        # does not infer that from the tag, and GitHub shows the newest
+        # non-prerelease as "Latest" — without the flag a beta would displace
+        # the current stable release on the repo page.
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=--prerelease ;;
+            *)   prerelease= ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag $prerelease
