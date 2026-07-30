@@ -710,6 +710,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   const [error, setError] = useState("");
   const [picking, setPicking] = useState(false);
   const [notARepo, setNotARepo] = useState(false);
+  const [emptyRepo, setEmptyRepo] = useState(false);
   // The picker opens on the machine running the server, so it is useless from a
   // phone or a remote browser — typing stays available as a fallback.
   const [typePath, setTypePath] = useState(false);
@@ -718,13 +719,16 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
     setError("");
     setPicking(true);
     try {
-      const picked = await api<{ path?: string; isGitRepo?: boolean; cancelled?: boolean }>(
-        "/api/folder-picker",
-        { method: "POST" },
-      );
+      const picked = await api<{
+        path?: string;
+        isGitRepo?: boolean;
+        hasCommits?: boolean;
+        cancelled?: boolean;
+      }>("/api/folder-picker", { method: "POST" });
       if (!picked.path) return; // cancelled
       setPath(picked.path);
       setNotARepo(picked.isGitRepo === false);
+      setEmptyRepo(picked.isGitRepo === true && picked.hasCommits === false);
       if (!name.trim()) setName(picked.path.split("/").pop() ?? "");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -742,6 +746,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
       setPath("");
       setBranch("");
       setNotARepo(false);
+      setEmptyRepo(false);
       onChange();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -781,6 +786,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
             onChange={(e) => {
               setPath(e.target.value);
               setNotARepo(false);
+              setEmptyRepo(false);
             }}
             placeholder="/absolute/path/to/repo"
             className={`${inputCls} font-mono`}
@@ -817,6 +823,12 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
       {notARepo && (
         <p className="text-xs text-amber-400/80">
           That folder is not a git repository — pick the folder containing <code>.git</code>.
+        </p>
+      )}
+      {emptyRepo && (
+        <p className="text-xs text-amber-400/80">
+          That repository has no commits yet — Radulf branches each task off an existing commit, so
+          make an initial commit first.
         </p>
       )}
       {!typePath && (

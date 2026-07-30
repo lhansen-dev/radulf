@@ -59,6 +59,14 @@ export async function isGitRepo(dir: string): Promise<boolean> {
   return fs.existsSync(dir) && (await tryGit(dir, "rev-parse", "--git-dir")).ok;
 }
 
+/** True when HEAD resolves to a commit. A freshly `git init`-ed repo is a valid
+ * repo with an unborn HEAD and no refs at all — nothing can be branched from it,
+ * so every worktree-based flow has to reject it up front rather than fail on an
+ * opaque `invalid reference: main` from `git worktree add`. */
+export async function hasCommits(dir: string): Promise<boolean> {
+  return (await tryGit(dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")).ok;
+}
+
 export function slugify(s: string): string {
   return (
     s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "card"
@@ -74,7 +82,20 @@ export async function createWorktree(
   const slug = slugify(cardTitle);
   const worktreePath = path.join(WORKTREES_DIR, `${slug}-${runId}`);
   const branch = `ralph/${slug}-${runId}`;
-  await git(repoPath, "worktree", "add", worktreePath, "-b", branch, defaultBranch);
+  // Check the base ref before branching so the failure names the real problem.
+  // Raw `git worktree add` reports both an empty repo and a typo'd branch as
+  // `invalid reference: <base>`, which surfaced in the UI as an unactionable
+  // "Command failed: git -C …" on the very first task of a fresh `git init`.
+  const base = await tryGit(repoPath, "rev-parse", "--verify", "--quiet", `${defaultBranch}^{commit}`);
+  if (!base.ok) {
+    throw new Error(
+      (await hasCommits(repoPath))
+        ? `base branch "${defaultBranch}" does not exist in ${repoPath}`
+        : `${repoPath} has no commits yet — make an initial commit before running tasks against it`
+    );
+  }
+  const add = await tryGit(repoPath, "worktree", "add", worktreePath, "-b", branch, defaultBranch);
+  if (!add.ok) throw new Error(`git worktree add failed: ${add.out}`);
   return { worktreePath, branch };
 }
 

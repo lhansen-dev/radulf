@@ -4,6 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import {
+  createWorktree,
+  hasCommits,
   isValidBranchName,
   listBranches,
   worktreeIsDirty,
@@ -60,6 +62,57 @@ describe("listBranches", () => {
   it("returns [] for a non-existent path", async () => {
     const branches = await listBranches("/tmp/nonexistent-ralph-test-path-12345");
     expect(branches).toEqual([]);
+  });
+});
+
+describe("repos with no commits", () => {
+  let emptyRepo: string;
+  let committedRepo: string;
+
+  beforeAll(() => {
+    emptyRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-empty-repo-"));
+    git(emptyRepo, "init");
+    committedRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-committed-repo-"));
+    git(committedRepo, "init");
+    git(committedRepo, "config", "user.email", "test@test.com");
+    git(committedRepo, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(committedRepo, "README.md"), "# test");
+    git(committedRepo, "add", ".");
+    git(committedRepo, "commit", "-m", "initial");
+  });
+
+  afterAll(() => {
+    fs.rmSync(emptyRepo, { recursive: true, force: true });
+    fs.rmSync(committedRepo, { recursive: true, force: true });
+  });
+
+  it("hasCommits is false for a freshly init-ed repo", async () => {
+    expect(await hasCommits(emptyRepo)).toBe(false);
+  });
+
+  it("hasCommits is true once a commit exists", async () => {
+    expect(await hasCommits(committedRepo)).toBe(true);
+  });
+
+  it("hasCommits is false for a non-git directory", async () => {
+    const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
+    try {
+      expect(await hasCommits(nonGitDir)).toBe(false);
+    } finally {
+      fs.rmSync(nonGitDir, { recursive: true, force: true });
+    }
+  });
+
+  it("createWorktree names the empty repo instead of failing on an invalid reference", async () => {
+    await expect(createWorktree(emptyRepo, "main", "My task", "run1")).rejects.toThrow(
+      /has no commits yet/
+    );
+  });
+
+  it("createWorktree reports a missing base branch on a repo that does have commits", async () => {
+    await expect(createWorktree(committedRepo, "nope", "My task", "run2")).rejects.toThrow(
+      /base branch "nope" does not exist/
+    );
   });
 });
 

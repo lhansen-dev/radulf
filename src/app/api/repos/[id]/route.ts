@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, repos } from "@/db";
-import { isGitRepo, listBranches } from "@/server/git";
+import { hasCommits, isGitRepo, listBranches } from "@/server/git";
 import { json, err, handle } from "../../_lib";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +23,9 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
     if (typeof body.path === "string" && body.path.trim()) {
       if (!(await isGitRepo(body.path.trim()))) return err(`${body.path} is not a git repository`);
+      if (!(await hasCommits(body.path.trim()))) {
+        return err(`${body.path} has no commits yet — make an initial commit before adding it`);
+      }
       patch.path = body.path.trim();
     }
     if (typeof body.defaultBranch === "string" && body.defaultBranch.trim()) {
