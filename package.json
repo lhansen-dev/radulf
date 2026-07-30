@@ -1,6 +1,6 @@
 {
   "name": "radulf",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "A local-first agent loop that turns a task into a reviewable diff — planner, loop, and evaluator agents run a Ralph Wiggum loop against a local git repo inside a sandboxed worktree, self-driving from queued task to merged branch.",
   "license": "MIT",
