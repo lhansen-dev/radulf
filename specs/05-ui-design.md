@@ -115,11 +115,21 @@ A read-only metrics dashboard reached from the board header's "📊 Analytics"
 link. Fetches `GET /api/analytics` (a pure `computeAnalytics` rollup of cards,
 runs, and iterations) and renders:
 
-- **KPI tiles** — Cards, Runs, Iterations, Total Tokens (prompt + completion).
+- **KPI tiles** — Cards, Runs, Iterations, Total Tokens (prompt + completion),
+  and Cost (summed harness-reported USD).
 - **Charts** — Cards by Status and Runs by Status (horizontal `BarList`, sorted
-  desc), Tokens per Run (bar per run labeled by card title, zero-token runs
-  filtered, sorted desc), and a Success Rate meter
+  desc), Tokens per Run and Cost per Run (bar per run labeled by card title,
+  zero-value runs filtered, sorted desc), Tokens by Model and Cost by Model, and
+  a Success Rate meter
   (`completed / (completed+failed+timeout+cancelled+interrupted)`).
+
+Cost is displayed by `formatCostUsd` (`src/app/ui/formatCost.ts`) wherever it
+appears — here, the card metrics table, the transcript usage line, and the
+Benchmarks reports table. Four decimals at every magnitude, because a single
+iteration usually costs a fraction of a cent and two decimals would show real
+spend as `$0.00`. An unreported cost renders as `—`, never `$0.00`, so an
+iteration nobody priced is never mistaken for a free one; a *reported* zero
+(local models carry zero rates) does render as `$0.0000`.
 
 Shows loading, error, and empty (no cards yet) states. No mutations — purely a
 view over existing data.

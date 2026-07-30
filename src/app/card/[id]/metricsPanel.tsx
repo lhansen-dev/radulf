@@ -1,5 +1,6 @@
 "use client";
 import { formatDuration } from "./formatDuration";
+import { formatCostUsd, sumCostUsd } from "../../ui/formatCost";
 import { useNow } from "../../ui/useNow";
 
 export type Iteration = {
@@ -10,6 +11,8 @@ export type Iteration = {
   summary: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  /** Harness-reported USD for the iteration; absent on pre-telemetry rows. */
+  costUsd?: number | null;
   startedAt: string;
   endedAt: string | null;
 };
@@ -38,6 +41,7 @@ export function MetricsPanel({ run }: { run: Run }) {
     (s, it) => s + (it.completionTokens ?? 0),
     0,
   );
+  const totalCost = sumCostUsd(iterations.map((it) => it.costUsd));
 
   return (
     <div className="mt-2 mb-2">
@@ -48,7 +52,8 @@ export function MetricsPanel({ run }: { run: Run }) {
               <th className="text-left py-1 pr-2 font-medium">Iter</th>
               <th className="text-left py-1 pr-2 font-medium">Duration</th>
               <th className="text-right py-1 pr-2 font-medium">Prompt</th>
-              <th className="text-right py-1 font-medium">Completion</th>
+              <th className="text-right py-1 pr-2 font-medium">Completion</th>
+              <th className="text-right py-1 font-medium">Cost</th>
             </tr>
           </thead>
           <tbody>
@@ -61,8 +66,11 @@ export function MetricsPanel({ run }: { run: Run }) {
                 <td className="py-1 pr-2 text-right font-mono">
                   {it.promptTokens ?? 0}
                 </td>
-                <td className="py-1 text-right font-mono">
+                <td className="py-1 pr-2 text-right font-mono">
                   {it.completionTokens ?? 0}
+                </td>
+                <td className="py-1 text-right font-mono">
+                  {formatCostUsd(it.costUsd)}
                 </td>
               </tr>
             ))}
@@ -74,7 +82,8 @@ export function MetricsPanel({ run }: { run: Run }) {
                 {formatDuration(run.startedAt, run.endedAt, nowMs)}
               </td>
               <td className="py-1 pr-2 text-right font-mono">{totalPrompt}</td>
-              <td className="py-1 text-right font-mono">{totalCompletion}</td>
+              <td className="py-1 pr-2 text-right font-mono">{totalCompletion}</td>
+              <td className="py-1 text-right font-mono">{formatCostUsd(totalCost)}</td>
             </tr>
           </tfoot>
         </table>

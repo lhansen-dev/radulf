@@ -112,15 +112,20 @@ export type Analytics = {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    /** Summed harness-reported USD; null when no iteration reported a cost, so
+     * an unpriced sample is never presented as free. */
+    costUsd: number | null;
   };
   cardsByStatus: BarDatum[];
   runsByStatus: BarDatum[];
   tokensPerRun: BarDatum[];
+  costPerRun: BarDatum[];
   iterationDurationsMs: number[];
   loopKpis: LoopKpis;
   loopCohorts: LoopCohort[];
   successRate: number;
   tokensByModel: BarDatum[];
+  costByModel: BarDatum[];
   runsByProvider: BarDatum[];
 };
 
@@ -176,6 +181,12 @@ export function computeAnalytics(input: {
     (sum, i) => sum + (i.completionTokens ?? 0),
     0,
   );
+  // Only iterations that reported a cost contribute — see totals.costUsd.
+  const pricedIterations = iterations.filter((i) => i.costUsd != null);
+  const costUsd =
+    pricedIterations.length > 0
+      ? pricedIterations.reduce((sum, i) => sum + (i.costUsd ?? 0), 0)
+      : null;
 
   // Group counts by status
   const cardStatusCounts = new Map<string, number>();
@@ -204,6 +215,21 @@ export function computeAnalytics(input: {
     .map((r) => ({
       label: cardMap.get(r.cardId) ?? r.id,
       value: runTokenMap.get(r.id) ?? 0,
+    }))
+    .filter((d) => d.value > 0)
+    .sort((a, b) => b.value - a.value);
+
+  // Cost per run mirrors tokens per run, over priced iterations only: a run with
+  // nothing priced gets no bar rather than a $0 one.
+  const runCostMap = new Map<string, number>();
+  for (const i of pricedIterations) {
+    runCostMap.set(i.runId, (runCostMap.get(i.runId) ?? 0) + (i.costUsd ?? 0));
+  }
+
+  const costPerRun: BarDatum[] = runs
+    .map((r) => ({
+      label: cardMap.get(r.cardId) ?? r.id,
+      value: runCostMap.get(r.id) ?? 0,
     }))
     .filter((d) => d.value > 0)
     .sort((a, b) => b.value - a.value);
@@ -243,6 +269,17 @@ export function computeAnalytics(input: {
     .map(([label, value]) => ({ label, value }))
     .sort((a, b) => b.value - a.value);
 
+  const modelCostMap = new Map<string, number>();
+  for (const i of pricedIterations) {
+    const model = runModel.get(i.runId) ?? "unknown";
+    modelCostMap.set(model, (modelCostMap.get(model) ?? 0) + (i.costUsd ?? 0));
+  }
+
+  const costByModel: BarDatum[] = Array.from(modelCostMap.entries())
+    .filter(([, value]) => value > 0)
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
+
   // Runs by provider: count runs per provider
   const providerCounts = new Map<string, number>();
   for (const r of runs) {
@@ -262,6 +299,7 @@ export function computeAnalytics(input: {
       promptTokens,
       completionTokens,
       totalTokens: promptTokens + completionTokens,
+      costUsd,
     },
     cardsByStatus: Array.from(cardStatusCounts.entries())
       .map(([label, value]) => ({ label, value }))
@@ -270,11 +308,13 @@ export function computeAnalytics(input: {
       .map(([label, value]) => ({ label, value }))
       .sort((a, b) => b.value - a.value),
     tokensPerRun,
+    costPerRun,
     iterationDurationsMs,
     loopKpis,
     loopCohorts,
     successRate,
     tokensByModel,
+    costByModel,
     runsByProvider,
   };
 }

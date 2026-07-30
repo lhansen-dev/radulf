@@ -6,6 +6,7 @@ import { api, timeAgo } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
 import { MetricsPanel } from "./metricsPanel";
 import { describeToolCall } from "../../ui/toolDescription";
+import { formatCostUsd } from "../../ui/formatCost";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { retryableFailedStep } from "@/shared/failedStep";
@@ -659,9 +660,13 @@ function TranscriptLine({ line }: { line: StreamLine }) {
     );
   }
   if (line.t === "usage") {
+    // costUsd is absent whenever the harness didn't price the turn — say
+    // nothing rather than imply the turn was free.
+    const cost = typeof line.costUsd === "number" ? line.costUsd : null;
     return (
       <div className="text-foreground/30 mt-1">
         ▸ tokens: {String(line.inputTokens ?? 0)} in / {String(line.outputTokens ?? 0)} out
+        {cost != null && ` · ${formatCostUsd(cost)}`}
       </div>
     );
   }

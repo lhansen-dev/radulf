@@ -105,4 +105,33 @@ describe("MetricsPanel", () => {
     const threeCells = screen.getAllByText("3s");
     expect(threeCells.length).toBe(2);
   });
+
+  it("shows per-iteration cost and the summed total", () => {
+    const run = makeRun();
+    run.iterations[0].costUsd = 0.0123;
+    run.iterations[1].costUsd = 0.0004;
+    render(<MetricsPanel run={run} />);
+
+    expect(screen.getByText("$0.0123")).toBeTruthy();
+    expect(screen.getByText("$0.0004")).toBeTruthy();
+    expect(screen.getByText("$0.0127")).toBeTruthy();
+  });
+
+  it("renders an unpriced iteration as em dash and only totals what was priced", () => {
+    const run = makeRun();
+    run.iterations[0].costUsd = 0.05;
+    // iterations[1] leaves costUsd unset — a pre-telemetry row.
+    render(<MetricsPanel run={run} />);
+
+    // One em dash for the unpriced row; the total reflects only the priced one,
+    // so "$0.0500" appears twice — once in the row, once in the total.
+    expect(screen.getAllByText("—").length).toBe(1);
+    expect(screen.getAllByText("$0.0500").length).toBe(2);
+  });
+
+  it("renders the cost total as em dash when nothing reported a cost", () => {
+    render(<MetricsPanel run={makeRun()} />);
+    // Two iteration cells plus the total row.
+    expect(screen.getAllByText("—").length).toBe(3);
+  });
 });

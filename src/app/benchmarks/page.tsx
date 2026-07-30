@@ -4,6 +4,7 @@ import Link from "next/link";
 import { api } from "../ui/api";
 import type { Repo } from "../ui/api";
 import { AppShell } from "../ui/appShell";
+import { formatCostUsd } from "../ui/formatCost";
 import type { BenchmarksResponse } from "../api/benchmarks/route";
 import type { RolloutTarget } from "../../server/analytics";
 
@@ -276,6 +277,7 @@ export default function BenchmarksPage() {
                     <th className="pb-2 pr-4 text-right font-medium">Criteria pass</th>
                     <th className="pb-2 pr-4 text-right font-medium">Diff correct</th>
                     <th className="pb-2 pr-4 text-right font-medium">Median wall</th>
+                    <th className="pb-2 pr-4 text-right font-medium">Median cost</th>
                     <th className="pb-2 text-right font-medium">When</th>
                   </tr>
                 </thead>
@@ -294,6 +296,7 @@ export default function BenchmarksPage() {
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtRate(r.criteriaPassRate)}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtRate(r.diffCorrectnessRate)}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtMs(r.medianWallTimeMs)}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums">{formatCostUsd(r.medianCostUsd)}</td>
                       <td className="py-2 text-right text-xs text-foreground/40">
                         {r.timestamp ? new Date(r.timestamp).toLocaleString() : "—"}
                       </td>

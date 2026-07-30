@@ -1,6 +1,13 @@
 export type BarDatum = { label: string; value: number };
 
-export function BarList({ data }: { data: BarDatum[] }) {
+export function BarList({
+  data,
+  format,
+}: {
+  data: BarDatum[];
+  /** Render the trailing value — defaults to the raw number. */
+  format?: (value: number) => string;
+}) {
   const max = Math.max(1, ...data.map((d) => d.value));
 
   return (
@@ -17,7 +24,7 @@ export function BarList({ data }: { data: BarDatum[] }) {
             />
           </div>
           <span className="shrink-0 text-right text-xs tabular-nums text-foreground/70 sm:text-sm">
-            {d.value}
+            {format ? format(d.value) : d.value}
           </span>
         </div>
       ))}

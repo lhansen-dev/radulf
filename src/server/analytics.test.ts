@@ -23,6 +23,7 @@ describe("computeAnalytics", () => {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
+      costUsd: null,
     });
     expect(result.cardsByStatus).toEqual([]);
     expect(result.runsByStatus).toEqual([]);
@@ -288,6 +289,7 @@ describe("computeAnalytics", () => {
       promptTokens: 130,
       completionTokens: 65,
       totalTokens: 195,
+      costUsd: null,
     });
 
     // cardsByStatus: completed=2, failed=1
@@ -486,6 +488,87 @@ describe("loopKpis", () => {
     expect(loopKpis.cacheSampleSize).toBe(2);
     expect(loopKpis.totalToolDurationMs).toBe(2000);
     expect(loopKpis.totalCostUsd).toBeCloseTo(0.75);
+  });
+});
+
+describe("cost aggregates", () => {
+  function run(id: string, cardId: string, model: string | null): AnalyticsRunRow {
+    return { id, cardId, kind: "loop", status: "completed", iterationsDone: 0, startedAt: "2026-07-01T00:00:00Z", endedAt: null, provider: "anthropic", model };
+  }
+  function iter(
+    id: number,
+    runId: string,
+    extra: Partial<AnalyticsIterationRow> = {},
+  ): AnalyticsIterationRow {
+    return { id, runId, n: id, promptTokens: 10, completionTokens: 5, startedAt: "2026-07-01T00:00:00Z", endedAt: "2026-07-01T00:01:00Z", ...extra };
+  }
+
+  it("sums totals.costUsd over the iterations that reported a cost", () => {
+    const iterations = [
+      iter(1, "r1", { costUsd: 0.0123 }),
+      iter(2, "r1", { costUsd: 0.0004 }),
+      iter(3, "r1"), // pre-telemetry row — contributes nothing
+    ];
+    const { totals } = computeAnalytics({ cards: [], runs: [], iterations });
+    expect(totals.costUsd).toBeCloseTo(0.0127);
+  });
+
+  it("leaves totals.costUsd null when nothing was priced, so an unpriced sample never reads as free", () => {
+    const { totals } = computeAnalytics({
+      cards: [],
+      runs: [],
+      iterations: [iter(1, "r1"), iter(2, "r1")],
+    });
+    expect(totals.costUsd).toBeNull();
+  });
+
+  it("keeps a reported zero as zero rather than dropping it to null", () => {
+    // Local models are registered with zero rates — that is a real $0, not an absence.
+    const { totals } = computeAnalytics({
+      cards: [],
+      runs: [],
+      iterations: [iter(1, "r1", { costUsd: 0 })],
+    });
+    expect(totals.costUsd).toBe(0);
+  });
+
+  it("labels costPerRun by card title and sorts descending", () => {
+    const cards = [
+      { id: "c1", title: "Cheap task", status: "completed" },
+      { id: "c2", title: "Costly task", status: "completed" },
+    ];
+    const runs = [run("r1", "c1", "opus"), run("r2", "c2", "opus")];
+    const iterations = [
+      iter(1, "r1", { costUsd: 0.01 }),
+      iter(2, "r2", { costUsd: 0.2 }),
+      iter(3, "r2", { costUsd: 0.05 }),
+    ];
+    const { costPerRun } = computeAnalytics({ cards, runs, iterations });
+    expect(costPerRun.map((d) => d.label)).toEqual(["Costly task", "Cheap task"]);
+    expect(costPerRun[0].value).toBeCloseTo(0.25);
+    expect(costPerRun[1].value).toBeCloseTo(0.01);
+  });
+
+  it("omits runs with no priced iteration from costPerRun", () => {
+    const cards = [{ id: "c1", title: "Unpriced task", status: "completed" }];
+    const runs = [run("r1", "c1", "local-model")];
+    const { costPerRun } = computeAnalytics({ cards, runs, iterations: [iter(1, "r1")] });
+    expect(costPerRun).toEqual([]);
+  });
+
+  it("groups costByModel by the run's model, bucketing a blank model as unknown", () => {
+    const runs = [run("r1", "c1", "opus"), run("r2", "c1", "haiku"), run("r3", "c1", null)];
+    const iterations = [
+      iter(1, "r1", { costUsd: 0.3 }),
+      iter(2, "r2", { costUsd: 0.1 }),
+      iter(3, "r3", { costUsd: 0.2 }),
+    ];
+    const { costByModel } = computeAnalytics({ cards: [], runs, iterations });
+    expect(costByModel).toEqual([
+      { label: "opus", value: 0.3 },
+      { label: "unknown", value: 0.2 },
+      { label: "haiku", value: 0.1 },
+    ]);
   });
 });
 

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "../ui/api";
 import { BarList } from "../ui/barList";
+import { formatCostUsd } from "../ui/formatCost";
 import type { AnalyticsResponse } from "../../server/analytics";
 import { AppShell } from "../ui/appShell";
 
@@ -106,7 +107,7 @@ export default function AnalyticsPage() {
       <main className="flex flex-col gap-5 p-4 sm:p-6">
         {/* KPI tiles — "Uncached Input" is cumulative uncached input across
             model turns, deliberately NOT presented as generic total tokens. */}
-        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
           <KpiTile label="Tasks" value={data.totals.cards.toLocaleString()} />
           <KpiTile label="Runs" value={data.totals.runs.toLocaleString()} />
           <KpiTile label="Iterations" value={data.totals.iterations.toLocaleString()} />
@@ -114,6 +115,15 @@ export default function AnalyticsPage() {
             label="Uncached Input"
             value={data.totals.promptTokens.toLocaleString()}
             hint="tokens, summed over model turns"
+          />
+          <KpiTile
+            label="Cost"
+            value={formatCostUsd(data.totals.costUsd)}
+            hint={
+              data.totals.costUsd != null
+                ? "USD, as priced by the harness"
+                : "no iteration reported a cost"
+            }
           />
         </div>
 
@@ -157,14 +167,10 @@ export default function AnalyticsPage() {
                     : "not reported yet"
                 }
               />
+              {/* Cost lives in its own totals tile above — this one is time. */}
               <KpiTile
                 label="Tool time"
                 value={fmtDuration(data.loopKpis.totalToolDurationMs)}
-                hint={
-                  data.loopKpis.totalCostUsd != null
-                    ? `cost $${data.loopKpis.totalCostUsd.toFixed(2)}`
-                    : undefined
-                }
               />
             </div>
             {data.loopCohorts.length > 0 && (
@@ -229,6 +235,9 @@ export default function AnalyticsPage() {
             <ChartSection title="Tokens per Run">
               <BarList data={data.tokensPerRun} />
             </ChartSection>
+            <ChartSection title="Cost per Run">
+              <BarList data={data.costPerRun} format={formatCostUsd} />
+            </ChartSection>
             <ChartSection title="Success Rate">
               <div className="flex items-center gap-3">
                 <div className="flex-1 h-5 bg-foreground/[0.06] rounded overflow-hidden">
@@ -244,6 +253,9 @@ export default function AnalyticsPage() {
             </ChartSection>
             <ChartSection title="Tokens by Model">
               <BarList data={data.tokensByModel} />
+            </ChartSection>
+            <ChartSection title="Cost by Model">
+              <BarList data={data.costByModel} format={formatCostUsd} />
             </ChartSection>
             <ChartSection title="Runs by Provider">
               <BarList data={data.runsByProvider} />
