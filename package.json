@@ -33,7 +33,7 @@
     "@anthropic-ai/sandbox-runtime": "0.0.66",
     "@earendil-works/pi-coding-agent": "^0.80.10",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "^13.0.2",
     "drizzle-orm": "^0.45.2",
     "nanoid": "^5.1.16",
     "next": "^16.2.10",
