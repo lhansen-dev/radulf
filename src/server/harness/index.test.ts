@@ -138,6 +138,26 @@ describe("runHarness watchdogs", () => {
     } as unknown as AgentSessionEvent;
   }
 
+  function toolEvt(name: string, args: unknown): AgentSessionEvent {
+    return {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", name, arguments: args }],
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      },
+    } as unknown as AgentSessionEvent;
+  }
+
   /** A fake session whose prompt runs `script` until it finishes or abort()
    * fires. abort() aborts the script's abort-aware waits, so prompt settles. */
   function fakeSession(
@@ -257,6 +277,53 @@ describe("runHarness watchdogs", () => {
 
     expect(result.timedOut).toBe(true);
     expect(result.stalled).toBe(false);
+  }, 15_000);
+
+  it("aborts an iteration that repeats the same tool call over and over", async () => {
+    fs.mkdirSync(scratch, { recursive: true });
+    const result = await runHarness({
+      provider: "openrouter",
+      prompt: "",
+      model: "m",
+      reasoningLevel: "medium",
+      cwd: scratch,
+      transcriptPath: path.join(scratch, "stuck.jsonl"),
+      timeoutMs: 60_000,
+      stallTimeoutMs: 0,
+      createSession: fakeSession(async ({ emit, signal }) => {
+        for (let i = 0; i < 10 && !signal.aborted; i++) {
+          emit(toolEvt("bash", { cmd: "ls" }));
+          await sleep(10, signal);
+        }
+      }),
+    });
+
+    expect(result.stuck).toBe(true);
+    expect(result.code).not.toBe(0);
+    expect(result.error).toContain("repeated the same tool call");
+  }, 15_000);
+
+  it("does not trip stuck when tool calls vary", async () => {
+    fs.mkdirSync(scratch, { recursive: true });
+    const result = await runHarness({
+      provider: "openrouter",
+      prompt: "",
+      model: "m",
+      reasoningLevel: "medium",
+      cwd: scratch,
+      transcriptPath: path.join(scratch, "not-stuck.jsonl"),
+      timeoutMs: 60_000,
+      stallTimeoutMs: 0,
+      createSession: fakeSession(async ({ emit, signal }) => {
+        for (let i = 0; i < 6; i++) {
+          emit(toolEvt("bash", { cmd: `step-${i}` }));
+          await sleep(10, signal);
+        }
+      }),
+    });
+
+    expect(result.stuck).toBe(false);
+    expect(result.code).toBe(0);
   }, 15_000);
 
   it("surfaces a session-construction failure as an error result", async () => {

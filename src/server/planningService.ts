@@ -7,10 +7,12 @@ import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
-import { runHarness } from "./harness";
+import { runHarness, runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { createWorktree, tryGit, currentBranch } from "./git";
+import { CONN_ERROR_PATTERN, isProviderOpen, recordProviderOutcome } from "./circuitBreaker";
+import { createWorktree, recordWorktree, tryGit, currentBranch } from "./git";
 import { runTranscriptDir } from "./retention";
+import { startTranscriptPush } from "./transcript";
 import { createRunSandbox } from "./sandbox/context";
 
 type Card = typeof cards.$inferSelect;
@@ -64,6 +66,7 @@ export type PlanningServiceDependencies = {
     runId: string,
     status: "completed" | "failed" | "timeout" | "cancelled",
     exitReason: string,
+    telemetry?: RunTelemetry,
   ): boolean;
   registerController(runId: string, controller: AbortController): void;
   releaseController(runId: string): void;
@@ -125,6 +128,9 @@ export class PlanningService {
         sandboxed: settings.sandboxEnabled ? 1 : 0,
       })
       .run();
+    // worktrees.runId is a real FK — record the worktree only now that its
+    // owning run row exists (creating it earlier would violate the constraint).
+    if (!prev) recordWorktree(repo.id, runId, worktreePath, branch);
     emitEvent("run.started", { cardId, runId, payload: { kind: "plan" } });
 
     const controller = new AbortController();
@@ -139,43 +145,74 @@ export class PlanningService {
     }
     const prevPlan = deps.latestPlan(cardId);
     try {
-      const result = await runHarness({
-        provider: plannerProvider,
-        model: plannerModel,
-        reasoningLevel: settings.plannerReasoningLevel,
-        prompt: renderPlanPrompt(
-          settings.plannerPromptTemplate,
-          card.title,
-          card.description,
-          prevPlan?.feedback ?? undefined,
-        ),
-        cwd: worktreePath,
-        transcriptPath: path.join(runTranscriptDir(runId), "plan.jsonl"),
-        timeoutMs: PLAN_TIMEOUT_MS,
-        signal: controller.signal,
-        role: "planner",
-        runContext: ctx,
-      });
+      // Circuit breaker: a provider with recent connection/auth failures
+      // fails this run fast instead of repeating the same slow failure.
+      if (isProviderOpen(plannerProvider)) {
+        const reason = `provider ${plannerProvider} circuit breaker open — recent connection failures, will retry automatically after cooldown`;
+        deps.finishRun(runId, "failed", reason);
+        deps.moveCard(cardId, "planning", "needs_attention", reason);
+        return;
+      }
+      // Live transcript push (Phase 16 chunk A) — single-file transcripts
+      // (plan/evaluate) always use iteration 0, matching the `singleFile`
+      // convention in /api/runs/[id]'s route and the TranscriptTarget the
+      // card page builds for a non-loop run.
+      const planTranscriptPath = path.join(runTranscriptDir(runId), "plan.jsonl");
+      const stopTranscriptPush = startTranscriptPush(planTranscriptPath, runId, 0);
+      let result;
+      try {
+        result = await runHarness({
+          provider: plannerProvider,
+          model: plannerModel,
+          reasoningLevel: settings.plannerReasoningLevel,
+          prompt: renderPlanPrompt(
+            settings.plannerPromptTemplate,
+            card.title,
+            card.description,
+            prevPlan?.feedback ?? undefined,
+          ),
+          cwd: worktreePath,
+          transcriptPath: planTranscriptPath,
+          timeoutMs: PLAN_TIMEOUT_MS,
+          signal: controller.signal,
+          role: "planner",
+          runContext: ctx,
+        });
+      } finally {
+        stopTranscriptPush();
+      }
 
       if (controller.signal.aborted) return; // cancelCard already finalized
 
       if (result.timedOut) {
-        deps.finishRun(runId, "timeout", "planning timed out");
+        deps.finishRun(runId, "timeout", "planning timed out", runTelemetry(result));
         deps.moveCard(cardId, "planning", "needs_attention", "planning timed out");
         return;
       }
       // A dead stream, not a slow planner — worth its own reason so it isn't
       // read as the model failing to produce a plan.
       if (result.stalled) {
-        deps.finishRun(runId, "failed", `planner stalled: ${result.error.slice(0, 500)}`);
+        deps.finishRun(
+          runId,
+          "failed",
+          `planner stalled: ${result.error.slice(0, 500)}`,
+          runTelemetry(result),
+        );
         deps.moveCard(cardId, "planning", "needs_attention", "planner stalled");
         return;
       }
       if (result.error) {
-        deps.finishRun(runId, "failed", `planner failed: ${result.error.slice(0, 500)}`);
+        if (CONN_ERROR_PATTERN.test(result.error)) recordProviderOutcome(plannerProvider, false);
+        deps.finishRun(
+          runId,
+          "failed",
+          `planner failed: ${result.error.slice(0, 500)}`,
+          runTelemetry(result),
+        );
         deps.moveCard(cardId, "planning", "needs_attention", "planner failed");
         return;
       }
+      recordProviderOutcome(plannerProvider, true);
 
       // Check for the planner's follow-up questions escape hatch.
       const questionsPath = path.join(
@@ -190,7 +227,7 @@ export class PlanningService {
         await tryGit(worktreePath, "add", ".ralph");
         await tryGit(worktreePath, "commit", "-m", `ralph: planner raised questions for "${card.title}"`);
         emitEvent("plan.questions", { cardId, runId, payload: { questions } });
-        deps.finishRun(runId, "completed", "planner raised follow-up questions");
+        deps.finishRun(runId, "completed", "planner raised follow-up questions", runTelemetry(result));
         deps.moveCard(cardId, "planning", "needs_attention", "planner has follow-up questions");
         return;
       }
@@ -204,7 +241,12 @@ export class PlanningService {
           : "";
       }
       if (RALPH_FILES.some((f) => !contents[f])) {
-        deps.finishRun(runId, "failed", "planner produced malformed artifacts");
+        deps.finishRun(
+          runId,
+          "failed",
+          "planner produced malformed artifacts",
+          runTelemetry(result),
+        );
         deps.moveCard(cardId, "planning", "needs_attention", "planner produced malformed artifacts");
         return;
       }
@@ -212,7 +254,7 @@ export class PlanningService {
       // there is no fallback prompt, so an unparseable plan cannot run.
       if (!firstUnchecked(contents["PLAN.md"])) {
         const reason = "plan checklist unparseable or has no unchecked tasks";
-        deps.finishRun(runId, "failed", reason);
+        deps.finishRun(runId, "failed", reason, runTelemetry(result));
         deps.moveCard(cardId, "planning", "needs_attention", reason);
         return;
       }
@@ -251,7 +293,7 @@ export class PlanningService {
       await tryGit(worktreePath, "add", ".ralph");
       await tryGit(worktreePath, "commit", "-m", `ralph: plan v${version} for "${card.title}"`);
 
-      deps.finishRun(runId, "completed", "plan artifacts written");
+      deps.finishRun(runId, "completed", "plan artifacts written", runTelemetry(result));
       deps.moveCard(cardId, "planning", planningDestination(card));
     } finally {
       deps.releaseController(runId);

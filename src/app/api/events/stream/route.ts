@@ -1,8 +1,9 @@
-import { bus, type RalphEvent } from "@/server/events";
+import { bus, type RalphEvent, type TranscriptPush } from "@/server/events";
 
 export const dynamic = "force-dynamic";
 
-/** SSE feed of every orchestrator event — the board's live-update channel. */
+/** SSE feed of every orchestrator event, plus live transcript pushes — the
+ * board's (and the transcript view's) live-update channel. */
 export async function GET(req: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -10,6 +11,17 @@ export async function GET(req: Request) {
       const send = (event: RalphEvent) => {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          cleanup();
+        }
+      };
+      // Same `data:` framing as `send`, distinguished by `kind` so the client
+      // can tell a transcript push apart from a durable `RalphEvent` — these
+      // never go through `emitEvent`/the `events` table (see TranscriptPush's
+      // doc comment), only this bus channel.
+      const sendTranscript = (push: TranscriptPush) => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ kind: "transcript", ...push })}\n\n`));
         } catch {
           cleanup();
         }
@@ -24,6 +36,7 @@ export async function GET(req: Request) {
       const cleanup = () => {
         clearInterval(heartbeat);
         bus.off("event", send);
+        bus.off("transcript", sendTranscript);
         try {
           controller.close();
         } catch {
@@ -31,6 +44,7 @@ export async function GET(req: Request) {
         }
       };
       bus.on("event", send);
+      bus.on("transcript", sendTranscript);
       req.signal.addEventListener("abort", cleanup, { once: true });
       controller.enqueue(encoder.encode(`: connected\n\n`));
     },

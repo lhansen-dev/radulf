@@ -16,6 +16,14 @@ export type AnalyticsRunRow = {
   endedAt: string | null;
   provider?: string | null;
   model?: string | null;
+  /** Run-level telemetry roll-up (spec: cost visibility for the planner and
+   * evaluator) — populated for every kind, not just loop. A loop run's
+   * value is the sum of its iterations; plan/evaluate write their single
+   * invocation's numbers directly. Absent/null on runs that predate these
+   * columns, same "never coerced to zero" convention as iterations. */
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  costUsd?: number | null;
 };
 
 export type AnalyticsIterationRow = {
@@ -127,6 +135,10 @@ export type Analytics = {
   tokensByModel: BarDatum[];
   costByModel: BarDatum[];
   runsByProvider: BarDatum[];
+  /** Cost/tokens grouped by run kind (plan/loop/evaluate) — "your planner is
+   * 70% of your spend" is the whole point of measuring per-role. */
+  costByRole: BarDatum[];
+  tokensByRole: BarDatum[];
 };
 
 export type AnalyticsFilter = {
@@ -173,19 +185,18 @@ export function computeAnalytics(input: {
 }): Analytics {
   const { cards, runs, iterations } = input;
 
-  const promptTokens = iterations.reduce(
-    (sum, i) => sum + (i.promptTokens ?? 0),
-    0,
-  );
-  const completionTokens = iterations.reduce(
-    (sum, i) => sum + (i.completionTokens ?? 0),
-    0,
-  );
-  // Only iterations that reported a cost contribute — see totals.costUsd.
-  const pricedIterations = iterations.filter((i) => i.costUsd != null);
+  // Totals source tokens/cost from RUNS, not iterations: a run's telemetry
+  // is now populated for every kind (loop = the roll-up of its iterations;
+  // plan/evaluate = their single invocation), so this is the only way plan
+  // and evaluate cost shows up at all — iterations only ever existed for
+  // loop.
+  const promptTokens = runs.reduce((sum, r) => sum + (r.promptTokens ?? 0), 0);
+  const completionTokens = runs.reduce((sum, r) => sum + (r.completionTokens ?? 0), 0);
+  // Only runs that reported a cost contribute — see totals.costUsd.
+  const pricedRuns = runs.filter((r) => r.costUsd != null);
   const costUsd =
-    pricedIterations.length > 0
-      ? pricedIterations.reduce((sum, i) => sum + (i.costUsd ?? 0), 0)
+    pricedRuns.length > 0
+      ? pricedRuns.reduce((sum, r) => sum + (r.costUsd ?? 0), 0)
       : null;
 
   // Group counts by status
@@ -199,37 +210,26 @@ export function computeAnalytics(input: {
     runStatusCounts.set(r.status, (runStatusCounts.get(r.status) ?? 0) + 1);
   }
 
-  // Tokens per run: sum each run's iteration tokens, label = card title (fallback run.id)
+  // Tokens per run: label = card title (fallback run.id)
   const cardMap = new Map<string, string>();
   for (const c of cards) {
     cardMap.set(c.id, c.title);
   }
 
-  const runTokenMap = new Map<string, number>();
-  for (const i of iterations) {
-    const tokens = (i.promptTokens ?? 0) + (i.completionTokens ?? 0);
-    runTokenMap.set(i.runId, (runTokenMap.get(i.runId) ?? 0) + tokens);
-  }
-
   const tokensPerRun: BarDatum[] = runs
     .map((r) => ({
       label: cardMap.get(r.cardId) ?? r.id,
-      value: runTokenMap.get(r.id) ?? 0,
+      value: (r.promptTokens ?? 0) + (r.completionTokens ?? 0),
     }))
     .filter((d) => d.value > 0)
     .sort((a, b) => b.value - a.value);
 
-  // Cost per run mirrors tokens per run, over priced iterations only: a run with
+  // Cost per run mirrors tokens per run, over priced runs only: a run with
   // nothing priced gets no bar rather than a $0 one.
-  const runCostMap = new Map<string, number>();
-  for (const i of pricedIterations) {
-    runCostMap.set(i.runId, (runCostMap.get(i.runId) ?? 0) + (i.costUsd ?? 0));
-  }
-
-  const costPerRun: BarDatum[] = runs
+  const costPerRun: BarDatum[] = pricedRuns
     .map((r) => ({
       label: cardMap.get(r.cardId) ?? r.id,
-      value: runCostMap.get(r.id) ?? 0,
+      value: r.costUsd ?? 0,
     }))
     .filter((d) => d.value > 0)
     .sort((a, b) => b.value - a.value);
@@ -240,7 +240,9 @@ export function computeAnalytics(input: {
     .map((i) => new Date(i.endedAt!).getTime() - new Date(i.startedAt).getTime())
     .sort((a, b) => a - b);
 
-  // Loop KPIs derive from the SAME duration pipeline (iterationDurationsMs) —
+  // Loop KPIs are iteration-granularity metrics (duration percentiles, model
+  // turns, cache hit ratio) — unaffected by the runs-level telemetry above,
+  // and derive from the SAME duration pipeline (iterationDurationsMs) since
   // spec 11 forbids a second duration calculation.
   const loopKpis = computeLoopKpis(iterations, iterationDurationsMs);
   const loopCohorts = computeLoopCohorts(iterations, runs);
@@ -251,16 +253,16 @@ export function computeAnalytics(input: {
   const completed = terminal.filter((r) => r.status === "completed").length;
   const successRate = terminal.length === 0 ? 0 : completed / terminal.length;
 
-  // Tokens by model: sum iteration tokens per model
+  // Tokens/cost by model: grouped by the run's model
   const runModel = new Map<string, string>();
   for (const r of runs) {
     runModel.set(r.id, r.model && r.model.trim() ? r.model : "unknown");
   }
 
   const modelTokenMap = new Map<string, number>();
-  for (const i of iterations) {
-    const tokens = (i.promptTokens ?? 0) + (i.completionTokens ?? 0);
-    const model = runModel.get(i.runId) ?? "unknown";
+  for (const r of runs) {
+    const tokens = (r.promptTokens ?? 0) + (r.completionTokens ?? 0);
+    const model = runModel.get(r.id) ?? "unknown";
     modelTokenMap.set(model, (modelTokenMap.get(model) ?? 0) + tokens);
   }
 
@@ -270,12 +272,33 @@ export function computeAnalytics(input: {
     .sort((a, b) => b.value - a.value);
 
   const modelCostMap = new Map<string, number>();
-  for (const i of pricedIterations) {
-    const model = runModel.get(i.runId) ?? "unknown";
-    modelCostMap.set(model, (modelCostMap.get(model) ?? 0) + (i.costUsd ?? 0));
+  for (const r of pricedRuns) {
+    const model = runModel.get(r.id) ?? "unknown";
+    modelCostMap.set(model, (modelCostMap.get(model) ?? 0) + (r.costUsd ?? 0));
   }
 
   const costByModel: BarDatum[] = Array.from(modelCostMap.entries())
+    .filter(([, value]) => value > 0)
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
+
+  // Tokens/cost by role (plan/loop/evaluate) — "your planner is 70% of your
+  // spend" is the real user value of measuring at run level.
+  const roleTokenMap = new Map<string, number>();
+  for (const r of runs) {
+    const tokens = (r.promptTokens ?? 0) + (r.completionTokens ?? 0);
+    roleTokenMap.set(r.kind, (roleTokenMap.get(r.kind) ?? 0) + tokens);
+  }
+  const tokensByRole: BarDatum[] = Array.from(roleTokenMap.entries())
+    .filter(([, value]) => value > 0)
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
+
+  const roleCostMap = new Map<string, number>();
+  for (const r of pricedRuns) {
+    roleCostMap.set(r.kind, (roleCostMap.get(r.kind) ?? 0) + (r.costUsd ?? 0));
+  }
+  const costByRole: BarDatum[] = Array.from(roleCostMap.entries())
     .filter(([, value]) => value > 0)
     .map(([label, value]) => ({ label, value }))
     .sort((a, b) => b.value - a.value);
@@ -316,6 +339,8 @@ export function computeAnalytics(input: {
     tokensByModel,
     costByModel,
     runsByProvider,
+    costByRole,
+    tokensByRole,
   };
 }
 

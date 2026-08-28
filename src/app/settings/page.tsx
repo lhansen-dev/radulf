@@ -11,7 +11,18 @@ type ProviderModel = {
   description: string;
   reasoningEfforts?: string[];
   reasoningMandatory?: boolean;
+  /** USD per 1M tokens, when the provider reports pricing. Undefined for
+   * oMLX — a local model has no market rate. */
+  costPerMillionInput?: number;
+  costPerMillionOutput?: number;
 };
+
+/** $3.00 for typical prices, $0.075 for very cheap ones — 2 decimals loses
+ * sub-cent-per-million models (e.g. Haiku-class) by rounding them to $0.00. */
+function formatPricePerMillion(usd: number): string {
+  if (usd === 0) return "$0.00";
+  return usd < 1 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
+}
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude subscription)" },
@@ -99,6 +110,13 @@ export default function SettingsPage() {
   }
 
   if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
+
+  // Same provider+model as the loop means the evaluator grades the model that
+  // did the work, sharing its blind spots when grading its own output —
+  // advisory only, never a save-blocking validation error.
+  const evaluatorMatchesLoop =
+    settings.evaluatorProvider === settings.loopProvider &&
+    settings.evaluatorModel === settings.loopModel;
 
   return (
     <AppShell>
@@ -240,6 +258,11 @@ export default function SettingsPage() {
         onReasoningLevel={(r) => setSettings({ ...settings, evaluatorReasoningLevel: r })}
         saveFirst={save}
         datalistId="evaluator-models"
+        warning={
+          evaluatorMatchesLoop
+            ? "The evaluator is currently the same provider and model as the loop agent, so it may share the loop's blind spots when grading its own work. Consider picking a different provider/model for the evaluator."
+            : undefined
+        }
       />
 
       <section id="templates" className="scroll-mt-4 flex flex-col gap-3">
@@ -557,6 +580,7 @@ function AgentSection({
   onReasoningLevel,
   saveFirst,
   datalistId,
+  warning,
 }: {
   title: string;
   subtitle: string;
@@ -568,6 +592,9 @@ function AgentSection({
   onReasoningLevel: (r: string) => void;
   saveFirst: () => Promise<void>;
   datalistId: string;
+  /** Advisory-only warning rendered under the provider/model pickers, e.g.
+   * the evaluator matching the loop's provider+model. Never blocks saving. */
+  warning?: string;
 }) {
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [status, setStatus] = useState("");
@@ -673,6 +700,17 @@ function AgentSection({
           </label>
         )}
       </div>
+      {warning && <p className="text-xs text-amber-400/80">{warning}</p>}
+      {selectedModel &&
+        (selectedModel.costPerMillionInput != null || selectedModel.costPerMillionOutput != null) && (
+          <p className="text-xs text-foreground/40">
+            {selectedModel.costPerMillionInput != null &&
+              `${formatPricePerMillion(selectedModel.costPerMillionInput)} / 1M input`}
+            {selectedModel.costPerMillionInput != null && selectedModel.costPerMillionOutput != null && " · "}
+            {selectedModel.costPerMillionOutput != null &&
+              `${formatPricePerMillion(selectedModel.costPerMillionOutput)} / 1M output`}
+          </p>
+        )}
       {status && (
         <p className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-foreground/40"}`}>
           {status}
@@ -684,7 +722,15 @@ function AgentSection({
             <button
               key={m.value}
               onClick={() => onModel(m.value)}
-              title={m.description || m.value}
+              title={
+                m.costPerMillionInput != null || m.costPerMillionOutput != null
+                  ? `${m.description || m.value} — ${
+                      m.costPerMillionInput != null ? `${formatPricePerMillion(m.costPerMillionInput)}/1M in` : ""
+                    }${m.costPerMillionInput != null && m.costPerMillionOutput != null ? ", " : ""}${
+                      m.costPerMillionOutput != null ? `${formatPricePerMillion(m.costPerMillionOutput)}/1M out` : ""
+                    }`
+                  : m.description || m.value
+              }
               className={`text-xs rounded px-2 py-1 border ${
                 model === m.value
                   ? "border-amber-500 text-amber-400"

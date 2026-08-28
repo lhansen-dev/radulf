@@ -1,14 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
   useMemo,
   useState,
-  type KeyboardEvent,
-  type MouseEvent,
 } from "react";
 import { AppShell } from "./ui/appShell";
 import {
@@ -423,17 +420,10 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   canMoveUp?: boolean;
   canMoveDown?: boolean;
 }) {
-  const router = useRouter();
   const state = statusDetails(card);
   const repo = repos.find((r) => r.id === card.repoId);
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
   const href = card.status === "review" ? `/review/${card.id}` : `/card/${card.id}`;
-  const navigate = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest("a,button,summary,details")) return;
-    if ("key" in event && event.key !== "Enter" && event.key !== " ") return;
-    if ("key" in event) event.preventDefault();
-    router.push(href);
-  };
   const pullBack = () => {
     const active = ["planning", "looping", "evaluating"].includes(card.status);
     if (active && !confirm(`Cancel the active run for “${card.title}” and return it to the backlog?`)) return;
@@ -445,10 +435,16 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   };
 
   return (
-    <article role="link" tabIndex={0} onClick={navigate} onKeyDown={navigate} className="group flex min-w-0 cursor-pointer gap-3 py-3.5 hover:bg-foreground/[0.025]">
+    <article className="group relative flex min-w-0 gap-3 py-3.5 hover:bg-foreground/[0.025]">
+      {/* Stretched-link overlay: covers the whole row so a click anywhere navigates, while
+          staying out of the tab order (aria-hidden + tabIndex=-1) since the title Link below
+          is the row's one real, screen-reader-visible link. Nested controls sit above it via
+          z-10 on the content wrapper, so they receive their own clicks natively — no
+          closest()/stopPropagation delegation hack needed. */}
+      <Link href={href} aria-hidden="true" tabIndex={-1} className="absolute inset-0" />
       {position !== undefined && <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.04] text-xs tabular-nums text-foreground/40">{position}</span>}
       <span className={`mt-1 flex size-5 shrink-0 items-center justify-center text-sm font-bold ${state.tone}`} aria-hidden="true">{state.mark}</span>
-      <div className="min-w-0 grow">
+      <div className="relative z-10 min-w-0 grow">
         <div className="flex min-w-0 items-start gap-2">
           <Link href={href} className="min-w-0 grow text-[0.95rem] font-medium leading-5 text-foreground/90 hover:underline">
             {card.source === "agent" && <span className="mr-1 text-xs text-amber-300" title="Agent-proposed task">AI</span>}{card.title}
@@ -458,8 +454,8 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {card.status === "review" && <Link href={`/review/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-violet-500/15 px-3 text-sm font-medium text-violet-200">Review</Link>}
           {card.status === "plan_review" && <Link href={`/card/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-cyan-500/15 px-3 text-sm font-medium text-cyan-200">Approve plan</Link>}
           {card.status === "needs_attention" && <Link href={`/card/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-red-500/15 px-3 text-sm font-medium text-red-200">Resolve</Link>}
-          {card.status === "looping" && <button type="button" onClick={(e) => { e.stopPropagation(); if (!confirm(`Pause “${card.title}” after the current iteration finishes?`)) return; void onAction(() => api(`/api/cards/${card.id}/pause`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 hover:bg-foreground/[0.10]">⏸ Pause</button>}
-          {card.status === "paused" && <button type="button" onClick={(e) => { e.stopPropagation(); void onAction(() => api(`/api/cards/${card.id}/resume`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-sky-500/15 px-3 text-sm font-medium text-sky-200 hover:bg-sky-500/25">▶ Continue</button>}
+          {card.status === "looping" && <button type="button" onClick={() => { if (!confirm(`Pause “${card.title}” after the current iteration finishes?`)) return; void onAction(() => api(`/api/cards/${card.id}/pause`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 hover:bg-foreground/[0.10]">⏸ Pause</button>}
+          {card.status === "paused" && <button type="button" onClick={() => { void onAction(() => api(`/api/cards/${card.id}/resume`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-sky-500/15 px-3 text-sm font-medium text-sky-200 hover:bg-sky-500/25">▶ Continue</button>}
           {activeStatuses.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">

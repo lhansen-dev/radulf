@@ -136,6 +136,12 @@ make dev
 
 Then open **[http://localhost:3000](http://localhost:3000)** 🎉
 
+> [!NOTE]
+> `main` is the stable branch and always sits at the latest release, so the clone
+> above needs no extra flags. To try unreleased work, clone the integration
+> branch instead — `git clone -b beta https://github.com/lhansen-dev/radulf.git`
+> — or pin an exact release with `-b v1.0.0`.
+
 The SQLite database and every runtime directory (`./data`, plus the agent-writable
 `./worktrees`, `./plans` and `./runtmp` beside it) are created automatically on first
 run and are all gitignored — **no manual migration step needed**.
@@ -156,10 +162,9 @@ make login   # opens pi → type /login → pick Claude, ChatGPT, or Copilot
 ```
 
 `/login` is a command you type **inside** pi, not a shell command. Quit pi when it
-reports success (`Ctrl+C`); the credential lands in `data/pi-agent/auth.json`, which is
-where Radulf looks. `make login` is what points pi at that directory — running `pi`
-straight from your shell would write to `~/.pi/agent/` instead, and Radulf would still
-see no provider.
+reports success (`Ctrl+C`). Use the `make login` target rather than running `pi`
+yourself — [`PROVIDERS.md`](docs/PROVIDERS.md#the-five-providers) explains where the
+credential lands and what goes wrong otherwise.
 
 OpenRouter and oMLX need **no login** — set them in the app's **Settings** page (an
 OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for the full matrix.
@@ -170,7 +175,7 @@ OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for
 
 | What | Detail |
 |------|--------|
-| 🖥️ **OS** | **macOS (Apple Silicon or Intel).** Linux (incl. WSL2) is best-effort / future — the sandbox has a Linux implementation but is not release-verified there. Native Windows and WSL1 are not supported. |
+| 🖥️ **OS** | **macOS (Apple Silicon or Intel).** Linux (including WSL2) is best-effort: the sandbox has a Linux implementation, but it is not release-verified. Native Windows and WSL1 are not supported. |
 | 🟢 **Node** | 22 or newer |
 | 📦 **pi SDK** | [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) — a pinned dependency. No global install, no CLIs. |
 | 🔒 **Sandbox runtime** | [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) — a pinned dependency ([spec 14](specs/14-sandboxing.md)). Kernel-enforced containment for agent bash: Seatbelt (`sandbox-exec`) on macOS, bubblewrap + a seccomp filter on Linux. On **Ubuntu 24.04+**, the default AppArmor policy blocks bubblewrap's unprivileged user namespace — Radulf's startup preflight detects this (`kernel.apparmor_restrict_unprivileged_userns=1`) and logs the exact remediation (grant `bwrap` the `userns` capability via an AppArmor profile, or set the sysctl to `0`). The sandbox is on by default (`sandboxEnabled` in Settings); turning it off is a deliberate, logged escape hatch — see spec 14's Failure semantics. **How it's implemented:** [`SANDBOXING.md`](docs/SANDBOXING.md). |
@@ -186,8 +191,8 @@ OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for
 | 🔵 **OpenRouter** | API key | remote | Bring your own model. Set in Settings — no login |
 | 🟠 **oMLX** | base URL | local, Apple Silicon | Optional. Set base URL in Settings — no login |
 
-> `make login` is a one-time interactive step for the subscription providers. It opens
-> pi against the Radulf agent dir (`data/pi-agent/`); `/login` is typed inside pi.
+> `make login` is a one-time interactive step for the subscription providers; `/login`
+> is typed inside pi. Full detail in [`PROVIDERS.md`](docs/PROVIDERS.md).
 
 ### Disk limits ([spec 14](specs/14-sandboxing.md))
 
@@ -489,7 +494,7 @@ supersedes an earlier one, and
 | Directory | Contents |
 |-----------|----------|
 | `src/app` | Next.js App Router routes and UI components |
-| `src/server` | Orchestrator, runners, and provider integrations |
+| `src/server` | Orchestrator, runners, and provider integrations (mapped in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) |
 | `src/db` | Drizzle schema definitions |
 | `drizzle` | Generated SQL migration files |
 | `docs` | The guides served by the in-app Docs tab |

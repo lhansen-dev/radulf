@@ -49,6 +49,7 @@ next-env.d.ts
 /plans
 /runtmp
 
-# benchmark reports (local evidence, not source)
-/benchmarks/reports/
 .DS_Store
+
+# local investigation/planning notes — not user-facing docs
+/PLAN.md

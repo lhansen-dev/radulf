@@ -12,9 +12,10 @@ than restates, the two other documents:
 Read those for the *why*. This document is the *what* and *where*.
 
 > **Scope:** macOS is the supported, release-verified platform (Seatbelt via
-> `sandbox-exec`). The Linux path (bubblewrap + seccomp) is implemented and
-> unit-tested but best-effort / not release-verified. Everything below is true
-> on macOS; Linux-specific notes are called out.
+> `sandbox-exec`). Linux (including WSL2) is best-effort: the sandbox has a
+> Linux implementation (bubblewrap + seccomp, unit-tested), but it is not
+> release-verified. Everything below is true on macOS; Linux-specific notes are
+> called out.
 
 ---
 

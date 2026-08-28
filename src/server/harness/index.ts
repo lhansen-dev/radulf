@@ -12,6 +12,8 @@ import {
   piNormalize,
   type AgentRole,
 } from "./pi";
+import { StuckDetector } from "./stuckDetector";
+import { withStreamLiveness } from "./streamLiveness";
 import type { TranscriptEvent, HarnessId } from "./types";
 
 /**
@@ -52,6 +54,9 @@ export type RunnerResult = {
    * emitted nothing for `stallTimeoutMs` (hung provider stream, dropped
    * network, machine sleep). */
   stalled: boolean;
+  /** True when the invocation was killed for repeating the exact same tool
+   * call over and over within this iteration (see StuckDetector). */
+  stuck: boolean;
   /** Last assistant text seen in the stream — used as the iteration summary. */
   lastText: string;
   /** Error text from the result event, if any. */
@@ -77,6 +82,49 @@ export type RunnerResult = {
   harness: HarnessId;
   harnessVersion: string | null;
 };
+
+/**
+ * The telemetry persisted on a `runs` row: a plan or evaluate run writes its
+ * single invocation's numbers directly (via runTelemetry() below); a loop
+ * run writes the sum of its iterations. Mirrors the iterations column set —
+ * every field nullable (a loop run with zero iterations, or a field no
+ * iteration reported, sums to null — never coerced to zero), which is why
+ * this isn't just `Pick<RunnerResult, ...>`: RunnerResult's promptTokens/
+ * completionTokens/toolCalls/harness are non-null for one real invocation,
+ * but a roll-up over zero or partial iterations needs the nullable form.
+ */
+export type RunTelemetry = {
+  promptTokens: number | null;
+  completionTokens: number | null;
+  cachedInputTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  modelTurns: number | null;
+  toolCalls: number | null;
+  toolDurationMs: number | null;
+  firstTokenMs: number | null;
+  costUsd: number | null;
+  harness: string | null;
+  harnessVersion: string | null;
+};
+
+/** Project a RunnerResult down to the RunTelemetry persisted on a `runs` row. */
+export function runTelemetry(result: RunnerResult): RunTelemetry {
+  return {
+    promptTokens: result.promptTokens,
+    completionTokens: result.completionTokens,
+    cachedInputTokens: result.cachedInputTokens,
+    cacheWriteTokens: result.cacheWriteTokens,
+    reasoningTokens: result.reasoningTokens,
+    modelTurns: result.modelTurns,
+    toolCalls: result.toolCalls,
+    toolDurationMs: result.toolDurationMs,
+    firstTokenMs: result.firstTokenMs,
+    costUsd: result.costUsd,
+    harness: result.harness,
+    harnessVersion: result.harnessVersion,
+  };
+}
 
 /**
  * Streaming accumulator for normalized transcript events — the single place
@@ -194,6 +242,8 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   let firstTokenMs: number | null = null;
   let timedOut = false;
   let stalled = false;
+  let stuck = false;
+  const stuckDetector = new StuckDetector();
   const startedAtMs = Date.now();
   const version = harnessPackageVersion();
 
@@ -204,6 +254,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     code,
     timedOut,
     stalled,
+    stuck,
     ...totals,
     firstTokenMs,
     harness: "pi",
@@ -253,7 +304,10 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   // Stall watchdog: any streamed event resets it — including the
   // `message_update` deltas piNormalize drops, so a model that is merely slow
-  // (a long high-effort thinking block) keeps the timer alive. Only a stream
+  // (a long high-effort thinking block) keeps the timer alive. So does any
+  // *byte* on the provider stream, via the liveness probe around the prompt
+  // below: keep-alive traffic that never parses into an event (OpenRouter's
+  // `: OPENROUTER PROCESSING` comments) counts as alive too. Only a stream
   // that hangs without erroring (network drop, machine sleep) trips it.
   // Defaulted from settings here rather than at the call sites so every model
   // call is covered; the floor keeps a mistyped setting from killing runs.
@@ -280,13 +334,16 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
         firstTokenMs = Date.now() - startedAtMs;
       }
       foldTranscriptEvent(totals, e);
+      if (e.t === "tool" && stuckDetector.record(e.name, e.input)) {
+        trip(() => (stuck = true));
+      }
     }
   });
 
   let promptError = "";
   try {
     await Promise.race([
-      session.prompt(opts.prompt).catch((err) => {
+      withStreamLiveness(resetStallTimer, () => session.prompt(opts.prompt)).catch((err) => {
         promptError = String(err instanceof Error ? err.message : err);
       }),
       watchdog,
@@ -306,10 +363,12 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   if (stalled) {
     totals.error = `harness emitted no output for ${Math.round(stallTimeoutMs / 1000)}s — stream hung (network drop or machine sleep?)`;
+  } else if (stuck) {
+    totals.error = "harness repeated the same tool call 4 times in a row — likely stuck";
   } else if (!totals.error && promptError) {
     totals.error = promptError;
   }
 
-  const failed = Boolean(totals.error) || timedOut || stalled;
+  const failed = Boolean(totals.error) || timedOut || stalled || stuck;
   return result(failed ? 1 : 0);
 }

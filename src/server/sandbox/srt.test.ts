@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import {
   buildFilesystemConfig,
@@ -348,6 +348,98 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
     const denied = await wrapBashCommand(`echo hi > ${outside}/bad.txt`, config());
     await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
+  });
+
+  it("serializes two concurrent wrapBashCommand calls with genuinely distinct per-run configs (different worktree/tmpdir/cacheRoot, matching two different repos' runs) but identical network policy — instead of rejecting either (PLAN.md Phase 19.1/19.2; supersedes the old Phase 4 hard-throw and the 18.2 test that only proved this with a shared config object reference)", async () => {
+    // Phase 10 made one-loop-per-repo concurrency the normal steady state.
+    // Two DIFFERENT repos' concurrent runs always get distinct filesystem
+    // config (own worktree/tmpdir/cacheRoot) but the SAME network policy
+    // (derived from the same global settings) — this is the exact shape
+    // 19.1 fixes. Building two separate config objects here (not one shared
+    // reference) matters: a whole-config comparison bug like 19.1's would
+    // treat these as "different" purely because of the filesystem paths and
+    // wrongly throw, even though a reference-equal object would short-circuit
+    // any comparison, buggy or not, and never catch that class of bug.
+    const worktreeA = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-a-"));
+    const worktreeB = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-b-"));
+    try {
+      const cfgA = buildRunSandboxConfig({
+        worktree: worktreeA,
+        gitCommonDir: worktreeA,
+        tmpdir: worktreeA,
+        cacheRoot: worktreeA,
+        networkAllowlistText: "",
+      });
+      const cfgB = buildRunSandboxConfig({
+        worktree: worktreeB,
+        gitCommonDir: worktreeB,
+        tmpdir: worktreeB,
+        cacheRoot: worktreeB,
+        networkAllowlistText: "",
+      });
+      // Sanity check that this test is actually exercising two distinct
+      // config objects (different filesystem slice), not accidentally back
+      // to the old shared-reference shape.
+      expect(cfgA).not.toBe(cfgB);
+      expect(cfgA.filesystem).not.toEqual(cfgB.filesystem);
+      expect(cfgA.network).toEqual(cfgB.network);
+
+      const events: string[] = [];
+      const origUpdateConfig = SandboxManager.updateConfig.bind(SandboxManager);
+      const origWrap = SandboxManager.wrapWithSandbox.bind(SandboxManager);
+      const updateConfigSpy = vi.spyOn(SandboxManager, "updateConfig").mockImplementation((cfg) => {
+        events.push("updateConfig");
+        return origUpdateConfig(cfg);
+      });
+      const wrapSpy = vi
+        .spyOn(SandboxManager, "wrapWithSandbox")
+        .mockImplementation(async (...args: Parameters<typeof SandboxManager.wrapWithSandbox>) => {
+          const result = await origWrap(...args);
+          events.push("wrapWithSandbox-done");
+          return result;
+        });
+      try {
+        const [first, second] = await Promise.all([
+          wrapBashCommand(`echo hi > ${worktreeA}/concurrent-first.txt`, cfgA),
+          wrapBashCommand(`echo hi > ${worktreeB}/concurrent-second.txt`, cfgB),
+        ]);
+        expect(first).toEqual(expect.any(String));
+        expect(second).toEqual(expect.any(String));
+        // Each call's updateConfig is immediately followed by ITS OWN
+        // wrapWithSandbox completion before the other call's updateConfig
+        // ever runs — proves the two calls' wrap-and-updateConfig steps never
+        // interleave, even though neither call was rejected.
+        expect(events).toEqual([
+          "updateConfig",
+          "wrapWithSandbox-done",
+          "updateConfig",
+          "wrapWithSandbox-done",
+        ]);
+      } finally {
+        updateConfigSpy.mockRestore();
+        wrapSpy.mockRestore();
+      }
+    } finally {
+      fs.rmSync(worktreeA, { recursive: true, force: true });
+      fs.rmSync(worktreeB, { recursive: true, force: true });
+    }
+  });
+
+  it("still hard-throws when two concurrent calls carry genuinely different network configs (the actual hazard Phase 4 guarded against)", async () => {
+    const cfgA = config();
+    const cfgB = {
+      ...cfgA,
+      network: { ...cfgA.network, allowedDomains: [...cfgA.network.allowedDomains, "example.com"] },
+    };
+    // Fired without awaiting: wrapBashCommand runs synchronously up to its
+    // first `await`, so cfgA's call has already claimed the queue slot by
+    // the time cfgB's call's synchronous guard check runs — no mocking
+    // needed to observe the race.
+    const first = wrapBashCommand(`echo hi > ${worktree}/concurrent-diff-a.txt`, cfgA);
+    await expect(
+      wrapBashCommand(`echo hi > ${worktree}/concurrent-diff-b.txt`, cfgB),
+    ).rejects.toThrow(/DIFFERENT network policy/);
+    await expect(first).resolves.toEqual(expect.any(String));
   });
 
   it("createSandboxedBashOperations.exec runs the command sandboxed via pi's own local exec", async () => {

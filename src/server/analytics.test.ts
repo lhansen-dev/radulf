@@ -32,14 +32,16 @@ describe("computeAnalytics", () => {
     expect(result.successRate).toBe(0);
   });
 
-  it("sums token totals across iterations", () => {
-    const iterations: AnalyticsIterationRow[] = [
-      { id: 1, runId: "r1", n: 1, promptTokens: 100, completionTokens: 50, startedAt: "2025-01-01T00:00:00Z", endedAt: null },
-      { id: 2, runId: "r1", n: 2, promptTokens: 200, completionTokens: 80, startedAt: "2025-01-01T00:01:00Z", endedAt: null },
-      { id: 3, runId: "r2", n: 1, promptTokens: null, completionTokens: 30, startedAt: "2025-01-02T00:00:00Z", endedAt: null },
+  it("sums token totals across runs — including plan/evaluate, not just loop", () => {
+    // r1 is a loop run's roll-up (sum of its iterations); r2 is a plan run's
+    // own telemetry. Totals must cover both — this is the whole point of
+    // moving totals off iterations, which only ever existed for loop.
+    const runs: AnalyticsRunRow[] = [
+      { id: "r1", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 2, startedAt: "2025-01-01T00:00:00Z", endedAt: null, promptTokens: 300, completionTokens: 130 },
+      { id: "r2", cardId: "c1", kind: "plan", status: "completed", iterationsDone: 0, startedAt: "2025-01-02T00:00:00Z", endedAt: null, promptTokens: null, completionTokens: 30 },
     ];
 
-    const result = computeAnalytics({ cards: [], runs: [], iterations });
+    const result = computeAnalytics({ cards: [], runs, iterations: [] });
 
     expect(result.totals.promptTokens).toBe(300);
     expect(result.totals.completionTokens).toBe(160);
@@ -113,22 +115,15 @@ describe("computeAnalytics", () => {
     ];
 
     const runs: AnalyticsRunRow[] = [
-      { id: "r1", cardId: "c1", kind: "default", status: "completed", iterationsDone: 2, startedAt: "2025-01-01T00:00:00Z", endedAt: "2025-01-01T00:05:00Z" },
-      { id: "r2", cardId: "c1", kind: "default", status: "completed", iterationsDone: 1, startedAt: "2025-01-01T01:00:00Z", endedAt: "2025-01-01T01:03:00Z" },
-      { id: "r3", cardId: "c2", kind: "default", status: "failed", iterationsDone: 3, startedAt: "2025-01-02T00:00:00Z", endedAt: "2025-01-02T00:10:00Z" },
-    ];
-
-    const iterations: AnalyticsIterationRow[] = [
-      // r1: 100+50 + 200+80 = 430 tokens
-      { id: 1, runId: "r1", n: 1, promptTokens: 100, completionTokens: 50, startedAt: "2025-01-01T00:00:00Z", endedAt: null },
-      { id: 2, runId: "r1", n: 2, promptTokens: 200, completionTokens: 80, startedAt: "2025-01-01T00:01:00Z", endedAt: null },
+      // r1: 100+50 + 200+80 = 430 tokens (a loop run's roll-up)
+      { id: "r1", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 2, startedAt: "2025-01-01T00:00:00Z", endedAt: "2025-01-01T00:05:00Z", promptTokens: 300, completionTokens: 130 },
       // r2: 10+5 = 15 tokens
-      { id: 3, runId: "r2", n: 1, promptTokens: 10, completionTokens: 5, startedAt: "2025-01-01T01:00:00Z", endedAt: null },
+      { id: "r2", cardId: "c1", kind: "plan", status: "completed", iterationsDone: 0, startedAt: "2025-01-01T01:00:00Z", endedAt: "2025-01-01T01:03:00Z", promptTokens: 10, completionTokens: 5 },
       // r3: 300+100 = 400 tokens
-      { id: 4, runId: "r3", n: 1, promptTokens: 300, completionTokens: 100, startedAt: "2025-01-02T00:00:00Z", endedAt: null },
+      { id: "r3", cardId: "c2", kind: "evaluate", status: "failed", iterationsDone: 0, startedAt: "2025-01-02T00:00:00Z", endedAt: "2025-01-02T00:10:00Z", promptTokens: 300, completionTokens: 100 },
     ];
 
-    const result = computeAnalytics({ cards, runs, iterations });
+    const result = computeAnalytics({ cards, runs, iterations: [] });
 
     // r1 (label="Feature A" via c1) → 430
     // r2 (label="Feature A" via c1) → 15
@@ -143,14 +138,10 @@ describe("computeAnalytics", () => {
 
   it("falls back to run id as label when card id is not found", () => {
     const runs: AnalyticsRunRow[] = [
-      { id: "orphan-run", cardId: "nonexistent-card", kind: "default", status: "completed", iterationsDone: 1, startedAt: "2025-01-01T00:00:00Z", endedAt: null },
+      { id: "orphan-run", cardId: "nonexistent-card", kind: "loop", status: "completed", iterationsDone: 1, startedAt: "2025-01-01T00:00:00Z", endedAt: null, promptTokens: 50, completionTokens: 25 },
     ];
 
-    const iterations: AnalyticsIterationRow[] = [
-      { id: 1, runId: "orphan-run", n: 1, promptTokens: 50, completionTokens: 25, startedAt: "2025-01-01T00:00:00Z", endedAt: null },
-    ];
-
-    const result = computeAnalytics({ cards: [], runs, iterations });
+    const result = computeAnalytics({ cards: [], runs, iterations: [] });
 
     expect(result.tokensPerRun).toEqual([
       { label: "orphan-run", value: 75 },
@@ -209,26 +200,18 @@ describe("computeAnalytics", () => {
 
   it("computes tokensByModel grouped by run model, sorted desc, excludes zero-token models, unknown for missing model", () => {
     const runs: AnalyticsRunRow[] = [
-      { id: "r1", cardId: "c1", kind: "default", status: "completed", iterationsDone: 2, startedAt: "2025-01-01T00:00:00Z", endedAt: null, model: "claude-3-opus" },
-      { id: "r2", cardId: "c1", kind: "default", status: "completed", iterationsDone: 1, startedAt: "2025-01-01T01:00:00Z", endedAt: null, model: "claude-3-sonnet" },
-      { id: "r3", cardId: "c1", kind: "default", status: "completed", iterationsDone: 1, startedAt: "2025-01-02T00:00:00Z", endedAt: null, model: "claude-3-opus" },
-      { id: "r4", cardId: "c1", kind: "default", status: "completed", iterationsDone: 0, startedAt: "2025-01-03T00:00:00Z", endedAt: null, model: "claude-3-haiku" }, // zero tokens → excluded
-      { id: "r5", cardId: "c1", kind: "default", status: "completed", iterationsDone: 1, startedAt: "2025-01-04T00:00:00Z", endedAt: null }, // no model → "unknown"
+      // opus: 190 (two iterations rolled up: 100+50 and 30+10)
+      { id: "r1", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 2, startedAt: "2025-01-01T00:00:00Z", endedAt: null, model: "claude-3-opus", promptTokens: 130, completionTokens: 60 },
+      // sonnet: 280
+      { id: "r2", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 1, startedAt: "2025-01-01T01:00:00Z", endedAt: null, model: "claude-3-sonnet", promptTokens: 200, completionTokens: 80 },
+      // opus: 75 — combined with r1 → 265
+      { id: "r3", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 1, startedAt: "2025-01-02T00:00:00Z", endedAt: null, model: "claude-3-opus", promptTokens: 50, completionTokens: 25 },
+      { id: "r4", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 0, startedAt: "2025-01-03T00:00:00Z", endedAt: null, model: "claude-3-haiku" }, // zero tokens → excluded
+      // no model → "unknown": 15
+      { id: "r5", cardId: "c1", kind: "plan", status: "completed", iterationsDone: 0, startedAt: "2025-01-04T00:00:00Z", endedAt: null, promptTokens: 10, completionTokens: 5 },
     ];
 
-    const iterations: AnalyticsIterationRow[] = [
-      // r1 (opus): 100+50 = 150
-      { id: 1, runId: "r1", n: 1, promptTokens: 100, completionTokens: 50, startedAt: "2025-01-01T00:00:00Z", endedAt: null },
-      { id: 2, runId: "r1", n: 2, promptTokens: 30, completionTokens: 10, startedAt: "2025-01-01T00:01:00Z", endedAt: null },
-      // r2 (sonnet): 200+80 = 280
-      { id: 3, runId: "r2", n: 1, promptTokens: 200, completionTokens: 80, startedAt: "2025-01-01T01:00:00Z", endedAt: null },
-      // r3 (opus): 50+25 = 75
-      { id: 4, runId: "r3", n: 1, promptTokens: 50, completionTokens: 25, startedAt: "2025-01-02T00:00:00Z", endedAt: null },
-      // r5 (unknown): 10+5 = 15
-      { id: 5, runId: "r5", n: 1, promptTokens: 10, completionTokens: 5, startedAt: "2025-01-04T00:00:00Z", endedAt: null },
-    ];
-
-    const result = computeAnalytics({ cards: [], runs, iterations });
+    const result = computeAnalytics({ cards: [], runs, iterations: [] });
 
     // opus: (100+50+30+10) + (50+25) = 265, sonnet: 280, unknown: 15
     // Sorted desc: sonnet (280), opus (265), unknown (15)
@@ -268,11 +251,14 @@ describe("computeAnalytics", () => {
     ];
 
     const runs: AnalyticsRunRow[] = [
-      { id: "r1", cardId: "c1", kind: "default", status: "completed", iterationsDone: 2, startedAt: "2025-01-01T00:00:00Z", endedAt: "2025-01-01T00:05:00Z" },
-      { id: "r2", cardId: "c2", kind: "default", status: "completed", iterationsDone: 1, startedAt: "2025-01-02T00:00:00Z", endedAt: "2025-01-02T00:03:00Z" },
-      { id: "r3", cardId: "c3", kind: "default", status: "failed", iterationsDone: 3, startedAt: "2025-01-03T00:00:00Z", endedAt: "2025-01-03T00:10:00Z" },
+      // r1's tokens are the roll-up of its two iterations below (10+20, 5+10)
+      { id: "r1", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 2, startedAt: "2025-01-01T00:00:00Z", endedAt: "2025-01-01T00:05:00Z", promptTokens: 30, completionTokens: 15 },
+      { id: "r2", cardId: "c2", kind: "loop", status: "completed", iterationsDone: 1, startedAt: "2025-01-02T00:00:00Z", endedAt: "2025-01-02T00:03:00Z", promptTokens: 100, completionTokens: 50 },
+      { id: "r3", cardId: "c3", kind: "loop", status: "failed", iterationsDone: 3, startedAt: "2025-01-03T00:00:00Z", endedAt: "2025-01-03T00:10:00Z", promptTokens: null, completionTokens: null },
     ];
 
+    // Iteration rows still drive iterationDurationsMs/loopKpis — unaffected
+    // by the runs-level telemetry move.
     const iterations: AnalyticsIterationRow[] = [
       { id: 1, runId: "r1", n: 1, promptTokens: 10, completionTokens: 5, startedAt: "2025-01-01T00:00:00Z", endedAt: "2025-01-01T00:00:02Z" },
       { id: 2, runId: "r1", n: 2, promptTokens: 20, completionTokens: 10, startedAt: "2025-01-01T00:00:03Z", endedAt: "2025-01-01T00:00:08Z" },
@@ -492,32 +478,32 @@ describe("loopKpis", () => {
 });
 
 describe("cost aggregates", () => {
-  function run(id: string, cardId: string, model: string | null): AnalyticsRunRow {
-    return { id, cardId, kind: "loop", status: "completed", iterationsDone: 0, startedAt: "2026-07-01T00:00:00Z", endedAt: null, provider: "anthropic", model };
-  }
-  function iter(
-    id: number,
-    runId: string,
-    extra: Partial<AnalyticsIterationRow> = {},
-  ): AnalyticsIterationRow {
-    return { id, runId, n: id, promptTokens: 10, completionTokens: 5, startedAt: "2026-07-01T00:00:00Z", endedAt: "2026-07-01T00:01:00Z", ...extra };
+  // Cost now lives on the run row (a plan/evaluate invocation's own number,
+  // or a loop run's roll-up of its iterations) — not summed from iterations.
+  function run(
+    id: string,
+    cardId: string,
+    model: string | null,
+    costUsd?: number | null,
+  ): AnalyticsRunRow {
+    return { id, cardId, kind: "loop", status: "completed", iterationsDone: 0, startedAt: "2026-07-01T00:00:00Z", endedAt: null, provider: "anthropic", model, costUsd };
   }
 
-  it("sums totals.costUsd over the iterations that reported a cost", () => {
-    const iterations = [
-      iter(1, "r1", { costUsd: 0.0123 }),
-      iter(2, "r1", { costUsd: 0.0004 }),
-      iter(3, "r1"), // pre-telemetry row — contributes nothing
+  it("sums totals.costUsd over the runs that reported a cost", () => {
+    const runs = [
+      run("r1", "c1", "opus", 0.0123),
+      run("r2", "c1", "opus", 0.0004),
+      run("r3", "c1", "opus"), // pre-telemetry row — contributes nothing
     ];
-    const { totals } = computeAnalytics({ cards: [], runs: [], iterations });
+    const { totals } = computeAnalytics({ cards: [], runs, iterations: [] });
     expect(totals.costUsd).toBeCloseTo(0.0127);
   });
 
   it("leaves totals.costUsd null when nothing was priced, so an unpriced sample never reads as free", () => {
     const { totals } = computeAnalytics({
       cards: [],
-      runs: [],
-      iterations: [iter(1, "r1"), iter(2, "r1")],
+      runs: [run("r1", "c1", "opus"), run("r2", "c1", "opus")],
+      iterations: [],
     });
     expect(totals.costUsd).toBeNull();
   });
@@ -526,8 +512,8 @@ describe("cost aggregates", () => {
     // Local models are registered with zero rates — that is a real $0, not an absence.
     const { totals } = computeAnalytics({
       cards: [],
-      runs: [],
-      iterations: [iter(1, "r1", { costUsd: 0 })],
+      runs: [run("r1", "c1", "local-model", 0)],
+      iterations: [],
     });
     expect(totals.costUsd).toBe(0);
   });
@@ -537,13 +523,8 @@ describe("cost aggregates", () => {
       { id: "c1", title: "Cheap task", status: "completed" },
       { id: "c2", title: "Costly task", status: "completed" },
     ];
-    const runs = [run("r1", "c1", "opus"), run("r2", "c2", "opus")];
-    const iterations = [
-      iter(1, "r1", { costUsd: 0.01 }),
-      iter(2, "r2", { costUsd: 0.2 }),
-      iter(3, "r2", { costUsd: 0.05 }),
-    ];
-    const { costPerRun } = computeAnalytics({ cards, runs, iterations });
+    const runs = [run("r1", "c1", "opus", 0.01), run("r2", "c2", "opus", 0.25)];
+    const { costPerRun } = computeAnalytics({ cards, runs, iterations: [] });
     expect(costPerRun.map((d) => d.label)).toEqual(["Costly task", "Cheap task"]);
     expect(costPerRun[0].value).toBeCloseTo(0.25);
     expect(costPerRun[1].value).toBeCloseTo(0.01);
@@ -552,22 +533,40 @@ describe("cost aggregates", () => {
   it("omits runs with no priced iteration from costPerRun", () => {
     const cards = [{ id: "c1", title: "Unpriced task", status: "completed" }];
     const runs = [run("r1", "c1", "local-model")];
-    const { costPerRun } = computeAnalytics({ cards, runs, iterations: [iter(1, "r1")] });
+    const { costPerRun } = computeAnalytics({ cards, runs, iterations: [] });
     expect(costPerRun).toEqual([]);
   });
 
   it("groups costByModel by the run's model, bucketing a blank model as unknown", () => {
-    const runs = [run("r1", "c1", "opus"), run("r2", "c1", "haiku"), run("r3", "c1", null)];
-    const iterations = [
-      iter(1, "r1", { costUsd: 0.3 }),
-      iter(2, "r2", { costUsd: 0.1 }),
-      iter(3, "r3", { costUsd: 0.2 }),
+    const runs = [
+      run("r1", "c1", "opus", 0.3),
+      run("r2", "c1", "haiku", 0.1),
+      run("r3", "c1", null, 0.2),
     ];
-    const { costByModel } = computeAnalytics({ cards: [], runs, iterations });
+    const { costByModel } = computeAnalytics({ cards: [], runs, iterations: [] });
     expect(costByModel).toEqual([
       { label: "opus", value: 0.3 },
       { label: "unknown", value: 0.2 },
       { label: "haiku", value: 0.1 },
+    ]);
+  });
+
+  it("groups costByRole and tokensByRole by run kind — the planner-vs-loop-vs-evaluator split", () => {
+    const runs: AnalyticsRunRow[] = [
+      { id: "p1", cardId: "c1", kind: "plan", status: "completed", iterationsDone: 0, startedAt: "2026-07-01T00:00:00Z", endedAt: null, promptTokens: 500, completionTokens: 100, costUsd: 0.7 },
+      { id: "l1", cardId: "c1", kind: "loop", status: "completed", iterationsDone: 3, startedAt: "2026-07-01T00:00:00Z", endedAt: null, promptTokens: 200, completionTokens: 50, costUsd: 0.2 },
+      { id: "e1", cardId: "c1", kind: "evaluate", status: "completed", iterationsDone: 0, startedAt: "2026-07-01T00:00:00Z", endedAt: null, promptTokens: 100, completionTokens: 20, costUsd: 0.1 },
+    ];
+    const { costByRole, tokensByRole } = computeAnalytics({ cards: [], runs, iterations: [] });
+    expect(costByRole).toEqual([
+      { label: "plan", value: 0.7 },
+      { label: "loop", value: 0.2 },
+      { label: "evaluate", value: 0.1 },
+    ]);
+    expect(tokensByRole).toEqual([
+      { label: "plan", value: 600 },
+      { label: "loop", value: 250 },
+      { label: "evaluate", value: 120 },
     ]);
   });
 });

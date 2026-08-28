@@ -516,12 +516,25 @@ export function harnessPackageVersion(): string {
  */
 export async function listAuthedModels(
   provider: ProviderId,
-): Promise<{ value: string; displayName: string; description: string }[]> {
+): Promise<
+  {
+    value: string;
+    displayName: string;
+    description: string;
+    costPerMillionInput?: number;
+    costPerMillionOutput?: number;
+  }[]
+> {
   const runtime = await getModelRuntime();
   const models = await runtime.getAvailable(PI_PROVIDER[provider]);
+  // pi's model catalog already prices in USD per 1M tokens (its cost rates
+  // are applied directly against raw token counts elsewhere), so these pass
+  // straight through with no unit conversion.
   return models.map((m) => ({
     value: m.id,
     displayName: m.name || m.id,
     description: "",
+    ...(Number.isFinite(m.cost?.input) ? { costPerMillionInput: m.cost.input } : {}),
+    ...(Number.isFinite(m.cost?.output) ? { costPerMillionOutput: m.cost.output } : {}),
   }));
 }

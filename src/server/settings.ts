@@ -3,6 +3,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { db, settings } from "@/db";
 import { ClientError } from "./clientError";
+import { decryptSecret, encryptSecret } from "./settingsCrypto";
 
 function readBuiltInPromptTemplate(fileName: string): string {
   return fs.readFileSync(
@@ -243,7 +244,12 @@ export function getSettings(): Settings {
       // Blank templates are a reset signal, never an executable prompt.
       if (PROMPT_TEMPLATE_SETTINGS.has(key as keyof Settings) &&
           typeof value === "string" && !value.trim()) return;
-      (out as Record<string, unknown>)[key] = value;
+      // Stored value may be encrypted (current writes) or legacy plaintext
+      // (rows written before this module existed) — decryptSecret handles both.
+      const resolved = SECRET_SETTINGS.has(key as keyof Settings) && typeof value === "string"
+        ? decryptSecret(value)
+        : value;
+      (out as Record<string, unknown>)[key] = resolved;
     } catch {
       // Ignore legacy/corrupt values and retain the safe default.
     }
@@ -261,12 +267,17 @@ export function getSettings(): Settings {
 
 export function patchSettings(value: unknown) {
   const patch = validateSettingsPatch(value);
-  for (const [key, value] of Object.entries(patch)) {
-    if (!(key in SETTING_DEFAULTS) || value === undefined) continue;
+  for (const [key, rawValue] of Object.entries(patch)) {
+    if (!(key in SETTING_DEFAULTS) || rawValue === undefined) continue;
     // The client only ever saw REDACTED for this one, so it is echoing back
     // what we sent it, not setting a key to the bullet string. Leave the
     // stored secret untouched. Clearing still works: "" is not REDACTED.
-    if (SECRET_SETTINGS.has(key as keyof Settings) && value === REDACTED) continue;
+    if (SECRET_SETTINGS.has(key as keyof Settings) && rawValue === REDACTED) continue;
+    // Encrypt at rest — see settingsCrypto.ts. Empty string ("" = "no key
+    // set") short-circuits inside encryptSecret and is stored as-is.
+    const value = SECRET_SETTINGS.has(key as keyof Settings) && typeof rawValue === "string" && rawValue !== ""
+      ? encryptSecret(rawValue)
+      : rawValue;
     if (
       PROMPT_TEMPLATE_SETTINGS.has(key as keyof Settings) &&
       (typeof value !== "string" || !value.trim() || value === SETTING_DEFAULTS[key as keyof Settings])

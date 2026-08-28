@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `beta` is the integration branch where work lands; `main` only ever
+    # receives a merge from it at release time. Both are gated — without beta
+    # here, merges into it would run unchecked and main would inherit the mess.
+    branches: [main, beta]
   pull_request:
 
 permissions:

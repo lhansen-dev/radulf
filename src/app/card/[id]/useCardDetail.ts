@@ -42,6 +42,16 @@ export type CardDetailData = {
     payload: string;
     createdAt: string;
   }[];
+  /** Effective provider+model+reasoning per role — card override for the
+   * model, else the global setting; reasoning level is always the current
+   * global setting (no per-card override, not persisted per run). `model` is
+   * null when that resolves to the provider's subscription default. Absent
+   * on older cached responses. */
+  models?: {
+    planner: { provider: string; model: string | null; reasoningLevel: string };
+    loop: { provider: string; model: string | null; reasoningLevel: string };
+    evaluator: { provider: string; model: string | null; reasoningLevel: string };
+  };
 };
 
 type ModelOption = { value: string; displayName: string };

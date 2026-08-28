@@ -1,19 +1,65 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
-import { WORKTREES_DIR } from "@/db";
+import { and, eq, isNull } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import { db, now, worktrees, WORKTREES_DIR } from "@/db";
 
-const execFileAsync = promisify(execFile);
 const MAX_BUFFER = 64 * 1024 * 1024;
+
+// Generous for any local git operation this codebase performs (worktree
+// add/remove, merge, diff, branch list) — none of these touch a remote.
+const GIT_TIMEOUT_MS = 30_000;
+// A process wedged deep in a blocking syscall can ignore SIGTERM; escalate to
+// SIGKILL this long after if it's still alive.
+const GIT_KILL_GRACE_MS = 5_000;
+
+/**
+ * Run `git -C cwd ...args` with a bounded lifetime: SIGTERM at
+ * GIT_TIMEOUT_MS, SIGKILL at GIT_TIMEOUT_MS + GIT_KILL_GRACE_MS if it's still
+ * alive. Not built on `promisify(execFile)`'s own `timeout` option because
+ * that only ever sends one signal — a hung git process (credential-helper
+ * prompt on stdin, corrupt lock file, dead network mount) must not be able to
+ * freeze the whole app, since the orchestrator runs exactly one card at a
+ * time globally.
+ */
+function execGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let timedOut = false;
+    const child = execFile(
+      "git",
+      ["-C", cwd, ...args],
+      { encoding: "utf8" as const, maxBuffer: MAX_BUFFER },
+      (err, stdout, stderr) => {
+        clearTimeout(termTimer);
+        clearTimeout(killTimer);
+        if (err) {
+          if (timedOut) {
+            // Make the failure actionable instead of an opaque "Command
+            // failed" — surfaced both via the thrown Error's message (git())
+            // and via `out` (tryGit(), which never looks at err.message).
+            const msg = `git ${args.join(" ")} timed out after ${GIT_TIMEOUT_MS}ms`;
+            err.message = msg;
+            stderr = stderr ? `${stderr}\n${msg}` : msg;
+          }
+          reject(Object.assign(err, { stdout, stderr }));
+        } else {
+          resolve({ stdout, stderr });
+        }
+      }
+    );
+    const termTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, GIT_TIMEOUT_MS);
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), GIT_TIMEOUT_MS + GIT_KILL_GRACE_MS);
+  });
+}
 
 /** Run git, throwing on a non-zero exit. Async so a slow or large git
  * operation never blocks the server event loop (and with it the SSE stream). */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
-    encoding: "utf8",
-    maxBuffer: MAX_BUFFER,
-  });
+  const { stdout } = await execGit(cwd, args);
   return stdout.trim();
 }
 
@@ -22,10 +68,7 @@ export async function tryGit(
   ...args: string[]
 ): Promise<{ ok: boolean; out: string }> {
   try {
-    const { stdout, stderr } = await execFileAsync("git", ["-C", cwd, ...args], {
-      encoding: "utf8",
-      maxBuffer: MAX_BUFFER,
-    });
+    const { stdout, stderr } = await execGit(cwd, args);
     return { ok: true, out: (stdout + stderr).trim() };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
@@ -99,6 +142,26 @@ export async function createWorktree(
   return { worktreePath, branch };
 }
 
+/** Record a freshly created worktree's `worktrees` row. `worktrees.runId` is
+ * a real foreign key, so callers must insert the owning `runs` row first —
+ * this is why it's split out of `createWorktree` rather than done there,
+ * where the run doesn't exist yet. */
+export function recordWorktree(repoId: string, runId: string, path: string, branch: string): void {
+  db.insert(worktrees)
+    .values({ id: nanoid(), repoId, runId, path, branch, createdAt: now() })
+    .run();
+}
+
+/** Stamp the `worktrees` row for `worktreePath` as removed. Idempotent — a
+ * row already marked removed (or with no matching row at all) is a no-op,
+ * shared by both `removeWorktree` and the retention sweep's orphan GC. */
+export function markWorktreeRemoved(worktreePath: string): void {
+  db.update(worktrees)
+    .set({ removedAt: now() })
+    .where(and(eq(worktrees.path, worktreePath), isNull(worktrees.removedAt)))
+    .run();
+}
+
 export async function removeWorktree(
   repoPath: string,
   worktreePath: string,
@@ -108,6 +171,7 @@ export async function removeWorktree(
   await tryGit(repoPath, "worktree", "prune");
   await tryGit(repoPath, "branch", "-D", branch);
   fs.rmSync(worktreePath, { recursive: true, force: true });
+  markWorktreeRemoved(worktreePath);
 }
 
 // Flags shared by every review-facing diff invocation. `--no-ext-diff` and

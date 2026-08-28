@@ -346,6 +346,70 @@ export function resetSandboxRuntimeForTests(): void {
 }
 
 /**
+ * Serializing queue for `wrapBashCommand` (PLAN.md Phase 18.2, superseding
+ * Phase 4's hard-throw guard below). `sandboxQueueTail` is a promise-chain
+ * mutex: each call captures the current tail, replaces it with its own
+ * "done" promise, then awaits the tail it captured — so calls run their
+ * wrap-and-`updateConfig` step one at a time, in arrival order, without
+ * rejecting any of them. `queueDepth`/`queuedConfig` exist only for the
+ * narrower safety check kept below: don't delete either without first
+ * making network policy genuinely per-call (today it's always derived from
+ * global settings, so it can never actually differ across calls — see the
+ * check itself for why that's still verified at runtime, not assumed).
+ */
+let sandboxQueueTail: Promise<void> = Promise.resolve();
+let queueDepth = 0;
+
+/**
+ * The only slice of `SandboxRuntimeConfig` that `updateConfig()` actually
+ * mutates process-wide (see `wrapBashCommand`'s doc comment). Deliberately
+ * excludes `filesystem`: that's per-call `customConfig` built fresh from
+ * per-run paths (`buildFilesystemConfig`'s `worktree`/`tmpdir`/`cacheRoot`/
+ * `gitCommonDir`), unique to every run by construction (PLAN.md Phase 19.1
+ * — comparing the whole config made every concurrent pair "different" and
+ * defeated 18.2's own fix).
+ */
+type NetworkPolicySlice = {
+  network: SandboxRuntimeConfig["network"];
+  enableWeakerNetworkIsolation?: boolean;
+};
+
+function networkPolicySlice(runConfig: SandboxRuntimeConfig): NetworkPolicySlice {
+  return {
+    network: runConfig.network,
+    enableWeakerNetworkIsolation: runConfig.enableWeakerNetworkIsolation,
+  };
+}
+
+let queuedConfig: NetworkPolicySlice | null = null;
+
+/** Order-independent-on-keys, order-dependent-on-arrays structural equality
+ * over plain JSON-shaped values — enough for a `NetworkPolicySlice` (strings,
+ * booleans, arrays of strings), and deliberately not a `JSON.stringify`
+ * comparison, which would be fooled by key-order differences from anywhere
+ * that ever builds the config object differently than `buildRunSandboxConfig`
+ * does today. */
+function sandboxConfigsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => sandboxConfigsEqual(v, b[i]));
+  }
+  if (typeof a === "object" && typeof b === "object") {
+    const aKeys = Object.keys(a as Record<string, unknown>);
+    const bKeys = Object.keys(b as Record<string, unknown>);
+    if (aKeys.length !== bKeys.length) return false;
+    return aKeys.every(
+      (k) =>
+        Object.hasOwn(b as Record<string, unknown>, k) &&
+        sandboxConfigsEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+    );
+  }
+  return false;
+}
+
+/**
  * `SandboxManager.wrapWithSandbox` returns the srt-wrapped command string —
  * ready to hand to a shell exactly like the unwrapped command was.
  *
@@ -360,17 +424,47 @@ export function resetSandboxRuntimeForTests(): void {
  * `customConfig.network`. Passing a run's `allowedDomains` only as
  * `customConfig` silently does nothing for network — proven live: identical
  * `customConfig`, `curl` denied before `updateConfig()`, allowed after.
- * `updateConfig()` mutates session-wide state, which is safe here only
- * because Radulf's pipeline is strictly serial (one card at a time, spec
- * 02) — never call this from anything that could run two sandboxed
- * commands with different policies concurrently.
+ * `updateConfig()` mutates session-wide state, so every call's
+ * wrap-and-`updateConfig` step is serialized against every other's via the
+ * queue above (PLAN.md Phase 18.2) — Radulf's pipeline is no longer strictly
+ * serial end-to-end (Phase 10: one loop per repo), but this specific window
+ * still must be, since two interleaved `updateConfig()` calls could apply
+ * the wrong run's network allowlist to the other's request.
  */
 export async function wrapBashCommand(
   command: string,
   runConfig: SandboxRuntimeConfig,
 ): Promise<string> {
-  SandboxManager.updateConfig(runConfig);
-  return SandboxManager.wrapWithSandbox(command, undefined, runConfig);
+  // Real (not hardcoded-"always equal") safety check: today every caller's
+  // config is derived from the same global settings, so this never actually
+  // trips — but if per-run network policy is ever added, two genuinely
+  // different concurrent configs must still fail loudly rather than one
+  // silently overwriting the other's `updateConfig()` call. Compares only
+  // the network-policy slice (PLAN.md Phase 19.1) — the per-run filesystem
+  // config is expected to differ on every call and must never factor in.
+  const incomingPolicy = networkPolicySlice(runConfig);
+  if (queueDepth > 0 && queuedConfig !== null && !sandboxConfigsEqual(queuedConfig, incomingPolicy)) {
+    throw new Error(
+      "sandbox network policy is process-wide (see wrapBashCommand's doc comment) — a concurrent " +
+        "sandboxed call is using a DIFFERENT network policy; applying this one now would silently " +
+        "clobber it, so refusing to start it",
+    );
+  }
+  queuedConfig = incomingPolicy;
+  queueDepth++;
+  const myTurn = sandboxQueueTail;
+  let releaseMyTurn!: () => void;
+  sandboxQueueTail = new Promise<void>((resolve) => {
+    releaseMyTurn = resolve;
+  });
+  await myTurn;
+  try {
+    SandboxManager.updateConfig(runConfig);
+    return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
+  } finally {
+    queueDepth--;
+    releaseMyTurn();
+  }
 }
 
 /**

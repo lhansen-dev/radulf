@@ -15,6 +15,7 @@ import {
 } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
+import { startTranscriptPush } from "./transcript";
 import {
   buildLoopPrompt,
   buildProgressState,
@@ -25,14 +26,16 @@ import {
 } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
-import { runHarness } from "./harness";
+import { runHarness, type RunTelemetry } from "./harness";
 import {
   listProviderModels,
   normalizeProvider,
   preflightProvider,
 } from "./providers";
+import { CONN_ERROR_PATTERN, isProviderOpen, recordProviderOutcome } from "./circuitBreaker";
 import {
   createWorktree,
+  recordWorktree,
   removeWorktree,
   tryGit,
   currentBranch,
@@ -88,10 +91,15 @@ export function planningCandidates(
 }
 
 export class Orchestrator {
-  /** IDs of cards whose async loops are currently running in the background. */
-  private activeLoopCards = new Set<string>();
+  /** Card ID → repoId for every async loop currently running in the
+   * background. A Map (not just a Set of card IDs) so pipelineBusy(repoId)
+   * can answer "is repo X busy" without an extra DB round-trip per call. */
+  private activeLoopCards = new Map<string, string>();
   /** Card IDs that have requested a pause on next iteration boundary. */
   private pausedCards = new Set<string>();
+  /** Set by startDraining() during graceful shutdown — pump() stops starting
+   * new runs but any run already in flight keeps going until it finishes. */
+  private draining = false;
   /** runId → controller for every live child process (plan or loop). */
   private controllers = new Map<string, AbortController>();
   private planningService = new PlanningService({
@@ -99,7 +107,8 @@ export class Orchestrator {
     latestPlan: (cardId) => this.latestPlan(cardId),
     latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
     moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
-    finishRun: (runId, status, exitReason) => this.finishRun(runId, status, exitReason),
+    finishRun: (runId, status, exitReason, telemetry) =>
+      this.finishRun(runId, status, exitReason, undefined, telemetry),
     registerController: (runId, controller) => this.controllers.set(runId, controller),
     releaseController: (runId) => this.controllers.delete(runId),
     pump: () => this.pump(),
@@ -109,7 +118,8 @@ export class Orchestrator {
     latestPlan: (cardId) => this.latestPlan(cardId),
     latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
     moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
-    finishRun: (runId, status, exitReason) => this.finishRun(runId, status, exitReason),
+    finishRun: (runId, status, exitReason, telemetry) =>
+      this.finishRun(runId, status, exitReason, undefined, telemetry),
     registerController: (runId, controller) => this.controllers.set(runId, controller),
     releaseController: (runId) => this.controllers.delete(runId),
     pump: () => this.pump(),
@@ -186,19 +196,25 @@ export class Orchestrator {
     runId: string,
     status: "completed" | "failed" | "timeout" | "cancelled",
     exitReason: string,
-    iterationsDone?: number
+    iterationsDone?: number,
+    telemetry?: RunTelemetry,
   ): boolean {
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
     if (!run || run.status !== "running") return false;
     // A pause request only applies to the live loop — a run that ends for any
     // other reason (cancel, DONE, timeout) must not pause the card's next run.
     this.pausedCards.delete(run.cardId);
+    // Plan/evaluate pass their single runHarness invocation's telemetry
+    // explicitly; a loop run has none passed (its telemetry lives per
+    // iteration), so roll it up from the iterations just recorded.
+    const rollup = telemetry ?? (run.kind === "loop" ? this.loopTelemetryRollup(runId) : undefined);
     db.update(runs)
       .set({
         status,
         exitReason,
         endedAt: now(),
         ...(iterationsDone !== undefined ? { iterationsDone } : {}),
+        ...(rollup ?? {}),
       })
       .where(eq(runs.id, runId))
       .run();
@@ -208,6 +224,38 @@ export class Orchestrator {
       payload: { status, exitReason },
     });
     return true;
+  }
+
+  /** Run-level telemetry roll-up for a loop run: sum its iterations, mirroring
+   * the "null means unreported" convention — a field is null only when NO
+   * iteration reported it, so a partial sample still sums the facts it has. */
+  private loopTelemetryRollup(runId: string): RunTelemetry {
+    const rows = db
+      .select()
+      .from(iterations)
+      .where(eq(iterations.runId, runId))
+      .orderBy(asc(iterations.n))
+      .all();
+    const sum = (values: (number | null)[]): number | null => {
+      const present = values.filter((v): v is number => v != null);
+      return present.length > 0 ? present.reduce((s, v) => s + v, 0) : null;
+    };
+    return {
+      promptTokens: sum(rows.map((r) => r.promptTokens)),
+      completionTokens: sum(rows.map((r) => r.completionTokens)),
+      cachedInputTokens: sum(rows.map((r) => r.cachedInputTokens)),
+      cacheWriteTokens: sum(rows.map((r) => r.cacheWriteTokens)),
+      reasoningTokens: sum(rows.map((r) => r.reasoningTokens)),
+      modelTurns: sum(rows.map((r) => r.modelTurns)),
+      toolCalls: sum(rows.map((r) => r.toolCalls)),
+      toolDurationMs: sum(rows.map((r) => r.toolDurationMs)),
+      // Time to first token describes the run's start, not a sum — the first
+      // iteration's value.
+      firstTokenMs: rows[0]?.firstTokenMs ?? null,
+      costUsd: sum(rows.map((r) => r.costUsd)),
+      harness: rows[0]?.harness ?? null,
+      harnessVersion: rows[0]?.harnessVersion ?? null,
+    };
   }
 
   /** External awaits may finish after a user cancellation. Never let their
@@ -255,7 +303,7 @@ export class Orchestrator {
       // Restart / reject path — plan exists, go straight to the loop queue.
       this.moveCard(cardId, card.status, "ready");
       this.pump();
-    } else if (this.pipelineBusy()) {
+    } else if (this.pipelineBusy(card.repoId)) {
       // One ticket runs at a time. The startedAt set above marks this a manual
       // start; land it back in todo so pump picks it up (oldest manual start
       // first) when the pipeline frees. pump only scans todo for planning, so
@@ -381,7 +429,7 @@ export class Orchestrator {
     }
 
     if (step === "plan") {
-      if (this.pipelineBusy()) throw new ClientError("another task is already being worked on");
+      if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
       if (!this.moveCard(cardId, "needs_attention", "planning", "retrying failed planner")) {
         throw new ClientError("card status changed before the planner could retry");
       }
@@ -402,7 +450,7 @@ export class Orchestrator {
       return { ok: true, step };
     }
 
-    if (this.pipelineBusy()) throw new ClientError("another task is already being worked on");
+    if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
 
     // step === "evaluate"
     if (!this.moveCard(cardId, "needs_attention", "evaluating", "retrying failed evaluator")) {
@@ -418,11 +466,18 @@ export class Orchestrator {
 
   // ---- pipeline pump -------------------------------------------------------
 
-  /** True while a card is actively running a harness (planning, looping, or
-   * evaluating) — the single pipeline slot is occupied. Cards queued (todo,
-   * ready) or waiting on a human (plan_review, paused, needs_attention) do
-   * not count. */
-  private pipelineBusy(): boolean {
+  /** Stop pump() from starting new runs. Called once, on shutdown signal —
+   * any run already in flight keeps going until it finishes or the caller's
+   * own timeout gives up on waiting (see instrumentation.ts). */
+  startDraining() {
+    this.draining = true;
+  }
+
+  /** True while any repo has a run in flight (planning, looping, or
+   * evaluating) — used by graceful shutdown to know whether it's safe to
+   * exit immediately. Deliberately global, unlike pipelineBusy(repoId):
+   * shutdown drains the whole process, not one repo. */
+  hasInFlightWork(): boolean {
     if (this.activeLoopCards.size > 0) return true;
     return (
       db
@@ -434,52 +489,87 @@ export class Orchestrator {
     );
   }
 
-  /** Advance one ticket through the pipeline. Only one card runs at a time: a
-   * ready card loops before any new card is planned, and nothing starts while
-   * a card is planning, looping, or evaluating. */
+  /** True while a card in `repoId` is actively running a harness (planning,
+   * looping, or evaluating) — that repo's single pipeline slot is occupied.
+   * Cards queued (todo, ready) or waiting on a human (plan_review, paused,
+   * needs_attention) do not count. Repos never share a slot, so this is
+   * always scoped to one repoId, never global. */
+  private pipelineBusy(repoId: string): boolean {
+    for (const activeRepoId of this.activeLoopCards.values()) {
+      if (activeRepoId === repoId) return true;
+    }
+    return (
+      db
+        .select({ id: cards.id })
+        .from(cards)
+        .where(and(eq(cards.repoId, repoId), inArray(cards.status, ["planning", "looping", "evaluating"])))
+        .limit(1)
+        .get() !== undefined
+    );
+  }
+
+  /** Advance every repo's queue independently. Each repo gets its own single
+   * pipeline slot: one card per repo runs at a time — a ready card loops
+   * before any new card in that repo is planned, and nothing new starts in a
+   * repo while a card there is planning, looping, or evaluating. Unrelated
+   * repos never wait on each other. */
   pump() {
-    if (this.pipelineBusy()) return;
+    if (this.draining) return;
 
     // Finish in-flight tickets first: a planned (ready) card loops before any
-    // fresh Todo card is planned.
-    const readyCard = db
+    // fresh Todo card in the same repo is planned. Both queries are read once
+    // up front and then filtered per repo below, preserving the existing
+    // tie-break order (ready before todo, oldest startedAt/position first)
+    // within each repo.
+    const readyCards = db
       .select()
       .from(cards)
       .where(eq(cards.status, "ready"))
       .orderBy(asc(cards.startedAt))
-      .limit(1)
-      .get();
-    if (readyCard) {
-      const id = readyCard.id;
-      this.activeLoopCards.add(id);
-      void this.runLoop(id)
-        .catch((err) => {
-          if (this.getCard(id)?.status === "looping") {
-            this.moveCard(id, "looping", "needs_attention", String(err));
-          }
-        })
-        .finally(() => {
-          this.activeLoopCards.delete(id);
-          this.pump();
-        });
-      return;
-    }
-
-    // Otherwise plan the next eligible Todo card: explicit manual starts
-    // (startedAt set, oldest first) first, then the queue in position order
-    // when auto-mode is on. Backlog is never queried here.
+      .all();
     const todoCards = db
       .select()
       .from(cards)
       .where(eq(cards.status, "todo"))
       .orderBy(asc(cards.position))
       .all();
-    const next = planningCandidates(todoCards, getSettings().autoMode)[0];
-    if (!next) return;
-    try {
-      this.startCard(next.cardId);
-    } catch {
-      // startCard throws on bad state — silently skip.
+    const autoMode = getSettings().autoMode;
+    const eligibleTodoRepoIds = planningCandidates(todoCards, autoMode).map((c) => c.repoId);
+    const repoIds = [...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds])];
+
+    for (const repoId of repoIds) {
+      if (this.pipelineBusy(repoId)) continue;
+
+      const readyCard = readyCards.find((c) => c.repoId === repoId);
+      if (readyCard) {
+        const id = readyCard.id;
+        this.activeLoopCards.set(id, repoId);
+        void this.runLoop(id)
+          .catch((err) => {
+            if (this.getCard(id)?.status === "looping") {
+              this.moveCard(id, "looping", "needs_attention", String(err));
+            }
+          })
+          .finally(() => {
+            this.activeLoopCards.delete(id);
+            this.pump();
+          });
+        continue;
+      }
+
+      // Otherwise plan the next eligible Todo card in this repo: explicit
+      // manual starts (startedAt set, oldest first) first, then the queue in
+      // position order when auto-mode is on. Backlog is never queried here.
+      const next = planningCandidates(
+        todoCards.filter((c) => c.repoId === repoId),
+        autoMode,
+      )[0];
+      if (!next) continue;
+      try {
+        this.startCard(next.cardId);
+      } catch {
+        // startCard throws on bad state — silently skip.
+      }
     }
   }
 
@@ -568,6 +658,19 @@ export class Orchestrator {
         sandboxed: settings.sandboxEnabled ? 1 : 0,
       })
       .run();
+    // events.run_id is a real FK too — emit only now that the run row exists
+    // (PLAN.md Phase 18.1: createRunSandbox used to emit this itself, before
+    // this insert, and crashed run start whenever the flag was on).
+    if (ctx.weakerIsolationEnabled) {
+      emitEvent("sandbox.weaker_isolation_enabled", {
+        cardId,
+        runId,
+        payload: { reason: "sandboxWeakerIsolationForGoTls" },
+      });
+    }
+    // worktrees.runId is a real FK — record the worktree only now that its
+    // owning run row exists (creating it earlier would violate the constraint).
+    if (!prev) recordWorktree(repo.id, runId, worktreePath, branch);
     // The awaited git calls above open a window where the user can cancel
     // before this run row existed — the CAS failing means the card left the
     // queue, so never start the loop for it.
@@ -603,6 +706,16 @@ export class Orchestrator {
     });
 
     try {
+      // Circuit breaker: a provider that has recently shown connection/auth
+      // failures fails this run fast instead of repeating the same slow
+      // preflight-then-iterate failure.
+      if (isProviderOpen(loopProvider)) {
+        const reason = `provider ${loopProvider} circuit breaker open — recent connection failures, will retry automatically after cooldown`;
+        this.finishRun(runId, "failed", reason);
+        this.moveCard(cardId, "looping", "needs_attention", reason);
+        return;
+      }
+
       // Fail fast if the loop provider is down or not serving the model, rather
       // than spending iterations discovering it mid-run.
       try {
@@ -695,6 +808,12 @@ export class Orchestrator {
           .get();
         emitEvent("iteration.started", { cardId, runId, payload: { n, maxIterations } });
 
+        // Push new transcript lines over the SSE bus as the harness writes
+        // them, instead of the UI polling (Phase 16 chunk A). Stopped in the
+        // `finally` below, once runHarness settles and this iteration's file
+        // is done being written.
+        const stopTranscriptPush = startTranscriptPush(transcriptPath, runId, n);
+
         const before = await progressState();
         const preIteration = await captureIterationState(worktreePath);
         // Install-script gate trigger (spec 14): a changed lockfile
@@ -730,6 +849,7 @@ export class Orchestrator {
           });
         } finally {
           clearTimeout(slowTimer);
+          stopTranscriptPush();
         }
 
         if (controller.signal.aborted) return; // cancelCard already finalized
@@ -763,7 +883,12 @@ export class Orchestrator {
         emitEvent("iteration.completed", {
           cardId,
           runId,
-          payload: { n, failed, summary: (result.error || result.lastText).slice(0, 200) },
+          payload: {
+            n,
+            failed,
+            stuck: result.stuck,
+            summary: (result.error || result.lastText).slice(0, 200),
+          },
         });
 
         // DONE is the trigger for independent evaluation, not a direct pass to
@@ -834,12 +959,9 @@ export class Orchestrator {
           // A first-iteration connection/auth failure means the loop provider
           // is down or misconfigured — no point retrying. Status codes are
           // word-bounded so "4010 tokens" or a port number never matches.
-          const connErr =
-            /ECONNREFUSED|connection ?refused|unable to connect|fetch failed|\b401\b|\b403\b|authentication|api key/i;
-          if (
-            consecutiveFailures >= 3 ||
-            (n === 1 && connErr.test(result.error))
-          ) {
+          const isConnErr = CONN_ERROR_PATTERN.test(result.error);
+          if (isConnErr) recordProviderOutcome(loopProvider, false);
+          if (consecutiveFailures >= 3 || (n === 1 && isConnErr)) {
             const reason = `loop failed: ${result.error.slice(0, 300)}`;
             this.finishRun(runId, "failed", reason, n);
             this.moveCard(cardId, "looping", "needs_attention", reason);
@@ -848,6 +970,7 @@ export class Orchestrator {
           continue;
         }
         consecutiveFailures = 0;
+        recordProviderOutcome(loopProvider, true);
 
         // Handle the ITERATION_DONE signal: the orchestrator performs the
         // checklist tick and commit — the agent never does.
@@ -1125,6 +1248,14 @@ export class Orchestrator {
 }
 
 // Survive Next.js dev hot-reload: one orchestrator per process.
+//
+// Hazard: instrumentation.ts (which constructs this singleton) and a route
+// handler can end up in different module graphs — Next.js bundles
+// instrumentation separately from routes, in both dev and production builds.
+// A class instantiated on one side (e.g. `new ClientError(...)` thrown
+// through the orchestrator) is a *different* class object than the same
+// class imported on the other side, so `instanceof` across that boundary is
+// unreliable. See src/app/api/_lib.ts's `isClientError` for the fallback.
 const g = globalThis as unknown as { __radulfOrchestrator?: Orchestrator };
 
 export function getOrchestrator(): Orchestrator {

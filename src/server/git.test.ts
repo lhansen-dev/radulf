@@ -110,9 +110,9 @@ describe("repos with no commits", () => {
   });
 
   it("createWorktree reports a missing base branch on a repo that does have commits", async () => {
-    await expect(createWorktree(committedRepo, "nope", "My task", "run2")).rejects.toThrow(
-      /base branch "nope" does not exist/
-    );
+    await expect(
+      createWorktree(committedRepo, "nope", "My task", "run2")
+    ).rejects.toThrow(/base branch "nope" does not exist/);
   });
 });
 

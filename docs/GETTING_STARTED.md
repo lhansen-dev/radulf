@@ -6,7 +6,7 @@ This page takes you from a fresh clone to a merged card.
 
 | What | Detail |
 |------|--------|
-| **OS** | macOS (Apple Silicon or Intel). Linux (including WSL2) is best-effort — the sandbox has a Linux implementation but is not release-verified there. Native Windows and WSL1 are not supported. |
+| **OS** | macOS (Apple Silicon or Intel). Linux (including WSL2) is best-effort: the sandbox has a Linux implementation, but it is not release-verified. Native Windows and WSL1 are not supported. |
 | **Node** | 22 or newer. |
 | **A provider** | At least one. See [Providers and models](PROVIDERS.md). |
 
@@ -43,12 +43,11 @@ make login
 
 That opens pi. Type **`/login`** inside it — it is a command in pi's own UI, not
 a shell command — pick your provider, follow the OAuth prompts, and quit with
-`Ctrl+C` once it reports success. The credential is written to
-`data/pi-agent/auth.json`, which is where Radulf reads it from.
+`Ctrl+C` once it reports success.
 
-Use `make login` rather than running `pi` yourself: the target points pi at
-Radulf's agent directory. A bare `pi` writes to `~/.pi/agent/` instead, and the
-app will still tell you no provider is available.
+Use the `make login` target rather than running `pi` yourself; if you want to
+know why, [Providers and models](PROVIDERS.md#the-five-providers) explains where
+the credential lands and what goes wrong otherwise.
 
 OpenRouter and oMLX need no login at all — set an API key or a base URL on the
 **Settings** page instead. The full matrix is in
@@ -95,6 +94,9 @@ send it back to Backlog, or abandon it.
 Two caps bound every loop run, both overridable per card: a maximum iteration
 count (default 50) and a wall-clock timeout (default 60 minutes).
 
+For what a specific exit reason means, [Troubleshooting](TROUBLESHOOTING.md) is
+keyed on the strings Radulf actually prints.
+
 ## Next steps
 
 - [Improvement Runs](IMPROVEMENT_RUNS.md) — hand a repo a time budget and let
@@ -103,3 +105,5 @@ count (default 50) and a wall-clock timeout (default 60 minutes).
   localhost.
 - [Sandboxing](SANDBOXING.md) — how agent runs are contained, and the disk-limit
   options for operators who want a hard ceiling.
+- [Troubleshooting](TROUBLESHOOTING.md) — every exit reason and error string,
+  and what to do about it.

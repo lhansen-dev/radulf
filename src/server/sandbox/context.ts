@@ -45,6 +45,12 @@ export type RunSandboxContext = {
    * L1-wrap this run's bash," which callers must only allow when
    * `sandboxEnabled` is deliberately off (never silently). */
   srtConfig?: SandboxRuntimeConfig;
+  /** True when this run actually applied `sandboxWeakerIsolationForGoTls`
+   * (spec 14 opt-in). Callers must emit `sandbox.weaker_isolation_enabled`
+   * themselves, once their own `runs` row exists — `createRunSandbox` runs
+   * before that insert (PLAN.md Phase 18.1: emitting the event here raced
+   * ahead of `events.run_id`'s FK and crashed run start). */
+  weakerIsolationEnabled: boolean;
   /** Kill every recorded process group; returns pgids still alive after. */
   reap(): Promise<number[]>;
   /** Reap, tear down the cgroup, and delete the run-private root. */
@@ -158,6 +164,7 @@ export function createRunSandbox(
   // pay for the git call, and pi.ts's absence-means-unsandboxed contract
   // depends on this being genuinely absent rather than unused.
   const sandboxEnabled = opts?.s?.sandboxEnabled ?? true;
+  const weakerIsolationForGoTls = opts?.s?.sandboxWeakerIsolationForGoTls ?? false;
   const srtConfig =
     opts?.cwd && sandboxEnabled
       ? buildRunSandboxConfig({
@@ -166,9 +173,23 @@ export function createRunSandbox(
           tmpdir,
           cacheRoot,
           networkAllowlistText: opts.s?.sandboxNetworkAllowlist ?? "",
-          weakerIsolationForGoTls: opts.s?.sandboxWeakerIsolationForGoTls ?? false,
+          weakerIsolationForGoTls,
         })
       : undefined;
+  // Spec 14 opt-in has a residual exfil channel (see buildRunSandboxConfig's
+  // doc comment on `weakerIsolationForGoTls`) — surface every run that
+  // actually applies it, once, so it's visible in server logs and on the
+  // card detail page without an operator having to know to look. The event
+  // itself is NOT emitted here (PLAN.md Phase 18.1) — this runs before the
+  // caller's own `runs` row exists, and `events.run_id` is a real FK; the
+  // caller emits it once that insert has landed. The console warning has no
+  // such dependency, so it stays here.
+  const weakerIsolationEnabled = Boolean(srtConfig && weakerIsolationForGoTls);
+  if (weakerIsolationEnabled) {
+    console.warn(
+      `[radulf] run ${runId} starting with weaker network isolation (trustd allowed) — see docs/SANDBOXING.md`,
+    );
+  }
 
   // The real disk bound: the Linux cgroup where present; otherwise the genuine
   // macOS ceiling when the worktree lives on an APFS quota volume (the README's
@@ -189,6 +210,7 @@ export function createRunSandbox(
     commandPrefix: buildCommandPrefix(pgidFile, cgroup),
     diskLimitMechanism,
     srtConfig,
+    weakerIsolationEnabled,
     reap,
     async cleanup() {
       try {

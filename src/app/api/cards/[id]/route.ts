@@ -6,6 +6,7 @@ import { planStatePath } from "@/server/bookkeeping";
 import { parseUpdateCard } from "@/server/cardValidation";
 import { groupBy } from "@/server/queryGrouping";
 import { removeRunTranscripts } from "@/server/retention";
+import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../../_lib";
 
 export const dynamic = "force-dynamic";
@@ -59,7 +60,31 @@ export async function GET(_req: Request, { params }: Ctx) {
     .limit(100)
     .all()
     .reverse();
-  return json({ card, repo, plans: cardPlans, runs: cardRuns, events: cardEvents });
+  // Effective provider+model per role: card override, else the global setting —
+  // same resolution the harness itself applies (planningService/orchestrator/
+  // evaluationService), so the overview shows what will actually run next.
+  // Reasoning level has no per-card override and isn't persisted per run
+  // (runHarness reads it straight off settings at call time), so this is
+  // always the current global value, not necessarily what an old run used.
+  const settings = getSettings();
+  const models = {
+    planner: {
+      provider: settings.plannerProvider,
+      model: card.plannerModel || settings.plannerModel || null,
+      reasoningLevel: settings.plannerReasoningLevel,
+    },
+    loop: {
+      provider: settings.loopProvider,
+      model: card.loopModel || settings.loopModel || null,
+      reasoningLevel: settings.loopReasoningLevel,
+    },
+    evaluator: {
+      provider: settings.evaluatorProvider,
+      model: card.evaluatorModel || settings.evaluatorModel || null,
+      reasoningLevel: settings.evaluatorReasoningLevel,
+    },
+  };
+  return json({ card, repo, plans: cardPlans, runs: cardRuns, events: cardEvents, models });
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {

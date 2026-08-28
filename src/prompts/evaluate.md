@@ -38,6 +38,21 @@ YOUR TASK
      write specific, actionable feedback: name the files, quote the failing
      command and its output, say exactly what to change. The loop model is
      small and will see only your words — be concrete.
+   - After your note, also list every concrete problem you found as a fenced
+     `findings` block — a JSON array, one object per problem:
+     ```findings
+     [
+       { "severity": "critical", "file": "src/auth.ts", "line": 42, "issue": "session token logged in plaintext" },
+       { "severity": "suggestion", "file": "src/utils.ts", "issue": "duplicated retry logic could share a helper" }
+     ]
+     ```
+     `severity` is one of `critical` (a real bug, security issue, or
+     acceptance-criterion failure — never auto-merged even if the card allows
+     it), `important` (should be fixed but isn't disqualifying on its own), or
+     `suggestion` (a nit or nice-to-have). `file`/`line` are optional; `issue`
+     is required and should be one concise sentence. Write `[]` when you found
+     nothing worth flagging — always include the block, even on a clean
+     `approve`.
 5. Write a short card summary to `.ralph/SUMMARY.md` — a couple of sentences on
    what the change does, for the human reviewer and the board. Write it every
    run, on approve and on revise alike.

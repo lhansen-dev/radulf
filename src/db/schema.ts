@@ -133,6 +133,23 @@ export const runs = sqliteTable("runs", {
   sandboxed: integer("sandboxed"),
   // Spec 14: which disk bound was actually in force for the run.
   diskLimitMechanism: text("disk_limit_mechanism").$type<DiskLimitMechanism>(),
+  // Run-level telemetry roll-up, mirroring the iterations column set: a plan
+  // or evaluate run is the single runHarness invocation's numbers directly;
+  // a loop run is the sum of its iterations, written when the run finishes.
+  // All nullable — null means unreported, never coerced to zero, same
+  // convention as iterations.
+  promptTokens: integer("prompt_tokens"),
+  completionTokens: integer("completion_tokens"),
+  cachedInputTokens: integer("cached_input_tokens"),
+  cacheWriteTokens: integer("cache_write_tokens"),
+  reasoningTokens: integer("reasoning_tokens"),
+  modelTurns: integer("model_turns"),
+  toolCalls: integer("tool_calls"),
+  toolDurationMs: integer("tool_duration_ms"),
+  firstTokenMs: integer("first_token_ms"),
+  costUsd: real("cost_usd"),
+  harness: text("harness"),
+  harnessVersion: text("harness_version"),
 }, (table) => [index("runs_card_started_idx").on(table.cardId, table.startedAt)]);
 
 export const iterations = sqliteTable("iterations", {
@@ -190,8 +207,12 @@ export const reviews = sqliteTable(
 
 export const events = sqliteTable("events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  cardId: text("card_id"),
-  runId: text("run_id"),
+  // Nullable + set-null on delete: an event may be card-scoped, run-scoped,
+  // both, or neither (see emitEvent call sites), and events is the audit
+  // trail — a deleted card/run should clear the reference, not take its
+  // history with it.
+  cardId: text("card_id").references(() => cards.id, { onDelete: "set null" }),
+  runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
   type: text("type").notNull(),
   payload: text("payload").notNull().default("{}"),
   createdAt: text("created_at").notNull(),
@@ -249,3 +270,24 @@ export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
 });
+
+// One row per physical worktree directory (not per run — a card's plan/loop/
+// evaluate runs share one worktree across a cycle, see createWorktree's one
+// call site). runId is nullable + set-null on delete so pruneRuntimeHistory
+// deleting the owning run row never orphans the record the GC sweep depends
+// on. removedAt null = still on disk as far as we know; set = cleaned up.
+export const worktrees = sqliteTable(
+  "worktrees",
+  {
+    id: text("id").primaryKey(),
+    repoId: text("repo_id")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    path: text("path").notNull().unique(),
+    branch: text("branch").notNull(),
+    createdAt: text("created_at").notNull(),
+    removedAt: text("removed_at"),
+  },
+  (table) => [index("worktrees_removed_at_idx").on(table.removedAt)],
+);

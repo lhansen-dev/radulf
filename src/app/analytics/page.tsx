@@ -257,6 +257,12 @@ export default function AnalyticsPage() {
             <ChartSection title="Cost by Model">
               <BarList data={data.costByModel} format={formatCostUsd} />
             </ChartSection>
+            <ChartSection title="Tokens by Role" hint="planner / loop / evaluator">
+              <BarList data={data.tokensByRole} />
+            </ChartSection>
+            <ChartSection title="Cost by Role" hint="planner / loop / evaluator">
+              <BarList data={data.costByRole} format={formatCostUsd} />
+            </ChartSection>
             <ChartSection title="Runs by Provider">
               <BarList data={data.runsByProvider} />
             </ChartSection>
@@ -294,10 +300,21 @@ function fmtPercent(ratio: number | null): string {
   return `${(ratio * 100).toFixed(1)}%`;
 }
 
-function ChartSection({ title, children }: { title: string; children: React.ReactNode }) {
+function ChartSection({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-lg bg-foreground/[0.03] border border-foreground/10 p-4">
-      <h3 className="text-sm font-medium text-foreground/70 mb-3">{title}</h3>
+      <h3 className="text-sm font-medium text-foreground/70 mb-3">
+        {title}
+        {hint && <span className="ml-2 font-normal text-foreground/40">{hint}</span>}
+      </h3>
       {children}
     </div>
   );

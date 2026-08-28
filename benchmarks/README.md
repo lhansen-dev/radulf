@@ -35,6 +35,12 @@ node benchmarks/run-benchmark.mjs \
   --out benchmarks/reports/small-ui-change-$(date +%Y-%m-%d).json
 ```
 
+Cost and token figures cover the whole card — planner, every loop, every
+evaluator pass — not just the loop. `runs` carries a telemetry roll-up for
+every run kind (a loop run's is the sum of its iterations; plan and evaluate
+write their single invocation's numbers directly), and `costByKind` in the
+report breaks cost down by role.
+
 `--provider` and `--model` identify the loop candidate. Planning can use a
 different model via `--planner-model`; when omitted, it defaults to the loop
 model for compatibility with older benchmark invocations. The planner model
@@ -52,12 +58,25 @@ UI, which shells out to this same runner and drops reports in
 - **Use a throwaway repo.** Seeded fixtures commit `seed/` into the repo, and
   every run starts with a hard reset to the pre-benchmark baseline commit —
   approved merges from earlier runs are discarded so runs stay identical.
-- **Parallel loops are disabled** for the duration (`maxParallelLoops: 1`,
-  restored afterwards): concurrency obscures per-loop latency.
+- **Loops are serialized**, so concurrency cannot obscure per-loop latency.
+  This is structural — the orchestrator has a single pipeline slot — and needs
+  no setup. (It was once a `maxParallelLoops` setting the runner toggled; that
+  setting no longer exists.)
 - **Run each candidate at least 3 times** (`--runs`, default 3).
 - **Promotion needs evidence**: no quality regression and at least a 20%
   median accepted-work wall-time improvement, or an explicit user-selected
   cost tradeoff. Single-fixture results are provisional.
 
-Reports land in `benchmarks/reports/` (gitignored — they are local evidence,
-not source).
+Reports land in `benchmarks/reports/`, which is git-tracked (not gitignored)
+so historical results are diffable over time rather than local-only evidence.
+
+## Scheduled CI run
+
+[`.github/workflows/benchmarks.yml`](../.github/workflows/benchmarks.yml) runs
+the full corpus weekly (`schedule:`, plus `workflow_dispatch:` for on-demand
+runs) against OpenRouter with a cheap/fast model — a subscription provider
+needs an interactive `pi` login that can't run headless in Actions. It is a
+separate workflow from `ci.yml` on purpose: a benchmark failure or long
+runtime must never block or slow down normal PR CI. Each run commits its
+reports straight to `benchmarks/reports/`, named `<fixture>-<date>.json`, so
+`git log`/`git diff` on that directory is the historical record.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import {
   DOCS,
@@ -22,6 +22,20 @@ describe("docs registry", () => {
       // Every registered source file must actually exist in the tree.
       const abs = path.join(process.cwd(), doc.sourcePath);
       await expect(readFile(abs, "utf8")).resolves.toBeTypeOf("string");
+    }
+  });
+
+  it("registers every file physically present under docs/", async () => {
+    const dir = path.join(process.cwd(), "docs");
+    const entries = await readdir(dir);
+    const files = entries.filter((f) => f.endsWith(".md"));
+    const registered = new Set(DOCS.map((d) => d.sourcePath));
+    for (const file of files) {
+      const sourcePath = `docs/${file}`;
+      expect(
+        registered.has(sourcePath),
+        `docs/${file} exists but is not registered in DOCS`,
+      ).toBe(true);
     }
   });
 

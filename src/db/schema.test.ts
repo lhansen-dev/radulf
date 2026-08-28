@@ -2,13 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 
 // The DB must open against a throwaway data dir, so the env var is set before
 // the module (and its import-time path resolution) loads.
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-schema-"));
 process.env.RADULF_DATA_DIR = testDataDir;
 
-const { db, now, repos, runs, cards, DATA_DIR, WORKTREES_DIR, PLANS_DIR } =
+const { db, now, repos, runs, cards, worktrees, DATA_DIR, WORKTREES_DIR, PLANS_DIR } =
   await import("@/db");
 
 afterAll(() => {
@@ -75,5 +76,25 @@ describe("spec 14 schema additions", () => {
     db.update(repos).set({ approvedInstallScripts: JSON.stringify(approved) }).run();
     const updated = db.select().from(repos).all()[0];
     expect(JSON.parse(updated.approvedInstallScripts)).toEqual(approved);
+  });
+
+  it("round-trips a worktrees row and set-nulls runId when its run is deleted", () => {
+    db.insert(worktrees)
+      .values({
+        id: "wt1",
+        repoId: "r1",
+        runId: "run1",
+        path: "/tmp/wt",
+        branch: "ralph/x",
+        createdAt: now(),
+      })
+      .run();
+
+    const row = db.select().from(worktrees).all().find((w) => w.id === "wt1")!;
+    expect(row.removedAt).toBeNull();
+
+    db.delete(runs).where(eq(runs.id, "run1")).run();
+    const afterDelete = db.select().from(worktrees).all().find((w) => w.id === "wt1")!;
+    expect(afterDelete.runId).toBeNull();
   });
 });

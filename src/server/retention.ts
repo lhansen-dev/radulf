@@ -3,11 +3,13 @@ import path from "node:path";
 import { and, inArray, isNotNull, lt } from "drizzle-orm";
 import { db, events, runs, TRANSCRIPTS_DIR } from "@/db";
 import { ClientError } from "./clientError";
+import { markWorktreeRemoved } from "./git";
 
 export type CleanupResult = {
   runsDeleted: number;
   eventsDeleted: number;
   transcriptEntriesDeleted: number;
+  worktreesRemoved: number;
 };
 
 /** The directory a run's transcripts live in — always under TRANSCRIPTS_DIR
@@ -36,12 +38,25 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
   const cutoffMs = Date.now() - olderThanDays * 86_400_000;
   const cutoff = new Date(cutoffMs).toISOString();
   const oldRuns = db
-    .select({ id: runs.id })
+    .select({ id: runs.id, worktreePath: runs.worktreePath })
     .from(runs)
     .where(and(isNotNull(runs.endedAt), lt(runs.endedAt, cutoff)))
     .all();
   const runIds = oldRuns.map((run) => run.id);
   let transcriptEntriesDeleted = removeRunTranscripts(runIds);
+
+  // Close the worktree-directory leak: a crashed run gets endedAt stamped by
+  // recover() same as any normal finish, ages past the cutoff, and its row
+  // is deleted below — reclaim the directory here before that happens, since
+  // nothing else ever revisits a dead run's worktreePath.
+  let worktreesRemoved = 0;
+  for (const worktreePath of new Set(oldRuns.map((run) => run.worktreePath))) {
+    if (!fs.existsSync(/* turbopackIgnore: true */ worktreePath)) continue;
+    fs.rmSync(/* turbopackIgnore: true */ worktreePath, { recursive: true, force: true });
+    markWorktreeRemoved(worktreePath);
+    worktreesRemoved += 1;
+  }
+
   if (runIds.length > 0) db.delete(runs).where(inArray(runs.id, runIds)).run();
   const eventsDeleted = db.delete(events).where(lt(events.createdAt, cutoff)).run().changes;
 
@@ -59,5 +74,5 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
     }
   }
 
-  return { runsDeleted: runIds.length, eventsDeleted, transcriptEntriesDeleted };
+  return { runsDeleted: runIds.length, eventsDeleted, transcriptEntriesDeleted, worktreesRemoved };
 }

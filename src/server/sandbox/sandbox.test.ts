@@ -3,9 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentEnv, AGENT_GIT_IDENTITY } from "../harness/types";
 import { SETTING_DEFAULTS, type Settings } from "../settings";
+
 import { cgroupPlanForRun } from "./cgroup";
 import {
   mechanismFromDiskutilPlist,
@@ -202,6 +203,66 @@ describe("createRunSandbox", () => {
       const ctx = createRunSandbox("test-run-srt-3", { s: testSettings({ sandboxEnabled: true }) });
       expect(ctx.srtConfig).toBeUndefined();
       await ctx.cleanup();
+    });
+  });
+
+  // PLAN.md Phase 15: sandboxWeakerIsolationForGoTls's own doc comment
+  // (srt.ts) admits a residual OCSP/CRL exfil channel — every run that
+  // actually applies it must log and (per PLAN.md Phase 18.1) let its caller
+  // emit an event, once per run. createRunSandbox itself only warns and
+  // reports `weakerIsolationEnabled` — it must NOT call emitEvent directly,
+  // since it runs before the caller's own `runs` row exists and
+  // `events.run_id` is a real FK (Phase 18.1's bug: emitting here crashed
+  // run start whenever the flag was on).
+  describe("weaker-isolation observability (PLAN.md Phase 15 / 18.1)", () => {
+    let repoDir: string;
+
+    beforeAll(async () => {
+      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-ctx-weaker-"));
+      await execFileAsync("git", ["-C", repoDir, "init"]);
+      await execFileAsync("git", ["-C", repoDir, "config", "user.email", "t@t.com"]);
+      await execFileAsync("git", ["-C", repoDir, "config", "user.name", "T"]);
+      fs.writeFileSync(path.join(repoDir, "f"), "x");
+      await execFileAsync("git", ["-C", repoDir, "add", "."]);
+      await execFileAsync("git", ["-C", repoDir, "commit", "-m", "init"]);
+    });
+
+    afterAll(() => {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    });
+
+    it("reports weakerIsolationEnabled: true and warns once when the flag is on — never calls emitEvent itself", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const ctx = createRunSandbox("test-run-weaker-1", {
+        cwd: repoDir,
+        s: testSettings({ sandboxEnabled: true, sandboxWeakerIsolationForGoTls: true }),
+      });
+      try {
+        expect(ctx.weakerIsolationEnabled).toBe(true);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls[0][0]).toMatch(/weaker network isolation/);
+      } finally {
+        warnSpy.mockRestore();
+        await ctx.cleanup();
+      }
+    });
+
+    it("reports weakerIsolationEnabled: false when the flag is off (the default)", () => {
+      const ctx = createRunSandbox("test-run-weaker-2", {
+        cwd: repoDir,
+        s: testSettings({ sandboxEnabled: true, sandboxWeakerIsolationForGoTls: false }),
+      });
+      expect(ctx.weakerIsolationEnabled).toBe(false);
+      return ctx.cleanup();
+    });
+
+    it("reports weakerIsolationEnabled: false when sandboxing itself is off, even if the flag is on", () => {
+      const ctx = createRunSandbox("test-run-weaker-3", {
+        cwd: repoDir,
+        s: testSettings({ sandboxEnabled: false, sandboxWeakerIsolationForGoTls: true }),
+      });
+      expect(ctx.weakerIsolationEnabled).toBe(false);
+      return ctx.cleanup();
     });
   });
 });

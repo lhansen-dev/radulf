@@ -108,6 +108,11 @@ beforeEach(() => {
             plans: cardPlans,
             runs: cardRuns,
             events: [],
+            models: {
+              planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
+              loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
+              evaluator: { provider: "anthropic", model: null, reasoningLevel: "off" },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
@@ -125,6 +130,14 @@ describe("CardDetail", () => {
 
     expect(await screen.findByText(/Planned by/)).toBeTruthy();
     expect(screen.getByText("claude-subscription/opus")).toBeTruthy();
+  });
+
+  it("shows the resolved planner/loop/evaluator provider, model, and reasoning level on the overview", async () => {
+    render(<CardDetail />);
+
+    expect(await screen.findByText("anthropic/opus (medium)")).toBeTruthy();
+    expect(screen.getByText("anthropic/sonnet (high)")).toBeTruthy();
+    expect(screen.getByText("anthropic/default (off)")).toBeTruthy();
   });
 
   it.each(["plan", "loop", "evaluate"])(

@@ -10,7 +10,10 @@ const mocks = vi.hoisted(() => ({ runHarness: vi.fn() }));
 // object that `beforeAll` fills in once real fs/os/path imports are usable.
 const dirs = vi.hoisted(() => ({ worktreesDir: "", transcriptsDir: "" }));
 
-vi.mock("./harness", () => ({ runHarness: mocks.runHarness }));
+vi.mock("./harness", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./harness")>()),
+  runHarness: mocks.runHarness,
+}));
 vi.mock("@/db", () => ({
   get WORKTREES_DIR() {
     return dirs.worktreesDir;

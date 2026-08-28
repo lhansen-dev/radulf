@@ -97,6 +97,20 @@ export const DOCS: DocMeta[] = [
     sourcePath: "docs/AUTHENTICATION.md",
   },
   {
+    slug: "troubleshooting",
+    title: "Troubleshooting",
+    description: "Keyed on the exit reasons and error strings Radulf actually prints.",
+    group: "Guides",
+    sourcePath: "docs/TROUBLESHOOTING.md",
+  },
+  {
+    slug: "architecture",
+    title: "Architecture",
+    description: "The contributor's map: where each part of the pipeline lives in the tree.",
+    group: "Reference",
+    sourcePath: "docs/ARCHITECTURE.md",
+  },
+  {
     slug: "design-history",
     title: "Design history",
     description: "The specs, what each decided, and which ones later specs overturned.",

@@ -1,14 +1,17 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api, timeAgo } from "../../ui/api";
+import { List, useDynamicRowHeight, useListRef, type RowComponentProps } from "react-window";
+import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
 import { MetricsPanel } from "./metricsPanel";
 import { describeToolCall } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
+import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
+import { transcriptPushDecision } from "./transcriptPushDecision";
 import { retryableFailedStep } from "@/shared/failedStep";
 
 const TABS = ["Overview", "Plan", "Activity", "Transcript"] as const;
@@ -26,7 +29,7 @@ export default function CardDetail() {
     refetch,
   } = useCardDetail(id);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
-  const [transcript, setTranscript] = useState<{ runId: string; iteration: number } | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptTarget | null>(null);
   const [showEdit, setShowEdit] = useState(false);
 
   useEffect(() => {
@@ -62,6 +65,14 @@ export default function CardDetail() {
   const failedStep = retryableFailedStep(runs);
   const canRetryFailedStep = Boolean(failedStep && card.status === "needs_attention");
   const latestPlanRun = runs.find((r) => r.kind === "plan");
+  // Phase 15 (weaker network isolation surfacing): which runs actually built
+  // their sandbox with `sandboxWeakerIsolationForGoTls` on, per the
+  // `sandbox.weaker_isolation_enabled` event context.ts emits once per run.
+  const weakerIsolationRunIds = new Set(
+    detail.events
+      .filter((e) => e.type === "sandbox.weaker_isolation_enabled")
+      .map((e) => e.runId),
+  );
   const questionsEvent = latestPlanRun && detail.events.find((e) => e.type === "plan.questions" && e.runId === latestPlanRun.id);
   let plannerQuestions = "";
   if (card.status === "needs_attention" && questionsEvent) {
@@ -248,6 +259,13 @@ export default function CardDetail() {
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes
           </div>
+          {detail.models && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-foreground/60">
+              <span>Planner: <span className="font-mono text-foreground/80">{formatProviderModel(detail.models.planner.provider, detail.models.planner.model, detail.models.planner.reasoningLevel)}</span></span>
+              <span>Loop: <span className="font-mono text-foreground/80">{formatProviderModel(detail.models.loop.provider, detail.models.loop.model, detail.models.loop.reasoningLevel)}</span></span>
+              <span>Evaluator: <span className="font-mono text-foreground/80">{formatProviderModel(detail.models.evaluator.provider, detail.models.evaluator.model, detail.models.evaluator.reasoningLevel)}</span></span>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             <WorkflowFlag
               on={Boolean(card.reviewPlanBeforeImplementation)}
@@ -333,6 +351,17 @@ export default function CardDetail() {
                   {run.status}
                 </span>
                 {run.exitReason && <span className="text-xs text-foreground/50">{run.exitReason}</span>}
+                {weakerIsolationRunIds.has(run.id) && (
+                  <span
+                    className="text-xs rounded px-1.5 py-0.5 bg-amber-950/30 text-amber-300 border border-amber-700/60"
+                    title="Ran with sandboxWeakerIsolationForGoTls on: trustd's OCSP/CRL requests bypass the egress proxy (see docs/SANDBOXING.md)."
+                  >
+                    weaker network isolation
+                  </span>
+                )}
+                <span className="text-xs font-mono text-foreground/40">
+                  {formatProviderModel(run.provider, run.model, reasoningLevelForKind(run.kind, detail.models))}
+                </span>
                 <span className="text-xs text-foreground/40 grow text-right">
                   {timeAgo(run.startedAt)} ago
                 </span>
@@ -341,7 +370,13 @@ export default function CardDetail() {
                 <button
                   className="text-xs text-amber-400 hover:underline mt-1"
                   onClick={() => {
-                    setTranscript({ runId: run.id, iteration: 0 });
+                    setTranscript({
+                      runId: run.id,
+                      iteration: 0,
+                      provider: run.provider,
+                      model: run.model,
+                      reasoningLevel: reasoningLevelForKind(run.kind, detail.models),
+                    });
                     chooseTab("Transcript");
                   }}
                 >
@@ -355,7 +390,13 @@ export default function CardDetail() {
                     <button
                       key={it.id}
                       onClick={() => {
-                        setTranscript({ runId: run.id, iteration: it.n });
+                        setTranscript({
+                          runId: run.id,
+                          iteration: it.n,
+                          provider: run.provider,
+                          model: run.model,
+                          reasoningLevel: reasoningLevelForKind(run.kind, detail.models),
+                        });
                         chooseTab("Transcript");
                       }}
                       className="text-left text-xs text-foreground/60 hover:text-foreground flex gap-2"
@@ -386,9 +427,21 @@ export default function CardDetail() {
         <TranscriptView
           fallback={
             latestLoopRun
-              ? { runId: latestLoopRun.id, iteration: latestLoopRun.iterationsDone || 1 }
+              ? {
+                  runId: latestLoopRun.id,
+                  iteration: latestLoopRun.iterationsDone || 1,
+                  provider: latestLoopRun.provider,
+                  model: latestLoopRun.model,
+                  reasoningLevel: reasoningLevelForKind(latestLoopRun.kind, detail.models),
+                }
               : runs[0]
-                ? { runId: runs[0].id, iteration: 0 }
+                ? {
+                    runId: runs[0].id,
+                    iteration: 0,
+                    provider: runs[0].provider,
+                    model: runs[0].model,
+                    reasoningLevel: reasoningLevelForKind(runs[0].kind, detail.models),
+                  }
                 : null
           }
           selected={transcript}
@@ -543,33 +596,122 @@ function MenuButton({ children, onClick, danger }: { children: React.ReactNode; 
 
 type StreamLine = Record<string, unknown> & { t?: string };
 
+// Was 2_000 pre-virtualization, capped mainly to bound *render* cost — with
+// react-window only visible rows ever hit the DOM, so render cost no longer
+// scales with this number. Raised, not removed: each StreamLine still lives
+// in a JS array in the tab's memory (tool inputs/text deltas can run to a
+// few KB apiece), and an hours-long chatty loop iteration can otherwise
+// accumulate lines indefinitely, so this is now purely a memory backstop.
+const MAX_TRANSCRIPT_LINES = 20_000;
+
+type TranscriptTarget = {
+  runId: string;
+  iteration: number;
+  provider?: string | null;
+  model?: string | null;
+  reasoningLevel?: string | null;
+};
+
+/**
+ * The reasoning level for a run's role. Not persisted per run (runHarness
+ * reads it straight off settings at call time), so this is always the
+ * current global value — not necessarily what an old run actually used.
+ */
+function reasoningLevelForKind(
+  kind: "plan" | "loop" | "evaluate",
+  models: CardDetailData["models"],
+): string | undefined {
+  if (!models) return undefined;
+  if (kind === "plan") return models.planner.reasoningLevel;
+  if (kind === "loop") return models.loop.reasoningLevel;
+  return models.evaluator.reasoningLevel;
+}
+
 function TranscriptView({
   selected,
   fallback,
   live,
 }: {
-  selected: { runId: string; iteration: number } | null;
-  fallback: { runId: string; iteration: number } | null;
+  selected: TranscriptTarget | null;
+  fallback: TranscriptTarget | null;
   live: boolean;
 }) {
   const target = selected ?? fallback;
   const [lines, setLines] = useState<StreamLine[]>([]);
   const [showJump, setShowJump] = useState(false);
   const [historyTruncated, setHistoryTruncated] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // Imperative handle onto react-window's List, replacing the old
+  // bottomRef.current?.scrollIntoView(...) sentinel — the list no longer
+  // renders every line as a real DOM node, so there's nothing to scroll a
+  // ref-anchored div into view *of*; scrollToRow targets a row index instead.
+  const listRef = useListRef(null);
+  // Rows are variable height: "text" lines wrap to however many lines their
+  // content needs, and "tool" lines are a collapsed <details> that grows
+  // when expanded. useDynamicRowHeight measures each row's real rendered
+  // height via ResizeObserver and feeds it back into List automatically.
+  // defaultRowHeight is only the pre-measurement estimate (single-line row).
+  // Keyed by target so switching runs/iterations doesn't reuse a stale
+  // height cache from a previous transcript's totally different content.
+  const rowHeight = useDynamicRowHeight({
+    defaultRowHeight: 28,
+    key: target ? `${target.runId}:${target.iteration}` : undefined,
+  });
 
-  useEffect(() => {
-    if (!target) return;
-    let stop = false;
-    let cursor = 0;
-    let first = true;
-    let inFlight = false;
-    let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
-    const load = async () => {
-      if (stop || inFlight) return;
-      inFlight = true;
-      const replace = first;
-      const cursorQuery = live || !first ? `&cursor=${cursor}` : "";
+  // Cursor/in-flight bookkeeping lives in refs, not state — it's shared
+  // between the fetch effect below and the SSE push handler, and neither
+  // should re-run/re-subscribe just because a byte offset changed.
+  const cursorRef = useRef(0);
+  const firstRef = useRef(true);
+  const inFlightRef = useRef(false);
+  const stopRef = useRef(false);
+  const catchUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True until a fetch chain has drained fully (hasMore: false) against the
+  // *current* cursor — i.e. until we know our cursor lines up with the live
+  // watcher's own cursor sequence server-side. Pushes arriving before that
+  // point can't be trusted to append cleanly (our fetch and the server's
+  // file watcher are two independent readers of the same growing file, so a
+  // push's line range isn't guaranteed to start exactly where our last fetch
+  // left off) — treat them as a "there's more, go fetch" signal instead of
+  // applying their lines directly. Re-armed on an SSE reconnect, since a
+  // dropped connection may have missed pushes written during the gap.
+  const needsResyncRef = useRef(true);
+  const wasDisconnectedRef = useRef(false);
+
+  const applyChunk = useCallback(
+    (d: { lines?: StreamLine[]; cursor: number; truncated?: boolean; reset?: boolean }, replace: boolean) => {
+      cursorRef.current = d.cursor;
+      // The list's own outer element is now the scroll container (the page
+      // around it no longer grows with line count), so "near bottom" reads
+      // its scrollTop/scrollHeight instead of window.scrollY. No element yet
+      // (e.g. the very first chunk, before any row has ever rendered) counts
+      // as near-bottom — there's nothing to preserve a scroll position of.
+      const el = listRef.current?.element;
+      const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+      setLines((previous) => {
+        const merged = replace || d.reset ? (d.lines ?? []) : [...previous, ...(d.lines ?? [])];
+        const next = merged.slice(-MAX_TRANSCRIPT_LINES);
+        if (!replace && previous.length > 0 && (d.lines?.length ?? 0) > 0) {
+          if (nearBottom) requestAnimationFrame(() => listRef.current?.scrollToRow({ index: next.length - 1, align: "end" }));
+          else setShowJump(true);
+        }
+        return next;
+      });
+      if (d.truncated !== undefined) setHistoryTruncated(d.truncated);
+      if (replace) setShowJump(false);
+    },
+    [listRef],
+  );
+
+  // Cursor-based fetch via /api/runs/[id] — used for the initial/historical
+  // load, to drain any backlog reported by `hasMore`, and to resync after an
+  // SSE reconnect. Live tailing itself comes from the `transcript` push
+  // handler below, not a repeated fetch.
+  const load = useCallback(
+    async (t: TranscriptTarget) => {
+      if (stopRef.current || inFlightRef.current) return;
+      inFlightRef.current = true;
+      const replace = firstRef.current;
+      const cursorQuery = live || !replace ? `&cursor=${cursorRef.current}` : "";
       try {
         const d = await api<{
           lines: StreamLine[];
@@ -577,34 +719,86 @@ function TranscriptView({
           hasMore: boolean;
           truncated: boolean;
           reset: boolean;
-        }>(`/api/runs/${target.runId}?iteration=${target.iteration}${cursorQuery}`);
-        if (stop) return;
-        first = false;
-        cursor = d.cursor;
-        const nearBottom = document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 96;
-        setLines((previous) => {
-          const next = replace || d.reset ? (d.lines ?? []) : [...previous, ...(d.lines ?? [])];
-          if (!replace && previous.length > 0 && (d.lines?.length ?? 0) > 0) {
-            if (nearBottom) requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
-            else setShowJump(true);
-          }
-          return next.slice(-2_000);
-        });
-        setHistoryTruncated(d.truncated);
-        if (replace) setShowJump(false);
-        if (d.hasMore) catchUpTimer = setTimeout(() => void load(), 0);
+        }>(`/api/runs/${t.runId}?iteration=${t.iteration}${cursorQuery}`);
+        if (stopRef.current) return;
+        firstRef.current = false;
+        applyChunk(d, replace);
+        if (d.hasMore) {
+          catchUpTimerRef.current = setTimeout(() => void load(t), 0);
+        } else {
+          needsResyncRef.current = false;
+        }
       } finally {
-        inFlight = false;
+        inFlightRef.current = false;
       }
-    };
-    void load();
-    const t = live ? setInterval(() => void load(), 2000) : null;
+    },
+    [live, applyChunk],
+  );
+
+  // Initial / historical load: fires once per target (and again if `live`
+  // flips). A finished run's transcript never changes again, so this is the
+  // only fetch a non-live view ever needs; for a live view it's just the
+  // catch-up before live pushes take over.
+  useEffect(() => {
+    if (!target) return;
+    stopRef.current = false;
+    cursorRef.current = 0;
+    firstRef.current = true;
+    needsResyncRef.current = true;
+    void load(target);
     return () => {
-      stop = true;
-      if (t) clearInterval(t);
-      if (catchUpTimer) clearTimeout(catchUpTimer);
+      stopRef.current = true;
+      if (catchUpTimerRef.current) clearTimeout(catchUpTimerRef.current);
     };
-  }, [target?.runId, target?.iteration, live]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [target?.runId, target?.iteration, live, load]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live tail: push instead of poll (Phase 16 chunk A). The SSE route
+  // forwards `bus`'s `"transcript"` channel alongside the durable event feed
+  // (src/app/api/events/stream/route.ts) — a plain in-memory push, never
+  // written to the `events` table (see TranscriptPush's doc comment in
+  // src/server/events.ts).
+  useEventStream(
+    (raw) => {
+      if (!live || !target || stopRef.current) return;
+      const msg = raw as unknown as {
+        kind?: string;
+        runId?: string;
+        iteration?: number;
+        fromCursor?: number;
+        cursor?: number;
+        lines?: StreamLine[];
+      };
+      if (msg.kind !== "transcript") return;
+      if (msg.runId !== target.runId || msg.iteration !== target.iteration) return;
+      if (typeof msg.cursor !== "number") return;
+      // See transcriptPushDecision's doc comment: a push can overlap (or, in
+      // theory, gap) the client's own cursor because the server-side watcher
+      // and this component's own fetch loop are two independent readers of
+      // the same growing file — only a clean handoff is safe to append
+      // directly, anything else falls back to a cursor-based resync fetch.
+      const decision = transcriptPushDecision(msg, cursorRef.current, needsResyncRef.current);
+      if (decision === "ignore") return;
+      if (decision === "resync") {
+        void load(target);
+        return;
+      }
+      applyChunk({ lines: msg.lines ?? [], cursor: msg.cursor }, false);
+    },
+    (connected) => {
+      if (!connected) {
+        wasDisconnectedRef.current = true;
+        return;
+      }
+      // Only a genuine reconnect (we saw a drop first) needs a resync — the
+      // very first `onopen` right after mount is already covered by the
+      // effect above's initial load().
+      if (wasDisconnectedRef.current) {
+        wasDisconnectedRef.current = false;
+        needsResyncRef.current = true;
+        if (target) void load(target);
+      }
+    },
+  );
 
   if (!target) return <p className="text-foreground/50 text-sm">No runs yet.</p>;
 
@@ -612,18 +806,42 @@ function TranscriptView({
     <section className="flex min-w-0 flex-col gap-1 font-mono text-xs">
       <div className="mb-1 flex min-h-11 items-center gap-2 text-foreground/40">
       <p>
-        run {target.runId} · {target.iteration ? `iteration ${target.iteration}` : "planning"}
+        {formatProviderModel(target.provider, target.model, target.reasoningLevel)} · run {target.runId} ·{" "}
+        {target.iteration ? `iteration ${target.iteration}` : "planning"}
         {live && <span className="text-amber-300"> · ● Live</span>}
       </p>
-      {showJump && <button type="button" onClick={() => { bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); setShowJump(false); }} className="ml-auto rounded-lg bg-amber-500/15 px-3 text-xs text-amber-200">Jump to latest</button>}
+      {showJump && <button type="button" onClick={() => { listRef.current?.scrollToRow({ index: lines.length - 1, align: "end", behavior: "smooth" }); setShowJump(false); }} className="ml-auto rounded-lg bg-amber-500/15 px-3 text-xs text-amber-200">Jump to latest</button>}
       </div>
       {historyTruncated && <p className="text-foreground/40">Showing the latest transcript chunk.</p>}
-      {lines.map((line, i) => (
-        <TranscriptLine key={i} line={line} />
-      ))}
-      {lines.length === 0 && <p className="text-foreground/40">No transcript output yet…</p>}
-      <div ref={bottomRef} />
+      {lines.length === 0 ? (
+        <p className="text-foreground/40">No transcript output yet…</p>
+      ) : (
+        <List
+          listRef={listRef}
+          rowComponent={TranscriptRow}
+          rowCount={lines.length}
+          rowHeight={rowHeight}
+          rowProps={{ lines }}
+          defaultHeight={480}
+          overscanCount={10}
+          style={{ height: "70dvh" }}
+          className="rounded"
+        />
+      )}
     </section>
+  );
+}
+
+// react-window's row wrapper: the DOM node it renders becomes a *direct*
+// child of the list's scroll container (react-window walks
+// containerElement.children to attach its ResizeObserver), so the
+// positioning `style` it hands us must land on that outer element, not
+// somewhere nested inside TranscriptLine's own markup.
+function TranscriptRow({ index, style, ariaAttributes, lines }: RowComponentProps<{ lines: StreamLine[] }>) {
+  return (
+    <div style={style} {...ariaAttributes}>
+      <TranscriptLine line={lines[index]} />
+    </div>
   );
 }
 

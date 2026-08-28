@@ -15,7 +15,10 @@ const mocks = vi.hoisted(() => ({
   rebuildPackages: vi.fn(),
 }));
 
-vi.mock("./harness", () => ({ runHarness: mocks.runHarness }));
+vi.mock("./harness", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./harness")>()),
+  runHarness: mocks.runHarness,
+}));
 // Real gate scanning/diffing, mocked `npm rebuild` (never run real npm here).
 vi.mock("./installGate", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./installGate")>()),
@@ -59,7 +62,8 @@ vi.mock("./settings", () => ({
     improvePromptTemplate: "Existing cards:\n{{EXISTING_CARDS}}\n{{FOCUS}}",
   }),
 }));
-vi.mock("./git", () => ({
+vi.mock("./git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./git")>()),
   createWorktree: mocks.createWorktree,
   currentBranch: () => "main",
   mergeBaseIntoWorktree: vi.fn(),
@@ -82,9 +86,11 @@ const {
   reviews,
   runs,
   settings,
+  worktrees,
 } = await import("@/db");
 const { Orchestrator } = await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
+const { recordProviderOutcome } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
 const { POST: postAbandon } = await import("@/app/api/cards/[id]/abandon/route");
 const { pruneRuntimeHistory } = await import("./retention");
@@ -104,11 +110,12 @@ function card(
   status: typeof cards.$inferInsert.status = "todo",
   reviewPlanBeforeImplementation = 0,
   autoApprove = 0,
+  repoId = "repo-1",
 ) {
   db.insert(cards)
     .values({
       id,
-      repoId: "repo-1",
+      repoId,
       title: `Card ${id}`,
       description: "Lifecycle test",
       status,
@@ -200,6 +207,27 @@ const successfulHarnessResult = {
   lastText: "complete",
 };
 
+/** A harness result carrying every telemetry field — for asserting the
+ * run-level roll-up planningService/evaluationService now persist. */
+function telemetryHarnessResult(overrides: Record<string, unknown> = {}) {
+  return {
+    ...successfulHarnessResult,
+    promptTokens: 120,
+    completionTokens: 45,
+    cachedInputTokens: 10,
+    cacheWriteTokens: 2,
+    reasoningTokens: 5,
+    modelTurns: 3,
+    toolCalls: 4,
+    toolDurationMs: 1500,
+    firstTokenMs: 200,
+    costUsd: 0.0123,
+    harness: "pi",
+    harnessVersion: "1.2.3",
+    ...overrides,
+  };
+}
+
 function writeDone(worktreePath: string) {
   fs.writeFileSync(path.join(worktreePath, ".ralph", "DONE"), "Implemented and verified.");
 }
@@ -230,6 +258,7 @@ async function settle() {
 
 describe("Orchestrator cancellation lifecycle", () => {
   beforeEach(() => {
+    db.delete(worktrees).run();
     db.delete(reviews).run();
     db.delete(iterations).run();
     db.delete(runs).run();
@@ -343,6 +372,24 @@ describe("Orchestrator cancellation lifecycle", () => {
     expect(mocks.runHarness).not.toHaveBeenCalled();
   });
 
+  it("fails a loop run fast when the provider circuit breaker is already open", async () => {
+    card("breaker");
+    plan("breaker");
+    // Trip the breaker for "anthropic" (the mocked loopProvider) the same way
+    // three real consecutive connection failures would.
+    recordProviderOutcome("anthropic", false);
+    recordProviderOutcome("anthropic", false);
+    recordProviderOutcome("anthropic", false);
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.startCard("breaker");
+    await vi.waitFor(() => expect(getCard("breaker").status).toBe("needs_attention"));
+
+    expect(getRun("breaker").exitReason).toMatch(/circuit breaker open/);
+    expect(mocks.preflightProvider).not.toHaveBeenCalled();
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+  });
+
   it("moves a card to Backlog when a running loop is cancelled", async () => {
     card("loop");
     plan("loop");
@@ -433,6 +480,98 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(plans).all()).toHaveLength(0);
     });
 
+    it("persists the planner's telemetry on the plan run row", async () => {
+      // reviewPlanBeforeImplementation=1 stops at plan_review — otherwise
+      // pump() immediately auto-starts the loop, which is beside the point
+      // of this test (planner telemetry only).
+      card("plan-telemetry", "todo", 1);
+      mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        writePlannerArtifacts(cwd);
+        return telemetryHarnessResult();
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("plan-telemetry");
+      await vi.waitFor(() => expect(getCard("plan-telemetry").status).toBe("plan_review"));
+
+      const planRun = getRun("plan-telemetry");
+      expect(planRun.kind).toBe("plan");
+      expect(planRun).toMatchObject({
+        promptTokens: 120,
+        completionTokens: 45,
+        cachedInputTokens: 10,
+        cacheWriteTokens: 2,
+        reasoningTokens: 5,
+        modelTurns: 3,
+        toolCalls: 4,
+        toolDurationMs: 1500,
+        firstTokenMs: 200,
+        costUsd: 0.0123,
+        harness: "pi",
+        harnessVersion: "1.2.3",
+      });
+    });
+
+  });
+
+  describe("per-repo pipeline concurrency (PLAN.md Phase 10)", () => {
+    function otherRepo(id = "repo-2") {
+      db.insert(repos)
+        .values({
+          id,
+          name: `Repo ${id}`,
+          path: path.join(testDataDir, id),
+          defaultBranch: "main",
+          createdAt: now(),
+        })
+        .run();
+    }
+
+    it("loops two cards in different repos concurrently — neither waits on the other", async () => {
+      otherRepo();
+      card("repo1-card", "ready", 0, 0, "repo-1");
+      plan("repo1-card");
+      card("repo2-card", "ready", 0, 0, "repo-2");
+      plan("repo2-card");
+      // Never resolves: proves both loops reach "looping" without either
+      // depending on the other's harness call ever returning. Under the old
+      // global pipelineBusy()/pump(), the second repo's card would never
+      // even start until the first's async loop settled.
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+
+      await vi.waitFor(() => {
+        expect(getCard("repo1-card").status).toBe("looping");
+        expect(getCard("repo2-card").status).toBe("looping");
+      });
+    });
+
+    it("still serializes two cards within the same repo", async () => {
+      card("same-repo-first", "ready", 0, 0, "repo-1");
+      plan("same-repo-first");
+      card("same-repo-second", "ready", 0, 0, "repo-1");
+      plan("same-repo-second");
+      db.update(cards)
+        .set({ startedAt: "2026-08-01T00:00:00.000Z" })
+        .where(eq(cards.id, "same-repo-first"))
+        .run();
+      db.update(cards)
+        .set({ startedAt: "2026-08-02T00:00:00.000Z" })
+        .where(eq(cards.id, "same-repo-second"))
+        .run();
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+
+      await vi.waitFor(() => expect(getCard("same-repo-first").status).toBe("looping"));
+      await settle();
+      // The repo's single pipeline slot is held by the first card — the
+      // second must not also enter the loop.
+      expect(getCard("same-repo-second").status).toBe("ready");
+    });
   });
 
   describe("failed-step retries", () => {
@@ -651,6 +790,40 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(reviews).all()).toHaveLength(1);
     });
 
+    it("persists loop and evaluator telemetry on their run rows", async () => {
+      card("run-telemetry");
+      plan("run-telemetry");
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return telemetryHarnessResult({ promptTokens: 100, costUsd: 0.01 });
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: approve\n\nAll criteria passed independently.");
+          return telemetryHarnessResult({ promptTokens: 60, costUsd: 0.02 });
+        });
+      const orchestrator = routeOrchestrator();
+
+      orchestrator.startCard("run-telemetry");
+      await vi.waitFor(() => expect(getCard("run-telemetry").status).toBe("review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "run-telemetry");
+      // The loop run's telemetry is the roll-up of its (single) iteration —
+      // not passed explicitly, unlike the evaluator's.
+      expect(cardRuns.find((run) => run.kind === "loop")).toMatchObject({
+        promptTokens: 100,
+        costUsd: 0.01,
+        harness: "pi",
+        harnessVersion: "1.2.3",
+      });
+      expect(cardRuns.find((run) => run.kind === "evaluate")).toMatchObject({
+        promptTokens: 60,
+        costUsd: 0.02,
+        harness: "pi",
+        harnessVersion: "1.2.3",
+      });
+    });
+
     it("auto-approves and merges without human review when the card opts in", async () => {
       card("auto-approve", "todo", 0, 1);
       plan("auto-approve");
@@ -680,6 +853,55 @@ describe("Orchestrator cancellation lifecycle", () => {
         .all()
         .find((event) => event.type === "card.auto_approved" && event.cardId === "auto-approve");
       expect(autoApproveEvent).toBeTruthy();
+    });
+
+    it("blocks auto-approve when the evaluator flags a critical finding, even on approve", async () => {
+      card("auto-approve-critical", "todo", 0, 1);
+      plan("auto-approve-critical");
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(
+            cwd,
+            [
+              "VERDICT: approve",
+              "",
+              "Criteria pass, but flagging a real problem.",
+              "",
+              "```findings",
+              JSON.stringify([{ severity: "critical", file: "src/auth.ts", issue: "token logged in plaintext" }]),
+              "```",
+            ].join("\n"),
+          );
+          fs.writeFileSync(path.join(cwd, ".ralph", "SUMMARY.md"), "Summarized the change.");
+          return successfulHarnessResult;
+        });
+      const orchestrator = routeOrchestrator();
+
+      orchestrator.startCard("auto-approve-critical");
+      // Approve verdict advances to review, but the critical finding blocks
+      // the auto-merge — it must sit in human review, not race straight to Done.
+      await vi.waitFor(() => expect(getCard("auto-approve-critical").status).toBe("review"));
+
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      expect(db.select().from(reviews).all()).toHaveLength(0);
+      const autoApproveEvent = db
+        .select()
+        .from(events)
+        .all()
+        .find((event) => event.type === "card.auto_approved" && event.cardId === "auto-approve-critical");
+      expect(autoApproveEvent).toBeUndefined();
+      const decidedEvent = db
+        .select()
+        .from(events)
+        .all()
+        .find((event) => event.type === "evaluation.decided" && event.cardId === "auto-approve-critical");
+      expect(JSON.parse(decidedEvent!.payload).findings).toEqual([
+        { severity: "critical", file: "src/auth.ts", issue: "token logged in plaintext" },
+      ]);
     });
 
     it("still escalates an evaluator revision-limit card to a human even with auto-approve on", async () => {
@@ -1151,6 +1373,17 @@ describe("Orchestrator cancellation lifecycle", () => {
       const orphan = path.join(testDataDir, "transcripts", "planner-chat-orphan.jsonl");
       fs.writeFileSync(orphan, "{}\n");
       fs.utimesSync(orphan, new Date("2020-01-01"), new Date("2020-01-01"));
+      const oldRun = getRun("old-history");
+      db.insert(worktrees)
+        .values({
+          id: "worktree-old",
+          repoId: "repo-1",
+          runId: "old-run",
+          path: oldRun.worktreePath,
+          branch: "ralph/old-run",
+          createdAt: "2020-01-01T00:00:00.000Z",
+        })
+        .run();
 
       const result = pruneRuntimeHistory(30);
 
@@ -1158,6 +1391,7 @@ describe("Orchestrator cancellation lifecycle", () => {
         runsDeleted: 1,
         eventsDeleted: 1,
         transcriptEntriesDeleted: 2,
+        worktreesRemoved: 1,
       });
       expect(db.select().from(runs).all().map((run) => run.id)).toEqual(["active-history-run"]);
       expect(db.select().from(iterations).all()).toHaveLength(0);
@@ -1165,6 +1399,32 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(fs.existsSync(oldDir)).toBe(false);
       expect(fs.existsSync(orphan)).toBe(false);
       expect(fs.existsSync(activeDir)).toBe(true);
+      // The worktree directory itself (not just its transcript dir) is reclaimed.
+      expect(fs.existsSync(oldRun.worktreePath)).toBe(false);
+      expect(fs.existsSync(getRun("active-history").worktreePath)).toBe(true);
+      // worktreeId is set-null'd, not deleted, when its owning run row is
+      // pruned — and its removedAt is stamped by the sweep.
+      const worktreeRow = db.select().from(worktrees).all().find((w) => w.id === "worktree-old")!;
+      expect(worktreeRow.runId).toBeNull();
+      expect(worktreeRow.removedAt).not.toBeNull();
+    });
+
+    it("is a no-op, not an error, when the worktree directory or row is already gone", () => {
+      card("old-history-2", "done");
+      plan("old-history-2");
+      completedRun("old-history-2", "old-run-2", {
+        endedAt: "2020-01-01T00:05:00.000Z",
+        startedAt: "2020-01-01T00:00:00.000Z",
+      });
+      const oldRun = getRun("old-history-2");
+      // Directory already removed by a prior sweep/crash cleanup; no worktrees row at all.
+      fs.rmSync(oldRun.worktreePath, { recursive: true, force: true });
+
+      const result = pruneRuntimeHistory(30);
+
+      expect(result.runsDeleted).toBe(1);
+      expect(result.worktreesRemoved).toBe(0);
+      expect(db.select().from(runs).all()).toHaveLength(0);
     });
   });
 });

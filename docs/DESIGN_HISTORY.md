@@ -54,16 +54,14 @@ history inline.
 
 ## Implementation plans
 
-Alongside the specs, `docs/` holds plans written to drive a particular piece of
-work to completion. They are checklists with a finish line, not reference
-material:
+`docs/` also held two implementation plans — checklists with a finish line
+rather than reference material — for spec 14's sandboxing work and for
+Improvement Runs. Both were completed and removed from the tree; they remain in
+git history if you want the phasing or the progress log that recorded the two
+bugs the live Improvement Runs exposed.
 
-- [Sandboxing implementation plan](PLAN_SPEC_14.md) — the phased plan behind
-  spec 14. Completed.
-- [Improvement Runs implementation plan](PLAN_IMPROVEMENT_RUNS.md) — the plan
-  behind the time-boxed self-driving loop, with a progress log recording the two
-  bugs the live runs exposed. Completed; the feature is documented in
-  [Improvement Runs](IMPROVEMENT_RUNS.md).
+What they built is documented in [Sandboxing](SANDBOXING.md) and
+[Improvement Runs](IMPROVEMENT_RUNS.md).
 
 ## The locked decisions
 

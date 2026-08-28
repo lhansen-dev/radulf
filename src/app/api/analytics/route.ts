@@ -42,6 +42,9 @@ export async function GET(req: Request) {
       endedAt: runs.endedAt,
       provider: runs.provider,
       model: runs.model,
+      promptTokens: runs.promptTokens,
+      completionTokens: runs.completionTokens,
+      costUsd: runs.costUsd,
     })
     .from(runs)
     .orderBy(desc(runs.startedAt))

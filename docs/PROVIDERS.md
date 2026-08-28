@@ -57,10 +57,16 @@ savings live.
 never seen and decides what the work actually is; a weak plan poisons every
 iteration downstream. This is the last role to economize on.
 
-**The loop is where your tokens go.** It runs many times over, so the difference
-between models compounds here more than anywhere else. It is also the most
-forgiving of a cheaper model, because the evaluator catches what it gets wrong
-and the plan constrains what it has to figure out for itself.
+**The loop runs many times over, so the difference between models compounds
+here more than anywhere else.** It is also the most forgiving of a cheaper
+model, because the evaluator catches what it gets wrong and the plan
+constrains what it has to figure out for itself. Whether the loop is
+actually *where your tokens go* — as opposed to the planner or evaluator — is
+no longer just an assumption to take on faith, but it also isn't yet verified
+against real numbers: the roll-up under ["What a card
+costs"](#what-a-card-costs) below now measures per-role cost, but the only
+figures on record predate that change and are loop-only. Re-run the benchmark
+before treating this as settled.
 
 **The evaluator should not be the same agent that wrote the code** — not for
 cost reasons but for independence. Its whole value is looking at the diff
@@ -69,6 +75,51 @@ without having decided in advance that the diff is correct.
 If you are running oMLX locally, note that the model must be tool-capable and
 the server must already be running and reachable at the configured base URL
 before you start a loop. The default is `http://127.0.0.1:8000`.
+
+## What a card costs
+
+Measured, not estimated — but read the scope before you use these numbers.
+
+Three runs of the `small-ui-change` benchmark fixture (a small change to an
+existing codebase), loop on OpenRouter `deepseek/deepseek-v4-flash`, planner on
+`z-ai/glm-5.2`, reasoning level high, on 2026-07-30:
+
+| | Median | Range |
+|---|---|---|
+| **Loop cost** | **$0.0033** | $0.0024 – $0.0057 |
+| Loop iterations | 1 | 1 – 2 |
+| Model turns | 7 | 7 – 17 |
+| Prompt tokens | 16,122 | 8,101 – 22,598 |
+| Cached input tokens | 23,552 | 15,872 – 51,200 |
+| Completion tokens | 2,180 | 2,124 – 3,839 |
+| Reasoning tokens | 352 | 298 – 698 |
+| Wall time, whole card | 2m 15s | 1m 58s – 4m 42s |
+
+All three runs passed every acceptance criterion and produced a correct diff.
+
+> **This table is the loop's cost, not the card's, and is pending a re-run.**
+> Radulf now records a token/cost roll-up on every run — planner and evaluator
+> included, not just the loop's iterations — and `run-benchmark.mjs`'s
+> `costByKind` reports the true per-role split (see `benchmarks/README.md`).
+> The numbers above predate that change and were measured back when planner
+> and evaluator spend was invisible, so they understate what the card actually
+> cost. Since the guidance above is to put a frontier model on the planner,
+> the missing part is plausibly the larger one — reproduce the benchmark run
+> to find out, and replace this table with the per-role figures it reports.
+
+Two more caveats worth stating plainly. This is one fixture at n=3 on one
+provider, so it establishes an order of magnitude and nothing more — the spread
+above is already 2.4× between the cheapest and dearest run, driven by whether
+the loop finished in one iteration or two.
+
+And a smooth card is the cheap case. An evaluator `revise` sends the card back
+through the loop, so each one buys another full loop pass plus another
+evaluator pass; a separate observed run of this same fixture took two revisions
+and ran seven runs end to end rather than three. The table above is three runs
+that all passed first time.
+
+Reproduce or extend it with `benchmarks/run-benchmark.mjs` — see
+[`benchmarks/README.md`](../benchmarks/README.md).
 
 ## Optional: web search
 

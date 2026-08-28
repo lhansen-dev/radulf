@@ -91,9 +91,12 @@ default no network exposure beyond `localhost` (though you can
 elsewhere). It runs one card at a time — there is no parallelism setting,
 because local models want the whole machine's memory.
 
-It does not integrate with GitHub. The merge target is a local branch; pushing
-is your business. And it does not merge anything on its own, ever, without you
-saying so.
+It does not integrate with GitHub, and that is deliberate rather than pending:
+approving a merge is the trust boundary, and a tool that opened pull requests
+would move that boundary onto a remote where the agent's work is already public.
+The merge target is a local branch; pushing stays a separate decision you make
+yourself. And it does not merge anything on its own, ever, without you saying
+so.
 
 ## Where to go next
 

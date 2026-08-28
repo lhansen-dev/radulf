@@ -24,9 +24,12 @@ LOADENV := set -a; [ -f .env.local ] && . ./.env.local; set +a;
 # interfaces; auth off -> loopback only. Override with `make dev HOST=...`.
 HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 || echo 127.0.0.1)
 
+# Override with `make dev PORT=...` to match a non-default `next dev` port.
+PORT := 3000
+
 .DEFAULT_GOAL := help
 .PHONY: help install dev build start lint typecheck test check login \
-        db-generate db-migrate db-studio clean release
+        db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -43,8 +46,16 @@ install: ## Install dependencies from the lockfile
 login: ## Log in a subscription provider (opens pi; type /login)
 	@$(LOADENV) PI_CODING_AGENT_DIR="$${RADULF_DATA_DIR:-$(CURDIR)/data}/pi-agent" $(BIN)/pi
 
-dev: ## Run the dev server (loopback-only unless auth is configured)
-	$(BIN)/next dev -H $(HOST)
+dev: ## Run the dev server (loopback-only unless auth is configured); restarts if already up
+	@pid=$$(lsof -ti tcp:$(PORT) -sTCP:LISTEN); \
+	if [ -n "$$pid" ]; then \
+		echo "Port $(PORT) already in use (pid $$pid) — stopping it"; \
+		kill $$pid; \
+		for _ in $$(seq 1 20); do kill -0 $$pid 2>/dev/null || break; sleep 0.25; done; \
+		kill -0 $$pid 2>/dev/null && kill -9 $$pid; \
+		true; \
+	fi
+	$(BIN)/next dev -H $(HOST) -p $(PORT)
 
 build: ## Production build
 	NODE_ENV=production $(BIN)/next build
@@ -72,12 +83,29 @@ db-migrate: ## Apply pending migrations (usually unnecessary: the app migrates a
 db-studio: ## Open Drizzle Studio
 	@$(LOADENV) $(BIN)/drizzle-kit studio
 
+# WAL mode (src/db/index.ts) means a plain `cp` of the DB file while the server
+# is running can miss uncommitted WAL frames and produce a torn snapshot;
+# VACUUM INTO reads through a consistent view instead. Requires the sqlite3
+# CLI — a dev-machine convenience, not something CI needs.
+db-backup: ## Back up the SQLite DB safely while the server is running
+	@$(LOADENV) dir="$${RADULF_DATA_DIR:-data}"; \
+	sqlite3 "$$dir/radulf.db" "VACUUM INTO '$$dir/radulf-backup-$$(date +%Y%m%d-%H%M%S).db'"
+
 clean: ## Remove build output and caches
 	rm -rf .next tsconfig.tsbuildinfo
 
-release: ## Cut a release: make release VERSION=1.0.0
+release: ## Cut a release: make release VERSION=1.0.0 (or 1.1.0-beta.1 from beta)
 	@test -n "$(VERSION)" || { echo "VERSION is required, e.g. make release VERSION=1.0.0"; exit 1; }
 	@git diff --quiet && git diff --cached --quiet || { echo "Working tree is dirty; commit or stash first."; exit 1; }
+	@# Enforce the branch model: stable tags come off main, prereleases off beta.
+	@# A hyphen in VERSION marks a prerelease (1.1.0-beta.1). Tagging a stable
+	@# release from beta would ship unpromoted work under a "Latest" release.
+	@branch=$$(git rev-parse --abbrev-ref HEAD); \
+	case "$(VERSION)" in \
+	  *-*) want=beta ;; \
+	  *)   want=main ;; \
+	esac; \
+	test "$$branch" = "$$want" || { echo "VERSION=$(VERSION) must be cut from '$$want', but HEAD is on '$$branch'."; exit 1; }
 	$(MAKE) check
 	npm version $(VERSION) -m "release v%s"
 	git push --follow-tags

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { TranscriptEvent } from "./harness";
+import { bus, type TranscriptPush } from "./events";
 
 export const TRANSCRIPT_CHUNK_BYTES = 512 * 1024;
 
@@ -92,4 +93,106 @@ export async function readTranscriptChunk(
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * Tail `transcriptPath` for changes, invoking `onChange` on each one.
+ * `fs.watch` needs the path to already exist, but the harness creates the
+ * transcript file lazily on its first write (harness/index.ts:250-251) — a
+ * watch started right as a run/iteration begins races that creation. Fall
+ * back to a short `fs.watchFile` poll until the file appears, then hand off
+ * to a real `fs.watch` for genuine push behavior. Returns a `close()`.
+ */
+function watchTranscript(transcriptPath: string, onChange: () => void): () => void {
+  let closed = false;
+  let watcher: fs.FSWatcher | null = null;
+  const attach = (): boolean => {
+    try {
+      // Guard against a stray event firing after stop() — close() isn't
+      // guaranteed to suppress an already-queued callback.
+      watcher = fs.watch(transcriptPath, () => {
+        if (!closed) onChange();
+      });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return false;
+    }
+  };
+  if (attach()) {
+    return () => {
+      closed = true;
+      watcher?.close();
+    };
+  }
+  const poll = (curr: fs.Stats) => {
+    if (curr.mtimeMs === 0) return; // file still doesn't exist
+    fs.unwatchFile(transcriptPath, poll);
+    if (closed) return;
+    attach();
+    onChange(); // catch up on anything written before we attached
+  };
+  fs.watchFile(transcriptPath, { interval: 300 }, poll);
+  return () => {
+    closed = true;
+    fs.unwatchFile(transcriptPath, poll);
+    watcher?.close();
+  };
+}
+
+/**
+ * Push new transcript lines over `bus`'s `"transcript"` channel as a run
+ * writes them (Phase 16 chunk A) — a plain `bus.emit`, not `emitEvent`: see
+ * `TranscriptPush`'s doc comment (src/server/events.ts) for why this must
+ * never hit the `events` table. Every live-transcript writer (loop
+ * iterations, planning, evaluation) shares this one function so the cursor
+ * bookkeeping and SSE payload shape stay identical across all of them.
+ *
+ * Callers own the run/iteration lifecycle: call this right before the
+ * `runHarness` call that writes `transcriptPath`, and call the returned
+ * `stop()` once that call settles (in a `finally`), so a run's watcher never
+ * outlives the file it's tailing.
+ */
+export function startTranscriptPush(transcriptPath: string, runId: string, iteration: number): () => void {
+  let cursor = 0;
+  // Re-entrancy guard: fs.watch can fire more than once for a single write,
+  // and the client trusts this channel's cursor sequence to be gapless and
+  // non-overlapping once caught up — two overlapping `readTranscriptChunk`
+  // calls sharing `cursor` would race and could emit duplicate line ranges.
+  let pumpInFlight = false;
+  let recheckPending = false;
+  const pump = () => {
+    if (pumpInFlight) {
+      recheckPending = true;
+      return;
+    }
+    pumpInFlight = true;
+    const fromCursor = cursor;
+    readTranscriptChunk(transcriptPath, cursor, true)
+      .then((chunk) => {
+        if (chunk.lines.length === 0) return;
+        cursor = chunk.cursor;
+        const push: TranscriptPush = {
+          runId,
+          iteration,
+          fromCursor,
+          cursor: chunk.cursor,
+          lines: chunk.lines,
+        };
+        bus.emit("transcript", push);
+      })
+      .catch(() => {
+        // Best-effort live tail; the JSONL file itself remains the durable
+        // copy, so a transient read failure here just means this batch of
+        // lines shows up on the next fs event instead.
+      })
+      .finally(() => {
+        pumpInFlight = false;
+        if (recheckPending) {
+          recheckPending = false;
+          pump();
+        }
+      });
+  };
+  return watchTranscript(transcriptPath, pump);
 }

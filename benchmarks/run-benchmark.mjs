@@ -15,150 +15,143 @@
  * starts identical — point --repo at a throwaway benchmark repo.
  *
  * Requires Node >= 18 (global `fetch`).
+ *
+ * Pure helpers (selectReviewRun, aggregateTokens, percentile, median,
+ * parseCriteriaCommand) are exported for unit testing and have no side
+ * effects on import. Everything else — argument parsing, validation, and
+ * main() — only runs when this file is executed directly, so `import`ing it
+ * from a test never touches argv or the network.
  */
 
-// ── Help / Usage ───────────────────────────────────────────────
+import { existsSync } from "node:fs";
+import { readFile, writeFile, access } from "node:fs/promises";
+import { execFile } from "node:child_process";
 
-const USAGE = `Usage: node benchmarks/run-benchmark.mjs [options]
+const fsReadFile = readFile;
+const fsWriteFile = writeFile;
+const fsAccess = access;
 
-Options:
-  --fixture <name>          Fixture directory under benchmarks/ (required)
-  --base-url <url>          Radulf server base URL (default: http://localhost:3000)
-  --repo <id>               Registered throwaway-repo ID (required)
-  --provider <name>         Provider name for the loop (required)
-  --model <name>            Model name for the loop (required)
-  --planner-model <name>    Planner model (default: loop model)
-  --runs <n>                Number of benchmark runs (default: 3)
-  --auth-cookie <value>     Session cookie value for authentication
-  --password <value>        Password to POST /api/auth/login and read Set-Cookie
-  --max-iterations <n>      Optional card maxIterations override
-  --timeout-minutes <n>     Optional card timeoutMinutes override
-  --auto-review             Approve (criteria pass) or abandon (criteria fail) each run
-  --no-reset                Skip the per-run hard reset to the baseline commit
-  --out <path>              JSON report output path (default: stdout)
-  --dry-run                 Validate args, print plan, exit 0 (no API calls)
-  --help                    Show this help message and exit
-`;
+// ── Pure helpers (exported for tests) ──────────────────────────
 
-// ── Argument parsing ───────────────────────────────────────────
+/** Compute percentile (0-100) from sorted array using linear interpolation. */
+export function percentile(sorted, p) {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const idx = (p / 100) * (sorted.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (idx - lo) * (sorted[hi] - sorted[lo]);
+}
 
-const args = {};
-for (let i = 2; i < process.argv.length; i++) {
-  const a = process.argv[i];
-  if (a === "--help") {
-    process.stdout.write(USAGE);
-    process.exit(0);
+/** Median = p50 */
+export function median(sorted) {
+  return percentile(sorted, 50);
+}
+
+/** Parse a CRITERIA.md line like: \`- \`command\` exits 0\` */
+export function parseCriteriaCommand(line) {
+  const m = line.match(/^-\s*`([^`]+)`\s+(?:exits 0|succeeds)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * A card is a plan run plus one or more loop → evaluate cycles, so the run to
+ * review is not `card.latestRun` (whichever run finished last — after a
+ * normal pipeline, that's the *evaluate* run: zero iterations, zero tokens,
+ * and rejected by POST /api/reviews, which requires a completed loop run).
+ * `cardRuns` must be newest-first, so the first match is the current loop.
+ */
+export function selectReviewRun(cardRuns) {
+  return cardRuns.find((r) => r.kind === "loop" && r.status === "completed") ?? null;
+}
+
+/**
+ * Token and cost totals must span every run on the card — plan, every loop,
+ * every evaluate — not just the reviewed run, or a card with revisions
+ * (evaluator `revise`s adding another loop → evaluate pair) undercounts what
+ * it actually cost. `runDetails` is the array of `{ run, iterations }` from
+ * GET /api/runs/:id for each run on the card.
+ *
+ * Each run's own telemetry roll-up (`run.promptTokens`, `run.costUsd`, etc —
+ * populated for every kind since the runs-table telemetry migration) is
+ * preferred over summing that run's iterations. Iterations only ever existed
+ * for loop, so before this migration a plan or evaluate run always summed to
+ * zero; falling back to the iteration sum only covers runs from a server
+ * that predates the migration.
+ */
+export function aggregateTokens(runDetails) {
+  const allIterations = runDetails.flatMap((d) => d.iterations || []);
+  const loopIterations = runDetails
+    .filter((d) => d.run.kind === "loop")
+    .flatMap((d) => d.iterations || []);
+
+  const perRun = runDetails.map((d) => {
+    const iters = d.iterations || [];
+    const sumIters = (key) => iters.reduce((s, it) => s + (it[key] || 0), 0);
+    const field = (key) => d.run[key] ?? sumIters(key);
+    return {
+      kind: d.run.kind,
+      promptTokens: field("promptTokens"),
+      completionTokens: field("completionTokens"),
+      cachedInputTokens: field("cachedInputTokens"),
+      reasoningTokens: field("reasoningTokens"),
+      modelTurns: field("modelTurns"),
+      costUsd: field("costUsd"),
+    };
+  });
+
+  const sum = (key) => perRun.reduce((s, r) => s + (r[key] || 0), 0);
+
+  // Per-role cost breakdown — the whole point of measuring is knowing which
+  // role to economize on.
+  const costByKind = {};
+  for (const r of perRun) {
+    costByKind[r.kind] = (costByKind[r.kind] || 0) + (r.costUsd || 0);
   }
-  if (a.startsWith("--")) {
-    const key = a.replace(/^--/, "").replace(/-/g, "_");
-    const next = process.argv[i + 1];
-    if (key === "dry_run" || key === "auto_review" || key === "no_reset" || key === "help") {
-      args[key] = true;
-    } else if (next !== undefined && !next.startsWith("--")) {
-      args[key] = next;
-      i++;
-    } else {
-      args[key] = true;
-    }
-  }
+
+  return {
+    allIterations,
+    loopIterations,
+    totalModelTurns: sum("modelTurns"),
+    sumPromptTokens: sum("promptTokens"),
+    sumCachedInputTokens: sum("cachedInputTokens"),
+    sumCompletionTokens: sum("completionTokens"),
+    sumReasoningTokens: sum("reasoningTokens"),
+    sumCostUsd: sum("costUsd"),
+    costByKind,
+  };
 }
 
-const {
-  fixture,
-  base_url = "http://localhost:3000",
-  repo,
-  provider,
-  model,
-  planner_model = model,
-  runs = "3",
-  auth_cookie,
-  password,
-  max_iterations,
-  timeout_minutes,
-  auto_review,
-  no_reset,
-  out,
-  dry_run,
-} = args;
-
-const numRuns = parseInt(runs, 10);
-if (isNaN(numRuns) || numRuns < 1) {
-  console.error("Error: --runs must be a positive integer");
-  process.exit(1);
+export function sortAsc(arr) {
+  return [...arr].sort((a, b) => a - b);
 }
 
-// ── Validation ─────────────────────────────────────────────────
-
-// Resolve fixture paths relative to this script's directory
-const scriptDir = new URL(".", import.meta.url).pathname;
-const fixtureDir = fixture ? `${scriptDir}${fixture}/` : null;
-const seedDir = fixtureDir ? `${fixtureDir}seed` : null;
-const hasSeed = seedDir ? existsSync(seedDir) : false;
-
-const errors = [];
-if (!fixture) errors.push("--fixture is required");
-else if (!existsSync(`${fixtureDir}TASK.md`) || !existsSync(`${fixtureDir}CRITERIA.md`)) {
-  errors.push(`--fixture ${fixture}: no TASK.md + CRITERIA.md under ${fixtureDir}`);
-}
-if (!repo) errors.push("--repo is required");
-if (!provider) errors.push("--provider is required");
-if (!model) errors.push("--model is required");
-if (!auth_cookie && !password) errors.push("either --auth-cookie or --password is required");
-if (errors.length > 0) {
-  for (const e of errors) console.error(`Error: ${e}`);
-  console.error("");
-  console.error(USAGE);
-  process.exit(1);
+export function computeStats(arr) {
+  if (arr.length === 0) return null;
+  const sorted = sortAsc(arr);
+  return {
+    count: arr.length,
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+    median: median(sorted),
+    p50: percentile(sorted, 50),
+    p90: percentile(sorted, 90),
+    mean: arr.reduce((s, v) => s + v, 0) / arr.length,
+  };
 }
 
-// ── Dry run ────────────────────────────────────────────────────
-
-if (dry_run) {
-  const plan = [
-    `Benchmark plan (dry run, no API calls):`,
-    `  Fixture:         ${fixture}${hasSeed ? " (seeded existing-codebase fixture)" : " (greenfield)"}`,
-    `  Base URL:        ${base_url}`,
-    `  Repo ID:         ${repo}`,
-    `  Loop provider:   ${provider}`,
-    `  Loop model:      ${model}`,
-    `  Planner model:   ${planner_model}`,
-    `  Runs:            ${numRuns}`,
-    `  Auth:            ${auth_cookie ? "cookie provided" : "password login"}`,
-    `  Max iterations:  ${max_iterations || "(default)"}`,
-    `  Timeout minutes: ${timeout_minutes || "(default)"}`,
-    `  Auto-review:     ${auto_review ? "yes" : "no"}`,
-    `  Per-run reset:   ${no_reset ? "no" : "yes (hard reset to baseline commit)"}`,
-    `  Output:          ${out || "(stdout)"}`,
-    ``,
-    `Steps:`,
-    `  1. PATCH /api/settings {maxParallelLoops: 1} (save prior value)`,
-    `  2. Resolve repo path via GET /api/repos${hasSeed ? "; commit seed/ into the repo" : ""},`,
-    `     record baseline commit SHA`,
-    `  3. For each run:`,
-    `     a. Hard-reset repo to baseline (unless --no-reset)`,
-    `     b. Read TASK.md for title + description`,
-    `     c. POST /api/cards with repo, title, description, plannerModel, loopModel`,
-    `     d. POST /api/cards/[id]/move {to: "todo"}`,
-    `     e. POST /api/cards/[id]/move {to: "in_progress"}`,
-    `     f. Poll GET /api/cards until terminal status`,
-    `     g. GET /api/runs/[latestRunId] for run + iterations`,
-    `     h. Compute per-run metrics`,
-    `     i. Execute CRITERIA.md commands in worktree`,
-    `     j. Compute diff correctness`,
-    `  4. Aggregate metrics across runs`,
-    `  5. Write JSON report to ${out || "stdout"}`,
-    `  6. Restore prior maxParallelLoops`,
-    ``,
-    `Note: This benchmark disables parallel loops (maxParallelLoops=1)`,
-    `      to prevent concurrency from masking per-loop latency.`,
-    `Note: The per-run reset discards commits the benchmark itself created`,
-    `      (including approved merges) — use a throwaway repo.`,
-  ];
-  for (const line of plan) console.log(line);
-  process.exit(0);
+/** Format milliseconds as a human-readable string. */
+export function msToHuman(ms) {
+  if (ms == null) return "N/A";
+  if (ms < 1000) return `${ms.toFixed(0)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = (ms % 60_000) / 1000;
+  return `${m}m ${s.toFixed(0)}s`;
 }
 
-// ── Helpers ────────────────────────────────────────────────────
+// ── Non-CLI internal helpers ────────────────────────────────────
 
 async function assertOk(res, context) {
   if (!res.ok) {
@@ -181,160 +174,289 @@ function parseTs(ts) {
   return new Date(ts).getTime();
 }
 
-/** Compute percentile (0-100) from sorted array using linear interpolation. */
-function percentile(sorted, p) {
-  if (sorted.length === 0) return 0;
-  if (sorted.length === 1) return sorted[0];
-  const idx = (p / 100) * (sorted.length - 1);
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  if (lo === hi) return sorted[lo];
-  return sorted[lo] + (idx - lo) * (sorted[hi] - sorted[lo]);
-}
-
-/** Median = p50 */
-function median(sorted) {
-  return percentile(sorted, 50);
-}
-
-/** Parse a CRITERIA.md line like: \`- \`command\` exits 0\` */
-function parseCriteriaCommand(line) {
-  const m = line.match(/^-\s*`([^`]+)`\s+(?:exits 0|succeeds)/);
-  return m ? m[1] : null;
-}
-
-// ── Main ───────────────────────────────────────────────────────
-
-async function main() {
-  const taskMdPath = fixtureDir + "TASK.md";
-  const criteriaMdPath = fixtureDir + "CRITERIA.md";
-
-  // Read TASK.md
-  let taskMd;
-  try {
-    taskMd = await fsReadFile(taskMdPath, "utf8");
-  } catch {
-    throw new Error(`Cannot read TASK.md at ${taskMdPath}`);
-  }
-  const taskLines = taskMd.trimStart().split("\n");
-  const title = taskLines[0].trim();
-  const description = taskLines.slice(1).join("\n").trim();
-
-  // Read CRITERIA.md
-  let criteriaMd;
-  try {
-    criteriaMd = await fsReadFile(criteriaMdPath, "utf8");
-  } catch {
-    throw new Error(`Cannot read CRITERIA.md at ${criteriaMdPath}`);
-  }
-
-  // Parse criteria commands
-  const criteriaCommands = criteriaMd
-    .split("\n")
-    .map(parseCriteriaCommand)
-    .filter(Boolean);
-
-  // ── Auth ─────────────────────────────────────────────────────
-
-  let cookie = auth_cookie;
-  if (!cookie && password) {
-    const loginRes = await fetch(`${base_url}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-      redirect: "manual",
+/**
+ * Execute a command with a timeout, returning { exitCode, stdout, stderr }.
+ * Uses child_process.execFile for safety.
+ */
+function execCmd(bin, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(bin, args, {
+      cwd: opts.cwd || process.cwd(),
+      timeout: opts.timeout || 30_000,
+      maxBuffer: 10 * 1024 * 1024, // 10 MB
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    }, (error, stdout, stderr) => {
+      if (error && error.killed) {
+        // Timeout
+        resolve({ exitCode: null, stdout: stdout || "", stderr: stderr || "", error: "Timed out" });
+      } else if (error) {
+        resolve({ exitCode: error.code || 1, stdout: stdout || "", stderr: stderr || "" });
+      } else {
+        resolve({ exitCode: 0, stdout: stdout || "", stderr: stderr || "" });
+      }
     });
-    // The login endpoint returns a 302 redirect with a Set-Cookie header
-    const setCookie = loginRes.headers.get("set-cookie");
-    if (!setCookie) {
-      throw new Error("Login failed: no Set-Cookie header in response");
+  });
+}
+
+// ── CLI entry point ──────────────────────────────────────────────
+// Everything below only executes when this file is run directly (`node
+// benchmarks/run-benchmark.mjs ...`), not when imported — so tests can pull
+// in the helpers above without touching argv, the filesystem beyond the
+// fixture corpus, or the network.
+
+const isMainModule = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+
+if (isMainModule) {
+  await runCli();
+}
+
+async function runCli() {
+  const USAGE = `Usage: node benchmarks/run-benchmark.mjs [options]
+
+Options:
+  --fixture <name>          Fixture directory under benchmarks/ (required)
+  --base-url <url>          Radulf server base URL (default: http://localhost:3000)
+  --repo <id>               Registered throwaway-repo ID (required)
+  --provider <name>         Provider name for the loop (required)
+  --model <name>            Model name for the loop (required)
+  --planner-model <name>    Planner model (default: loop model)
+  --runs <n>                Number of benchmark runs (default: 3)
+  --auth-cookie <value>     Session cookie value for authentication
+  --password <value>        Password to POST /api/auth/login and read Set-Cookie
+  --max-iterations <n>      Optional card maxIterations override
+  --timeout-minutes <n>     Optional card timeoutMinutes override
+  --auto-review             Approve (criteria pass) or abandon (criteria fail) each run
+  --no-reset                Skip the per-run hard reset to the baseline commit
+  --out <path>              JSON report output path (default: stdout)
+  --dry-run                 Validate args, print plan, exit 0 (no API calls)
+  --help                    Show this help message and exit
+`;
+
+  // ── Argument parsing ───────────────────────────────────────────
+
+  const args = {};
+  for (let i = 2; i < process.argv.length; i++) {
+    const a = process.argv[i];
+    if (a === "--help") {
+      process.stdout.write(USAGE);
+      process.exit(0);
     }
-    // Extract the cookie value (everything before the first ';')
-    cookie = setCookie.split(";")[0].trim();
+    if (a.startsWith("--")) {
+      const key = a.replace(/^--/, "").replace(/-/g, "_");
+      const next = process.argv[i + 1];
+      if (key === "dry_run" || key === "auto_review" || key === "no_reset" || key === "help") {
+        args[key] = true;
+      } else if (next !== undefined && !next.startsWith("--")) {
+        args[key] = next;
+        i++;
+      } else {
+        args[key] = true;
+      }
+    }
   }
 
-  const authHeaders = {
-    Cookie: cookie,
-    "Content-Type": "application/json",
-  };
-  const jsonHeaders = {
-    "Content-Type": "application/json",
-  };
+  const {
+    fixture,
+    base_url = "http://localhost:3000",
+    repo,
+    provider,
+    model,
+    planner_model = model,
+    runs = "3",
+    auth_cookie,
+    password,
+    max_iterations,
+    timeout_minutes,
+    auto_review,
+    no_reset,
+    out,
+    dry_run,
+  } = args;
 
-  // ── Resolve repo path, commit seed, record baseline ──────────
-
-  const reposRes = await fetch(`${base_url}/api/repos`, { headers: authHeaders });
-  await assertOk(reposRes, "GET /api/repos");
-  const repoRow = (await reposRes.json()).find((r) => r.id === repo);
-  if (!repoRow) throw new Error(`Repo ${repo} is not registered`);
-  const repoPath = repoRow.path;
-  const defaultBranch = repoRow.defaultBranch || "main";
-
-  async function git(...gitArgs) {
-    const { exitCode, stdout, stderr } = await execCmd("git", ["-C", repoPath, ...gitArgs], {
-      timeout: 60_000,
-    });
-    if (exitCode !== 0) {
-      throw new Error(`git ${gitArgs.join(" ")} exited ${exitCode}: ${stderr || stdout}`);
-    }
-    return stdout.trim();
+  const numRuns = parseInt(runs, 10);
+  if (isNaN(numRuns) || numRuns < 1) {
+    console.error("Error: --runs must be a positive integer");
+    process.exit(1);
   }
 
-  await git("checkout", "-q", defaultBranch);
+  // ── Validation ─────────────────────────────────────────────────
 
-  if (hasSeed) {
-    console.log(`Seeding ${repoPath} from ${seedDir}/`);
-    await git("rm", "-rfq", "--ignore-unmatch", ".");
-    await git("clean", "-fdq");
-    const { exitCode: cpCode, stderr: cpErr } = await execCmd(
-      "cp", ["-R", `${seedDir}/.`, repoPath], { timeout: 30_000 },
-    );
-    if (cpCode !== 0) throw new Error(`Seed copy failed: ${cpErr}`);
-    await git("add", "-A");
-    const dirty = await git("status", "--porcelain");
-    if (dirty) {
-      await git(
-        "-c", "user.name=radulf-benchmark",
-        "-c", "user.email=benchmark@radulf.local",
-        "commit", "-qm", `benchmark: seed ${fixture}`,
+  // Resolve fixture paths relative to this script's directory
+  const scriptDir = new URL(".", import.meta.url).pathname;
+  const fixtureDir = fixture ? `${scriptDir}${fixture}/` : null;
+  const seedDir = fixtureDir ? `${fixtureDir}seed` : null;
+  const hasSeed = seedDir ? existsSync(seedDir) : false;
+
+  const errors = [];
+  if (!fixture) errors.push("--fixture is required");
+  else if (!existsSync(`${fixtureDir}TASK.md`) || !existsSync(`${fixtureDir}CRITERIA.md`)) {
+    errors.push(`--fixture ${fixture}: no TASK.md + CRITERIA.md under ${fixtureDir}`);
+  }
+  if (!repo) errors.push("--repo is required");
+  if (!provider) errors.push("--provider is required");
+  if (!model) errors.push("--model is required");
+  if (!auth_cookie && !password) errors.push("either --auth-cookie or --password is required");
+  if (errors.length > 0) {
+    for (const e of errors) console.error(`Error: ${e}`);
+    console.error("");
+    console.error(USAGE);
+    process.exit(1);
+  }
+
+  // ── Dry run ────────────────────────────────────────────────────
+
+  if (dry_run) {
+    const plan = [
+      `Benchmark plan (dry run, no API calls):`,
+      `  Fixture:         ${fixture}${hasSeed ? " (seeded existing-codebase fixture)" : " (greenfield)"}`,
+      `  Base URL:        ${base_url}`,
+      `  Repo ID:         ${repo}`,
+      `  Loop provider:   ${provider}`,
+      `  Loop model:      ${model}`,
+      `  Planner model:   ${planner_model}`,
+      `  Runs:            ${numRuns}`,
+      `  Auth:            ${auth_cookie ? "cookie provided" : "password login"}`,
+      `  Max iterations:  ${max_iterations || "(default)"}`,
+      `  Timeout minutes: ${timeout_minutes || "(default)"}`,
+      `  Auto-review:     ${auto_review ? "yes" : "no"}`,
+      `  Per-run reset:   ${no_reset ? "no" : "yes (hard reset to baseline commit)"}`,
+      `  Output:          ${out || "(stdout)"}`,
+      ``,
+      `Steps:`,
+      `  1. Resolve repo path via GET /api/repos${hasSeed ? "; commit seed/ into the repo" : ""},`,
+      `     record baseline commit SHA`,
+      `  2. For each run:`,
+      `     a. Hard-reset repo to baseline (unless --no-reset)`,
+      `     b. Read TASK.md for title + description`,
+      `     c. POST /api/cards with repo, title, description, plannerModel, loopModel`,
+      `     d. POST /api/cards/[id]/move {to: "todo"}`,
+      `     e. POST /api/cards/[id]/move {to: "in_progress"}`,
+      `     f. Poll GET /api/cards until terminal status`,
+      `     g. GET /api/cards/[id] for every run; sum tokens/cost across all`,
+      `     h. Compute per-run metrics`,
+      `     i. Execute CRITERIA.md commands in worktree`,
+      `     j. Compute diff correctness`,
+      `  3. Aggregate metrics across runs`,
+      `  4. Write JSON report to ${out || "stdout"}`,
+      ``,
+      `Note: Loops are serialized by the orchestrator's single pipeline slot,`,
+      `      so concurrency cannot mask per-loop latency. No setup needed.`,
+      `Note: The per-run reset discards commits the benchmark itself created`,
+      `      (including approved merges) — use a throwaway repo.`,
+    ];
+    for (const line of plan) console.log(line);
+    process.exit(0);
+  }
+
+  // ── Main ───────────────────────────────────────────────────────
+
+  async function main() {
+    const taskMdPath = fixtureDir + "TASK.md";
+    const criteriaMdPath = fixtureDir + "CRITERIA.md";
+
+    // Read TASK.md
+    let taskMd;
+    try {
+      taskMd = await fsReadFile(taskMdPath, "utf8");
+    } catch {
+      throw new Error(`Cannot read TASK.md at ${taskMdPath}`);
+    }
+    const taskLines = taskMd.trimStart().split("\n");
+    const title = taskLines[0].trim();
+    const description = taskLines.slice(1).join("\n").trim();
+
+    // Read CRITERIA.md
+    let criteriaMd;
+    try {
+      criteriaMd = await fsReadFile(criteriaMdPath, "utf8");
+    } catch {
+      throw new Error(`Cannot read CRITERIA.md at ${criteriaMdPath}`);
+    }
+
+    // Parse criteria commands
+    const criteriaCommands = criteriaMd
+      .split("\n")
+      .map(parseCriteriaCommand)
+      .filter(Boolean);
+
+    // ── Auth ─────────────────────────────────────────────────────
+
+    let cookie = auth_cookie;
+    if (!cookie && password) {
+      const loginRes = await fetch(`${base_url}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+        redirect: "manual",
+      });
+      // The login endpoint returns a 302 redirect with a Set-Cookie header
+      const setCookie = loginRes.headers.get("set-cookie");
+      if (!setCookie) {
+        throw new Error("Login failed: no Set-Cookie header in response");
+      }
+      // Extract the cookie value (everything before the first ';')
+      cookie = setCookie.split(";")[0].trim();
+    }
+
+    const authHeaders = {
+      Cookie: cookie,
+      "Content-Type": "application/json",
+    };
+
+    // ── Resolve repo path, commit seed, record baseline ──────────
+
+    const reposRes = await fetch(`${base_url}/api/repos`, { headers: authHeaders });
+    await assertOk(reposRes, "GET /api/repos");
+    const repoRow = (await reposRes.json()).find((r) => r.id === repo);
+    if (!repoRow) throw new Error(`Repo ${repo} is not registered`);
+    const repoPath = repoRow.path;
+    const defaultBranch = repoRow.defaultBranch || "main";
+
+    async function git(...gitArgs) {
+      const { exitCode, stdout, stderr } = await execCmd("git", ["-C", repoPath, ...gitArgs], {
+        timeout: 60_000,
+      });
+      if (exitCode !== 0) {
+        throw new Error(`git ${gitArgs.join(" ")} exited ${exitCode}: ${stderr || stdout}`);
+      }
+      return stdout.trim();
+    }
+
+    await git("checkout", "-q", defaultBranch);
+
+    if (hasSeed) {
+      console.log(`Seeding ${repoPath} from ${seedDir}/`);
+      await git("rm", "-rfq", "--ignore-unmatch", ".");
+      await git("clean", "-fdq");
+      const { exitCode: cpCode, stderr: cpErr } = await execCmd(
+        "cp", ["-R", `${seedDir}/.`, repoPath], { timeout: 30_000 },
       );
+      if (cpCode !== 0) throw new Error(`Seed copy failed: ${cpErr}`);
+      await git("add", "-A");
+      const dirty = await git("status", "--porcelain");
+      if (dirty) {
+        await git(
+          "-c", "user.name=radulf-benchmark",
+          "-c", "user.email=benchmark@radulf.local",
+          "commit", "-qm", `benchmark: seed ${fixture}`,
+        );
+      }
     }
-  }
 
-  const baselineSha = await git("rev-parse", "HEAD");
-  console.log(`Baseline commit: ${baselineSha}`);
+    const baselineSha = await git("rev-parse", "HEAD");
+    console.log(`Baseline commit: ${baselineSha}`);
 
-  // ── Step 1: Save and disable parallel loops ──────────────────
+    // Serialization needs no setup any more. The orchestrator has a single
+    // pipeline slot — `pipelineBusy()` blocks `pump()` while any card is
+    // planning, looping, or evaluating — so one card runs at a time by
+    // construction. This used to PATCH a `maxParallelLoops` setting; that
+    // setting no longer exists, and `patchSettings` silently skips unknown
+    // keys, so the call had been a no-op reporting success.
 
-  // Fetch current settings to get maxParallelLoops
-  let priorMaxParallelLoops = 1;
-  try {
-    const settingsRes = await fetch(`${base_url}/api/settings`, { headers: authHeaders });
-    await assertOk(settingsRes, "GET /api/settings");
-    const settings = await settingsRes.json();
-    priorMaxParallelLoops = settings.maxParallelLoops ?? 1;
-  } catch (e) {
-    // If settings fetch fails, assume default
-    console.warn("Warning: could not fetch current settings, assuming maxParallelLoops=1");
-  }
+    // ── Per-run data ─────────────────────────────────────────────
 
-  try {
-    const patchRes = await fetch(`${base_url}/api/settings`, {
-      method: "PATCH",
-      headers: authHeaders,
-      body: JSON.stringify({ maxParallelLoops: 1 }),
-    });
-    await assertOk(patchRes, "PATCH /api/settings maxParallelLoops=1");
-    console.log(`Disabled parallel loops (was ${priorMaxParallelLoops})`);
-  } catch (e) {
-    console.warn("Warning: could not disable parallel loops, continuing anyway");
-  }
+    const runResults = [];
 
-  // ── Per-run data ─────────────────────────────────────────────
-
-  const runResults = [];
-
-  try {
     for (let runIdx = 1; runIdx <= numRuns; runIdx++) {
       console.log(`\n--- Run ${runIdx}/${numRuns} ---`);
 
@@ -440,7 +562,7 @@ async function main() {
         if (status === "review" || status === "needs_attention" || status === "done" || status === "abandoned") {
           terminalStatus = status;
           latestRunId = currentCard.latestRun?.id ?? null;
-          console.log(`  Card reached terminal status: ${status} (runId: ${latestRunId})`);
+          console.log(`  Card reached terminal status: ${status}`);
           break;
         }
         // Also check for "done" status — not expected in benchmark but handle gracefully
@@ -460,25 +582,55 @@ async function main() {
         continue;
       }
 
-      const runRes = await fetch(`${base_url}/api/runs/${latestRunId}`, { headers: authHeaders });
-      await assertOk(runRes, `GET /api/runs/${latestRunId}`);
-      const runData = await runRes.json();
-      const run = runData.run;
-      const iterations = runData.iterations || [];
+      const cardRes = await fetch(`${base_url}/api/cards/${cardId}`, { headers: authHeaders });
+      await assertOk(cardRes, `GET /api/cards/${cardId}`);
+      const cardDetail = await cardRes.json();
+      const cardRuns = cardDetail.runs || [];
 
-      console.log(`  Run: ${run.id}, iterations: ${iterations.length}`);
+      const reviewRun = selectReviewRun(cardRuns);
+      const reviewRunId = reviewRun?.id ?? null;
 
-      // ── Step 2e: compute per-run metrics ─────────────────────
+      // Pull iterations for every run, so totals cover the whole card.
+      const runDetails = [];
+      for (const r of cardRuns) {
+        const rRes = await fetch(`${base_url}/api/runs/${r.id}`, { headers: authHeaders });
+        await assertOk(rRes, `GET /api/runs/${r.id}`);
+        runDetails.push(await rRes.json());
+      }
 
-      const totalWallTimeMs = run.endedAt && run.startedAt
-        ? parseTs(run.endedAt) - parseTs(run.startedAt)
+      const {
+        loopIterations,
+        totalModelTurns,
+        sumPromptTokens,
+        sumCachedInputTokens,
+        sumCompletionTokens,
+        sumReasoningTokens,
+        sumCostUsd,
+        costByKind,
+      } = aggregateTokens(runDetails);
+
+      const run = runDetails.find((d) => d.run.id === reviewRunId)?.run ?? runDetails[0]?.run;
+
+      console.log(
+        `  Card ran ${cardRuns.length} runs ` +
+          `(${cardRuns.filter((r) => r.kind === "loop").length} loop, ` +
+          `${cardRuns.filter((r) => r.kind === "evaluate").length} evaluate), ` +
+          `${loopIterations.length} loop iterations`,
+      );
+
+      // ── Step 2e: compute per-card metrics ────────────────────
+
+      // Whole-card wall time: first run started → last run ended.
+      const runStarts = runDetails.map((d) => d.run.startedAt).filter(Boolean).map(parseTs);
+      const runEnds = runDetails.map((d) => d.run.endedAt).filter(Boolean).map(parseTs);
+      const totalWallTimeMs = runStarts.length && runEnds.length
+        ? Math.max(...runEnds) - Math.min(...runStarts)
         : null;
 
-      const iterationCount = iterations.length;
+      const iterationCount = loopIterations.length;
 
-      const totalModelTurns = iterations.reduce((s, it) => s + (it.modelTurns || 0), 0);
-
-      const iterationWallTimes = iterations
+      // Latency percentiles describe the loop, so they use loop iterations only.
+      const iterationWallTimes = loopIterations
         .filter((it) => it.endedAt && it.startedAt)
         .map((it) => parseTs(it.endedAt) - parseTs(it.startedAt))
         .sort((a, b) => a - b);
@@ -489,12 +641,6 @@ async function main() {
       const p90IterationTime = iterationWallTimes.length > 0
         ? percentile(iterationWallTimes, 90)
         : null;
-
-      const sumPromptTokens = iterations.reduce((s, it) => s + (it.promptTokens || 0), 0);
-      const sumCachedInputTokens = iterations.reduce((s, it) => s + (it.cachedInputTokens || 0), 0);
-      const sumCompletionTokens = iterations.reduce((s, it) => s + (it.completionTokens || 0), 0);
-      const sumReasoningTokens = iterations.reduce((s, it) => s + (it.reasoningTokens || 0), 0);
-      const sumCostUsd = iterations.reduce((s, it) => s + (it.costUsd || 0), 0);
 
       let reviewOutcome = terminalStatus === "review" ? "pending" : terminalStatus;
 
@@ -579,13 +725,13 @@ async function main() {
       // Criteria fail → abandon the card: rejecting would re-queue it and the
       // orchestrator would relaunch its loop mid-benchmark.
 
-      if (auto_review && terminalStatus === "review" && latestRunId) {
+      if (auto_review && terminalStatus === "review" && reviewRunId) {
         const decision = criteriaPass ? "approved" : "abandoned";
         const reviewRes = criteriaPass
           ? await fetch(`${base_url}/api/reviews`, {
               method: "POST",
               headers: authHeaders,
-              body: JSON.stringify({ runId: latestRunId, decision: "approved" }),
+              body: JSON.stringify({ runId: reviewRunId, decision: "approved" }),
             })
           : await fetch(`${base_url}/api/cards/${cardId}/abandon`, {
               method: "POST",
@@ -621,7 +767,8 @@ async function main() {
       runResults.push({
         run: runIdx,
         cardId,
-        runId: latestRunId,
+        runId: reviewRunId,
+        runCount: cardRuns.length,
         status: terminalStatus,
         reviewOutcome,
         totalWallTimeMs,
@@ -635,6 +782,7 @@ async function main() {
         sumCompletionTokens,
         sumReasoningTokens,
         sumCostUsd,
+        costByKind,
         criteriaPass,
         criteriaResults,
         diffStat,
@@ -659,24 +807,6 @@ async function main() {
     const costs = validResults.map((r) => r.sumCostUsd);
     const criteriaPasses = validResults.map((r) => r.criteriaPass);
     const diffCorrectnesses = validResults.map((r) => r.diffCorrectness);
-
-    function sortAsc(arr) {
-      return [...arr].sort((a, b) => a - b);
-    }
-
-    function computeStats(arr) {
-      if (arr.length === 0) return null;
-      const sorted = sortAsc(arr);
-      return {
-        count: arr.length,
-        min: sorted[0],
-        max: sorted[sorted.length - 1],
-        median: median(sorted),
-        p50: percentile(sorted, 50),
-        p90: percentile(sorted, 90),
-        mean: arr.reduce((s, v) => s + v, 0) / arr.length,
-      };
-    }
 
     const report = {
       meta: {
@@ -755,98 +885,34 @@ async function main() {
       console.log(`Cost (USD):         median $${agg.sumCostUsd.median.toFixed(4)}`);
     }
     console.log("========================\n");
-
-  } finally {
-    // ── Step 5: restore prior maxParallelLoops ─────────────────
-
-    try {
-      const restoreRes = await fetch(`${base_url}/api/settings`, {
-        method: "PATCH",
-        headers: authHeaders,
-        body: JSON.stringify({ maxParallelLoops: priorMaxParallelLoops }),
-      });
-      if (restoreRes.ok) {
-        console.log(`Restored maxParallelLoops to ${priorMaxParallelLoops}`);
-      } else {
-        console.warn(`Warning: could not restore maxParallelLoops (HTTP ${restoreRes.status})`);
-      }
-    } catch (e) {
-      console.warn(`Warning: error restoring maxParallelLoops: ${e.message}`);
-    }
   }
-}
 
-// ── Minimal FS helpers (no dependencies) ───────────────────────
-
-import { existsSync } from "node:fs";
-import { readFile, writeFile, access } from "node:fs/promises";
-import { execFile } from "node:child_process";
-
-const fsReadFile = readFile;
-const fsWriteFile = writeFile;
-const fsAccess = access;
-
-/**
- * Execute a command with a timeout, returning { exitCode, stdout, stderr }.
- * Uses child_process.execFile for safety.
- */
-function execCmd(bin, args, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const child = execFile(bin, args, {
-      cwd: opts.cwd || process.cwd(),
-      timeout: opts.timeout || 30_000,
-      maxBuffer: 10 * 1024 * 1024, // 10 MB
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
-    }, (error, stdout, stderr) => {
-      if (error && error.killed) {
-        // Timeout
-        resolve({ exitCode: null, stdout: stdout || "", stderr: stderr || "", error: "Timed out" });
-      } else if (error) {
-        resolve({ exitCode: error.code || 1, stdout: stdout || "", stderr: stderr || "" });
-      } else {
-        resolve({ exitCode: 0, stdout: stdout || "", stderr: stderr || "" });
+  await main().catch(async (err) => {
+    console.error("Fatal error:", err.message);
+    // Always land a report so the UI shows a failed run instead of a
+    // permanently "in progress" one (active = log without report).
+    if (out) {
+      try {
+        const failureReport = {
+          meta: {
+            fixture,
+            baseUrl: base_url,
+            repo,
+            provider,
+            model,
+            plannerModel: planner_model,
+            numRuns,
+            autoReview: !!auto_review,
+            timestamp: new Date().toISOString(),
+            error: err.message,
+          },
+        };
+        await fsWriteFile(out, JSON.stringify(failureReport, null, 2), "utf8");
+        console.error(`Failure report written to ${out}`);
+      } catch (writeErr) {
+        console.error(`Could not write failure report: ${writeErr.message}`);
       }
-    });
+    }
+    process.exit(1);
   });
 }
-
-/** Format milliseconds as a human-readable string. */
-function msToHuman(ms) {
-  if (ms == null) return "N/A";
-  if (ms < 1000) return `${ms.toFixed(0)}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = (ms % 60_000) / 1000;
-  return `${m}m ${s.toFixed(0)}s`;
-}
-
-// ── Run ────────────────────────────────────────────────────────
-
-main().catch(async (err) => {
-  console.error("Fatal error:", err.message);
-  // Always land a report so the UI shows a failed run instead of a
-  // permanently "in progress" one (active = log without report).
-  if (out) {
-    try {
-      const failureReport = {
-        meta: {
-          fixture,
-          baseUrl: base_url,
-          repo,
-          provider,
-          model,
-          plannerModel: planner_model,
-          numRuns,
-          autoReview: !!auto_review,
-          timestamp: new Date().toISOString(),
-          error: err.message,
-        },
-      };
-      await fsWriteFile(out, JSON.stringify(failureReport, null, 2), "utf8");
-      console.error(`Failure report written to ${out}`);
-    } catch (writeErr) {
-      console.error(`Could not write failure report: ${writeErr.message}`);
-    }
-  }
-  process.exit(1);
-});
