@@ -17,8 +17,20 @@ export type Iteration = {
   endedAt: string | null;
 };
 
+/** An evaluator verdict, one per evaluate run (`reviews.run_id` is unique). */
+export type Review = {
+  id: string;
+  runId: string;
+  decision: "approved" | "rejected";
+  feedback: string | null;
+  mergeCommit: string | null;
+  createdAt: string;
+};
+
 export type Run = {
   id: string;
+  /** The plan a `plan` run wrote, when it got far enough to write one. */
+  planId?: string | null;
   kind: "plan" | "loop" | "evaluate";
   status: string;
   iterationsDone: number;
@@ -27,7 +39,15 @@ export type Run = {
   endedAt: string | null;
   provider?: string | null;
   model?: string | null;
+  /** Run-level telemetry roll-up, recorded for every kind — a plan or
+   * evaluate run is its single harness invocation's numbers, a loop run is
+   * the sum of its iterations. Written when the run finishes, so these are
+   * null while it is still in flight (and on pre-telemetry rows). */
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  costUsd?: number | null;
   iterations: Iteration[];
+  reviews?: Review[];
 };
 
 export function MetricsPanel({ run }: { run: Run }) {

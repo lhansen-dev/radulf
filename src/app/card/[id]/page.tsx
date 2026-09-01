@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { List, useDynamicRowHeight, useListRef, type RowComponentProps } from "react-window";
 import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
-import { MetricsPanel } from "./metricsPanel";
+import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { describeToolCall } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
@@ -14,7 +14,16 @@ import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import { retryableFailedStep } from "@/shared/failedStep";
 
-const TABS = ["Overview", "Plan", "Activity", "Transcript"] as const;
+const TABS = ["Task", "Activity"] as const;
+
+/** Tab names this page used to have, so old links and bookmarks still land
+ * somewhere sensible: the plan moved into Task, the transcript became a
+ * drill-down inside Activity. */
+const RETIRED_TABS: Record<string, (typeof TABS)[number]> = {
+  overview: "Task",
+  plan: "Task",
+  transcript: "Activity",
+};
 
 export default function CardDetail() {
   const { id } = useParams<{ id: string }>();
@@ -28,14 +37,14 @@ export default function CardDetail() {
     evaluatorModels,
     refetch,
   } = useCardDetail(id);
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Task");
   const [transcript, setTranscript] = useState<TranscriptTarget | null>(null);
   const [showEdit, setShowEdit] = useState(false);
 
   useEffect(() => {
     const readTab = () => {
-      const raw = new URLSearchParams(window.location.search).get("tab")?.toLowerCase();
-      const found = TABS.find((item) => item.toLowerCase() === raw);
+      const raw = new URLSearchParams(window.location.search).get("tab")?.toLowerCase() ?? "";
+      const found = TABS.find((item) => item.toLowerCase() === raw) ?? RETIRED_TABS[raw];
       if (found) setTab(found);
     };
     readTab();
@@ -46,7 +55,7 @@ export default function CardDetail() {
   function chooseTab(next: (typeof TABS)[number]) {
     setTab(next);
     const query = new URLSearchParams(window.location.search);
-    if (next === "Overview") query.delete("tab"); else query.set("tab", next.toLowerCase());
+    if (next === "Task") query.delete("tab"); else query.set("tab", next.toLowerCase());
     window.history.pushState({}, "", `/card/${id}${query.size ? `?${query}` : ""}`);
   }
 
@@ -55,6 +64,9 @@ export default function CardDetail() {
   const { card, repo, plans, runs } = detail;
   const planTag = plannerModelTag(runs);
   const latestPlan = plans[0];
+  // plan_review means the planner is done and the human gate is open — the
+  // plan is the thing to read, so it gets a heading and a highlight.
+  const awaitingPlanApproval = card.status === "plan_review" && Boolean(latestPlan);
   const latestLoopRun = runs.find((r) => r.kind === "loop");
   const latestEvaluatorRun = runs.find((r) => r.kind === "evaluate");
   const evaluatorCleared =
@@ -144,7 +156,7 @@ export default function CardDetail() {
           <ActionButton onClick={() => setShowEdit(true)}>Edit model overrides</ActionButton>
         )}
         {["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status) && <ActionButton primary onClick={() => chooseTab("Activity")}>View activity</ActionButton>}
-        {card.status === "done" && <ActionButton primary onClick={() => chooseTab("Overview")}>Open summary</ActionButton>}
+        {card.status === "done" && <ActionButton primary onClick={() => chooseTab("Task")}>Open summary</ActionButton>}
         <details className="relative">
           <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" aria-label="More task actions">•••</summary>
           <div className="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl">
@@ -246,7 +258,7 @@ export default function CardDetail() {
         </div>
       </nav>
 
-      {tab === "Overview" && (
+      {tab === "Task" && (
         <section className="flex flex-col gap-4">
           <div className="text-sm text-foreground/70">
             <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
@@ -277,26 +289,54 @@ export default function CardDetail() {
               warnWhenOn
             />
           </div>
-          {plans.length > 0 && (
-            <div>
-              <h3 className="text-sm font-medium mb-1">Plan versions</h3>
-              {plans.map((p) => (
-                <div key={p.id} className="text-sm text-foreground/60">
-                  v{p.version} · {timeAgo(p.createdAt)} ago
-                  {p.feedback && <span className="text-amber-400"> · from feedback: &ldquo;{p.feedback.slice(0, 80)}&rdquo;</span>}
-                </div>
-              ))}
-            </div>
-          )}
-          {card.status === "plan_review" && latestPlan && (
-            <div>
-              <h3 className="text-sm font-medium mb-1 text-cyan-300">Generated plan</h3>
-              <PlanModelBadge tag={planTag} />
-              <pre className="whitespace-pre-wrap text-xs bg-cyan-950/30 border border-cyan-800/40 rounded p-3 mt-1 font-mono overflow-x-auto text-cyan-100/80">
-                {latestPlan.planMd}
-              </pre>
-            </div>
-          )}
+
+          {/* The plan, rendered once. It used to live in a Plan tab AND be
+              duplicated into the overview during plan_review; the awaiting-
+              approval case is now just a heading and an opened PLAN.md. */}
+          <div className={awaitingPlanApproval ? "rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3" : undefined}>
+            <h3 className={`text-sm font-medium mb-1 ${awaitingPlanApproval ? "text-cyan-300" : ""}`}>
+              {awaitingPlanApproval ? "Generated plan — awaiting your approval" : "Plan"}
+            </h3>
+            {latestPlan ? (
+              <>
+                <PlanModelBadge tag={planTag} />
+                {(
+                  [
+                    ["PLAN.md", latestPlan.planMd],
+                    ["CRITERIA.md", latestPlan.acceptanceCriteria],
+                    ["PROMPT.md", latestPlan.promptMd],
+                  ] as const
+                ).map(([name, content]) => (
+                  <details key={name} open={name === "PLAN.md"} className="mt-1">
+                    <summary className="text-sm font-medium cursor-pointer text-foreground/80">
+                      {name} <span className="text-foreground/40">(plan v{latestPlan.version})</span>
+                    </summary>
+                    <pre className="whitespace-pre-wrap text-xs bg-foreground/[0.04] rounded p-3 mt-1 font-mono overflow-x-auto">
+                      {content}
+                    </pre>
+                  </details>
+                ))}
+                {plans.length > 1 && (
+                  <div className="mt-3">
+                    <h4 className="text-xs font-medium uppercase tracking-wider text-foreground/40 mb-1">
+                      Earlier versions
+                    </h4>
+                    {plans.slice(1).map((p) => (
+                      <div key={p.id} className="text-sm text-foreground/60">
+                        v{p.version} · {timeAgo(p.createdAt)} ago
+                        {p.feedback && <span className="text-amber-400"> · from feedback: &ldquo;{p.feedback.slice(0, 80)}&rdquo;</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-foreground/50 text-sm">
+                {card.status === "planning" ? "Plan is running…" : "No plan yet — start the task to run planning."}
+              </p>
+            )}
+          </div>
+
           {card.summary && (
             <div>
               <h3 className="text-sm font-medium mb-1">Changes summary</h3>
@@ -308,110 +348,35 @@ export default function CardDetail() {
         </section>
       )}
 
-      {tab === "Plan" &&
-        (latestPlan ? (
-          <section className="flex flex-col gap-4">
-            <PlanModelBadge tag={planTag} />
-            {(
-              [
-                ["PLAN.md", latestPlan.planMd],
-                ["CRITERIA.md", latestPlan.acceptanceCriteria],
-                ["PROMPT.md", latestPlan.promptMd],
-              ] as const
-            ).map(([name, content]) => (
-              <details key={name} open={name === "PLAN.md"}>
-                <summary className="text-sm font-medium cursor-pointer text-foreground/80">
-                  {name} <span className="text-foreground/40">(plan v{latestPlan.version})</span>
-                </summary>
-                <pre className="whitespace-pre-wrap text-xs bg-foreground/[0.04] rounded p-3 mt-1 font-mono overflow-x-auto">
-                  {content}
-                </pre>
-              </details>
-            ))}
-          </section>
-        ) : (
-          <p className="text-foreground/50 text-sm">{card.status === "planning" ? "Plan is running…" : "No plan yet — start the task to run planning."}</p>
-        ))}
-
-      {tab === "Activity" && (
+      {tab === "Activity" && (transcript ? (
+        <section className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setTranscript(null)}
+            className="touch-target flex items-center self-start text-sm text-foreground/60 hover:text-foreground"
+          >
+            ← Back to runs
+          </button>
+          <TranscriptView
+            fallback={null}
+            selected={transcript}
+            live={card.status === "looping" || card.status === "evaluating" || card.status === "planning" || card.status === "plan_review"}
+          />
+        </section>
+      ) : (
         <section className="flex flex-col gap-4">
-          {[...runs].reverse().map((run) => (
-            <div key={run.id} className="bg-foreground/[0.04] rounded p-3">
-              <div className="text-sm flex gap-2 items-center">
-                <span className="font-medium">{run.kind === "plan" ? "◔ Planning run" : run.kind === "loop" ? "⚙ Loop run" : "🔎 Evaluator run"}</span>
-                <span
-                  className={`text-xs rounded px-1.5 py-0.5 ${
-                    run.status === "completed"
-                      ? "bg-green-900/60 text-green-300"
-                      : run.status === "running"
-                        ? "bg-amber-900/60 text-amber-300"
-                        : "bg-red-900/60 text-red-300"
-                  }`}
-                >
-                  {run.status}
-                </span>
-                {run.exitReason && <span className="text-xs text-foreground/50">{run.exitReason}</span>}
-                {weakerIsolationRunIds.has(run.id) && (
-                  <span
-                    className="text-xs rounded px-1.5 py-0.5 bg-amber-950/30 text-amber-300 border border-amber-700/60"
-                    title="Ran with sandboxWeakerIsolationForGoTls on: trustd's OCSP/CRL requests bypass the egress proxy (see docs/SANDBOXING.md)."
-                  >
-                    weaker network isolation
-                  </span>
-                )}
-                <span className="text-xs font-mono text-foreground/40">
-                  {formatProviderModel(run.provider, run.model, reasoningLevelForKind(run.kind, detail.models))}
-                </span>
-                <span className="text-xs text-foreground/40 grow text-right">
-                  {timeAgo(run.startedAt)} ago
-                </span>
-              </div>
-              {run.kind !== "loop" ? (
-                <button
-                  className="text-xs text-amber-400 hover:underline mt-1"
-                  onClick={() => {
-                    setTranscript({
-                      runId: run.id,
-                      iteration: 0,
-                      provider: run.provider,
-                      model: run.model,
-                      reasoningLevel: reasoningLevelForKind(run.kind, detail.models),
-                    });
-                    chooseTab("Transcript");
-                  }}
-                >
-                  view transcript
-                </button>
-              ) : (
-                <>
-                  {run.iterations.length > 0 && <MetricsPanel run={run} />}
-                  <div className="mt-1 flex flex-col gap-0.5">
-                    {run.iterations.map((it) => (
-                    <button
-                      key={it.id}
-                      onClick={() => {
-                        setTranscript({
-                          runId: run.id,
-                          iteration: it.n,
-                          provider: run.provider,
-                          model: run.model,
-                          reasoningLevel: reasoningLevelForKind(run.kind, detail.models),
-                        });
-                        chooseTab("Transcript");
-                      }}
-                      className="text-left text-xs text-foreground/60 hover:text-foreground flex gap-2"
-                    >
-                      <span className="text-amber-400/80 shrink-0">iter {it.n}</span>
-                      <span className={it.status === "failed" ? "text-red-400" : ""}>
-                        {(it.summary ?? it.status).slice(0, 140)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                </>
-              )}
-            </div>
-          ))}
+          {runs.length > 0 ? (
+            <RunsTable
+              runs={runs}
+              plans={plans}
+              models={detail.models}
+              cardSummary={card.summary}
+              weakerIsolationRunIds={weakerIsolationRunIds}
+              onOpenTranscript={setTranscript}
+            />
+          ) : (
+            <p className="text-sm text-foreground/50">No runs yet — start the task to run planning.</p>
+          )}
           <div>
             <h3 className="text-sm font-medium mb-1">Events</h3>
             {detail.events.map((e) => (
@@ -421,33 +386,7 @@ export default function CardDetail() {
             ))}
           </div>
         </section>
-      )}
-
-      {tab === "Transcript" && (
-        <TranscriptView
-          fallback={
-            latestLoopRun
-              ? {
-                  runId: latestLoopRun.id,
-                  iteration: latestLoopRun.iterationsDone || 1,
-                  provider: latestLoopRun.provider,
-                  model: latestLoopRun.model,
-                  reasoningLevel: reasoningLevelForKind(latestLoopRun.kind, detail.models),
-                }
-              : runs[0]
-                ? {
-                    runId: runs[0].id,
-                    iteration: 0,
-                    provider: runs[0].provider,
-                    model: runs[0].model,
-                    reasoningLevel: reasoningLevelForKind(runs[0].kind, detail.models),
-                  }
-                : null
-          }
-          selected={transcript}
-          live={card.status === "looping" || card.status === "evaluating" || card.status === "planning" || card.status === "plan_review"}
-        />
-      )}
+      ))}
     </div>
     </AppShell>
   );
@@ -603,29 +542,6 @@ type StreamLine = Record<string, unknown> & { t?: string };
 // few KB apiece), and an hours-long chatty loop iteration can otherwise
 // accumulate lines indefinitely, so this is now purely a memory backstop.
 const MAX_TRANSCRIPT_LINES = 20_000;
-
-type TranscriptTarget = {
-  runId: string;
-  iteration: number;
-  provider?: string | null;
-  model?: string | null;
-  reasoningLevel?: string | null;
-};
-
-/**
- * The reasoning level for a run's role. Not persisted per run (runHarness
- * reads it straight off settings at call time), so this is always the
- * current global value — not necessarily what an old run actually used.
- */
-function reasoningLevelForKind(
-  kind: "plan" | "loop" | "evaluate",
-  models: CardDetailData["models"],
-): string | undefined {
-  if (!models) return undefined;
-  if (kind === "plan") return models.planner.reasoningLevel;
-  if (kind === "loop") return models.loop.reasoningLevel;
-  return models.evaluator.reasoningLevel;
-}
 
 function TranscriptView({
   selected,

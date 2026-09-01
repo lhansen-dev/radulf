@@ -13,7 +13,12 @@ export function formatDuration(
 ): string {
   const end = endedAt ? new Date(endedAt).getTime() : nowMs;
   if (end === undefined) return "—";
-  const ms = end - new Date(startedAt).getTime();
+  return formatDurationMs(end - new Date(startedAt).getTime());
+}
+
+/** The same "Xs" / "Xm Ys" rendering, for a duration already in milliseconds
+ * (a total summed across runs has no single pair of timestamps behind it). */
+export function formatDurationMs(ms: number): string {
   const totalSec = Math.round(ms / 1000);
   if (totalSec < 60) return `${totalSec}s`;
   const min = Math.floor(totalSec / 60);

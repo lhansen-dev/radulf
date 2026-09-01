@@ -118,6 +118,15 @@ beforeEach(() => {
         ),
       );
     }
+    // The transcript drill-down loads its lines from here.
+    if (url.startsWith("/api/runs/")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ lines: [], cursor: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
   });
 
@@ -183,13 +192,12 @@ describe("CardDetail", () => {
     expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
   });
 
+  // The plan lives on the Task tab, which is the default — no click needed.
   it("shows 'Plan is running…' when planning is active and no plan exists", async () => {
     cardStatus = "planning";
     cardPlans = [];
 
     render(<CardDetail />);
-
-    fireEvent.click(await screen.findByRole("tab", { name: "Plan" }));
 
     expect(await screen.findByText("Plan is running…")).toBeTruthy();
   });
@@ -200,8 +208,69 @@ describe("CardDetail", () => {
 
     render(<CardDetail />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Plan" }));
-
     expect(await screen.findByText("No plan yet — start the task to run planning.")).toBeTruthy();
+  });
+
+  it("offers only Task and Activity tabs", async () => {
+    render(<CardDetail />);
+
+    const tabs = (await screen.findAllByRole("tab")).map((t) => t.textContent);
+    expect(tabs).toEqual(["Task", "Activity"]);
+  });
+
+  it("renders the plan documents on the Task tab without a second tab", async () => {
+    render(<CardDetail />);
+
+    expect(await screen.findByText(/PLAN.md/)).toBeTruthy();
+    expect(screen.getByText(/CRITERIA.md/)).toBeTruthy();
+    expect(screen.getByText(/PROMPT.md/)).toBeTruthy();
+  });
+
+  it("drills from a run into its transcript and back, inside the Activity tab", async () => {
+    cardStatus = "looping";
+    cardRuns = [
+      {
+        id: "r1",
+        kind: "plan",
+        status: "completed",
+        iterationsDone: 0,
+        exitReason: null,
+        startedAt: "2026-07-17T10:00:00.000Z",
+        endedAt: "2026-07-17T10:01:00.000Z",
+        provider: "anthropic",
+        model: "opus",
+        planId: "p1",
+        iterations: [],
+      },
+    ];
+
+    render(<CardDetail />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Planning/ }));
+    fireEvent.click(screen.getByRole("button", { name: "view transcript" }));
+
+    // The transcript replaces the table, with a way back.
+    const back = await screen.findByRole("button", { name: "← Back to runs" });
+    expect(screen.queryByRole("button", { name: /Planning/ })).toBeNull();
+
+    fireEvent.click(back);
+    expect(await screen.findByRole("button", { name: /Planning/ })).toBeTruthy();
+  });
+
+  it("lands an old ?tab=plan link on Task and ?tab=transcript on Activity", async () => {
+    window.history.replaceState({}, "", "/card/c1?tab=plan");
+    render(<CardDetail />);
+
+    const planTab = await screen.findByRole("tab", { name: "Task" });
+    expect(planTab.getAttribute("aria-selected")).toBe("true");
+
+    cleanup();
+    window.history.replaceState({}, "", "/card/c1?tab=transcript");
+    render(<CardDetail />);
+
+    const activityTab = await screen.findByRole("tab", { name: "Activity" });
+    expect(activityTab.getAttribute("aria-selected")).toBe("true");
+    window.history.replaceState({}, "", "/card/c1");
   });
 });
