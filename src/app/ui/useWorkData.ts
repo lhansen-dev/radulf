@@ -26,6 +26,7 @@ export function useWorkData() {
   const [loading, setLoading] = useState(true);
   const [streamConnected, setStreamConnected] = useState(true);
   const [autoMode, setAutoMode] = useState(true);
+  const [autoApprove, setAutoApprove] = useState(false);
   const [improvementRuns, setImprovementRuns] = useState<ImprovementRun[]>([]);
   const [improvementAlert, setImprovementAlert] = useState<ImprovementRunAlert | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
@@ -74,11 +75,13 @@ export function useWorkData() {
   const refetchSettings = useCallback(() => {
     api<{
       autoMode: boolean;
+      autoApprove: boolean;
       notificationsEnabled: boolean;
       soundEnabled: boolean;
     }>("/api/settings")
       .then((settings) => {
         setAutoMode(settings.autoMode);
+        setAutoApprove(settings.autoApprove);
         notifyPrefs.current = {
           notifications: settings.notificationsEnabled,
           sound: settings.soundEnabled,
@@ -170,6 +173,8 @@ export function useWorkData() {
     streamConnected,
     autoMode,
     setAutoMode,
+    autoApprove,
+    setAutoApprove,
     improvementRuns,
     improvementAlert,
     dismissImprovementAlert: () => setImprovementAlert(null),

@@ -17,7 +17,6 @@ export type Settings = {
   omlxApiKey: string;
   openrouterApiKey: string;
   braveApiKey: string;
-  defaultAutoApprove: boolean;
   defaultMaxIterations: number;
   defaultTimeoutMinutes: number;
   iterationHardTimeoutMinutes: number;

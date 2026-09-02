@@ -33,6 +33,9 @@ const mocks = vi.hoisted(() => ({
     sandboxEnabled: false,
     sandboxNetworkAllowlist: "",
     sandboxWeakerIsolationForGoTls: false,
+    // The workspace-wide auto-approve override. Off for every test but the
+    // ones that flip it, so the card's own flag stays the only grant.
+    autoApprove: false,
   },
 }));
 
@@ -229,6 +232,7 @@ describe("EvaluationService.runEvaluator", () => {
     mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
     mocks.settings.sandboxEnabled = false;
     mocks.settings.sandboxWeakerIsolationForGoTls = false;
+    mocks.settings.autoApprove = false;
     seedRepo();
   });
 
@@ -249,6 +253,67 @@ describe("EvaluationService.runEvaluator", () => {
     expect(deps.moveCard).toHaveBeenCalledWith("card-approve", "evaluating", "review", "evaluator approved");
     expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "approve", expect.any(Object));
     expect(deps.pump).not.toHaveBeenCalled();
+    expect(deps.approveReview).not.toHaveBeenCalled();
+  });
+
+  // Auto-approve is granted by the card's own flag OR the workspace-wide
+  // setting, and the resulting event has to say which — the card row alone
+  // can't explain a past auto-merge once the global has been toggled again.
+  describe("auto-approve", () => {
+    function autoApproveSource(cardId: string): string | undefined {
+      const event = db
+        .select()
+        .from(events)
+        .where(and(eq(events.cardId, cardId), eq(events.type, "card.auto_approved")))
+        .get();
+      return event ? (JSON.parse(event.payload) as { source?: string }).source : undefined;
+    }
+
+    async function evaluate(cardId: string) {
+      const planId = seedPlan(cardId);
+      seedLoopRun(cardId, planId);
+      mockEvaluationVerdict("VERDICT: approve\n\nLooks solid.");
+      const deps = makeDeps();
+      await new EvaluationService(deps).runEvaluator(cardId);
+      return deps;
+    }
+
+    it("auto-approves on the card's own flag while the global setting is off", async () => {
+      seedCard("card-flag", 1);
+
+      const deps = await evaluate("card-flag");
+
+      expect(deps.approveReview).toHaveBeenCalledTimes(1);
+      expect(autoApproveSource("card-flag")).toBe("card");
+    });
+
+    it("auto-approves a card whose own flag is off when the global setting is on", async () => {
+      mocks.settings.autoApprove = true;
+      seedCard("card-global", 0);
+
+      const deps = await evaluate("card-global");
+
+      expect(deps.approveReview).toHaveBeenCalledTimes(1);
+      expect(autoApproveSource("card-global")).toBe("global");
+    });
+
+    it("attributes to the card when both grant it", async () => {
+      mocks.settings.autoApprove = true;
+      seedCard("card-both", 1);
+
+      await evaluate("card-both");
+
+      expect(autoApproveSource("card-both")).toBe("card");
+    });
+
+    it("waits for a human when neither grants it", async () => {
+      seedCard("card-neither", 0);
+
+      const deps = await evaluate("card-neither");
+
+      expect(deps.approveReview).not.toHaveBeenCalled();
+      expect(autoApproveSource("card-neither")).toBeUndefined();
+    });
   });
 
   it("revises normally when exactly one prior revision exists — below MAX_EVALUATOR_REVISIONS (2)", async () => {

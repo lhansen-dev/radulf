@@ -70,7 +70,11 @@ export const cards = sqliteTable(
       .default(0),
     // When set, an evaluator `approve` verdict skips the human In Review gate
     // and merges straight through the same load-bearing review path. Trusts the
-    // evaluator; seeded per card from the `defaultAutoApprove` global setting.
+    // evaluator. A per-card opt-in that holds even when the global `autoApprove`
+    // setting is off; the global grants the same thing workspace-wide, so the
+    // effective value is the OR of the two (see evaluationService's `approve`
+    // branch). This column is NOT seeded from the global — a card with 0 here
+    // was never independently opted in.
     autoApprove: integer("auto_approve").notNull().default(0),
     timeoutMinutes: integer("timeout_minutes"),
     plannerModel: text("planner_model"),

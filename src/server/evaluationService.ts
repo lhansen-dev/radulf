@@ -348,16 +348,26 @@ export class EvaluationService {
 
       if (evaluation.verdict === "approve") {
         await advanceToReview("approve", "evaluator approved");
-        // Auto-approve (per-card, opt-in): skip the human In Review gate and
-        // merge straight through the same review path. Only genuine `approve`
-        // verdicts qualify — the revision-limit escalation below always waits
-        // for a human. On any merge/claim failure `approveReview` leaves the
-        // card in review (or needs_attention), so a human still sees it. A
-        // `critical` finding always forces human review, even here — the
-        // card stays in `review` (set by `advanceToReview` above) instead of
-        // auto-merging.
-        if (card.autoApprove && !hasCritical) {
-          emitEvent("card.auto_approved", { cardId, runId, payload: { runId: loopRun.id } });
+        // Auto-approve: skip the human In Review gate and merge straight
+        // through the same review path. Granted by either the card's own
+        // opt-in flag or the global `autoApprove` setting — the global is a
+        // live override read here, at verdict time, so turning it on applies
+        // to work already in flight. `source` records which one granted it;
+        // without that the card row alone can't explain a past auto-merge,
+        // since the global may have been flipped since.
+        //
+        // Only genuine `approve` verdicts qualify — the revision-limit
+        // escalation below always waits for a human. On any merge/claim
+        // failure `approveReview` leaves the card in review (or
+        // needs_attention), so a human still sees it. A `critical` finding
+        // always forces human review, even here — the card stays in `review`
+        // (set by `advanceToReview` above) instead of auto-merging.
+        if ((card.autoApprove || getSettings().autoApprove) && !hasCritical) {
+          emitEvent("card.auto_approved", {
+            cardId,
+            runId,
+            payload: { runId: loopRun.id, source: card.autoApprove ? "card" : "global" },
+          });
           try {
             await deps.approveReview(loopRun.id);
           } catch {

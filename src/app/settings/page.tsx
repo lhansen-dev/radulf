@@ -413,21 +413,6 @@ export default function SettingsPage() {
           />
           Minimal tool set (deny-by-default tool permissions for the loop agent)
         </label>
-        <label className="text-sm text-foreground/70 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={settings.defaultAutoApprove}
-            onChange={(e) => setSettings({ ...settings, defaultAutoApprove: e.target.checked })}
-          />
-          Auto-approve new cards on evaluator pass (skip human review)
-        </label>
-        <p className="text-xs text-amber-400/80">
-          Warning: this only sets the default for the checkbox on new cards. When a card has it
-          on, an evaluator <code>approve</code> merges straight to the base branch with{" "}
-          <strong>no human review</strong> — you are trusting the LLM evaluator&rsquo;s verdict.
-          Pre-merge repo-integrity and merge-conflict checks still run, and a card that hits the
-          evaluator&rsquo;s revision limit is always escalated to a human instead.
-        </p>
       </section>
 
       <section id="sandbox" className="scroll-mt-4 flex flex-col gap-3">

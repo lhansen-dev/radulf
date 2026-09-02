@@ -152,6 +152,7 @@ describe("NewTaskDialog", () => {
         maxIterations: "",
         timeoutMinutes: "",
         reviewPlanBeforeImplementation: false,
+        autoApprove: false,
         baseBranch: null,
       });
     });

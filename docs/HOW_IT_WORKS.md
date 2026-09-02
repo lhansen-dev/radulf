@@ -51,6 +51,18 @@ alongside it. Approve merges the branch into the repo's default branch and moves
 the card to Done. Reject takes your feedback, appends it to the plan, and sends
 the card back for another pass.
 
+**Skipping step 4.** Auto-approve makes an evaluator `approve` merge straight
+through, with no human in the path. It can be granted two ways: per card, from
+the New Task dialog, or workspace-wide, from the **Auto-approve** toggle in the
+Work page's `•••` menu. Either one is enough; the card's own flag holds even
+when the workspace toggle is off. The workspace toggle is read at the moment the
+evaluator returns its verdict, so turning it on applies to work already in
+flight — but not to cards already sitting in In Review, which have passed that
+point and stay there waiting for you. Two things are never skipped: a
+`critical` finding always forces human review, and a card that exhausts the
+evaluator's revision limit is always escalated to you. Pre-merge repo-integrity
+and merge-conflict checks run either way.
+
 ## The three agent roles
 
 | Role | Job |

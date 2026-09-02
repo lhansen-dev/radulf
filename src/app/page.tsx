@@ -77,6 +77,8 @@ export default function WorkPage() {
     streamConnected,
     autoMode,
     setAutoMode,
+    autoApprove,
+    setAutoApprove,
     improvementRuns,
     improvementAlert,
     dismissImprovementAlert,
@@ -202,6 +204,21 @@ export default function WorkPage() {
     }
   }
 
+  // Unlike Auto Mode, this one hands merge authority to the evaluator for
+  // every card that reaches a verdict, so turning it ON asks first. Turning it
+  // off is always safe and never prompts.
+  async function toggleAutoApprove() {
+    const previous = autoApprove;
+    if (!previous && !confirm("Turn on auto-approve?\n\nAn evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you.")) return;
+    setAutoApprove(!previous);
+    try {
+      await api("/api/settings", { method: "PATCH", json: { autoApprove: !previous } });
+    } catch (e) {
+      setAutoApprove(previous);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function stopImprovementRun(run: ImprovementRun) {
     if (!confirm(`Stop the improvement run on “${run.featureBranch}”? The current task finishes, then the run ends.`)) return;
     await runAction(() => api(`/api/improvement-runs/${run.id}/stop`, { method: "POST" }));
@@ -249,6 +266,9 @@ export default function WorkPage() {
               <button type="button" onClick={toggleAutoMode} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
                 Auto Mode <span className={autoMode ? "text-green-300" : "text-foreground/40"}>{autoMode ? "On" : "Off"}</span>
               </button>
+              <button type="button" onClick={toggleAutoApprove} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
+                Auto-approve <span className={autoApprove ? "text-amber-300" : "text-foreground/40"}>{autoApprove ? "On" : "Off"}</span>
+              </button>
               <button type="button" onClick={() => setShowImprovementRun(true)} disabled={repos.length === 0} className="min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] disabled:opacity-40">
                 Start improvement run
               </button>
@@ -259,6 +279,7 @@ export default function WorkPage() {
         <div className="mt-4 flex items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-xs text-foreground/55">
           <span className={`size-2 shrink-0 rounded-full ${autoMode ? "bg-green-400" : "bg-slate-500"}`} aria-hidden="true" />
           <span>Auto Mode {autoMode ? "is on · Todo tasks run automatically" : "is off"}</span>
+          {autoApprove && <span className="text-amber-300">· Auto-approve is on · approved work merges without review</span>}
           {!streamConnected && <span className="ml-auto text-amber-300">Offline · updates will resume</span>}
         </div>
 

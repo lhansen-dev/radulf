@@ -56,12 +56,18 @@ export const SETTING_DEFAULTS = {
   stallTimeoutSeconds: 300,
   autoMode: true,
   minimalToolset: false,
-  // Default value for a new card's per-card auto-approve flag (skip the human
-  // In Review gate on an evaluator `approve`). OFF by default: turning it on
-  // hands merge authority to the LLM evaluator for every new card, so the
-  // settings UI carries a warning. Only ever seeds the card's own flag; the
-  // card's stored value is what the evaluator honors.
-  defaultAutoApprove: false,
+  // Global auto-approve: skip the human In Review gate on an evaluator
+  // `approve`. OFF by default — turning it on hands merge authority to the LLM
+  // evaluator, so the toggle carries a warning and a confirm.
+  //
+  // This is a LIVE override, not a seed. The effective value for a card is
+  // `card.autoApprove || settings.autoApprove`, read at evaluator-verdict time
+  // (evaluationService's `approve` branch), so flipping it here changes the
+  // behavior of work already in flight. A card's own flag remains an
+  // independent opt-in that survives this being off. Which of the two granted
+  // an auto-approval is recorded on the `card.auto_approved` event, so the
+  // decision stays reconstructable after the fact.
+  autoApprove: false,
   // Spec 14: the ONE sandbox escape hatch. Default on; turning it off shows a
   // persistent UI warning and stamps `sandboxed: false` on every affected run.
   // Deliberately NOT model-reachable — no tool binding exists for settings, and
@@ -127,7 +133,7 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "soundEnabled",
   "sandboxEnabled",
   "sandboxWeakerIsolationForGoTls",
-  "defaultAutoApprove",
+  "autoApprove",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   defaultMaxIterations: [1, 1_000],
@@ -141,6 +147,10 @@ const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
 const LEGACY_SETTING_KEYS: Record<string, keyof Settings> = {
   // Was loop-only; now applies to every model call.
   loopStallTimeoutSeconds: "stallTimeoutSeconds",
+  // Was a seed for each new card's flag; now a live global override read at
+  // evaluator-verdict time. A user who had the old default on keeps that
+  // intent — it just starts applying to existing cards too.
+  defaultAutoApprove: "autoApprove",
 };
 const PRIMARY_PROVIDER_SETTINGS = new Set<keyof Settings>([
   "plannerProvider",

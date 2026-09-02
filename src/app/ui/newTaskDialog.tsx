@@ -72,12 +72,11 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   }, []);
 
   useEffect(() => {
-    api<{ plannerProvider: string; loopProvider: string; evaluatorProvider: string; defaultAutoApprove: boolean }>("/api/settings")
+    api<{ plannerProvider: string; loopProvider: string; evaluatorProvider: string }>("/api/settings")
       .then(async (settings) => {
         setPlannerProvider(settings.plannerProvider);
         setLoopProvider(settings.loopProvider);
         setEvaluatorProvider(settings.evaluatorProvider);
-        setAutoApprove(settings.defaultAutoApprove);
         const load = (provider: string) => api<{ models: { value: string; displayName: string }[] }>(`/api/providers/${provider}/models`).catch(() => ({ models: [] }));
         const [planner, loop, evaluator] = await Promise.all([load(settings.plannerProvider), load(settings.loopProvider), load(settings.evaluatorProvider)]);
         setModels({ planner: planner.models, loop: loop.models, evaluator: evaluator.models });
@@ -143,7 +142,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                 <div className="grid grid-cols-2 gap-3"><label className="text-sm text-foreground/70">Iteration cap<input type="number" min="1" value={maxIterations} onChange={(e) => setMaxIterations(e.target.value)} placeholder="Default" className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label><label className="text-sm text-foreground/70">Timeout (min)<input type="number" min="1" value={timeoutMinutes} onChange={(e) => setTimeoutMinutes(e.target.value)} placeholder="Default" className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label></div>
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={reviewPlanBeforeImplementation} onChange={(e) => setReviewPlanBeforeImplementation(e.target.checked)} className="size-4 accent-amber-600" />Review plan before implementation</label>
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
-                {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run.</p>}
+                {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run. This card keeps this setting even when the workspace-wide toggle is off.</p>}
                 <button type="button" onClick={() => setShowPlanner((value) => !value)} className="w-full rounded-lg bg-foreground/[0.06] px-3 text-left text-sm">{showPlanner ? "Hide planner chat" : "Open planner chat"}</button>
                 {showPlanner && <ConversationPlanner onInsert={(text) => setDescription((current) => current ? `${current}\n\n${text}` : text)} />}
               </div>
