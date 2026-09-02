@@ -159,6 +159,75 @@ describe("NewTaskDialog", () => {
     });
   });
 
+  // Spec 15: the PR checkbox is only offerable when `gh` is installed and
+  // authenticated AND the selected repo has an `origin`. Each of the three
+  // failures names a different next action, so each is asserted separately.
+  describe("Open a pull request instead of merging", () => {
+    const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" };
+
+    function stubGithubStatus(status: Record<string, unknown>) {
+      cleanup();
+      vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () => {
+          const u = String(url);
+          if (u.includes("/api/github/status")) return status;
+          if (u.includes("/providers/")) return { models: [] };
+          if (u.includes("/branches")) return [];
+          return { plannerProvider: "p", loopProvider: "l", evaluatorProvider: "e" };
+        },
+      }))) as unknown as typeof fetch;
+    }
+
+    const openAdvanced = async () => {
+      const user = userEvent.setup();
+      render(<NewTaskDialog repos={[repo]} onClose={() => {}} onCreated={() => {}} />);
+      await user.click(screen.getByText("Advanced"));
+      return screen.getByLabelText("Open a pull request instead of merging") as HTMLInputElement;
+    };
+
+    it("is enabled when gh is ready and the repo has an origin", async () => {
+      stubGithubStatus({ ok: true, reason: null, detail: null, hasRemote: true });
+      const box = await openAdvanced();
+      await waitFor(() => expect(box.disabled).toBe(false));
+      expect(screen.queryByText(/no `origin` remote/)).toBeNull();
+    });
+
+    it("is disabled, naming the remote, when the repo has no origin", async () => {
+      stubGithubStatus({ ok: true, reason: null, detail: null, hasRemote: false });
+      const box = await openAdvanced();
+      // Await the reason, not the disabled flag: the box is disabled before the
+      // probe resolves, so asserting `disabled` alone would pass even if the
+      // response were ignored entirely.
+      expect(await screen.findByText(/no `origin` remote/)).toBeTruthy();
+      expect(box.disabled).toBe(true);
+    });
+
+    it("is disabled, naming the login, when gh is not authenticated", async () => {
+      stubGithubStatus({
+        ok: false,
+        reason: "unauthenticated",
+        detail: "`gh` is not authenticated — run `gh auth login` in a terminal",
+        hasRemote: true,
+      });
+      const box = await openAdvanced();
+      expect(await screen.findByText(/gh auth login/)).toBeTruthy();
+      expect(box.disabled).toBe(true);
+    });
+
+    it("is disabled, naming the install, when gh is missing", async () => {
+      stubGithubStatus({
+        ok: false,
+        reason: "missing",
+        detail: "the GitHub CLI (`gh`) is not installed or not on PATH",
+        hasRemote: true,
+      });
+      const box = await openAdvanced();
+      expect(await screen.findByText(/not installed or not on PATH/)).toBeTruthy();
+      expect(box.disabled).toBe(true);
+    });
+  });
+
   describe("Review plan before implementation", () => {
     beforeEach(() => {
       cleanup();
