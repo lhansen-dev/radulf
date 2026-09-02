@@ -31,6 +31,7 @@ target, so the user can point the app at itself to improve it.
 | [12-pi-harness.md](12-pi-harness.md) | Adds pi as a fourth loop harness and the proxied-provider default (amends 09/11) |
 | [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md) | One harness — pi in SDK mode — for every provider, subscriptions included (supersedes 09's premise, re-amends decisions 4/7) |
 | [14-sandboxing.md](14-sandboxing.md) | Kernel-enforced containment (srt sandbox + tool path guards + layout hygiene) for the skip-permissions loop (re-amends decision 7, hardens 13's Security) |
+| [15-github-pr-delivery.md](15-github-pr-delivery.md) | Push + open a GitHub PR as a second delivery target for an approved diff, replacing the local merge (amends decision 6) — **proposed, not yet built** |
 
 ## Locked decisions
 

@@ -42,7 +42,9 @@ itself (the backlog below becomes cards).
    single-password login (08); cluster manifests managed via GitOps.
 6. **Polish** — transcript search, better stall heuristics, card
    export/import, packaging under launchd.
-7. **Deferred bets** — pluggable runners (Ollama), GitHub PR mode.
+7. **Deferred bets** — pluggable runners (Ollama), ~~GitHub PR mode~~ —
+   **specced** as [15-github-pr-delivery.md](15-github-pr-delivery.md)
+   (decided 2026-09-02; not yet built).
    - ~~Codex CLI harness for a ChatGPT-subscription provider~~ — **shipped** as
      the third adapter on 09's seam (see `specs/09-multi-harness.md`).
 8. **Mobile-first workspace** — replace horizontal status lanes with the
