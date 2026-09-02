@@ -242,13 +242,45 @@ Consistent with 14's "fail loudly, no silent fallback":
 - [07-roadmap.md](07-roadmap.md)'s deferred bet #7, "GitHub PR mode", is
   answered by this spec.
 
+## Found during implementation (2026-09-02)
+
+**`.ralph/` must be stripped before the push.** This spec missed it. The card's
+branch carries `.ralph/` — plan artifacts, loop memory, the evaluator's verdict —
+and every review surface excludes it (`worktreeDiff`, `worktreeDiffStat`, and
+`worktreeChangedPaths` all pass `:(exclude).ralph`), while `mergeBranch` strips
+it before committing. A raw push would therefore publish to a remote precisely
+the content the local path takes care to leave out, including content no human
+was shown. Delivery drops `.ralph` and commits that removal before pushing, and
+does so *after* the base-branch merge so a hand-back to the loop never inherits a
+worktree whose memory has been stripped.
+
+**Improvement Runs must be excluded from the workspace toggle.** Also missed by
+this spec. Every card an Improvement Run spawns takes the run's
+`ralph/improve-*` branch as its base, "so approve-merges fold back into it with
+no new merge code". That branch is local-only, so PR delivery does not merely
+change the shape of the result — there is nothing on `origin` to open a pull
+request against, and the run's whole accumulation model *is* the local merge. A
+card whose base branch is an active or past Improvement Run's feature branch
+therefore never delivers by pull request, global toggle or not. The setting
+describes how the operator's own approved work is delivered, and a run's
+internal steps are not that.
+
+**Open question 2 is resolved: the worktree is reclaimed**, exactly as it is
+after a merge. Once the push succeeds, `origin` holds the branch, so the local
+worktree and branch are no longer the only copy and there is nothing to preserve.
+
+**The retry path already existed.** `retryMerge` routes through the same claim
+and delivery step, so a failed push or `gh pr create` retries through it
+unchanged; only its name still says "merge". Precondition failures (`gh` missing,
+logged out, no `origin`) do not need it at all — they return the card to In
+Review, so the operator fixes the precondition in a terminal and clicks Approve
+again.
+
 ## Open questions
 
 1. **Branch naming on the remote.** Card branches are local-first names. Whether
-   they are pushed as-is or prefixed is unresolved.
-2. **Worktree lifetime.** Today a worktree is reclaimed after the merge. With no
-   merge, it is unclear whether the worktree should survive until the PR is
-   merged (so a follow-up push is possible) or be reclaimed immediately.
+   they are pushed as-is or prefixed is unresolved. Shipped pushing them as-is.
+2. ~~**Worktree lifetime.**~~ Resolved above — reclaimed on success.
 3. **Whether the operator wants the local merge as well**, per repo. Decided
    against as a default above; if it turns out to be wanted, it is a third
    delivery target rather than a change to this one.

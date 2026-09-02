@@ -123,7 +123,9 @@ export class Orchestrator {
     registerController: (runId, controller) => this.controllers.set(runId, controller),
     releaseController: (runId) => this.controllers.delete(runId),
     pump: () => this.pump(),
-    approveReview: (runId) => this.reviewService.approve(runId),
+    // "auto": the evaluator released this diff, not a human. Spec 15 makes a
+    // pull request delivered this way a draft.
+    approveReview: (runId) => this.reviewService.approve(runId, "auto"),
   });
   private reviewService = new ReviewService({
     getCard: (cardId) => this.getCard(cardId),

@@ -79,6 +79,8 @@ export default function WorkPage() {
     setAutoMode,
     autoApprove,
     setAutoApprove,
+    openPr,
+    setOpenPr,
     improvementRuns,
     improvementAlert,
     dismissImprovementAlert,
@@ -219,6 +221,21 @@ export default function WorkPage() {
     }
   }
 
+  // Spec 15: switches every approval's delivery target from a local merge to a
+  // pushed branch + pull request. Turning it ON asks first — it is the setting
+  // that lets an approved diff leave the machine.
+  async function toggleOpenPr() {
+    const previous = openPr;
+    if (!previous && !confirm("Deliver approved work as pull requests?\n\nApproving a card will push its branch to \u201Corigin\u201D and open a pull request instead of merging into the local base branch. Requires the GitHub CLI (`gh`) to be installed and logged in. Radulf never merges the pull request it opens.")) return;
+    setOpenPr(!previous);
+    try {
+      await api("/api/settings", { method: "PATCH", json: { openPr: !previous } });
+    } catch (e) {
+      setOpenPr(previous);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function stopImprovementRun(run: ImprovementRun) {
     if (!confirm(`Stop the improvement run on “${run.featureBranch}”? The current task finishes, then the run ends.`)) return;
     await runAction(() => api(`/api/improvement-runs/${run.id}/stop`, { method: "POST" }));
@@ -269,6 +286,9 @@ export default function WorkPage() {
               <button type="button" onClick={toggleAutoApprove} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
                 Auto-approve <span className={autoApprove ? "text-amber-300" : "text-foreground/40"}>{autoApprove ? "On" : "Off"}</span>
               </button>
+              <button type="button" onClick={toggleOpenPr} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
+                Open pull requests <span className={openPr ? "text-amber-300" : "text-foreground/40"}>{openPr ? "On" : "Off"}</span>
+              </button>
               <button type="button" onClick={() => setShowImprovementRun(true)} disabled={repos.length === 0} className="min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] disabled:opacity-40">
                 Start improvement run
               </button>
@@ -280,6 +300,7 @@ export default function WorkPage() {
           <span className={`size-2 shrink-0 rounded-full ${autoMode ? "bg-green-400" : "bg-slate-500"}`} aria-hidden="true" />
           <span>Auto Mode {autoMode ? "is on · Todo tasks run automatically" : "is off"}</span>
           {autoApprove && <span className="text-amber-300">· Auto-approve is on · approved work merges without review</span>}
+          {openPr && <span className="text-amber-300">· Approved work is delivered as a pull request{autoApprove ? " (draft)" : ""}</span>}
           {!streamConnected && <span className="ml-auto text-amber-300">Offline · updates will resume</span>}
         </div>
 

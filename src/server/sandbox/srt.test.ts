@@ -159,6 +159,21 @@ describe("buildFilesystemConfig", () => {
     expect(cfg.denyRead).toContain(path.join(os.homedir(), ".ssh"));
   });
 
+  it("spec 15 regression: an agent still cannot read gh's credential store", () => {
+    // Spec 15 gave the HOST process the ability to push and open pull requests
+    // with the operator's GitHub credential. The agent must gain nothing from
+    // that. This is the assertion that fails if someone ever "fixes" a broken
+    // host-side push by loosening the sandbox instead — the credential lives
+    // in ~/.config/gh, and the loop has no business reading it.
+    const cfg = buildFilesystemConfig({
+      worktree: "/w",
+      gitCommonDir: "/w/.git",
+      tmpdir: "/tmp/t",
+      cacheRoot: "/tmp/c",
+    });
+    expect(cfg.denyRead).toContain(path.join(os.homedir(), ".config/gh"));
+  });
+
   it("regression: never lets a PATH-derived root (e.g. /bin's parent, '/') re-open $HOME", () => {
     // Every Unix PATH realistically contains /bin or /sbin — their dirname
     // is "/", which a naive toolchain-root allow-list would include and

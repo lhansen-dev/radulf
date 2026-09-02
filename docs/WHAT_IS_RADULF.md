@@ -91,12 +91,20 @@ default no network exposure beyond `localhost` (though you can
 elsewhere). It runs one card at a time — there is no parallelism setting,
 because local models want the whole machine's memory.
 
-It does not integrate with GitHub, and that is deliberate rather than pending:
-approving a merge is the trust boundary, and a tool that opened pull requests
-would move that boundary onto a remote where the agent's work is already public.
-The merge target is a local branch; pushing stays a separate decision you make
-yourself. And it does not merge anything on its own, ever, without you saying
-so.
+Its GitHub integration is one thing and no more: once you have approved a diff,
+Radulf can push that branch and open a pull request for it instead of merging it
+locally. That was deliberately absent for a long time, on the grounds that
+approving a merge is the trust boundary and a tool that opened pull requests
+would move that boundary onto a remote. What changed is not the boundary but
+where it sits — the push happens *after* the same approval that authorizes a
+merge, so the pull request is a delivery format, not a way for work to arrive
+unvetted. It requires the GitHub CLI, already logged in; Radulf has no GitHub
+login of its own. And Radulf never merges the pull request it opens — that is
+still a person's decision, on GitHub.
+
+Nothing else about GitHub is integrated: no issue sync, no reading review
+comments back into a card, no other forge. And it does not merge anything on its
+own, ever, without you saying so.
 
 ## Where to go next
 

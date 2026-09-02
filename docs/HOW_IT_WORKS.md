@@ -51,6 +51,21 @@ alongside it. Approve merges the branch into the repo's default branch and moves
 the card to Done. Reject takes your feedback, appends it to the plan, and sends
 the card back for another pass.
 
+**Where the approved diff goes.** By default, approving merges the branch into
+the local base branch. Turn on **Open pull requests** — per card in the New Task
+dialog, or workspace-wide from the Work page's `•••` menu — and approving
+instead pushes the branch to `origin` and opens a pull request against the base,
+leaving the local base branch untouched. It is one or the other, never both.
+
+This needs the GitHub CLI (`gh`) installed and already authenticated: run
+`gh auth login` in your terminal, the same way `make login` handles provider
+auth. The option is unavailable, with the reason shown, when `gh` is missing,
+`gh` is logged out, or the repo has no `origin`. Before pushing, Radulf merges
+the base branch in (a conflict goes back to the loop exactly as it would for a
+local merge) and strips `.ralph/`, so the pull request contains what you
+reviewed and not the loop's own working notes. Radulf never merges the pull
+request it opens.
+
 **Skipping step 4.** Auto-approve makes an evaluator `approve` merge straight
 through, with no human in the path. It can be granted two ways: per card, from
 the New Task dialog, or workspace-wide, from the **Auto-approve** toggle in the
@@ -62,6 +77,10 @@ point and stay there waiting for you. Two things are never skipped: a
 `critical` finding always forces human review, and a card that exhausts the
 evaluator's revision limit is always escalated to you. Pre-merge repo-integrity
 and merge-conflict checks run either way.
+
+If auto-approve and pull-request delivery are both on, the pull request is opened
+as a **draft** — nobody looked at the diff, and the draft says so. A pull request
+Radulf opens as ready-for-review is one a human approved.
 
 ## The three agent roles
 

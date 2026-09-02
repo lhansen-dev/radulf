@@ -57,6 +57,13 @@
       "when": 1786468061887,
       "tag": "0007_high_killraven",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788389751894,
+      "tag": "0008_bored_mac_gargan",
+      "breakpoints": true
     }
   ]
 }

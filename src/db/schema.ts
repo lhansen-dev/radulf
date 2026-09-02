@@ -76,6 +76,12 @@ export const cards = sqliteTable(
     // branch). This column is NOT seeded from the global — a card with 0 here
     // was never independently opted in.
     autoApprove: integer("auto_approve").notNull().default(0),
+    // Spec 15: deliver this card's approved diff as a GitHub pull request
+    // instead of merging it into the local base branch. Per-card opt-in that
+    // holds even when the global `openPr` setting is off; the effective value
+    // is the OR of the two, read at approval time. Same shape as autoApprove,
+    // and like it, NOT seeded from the global.
+    openPr: integer("open_pr").notNull().default(0),
     timeoutMinutes: integer("timeout_minutes"),
     plannerModel: text("planner_model"),
     loopModel: text("loop_model"),

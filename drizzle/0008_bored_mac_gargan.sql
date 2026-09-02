@@ -1,0 +1,1 @@
+ALTER TABLE `cards` ADD `open_pr` integer DEFAULT 0 NOT NULL;

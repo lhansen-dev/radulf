@@ -10,6 +10,12 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 // Generous for any local git operation this codebase performs (worktree
 // add/remove, merge, diff, branch list) — none of these touch a remote.
 const GIT_TIMEOUT_MS = 30_000;
+// Spec 15's push is the one exception, and 30s is the wrong bound for it: it
+// crosses a network, on a link this process does not control, pushing a branch
+// whose size it does not know. Long enough for a slow uplink, still bounded —
+// the orchestrator runs one card at a time globally, so a wedged git freezes
+// everything.
+const GIT_REMOTE_TIMEOUT_MS = 10 * 60_000;
 // A process wedged deep in a blocking syscall can ignore SIGTERM; escalate to
 // SIGKILL this long after if it's still alive.
 const GIT_KILL_GRACE_MS = 5_000;
@@ -23,13 +29,24 @@ const GIT_KILL_GRACE_MS = 5_000;
  * freeze the whole app, since the orchestrator runs exactly one card at a
  * time globally.
  */
-function execGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
+
+function execGit(
+  cwd: string,
+  args: string[],
+  options: ExecGitOptions = {}
+): Promise<{ stdout: string; stderr: string }> {
+  const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     let timedOut = false;
     const child = execFile(
       "git",
       ["-C", cwd, ...args],
-      { encoding: "utf8" as const, maxBuffer: MAX_BUFFER },
+      {
+        encoding: "utf8" as const,
+        maxBuffer: MAX_BUFFER,
+        ...(options.env ? { env: options.env } : {}),
+      },
       (err, stdout, stderr) => {
         clearTimeout(termTimer);
         clearTimeout(killTimer);
@@ -38,7 +55,7 @@ function execGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr:
             // Make the failure actionable instead of an opaque "Command
             // failed" — surfaced both via the thrown Error's message (git())
             // and via `out` (tryGit(), which never looks at err.message).
-            const msg = `git ${args.join(" ")} timed out after ${GIT_TIMEOUT_MS}ms`;
+            const msg = `git ${args.join(" ")} timed out after ${timeoutMs}ms`;
             err.message = msg;
             stderr = stderr ? `${stderr}\n${msg}` : msg;
           }
@@ -48,11 +65,15 @@ function execGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr:
         }
       }
     );
+    // Nothing this module runs is ever meant to read stdin. Closing it makes a
+    // credential helper that decides to prompt fail immediately instead of
+    // blocking on a read that will never be answered.
+    child.stdin?.end();
     const termTimer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, GIT_TIMEOUT_MS);
-    const killTimer = setTimeout(() => child.kill("SIGKILL"), GIT_TIMEOUT_MS + GIT_KILL_GRACE_MS);
+    }, timeoutMs);
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), timeoutMs + GIT_KILL_GRACE_MS);
   });
 }
 
@@ -318,4 +339,95 @@ export async function mergeBaseIntoWorktree(
   const conflicted = /conflict/i.test(res.out);
   if (!conflicted) await tryGit(worktreePath, "merge", "--abort");
   return { ok: false, conflicted, out: res.out };
+}
+
+// ─── Spec 15: remote delivery ────────────────────────────────────────────────
+//
+// Everything below is the ONLY part of this module that touches a remote, and
+// it runs exclusively host-side from the review path, after a human (or an
+// explicit auto-approve grant) has released the diff. No agent can reach it:
+// there is no tool binding for any of it, `git push` stays blocked inside the
+// sandbox by spec 14's egress proxy and socket policy, and `~/.config/gh`
+// stays on 14's deny list. That is a permanent property, not a phase-one one.
+
+/** The remote a card's branch is pushed to. Not configurable — a repo with a
+ * differently-named remote is out of scope rather than silently guessed at. */
+export const PR_REMOTE = "origin";
+
+/** Does this repo have an `origin` to push to? Most registered repos are
+ * local-only, so PR delivery is offered per repo, not globally. */
+export async function hasRemote(repoPath: string): Promise<boolean> {
+  const { ok, out } = await tryGit(repoPath, "remote", "get-url", PR_REMOTE);
+  return ok && out.trim().length > 0;
+}
+
+/**
+ * Drop `.ralph/` from the branch and commit that removal.
+ *
+ * Every review surface excludes `.ralph` (`worktreeDiff`, `worktreeDiffStat`,
+ * `worktreeChangedPaths` all pass `:(exclude).ralph`) and `mergeBranch` strips
+ * it before committing, so the plan artifacts, loop memory, and evaluator
+ * verdict are deliberately not part of what a human approves. A push has to
+ * honour the same exclusion or PR delivery would publish to a remote exactly
+ * the content the local path takes care to leave behind.
+ *
+ * Safe to run twice: `--ignore-unmatch` no-ops when `.ralph` is already gone,
+ * and with nothing staged there is no commit to make. Callers must run it
+ * *after* any base-branch merge, so a hand-back to the loop never sees a
+ * worktree whose memory has been stripped.
+ */
+export async function stripRalphForDelivery(
+  worktreePath: string,
+  message: string
+): Promise<{ ok: boolean; out: string }> {
+  const removed = await tryGit(
+    worktreePath,
+    "rm",
+    "-r",
+    "-f",
+    "-q",
+    "--ignore-unmatch",
+    ".ralph"
+  );
+  if (!removed.ok) return removed;
+  fs.rmSync(path.join(worktreePath, ".ralph"), { recursive: true, force: true });
+  const staged = await tryGit(worktreePath, "diff", "--cached", "--quiet");
+  // `--quiet` exits non-zero when there *is* something staged.
+  if (staged.ok) return { ok: true, out: "" };
+  return tryGit(worktreePath, "commit", "-m", message);
+}
+
+/**
+ * Push the card's branch to `origin`, setting upstream.
+ *
+ * Never forced. A rejected non-fast-forward means someone else moved the
+ * branch on the remote, and resolving that automatically is exactly the kind
+ * of guess this codebase does not make — it surfaces as an error the operator
+ * acts on.
+ */
+export async function pushBranch(
+  worktreePath: string,
+  branch: string
+): Promise<{ ok: boolean; error?: string }> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    // Refuse to prompt for credentials on a terminal that is not there. A
+    // helper that would have blocked fails loudly instead.
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  // Same intent for the SSH path, which reads a passphrase from /dev/tty and
+  // so would not be stopped by a closed stdin. Only when the operator has not
+  // set their own command — theirs wins.
+  if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
+  try {
+    await execGit(worktreePath, ["push", "--set-upstream", PR_REMOTE, branch], {
+      timeoutMs: GIT_REMOTE_TIMEOUT_MS,
+      env,
+    });
+    return { ok: true };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    const out = ((err.stdout ?? "") + (err.stderr ?? "")).trim();
+    return { ok: false, error: out || err.message || "git push failed" };
+  }
 }

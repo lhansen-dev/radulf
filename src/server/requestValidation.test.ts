@@ -139,6 +139,7 @@ describe("card request validation", () => {
       evaluatorModel: "judge",
       reviewPlanBeforeImplementation: true,
       autoApprove: false,
+      openPr: false,
       baseBranch: "feature/base",
     });
   });
@@ -148,6 +149,7 @@ describe("card request validation", () => {
     [{ repoId: "r", title: "T", timeoutMinutes: "Infinity" }, /timeoutMinutes/],
     [{ repoId: "r", title: "T", reviewPlanBeforeImplementation: "true" }, /boolean/],
     [{ repoId: "r", title: "T", autoApprove: "yes" }, /autoApprove/],
+    [{ repoId: "r", title: "T", openPr: "yes" }, /openPr/],
     [{ repoId: "r", title: "T", loopModel: 42 }, /loopModel/],
     [{ repoId: "r", title: "T", evaluatorModel: 42 }, /evaluatorModel/],
     [{ repoId: "r", title: "T", surprise: true }, /unknown card field/],

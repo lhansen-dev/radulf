@@ -248,6 +248,11 @@ and `tasksSucceeded` only ever move in lockstep with a card's own events.
   with 30 minutes against a repo you're happy to throw a branch away from.
 - **Auto-approve ≠ unreviewed merge.** Cards still go through the evaluator; the
   human review step is what's skipped. The branch is your review surface.
+- **Pull-request delivery does not apply to a run's cards.** A run's cards merge
+  into its feature branch — that accumulation is the whole point, and the
+  feature branch is local-only. Turning on **Open pull requests** workspace-wide
+  leaves them alone. Delivering the finished run is still your call: it is one
+  branch, and you push and open a pull request for it yourself.
 - **Reasoning-level overrides are partially applied.** The run row carries
   `plannerReasoning` / `loopReasoning` / `evaluatorReasoning`, but `cards` has no
   per-card reasoning columns — only `plannerReasoning` reaches the proposer pass.

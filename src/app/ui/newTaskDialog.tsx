@@ -32,6 +32,12 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [showPlanner, setShowPlanner] = useState(false);
   const [reviewPlanBeforeImplementation, setReviewPlanBeforeImplementation] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
+  const [openPr, setOpenPr] = useState(false);
+  // Spec 15: PR delivery is only offerable when `gh` is installed and
+  // authenticated AND the selected repo has an `origin`. Tagged with the repo
+  // it describes, so a stale answer for the previously selected repo reads as
+  // "unknown" rather than as permission to tick the box.
+  const [prReady, setPrReady] = useState<{ repoId: string; ok: boolean; detail: string | null; hasRemote: boolean | null } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
@@ -40,7 +46,16 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [newBranchName, setNewBranchName] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
   const invoker = useRef<HTMLElement | null>(null);
-  const dirty = Boolean(title || description || plannerModel || loopModel || evaluatorModel || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || autoApprove;
+  const prStatus = prReady && prReady.repoId === repoId ? prReady : null;
+  const prDeliverable = Boolean(prStatus?.ok && prStatus.hasRemote);
+  // Say which of the three preconditions is missing — install a tool, run a
+  // login, and add a remote are three different next actions.
+  const prBlockedReason = prStatus === null || prDeliverable
+    ? null
+    : prStatus.ok
+      ? "This repo has no `origin` remote to open a pull request against."
+      : prStatus.detail;
+  const dirty = Boolean(title || description || plannerModel || loopModel || evaluatorModel || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || autoApprove || openPr;
 
   const requestClose = useCallback(() => {
     if (dirty && !confirm("Discard your unsaved task?")) return;
@@ -85,6 +100,20 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
 
   useEffect(() => {
     if (!repoId) return;
+    let live = true;
+    api<{ ok: boolean; detail: string | null; hasRemote: boolean | null }>(`/api/github/status?repoId=${encodeURIComponent(repoId)}`)
+      .then((status) => {
+        if (!live) return;
+        setPrReady({ repoId, ...status });
+        // Never leave the box ticked for a target that cannot deliver.
+        if (!status.ok || !status.hasRemote) setOpenPr(false);
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [repoId]);
+
+  useEffect(() => {
+    if (!repoId) return;
     fetch(`/api/repos/${repoId}/branches`)
       .then(async (res) => {
         if (!res.ok) { setBranches([]); return; }
@@ -112,6 +141,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         timeoutMinutes,
         reviewPlanBeforeImplementation,
         autoApprove,
+        openPr,
         baseBranch: selectedBranch || null,
       };
       await api("/api/cards", { json: request });
@@ -143,6 +173,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={reviewPlanBeforeImplementation} onChange={(e) => setReviewPlanBeforeImplementation(e.target.checked)} className="size-4 accent-amber-600" />Review plan before implementation</label>
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
                 {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run. This card keeps this setting even when the workspace-wide toggle is off.</p>}
+                <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={openPr} disabled={!prDeliverable} onChange={(e) => setOpenPr(e.target.checked)} className="size-4 accent-amber-600 disabled:opacity-40" />Open a pull request instead of merging</label>
+                {prBlockedReason && <p className="text-xs text-foreground/45">{prBlockedReason}</p>}
+                {openPr && <p className="text-xs text-foreground/55">On approval the branch is pushed to <code>origin</code> and a pull request is opened against the base branch. Nothing is merged locally, and Radulf never merges the pull request.</p>}
                 <button type="button" onClick={() => setShowPlanner((value) => !value)} className="w-full rounded-lg bg-foreground/[0.06] px-3 text-left text-sm">{showPlanner ? "Hide planner chat" : "Open planner chat"}</button>
                 {showPlanner && <ConversationPlanner onInsert={(text) => setDescription((current) => current ? `${current}\n\n${text}` : text)} />}
               </div>

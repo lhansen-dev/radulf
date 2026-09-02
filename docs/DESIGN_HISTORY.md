@@ -51,7 +51,7 @@ history inline.
 | [13 — One harness: pi in SDK mode](../specs/13-single-pi-sdk-harness.md) | Consolidating every provider onto pi in SDK mode | Current — this is what ships |
 | [13 — Implementation checklist](../specs/13-implementation-checklist.md) | The checklist that tracked the migration to 13 | Completed |
 | [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current — see also the [Sandboxing guide](SANDBOXING.md) |
-| [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | **Proposed — decided, not yet implemented** |
+| [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | Current; amends decision 6 |
 
 ## Implementation plans
 

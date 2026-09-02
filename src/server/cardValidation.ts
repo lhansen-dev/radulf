@@ -70,6 +70,7 @@ const CREATE_FIELDS = new Set([
   "evaluatorModel",
   "reviewPlanBeforeImplementation",
   "autoApprove",
+  "openPr",
   "baseBranch",
 ]);
 
@@ -88,6 +89,9 @@ export function parseCreateCard(value: unknown): CreateCardInput {
   if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") {
     invalid("autoApprove must be a boolean");
   }
+  if (body.openPr !== undefined && typeof body.openPr !== "boolean") {
+    invalid("openPr must be a boolean");
+  }
   return {
     repoId: requiredString(body.repoId, "repoId"),
     title: requiredString(body.title, "title"),
@@ -99,6 +103,7 @@ export function parseCreateCard(value: unknown): CreateCardInput {
     evaluatorModel: optionalString(body.evaluatorModel, "evaluatorModel"),
     reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation ?? false,
     autoApprove: body.autoApprove ?? false,
+    openPr: body.openPr ?? false,
     baseBranch: optionalString(body.baseBranch, "baseBranch"),
   } as CreateCardInput;
 }

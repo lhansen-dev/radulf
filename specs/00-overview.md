@@ -31,7 +31,7 @@ target, so the user can point the app at itself to improve it.
 | [12-pi-harness.md](12-pi-harness.md) | Adds pi as a fourth loop harness and the proxied-provider default (amends 09/11) |
 | [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md) | One harness — pi in SDK mode — for every provider, subscriptions included (supersedes 09's premise, re-amends decisions 4/7) |
 | [14-sandboxing.md](14-sandboxing.md) | Kernel-enforced containment (srt sandbox + tool path guards + layout hygiene) for the skip-permissions loop (re-amends decision 7, hardens 13's Security) |
-| [15-github-pr-delivery.md](15-github-pr-delivery.md) | Push + open a GitHub PR as a second delivery target for an approved diff, replacing the local merge (amends decision 6) — **proposed, not yet built** |
+| [15-github-pr-delivery.md](15-github-pr-delivery.md) | Push + open a GitHub PR as a second delivery target for an approved diff, replacing the local merge (amends decision 6) |
 
 ## Locked decisions
 
@@ -61,7 +61,12 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
    is always serial — there are no parallel loops or planners.
 6. **Review** — in-app diff review. Loops work in per-card git worktrees on
    per-card branches; the In Review column shows diff + transcript with
-   Approve-merge / Reject-with-feedback actions.
+   Approve-merge / Reject-with-feedback actions. Amended 2026-09-02 by
+   [15-github-pr-delivery.md](15-github-pr-delivery.md): approval has a second
+   delivery target, per card or workspace-wide — push the branch to `origin`
+   and open a pull request *instead of* merging locally. In-app review remains
+   where the diff is judged; only what approval writes to changes. Radulf never
+   merges the pull request it opens, so decision 8 is untouched.
 7. **Permissions** — the classic Ralph skip-permissions posture. Re-amended
    2026-07-17 by [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md): pi
    has no permission system, so the posture is structural — worktree cwd +

@@ -98,6 +98,7 @@ export async function POST(req: Request) {
         evaluatorModel: body.evaluatorModel,
         reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation === true ? 1 : 0,
         autoApprove: body.autoApprove === true ? 1 : 0,
+        openPr: body.openPr === true ? 1 : 0,
         baseBranch: body.baseBranch,
         createdAt: now(),
         updatedAt: now(),

@@ -68,6 +68,13 @@ export const SETTING_DEFAULTS = {
   // an auto-approval is recorded on the `card.auto_approved` event, so the
   // decision stays reconstructable after the fact.
   autoApprove: false,
+  // Spec 15: workspace-wide PR delivery — an approved diff is pushed to
+  // `origin` and opened as a pull request instead of merged into the local
+  // base branch. Live override read at approval time, OR'd with the card's own
+  // `openPr` flag. Like the sandbox keys, deliberately NOT model-reachable: no
+  // tool binding exists for settings, and none may ever be added for this one,
+  // because it is what lets an approved diff leave the machine.
+  openPr: false,
   // Spec 14: the ONE sandbox escape hatch. Default on; turning it off shows a
   // persistent UI warning and stamps `sandboxed: false` on every affected run.
   // Deliberately NOT model-reachable — no tool binding exists for settings, and
@@ -134,6 +141,7 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "sandboxEnabled",
   "sandboxWeakerIsolationForGoTls",
   "autoApprove",
+  "openPr",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   defaultMaxIterations: [1, 1_000],
