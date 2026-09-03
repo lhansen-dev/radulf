@@ -17,6 +17,90 @@ type ProviderModel = {
   costPerMillionOutput?: number;
 };
 
+type GithubStatusResponse = {
+  ok: boolean;
+  account: string | null;
+  reason: "missing" | "unauthenticated" | null;
+  detail: string | null;
+};
+
+/**
+ * Whether `gh` can deliver a pull request right now (spec 15).
+ *
+ * Read-only and deliberately so — Radulf has no GitHub login of its own, by
+ * design: interactive OAuth belongs in the operator's terminal, the same
+ * position `make login` takes for the subscription providers. So this reports
+ * and points at the fix; it never performs one. The re-check bypasses the
+ * server's 30s cache, because the whole flow is "fix it in a terminal, come
+ * straight back".
+ */
+function GithubSection() {
+  const [status, setStatus] = useState<GithubStatusResponse | null>(null);
+  // Starts true: the first check is already in flight from the effect below.
+  const [checking, setChecking] = useState(true);
+
+  // Inline rather than reusing `recheck`, which sets state synchronously — a
+  // sync setState in an effect body is what react-hooks/set-state-in-effect
+  // forbids.
+  useEffect(() => {
+    let live = true;
+    api<GithubStatusResponse>("/api/github/status")
+      .then((next) => { if (live) setStatus(next); })
+      .catch(() => { if (live) setStatus(null); })
+      .finally(() => { if (live) setChecking(false); });
+    return () => { live = false; };
+  }, []);
+
+  const recheck = useCallback(async () => {
+    setChecking(true);
+    try {
+      setStatus(await api<GithubStatusResponse>("/api/github/status?refresh=1"));
+    } catch {
+      setStatus(null);
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  const dot = status === null ? "bg-slate-500" : status.ok ? "bg-green-400" : "bg-amber-400";
+  return (
+    <section id="github" className="scroll-mt-4 flex flex-col gap-3">
+      <h2 className="font-medium">GitHub</h2>
+      <p className="text-sm text-foreground/55">
+        Needed only to deliver an approved diff as a pull request instead of merging it
+        locally. Radulf uses the GitHub CLI and never logs in for you.
+      </p>
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-sm">
+        <span className={`size-2 shrink-0 rounded-full ${dot}`} aria-hidden="true" />
+        <span className="text-foreground/70">
+          {status === null
+            ? checking ? "Checking…" : "Could not check the GitHub CLI"
+            : status.ok
+              ? status.account
+                ? <>Signed in to GitHub as <strong className="font-medium text-foreground/90">{status.account}</strong></>
+                : "GitHub CLI is signed in"
+              : status.detail}
+        </span>
+        <button
+          type="button"
+          onClick={() => void recheck()}
+          disabled={checking}
+          className="ml-auto touch-target rounded-md bg-foreground/10 px-3 text-sm font-medium hover:bg-foreground/15 disabled:opacity-40"
+        >
+          {checking ? "Checking…" : "Re-check"}
+        </button>
+      </div>
+      {status && !status.ok && (
+        <p className="text-xs text-foreground/45">
+          {status.reason === "missing"
+            ? <>Install it, then re-check. Pull-request delivery stays unavailable until then; everything else is unaffected.</>
+            : <>Run <code>gh auth login</code> in a terminal on this machine, then re-check.</>}
+        </p>
+      )}
+    </section>
+  );
+}
+
 /** $3.00 for typical prices, $0.075 for very cheap ones — 2 decimals loses
  * sub-cent-per-million models (e.g. Haiku-class) by rounding them to $0.00. */
 function formatPricePerMillion(usd: number): string {
@@ -127,7 +211,7 @@ export default function SettingsPage() {
       </header>
       <nav aria-label="Settings sections" className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6">
         <div className="flex w-max gap-2">
-          {[["repos", "Repos"], ["agents", "Agents"], ["templates", "Templates"], ["appearance", "Appearance"], ["notifications", "Notifications"], ["defaults", "Run defaults"], ["maintenance", "Maintenance"]].map(([id, label]) => <a key={id} href={`#${id}`} className="touch-target flex items-center rounded-full border border-foreground/10 bg-foreground/[0.03] px-3 text-sm text-foreground/65">{label}</a>)}
+          {[["repos", "Repos"], ["agents", "Agents"], ["templates", "Templates"], ["appearance", "Appearance"], ["notifications", "Notifications"], ["defaults", "Run defaults"], ["github", "GitHub"], ["maintenance", "Maintenance"]].map(([id, label]) => <a key={id} href={`#${id}`} className="touch-target flex items-center rounded-full border border-foreground/10 bg-foreground/[0.03] px-3 text-sm text-foreground/65">{label}</a>)}
         </div>
       </nav>
       {error && <p className="text-red-400 text-sm">{error}</p>}
@@ -414,6 +498,8 @@ export default function SettingsPage() {
           Minimal tool set (deny-by-default tool permissions for the loop agent)
         </label>
       </section>
+
+      <GithubSection />
 
       <section id="sandbox" className="scroll-mt-4 flex flex-col gap-3">
         <h2 className="font-medium">Sandbox</h2>

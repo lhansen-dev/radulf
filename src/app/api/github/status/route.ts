@@ -18,8 +18,12 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: Request) {
   return handle(async () => {
-    const repoId = new URL(req.url).searchParams.get("repoId");
-    const gh = await githubStatus();
+    const params = new URL(req.url).searchParams;
+    const repoId = params.get("repoId");
+    // `refresh=1` bypasses the 30s cache: the operator fixes auth in a terminal
+    // and comes straight back, and being told "still logged out" for another
+    // half a minute would make the indicator look broken.
+    const gh = await githubStatus({ refresh: params.get("refresh") === "1" });
     let remote: boolean | null = null;
     if (repoId) {
       const repo = db.select().from(repos).where(eq(repos.id, repoId)).get();
@@ -27,6 +31,7 @@ export async function GET(req: Request) {
     }
     return json({
       ok: gh.ok,
+      account: gh.ok ? gh.account ?? null : null,
       reason: gh.ok ? null : gh.reason,
       detail: gh.ok ? null : gh.detail,
       hasRemote: remote,

@@ -27,7 +27,7 @@ const GH_PR_TIMEOUT_MS = 2 * 60_000;
 const STATUS_TTL_MS = 30_000;
 
 export type GithubStatus =
-  | { ok: true }
+  | { ok: true; account?: string }
   | { ok: false; reason: "missing"; detail: string }
   | { ok: false; reason: "unauthenticated"; detail: string };
 
@@ -89,7 +89,8 @@ export function invalidateGithubStatus(): void {
  * Is `gh` installed and authenticated? The two failures are distinguished
  * because the operator's next action differs: install a tool, or run a login.
  */
-export async function githubStatus(): Promise<GithubStatus> {
+export async function githubStatus(options: { refresh?: boolean } = {}): Promise<GithubStatus> {
+  if (options.refresh) cached = null;
   if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
   const version = await run(["--version"], { timeoutMs: GH_TIMEOUT_MS });
   let status: GithubStatus;
@@ -101,8 +102,17 @@ export async function githubStatus(): Promise<GithubStatus> {
     };
   } else {
     const auth = await run(["auth", "status"], { timeoutMs: GH_TIMEOUT_MS });
+    // Which account will open the pull requests is the part worth surfacing —
+    // "logged in" is not reassuring if it is the wrong identity. Scraped from
+    // gh's human-readable output, so treat its absence as unremarkable: the
+    // status is still `ok`, just unnamed.
+    const account = auth.ok
+      ? /account\s+(\S+)/.exec(auth.out)?.[1]
+      : undefined;
     status = auth.ok
-      ? { ok: true }
+      ? account
+        ? { ok: true, account }
+        : { ok: true }
       : {
           ok: false,
           reason: "unauthenticated",
