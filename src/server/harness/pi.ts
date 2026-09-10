@@ -203,11 +203,12 @@ async function resolveModel(
  * Normalize one pi SDK event object into transcript events.
  *
  * Field mapping is pinned against the SDK's emitted types (packages/ai):
- * `message_end` carries `message: AssistantMessage` (content parts, usage,
- * stopReason); `auto_retry_end` carries `success`/`finalError`. Streaming
- * deltas and lifecycle framing are dropped deliberately — their content is
- * fully duplicated by `message_end`. Everything unrecognized is preserved as
- * `t:"raw"` with a stringified event so nothing is lost.
+ * `message_end` carries `message: AssistantMessage` (content parts — `text`,
+ * `thinking`, and `toolCall` — plus usage and stopReason); `auto_retry_end`
+ * carries `success`/`finalError`. Streaming deltas and lifecycle framing are
+ * dropped deliberately — their content is fully duplicated by `message_end`.
+ * Everything unrecognized is preserved as `t:"raw"` with a stringified event
+ * so nothing is lost.
  */
 export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
   const raw = (): TranscriptEvent[] => [{ t: "raw", line: JSON.stringify(evt) }];
@@ -223,6 +224,14 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
       if (p.type === "text") {
         const text = String(p.text ?? "");
         if (text) events.push({ t: "text", role: "assistant", content: text });
+      } else if (p.type === "thinking") {
+        // A redacted block carries no text — keep it anyway, so the transcript
+        // still shows that the turn reasoned rather than silently skipping it.
+        const thinking = String(p.thinking ?? "");
+        const redacted = p.redacted === true;
+        if (thinking || redacted) {
+          events.push({ t: "reasoning", content: thinking, ...(redacted ? { redacted: true } : {}) });
+        }
       } else if (p.type === "toolCall") {
         events.push({ t: "tool", name: String(p.name ?? ""), input: p.arguments });
       }

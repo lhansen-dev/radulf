@@ -12,6 +12,7 @@ import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
+import { isRenderableLine } from "./renderableLine";
 import { retryableFailedStep } from "@/shared/failedStep";
 
 const TABS = ["Task", "Activity"] as const;
@@ -603,10 +604,14 @@ function TranscriptView({
       // as near-bottom — there's nothing to preserve a scroll position of.
       const el = listRef.current?.element;
       const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+      // Drop the lines the view can't draw before they ever reach state (see
+      // renderableLine.ts) — a chunk that is nothing but raw framing must not
+      // grow the list, move the scroll anchor, or raise "Jump to latest".
+      const incoming = (d.lines ?? []).filter(isRenderableLine);
       setLines((previous) => {
-        const merged = replace || d.reset ? (d.lines ?? []) : [...previous, ...(d.lines ?? [])];
+        const merged = replace || d.reset ? incoming : [...previous, ...incoming];
         const next = merged.slice(-MAX_TRANSCRIPT_LINES);
-        if (!replace && previous.length > 0 && (d.lines?.length ?? 0) > 0) {
+        if (!replace && previous.length > 0 && incoming.length > 0) {
           if (nearBottom) requestAnimationFrame(() => listRef.current?.scrollToRow({ index: next.length - 1, align: "end" }));
           else setShowJump(true);
         }
@@ -761,12 +766,33 @@ function TranscriptRow({ index, style, ariaAttributes, lines }: RowComponentProp
   );
 }
 
+/** Collapsed-summary text for a reasoning block — one line, same 120-char
+ * budget `describeToolCall` uses for a tool's summary. */
+function reasoningPreview(content: string): string {
+  const singleLine = content.replace(/\s+/g, " ").trim();
+  return singleLine.length <= 120 ? singleLine : singleLine.slice(0, 120) + "…";
+}
+
 function TranscriptLine({ line }: { line: StreamLine }) {
   if (line.t === "text") {
     return (
       <div className="whitespace-pre-wrap text-foreground/85 bg-foreground/[0.04] rounded p-2 my-0.5 font-sans text-sm">
         {String(line.content ?? "")}
       </div>
+    );
+  }
+  if (line.t === "reasoning") {
+    const content = String(line.content ?? "");
+    return (
+      <details className="my-0.5 text-foreground/50">
+        <summary className="cursor-pointer hover:text-foreground/80">
+          ✻ reasoning
+          {content && <span className="text-foreground/40 ml-2">{reasoningPreview(content)}</span>}
+        </summary>
+        <div className="whitespace-pre-wrap pl-4 pt-1 font-sans text-sm text-foreground/45 italic">
+          {content || "(redacted by the provider)"}
+        </div>
+      </details>
     );
   }
   if (line.t === "tool") {

@@ -138,4 +138,17 @@ export type TranscriptEvent =
        * so the usage-event count stands. */
       numTurns?: number;
     }
+  | {
+      /**
+       * A reasoning/thinking block from the model. Pi carries these as
+       * `thinking` content parts on the assistant message, alongside `text`
+       * parts — dropping them loses the model's visible chain of thought,
+       * which is often the only explanation of *why* a turn ran the tools it
+       * did. `redacted` marks a block whose text the provider withheld: the
+       * turn reasoned, but the content is unavailable.
+       */
+      t: "reasoning";
+      content: string;
+      redacted?: boolean;
+    }
   | { t: "raw"; line: string };

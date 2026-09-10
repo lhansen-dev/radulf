@@ -179,7 +179,7 @@ describe("piNormalize", () => {
     ]);
   });
 
-  it("skips empty text blocks and thinking blocks", () => {
+  it("skips empty text blocks but keeps thinking blocks", () => {
     const evt = {
       type: "message_end",
       message: {
@@ -188,6 +188,38 @@ describe("piNormalize", () => {
           { type: "thinking", thinking: "hmm" },
           { type: "text", text: "" },
         ],
+        usage: { input: 10, output: 2 },
+        stopReason: "stop",
+      },
+    };
+    expect(norm(evt)).toEqual([
+      { t: "reasoning", content: "hmm" },
+      { t: "usage", inputTokens: 10, outputTokens: 2 },
+    ]);
+  });
+
+  it("keeps a redacted thinking block, which carries no text", () => {
+    const evt = {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "", thinkingSignature: "enc", redacted: true }],
+        usage: { input: 10, output: 2 },
+        stopReason: "stop",
+      },
+    };
+    expect(norm(evt)).toEqual([
+      { t: "reasoning", content: "", redacted: true },
+      { t: "usage", inputTokens: 10, outputTokens: 2 },
+    ]);
+  });
+
+  it("drops an empty, non-redacted thinking block", () => {
+    const evt = {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "" }],
         usage: { input: 10, output: 2 },
         stopReason: "stop",
       },
