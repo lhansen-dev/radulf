@@ -88,6 +88,19 @@ export function piAgentDir(): string {
 }
 
 /**
+ * The one message for "this subscription has no credential in Radulf's own pi
+ * agent dir". Radulf deliberately ignores the user's personal `~/.pi/agent`
+ * (see piAgentDir), so a `pi` that logs in fine from a terminal still leaves
+ * this dir empty — the message has to name the dir, or the mismatch is
+ * invisible from the settings page.
+ */
+function notLoggedInError(provider: ProviderId): Error {
+  return new Error(
+    `not logged in to ${provider} — run \`make login\` and type /login in pi to establish the subscription (agent dir: ${piAgentDir()})`,
+  );
+}
+
+/**
  * The shared, long-lived ModelRuntime. Constructed once so subscription OAuth
  * in `auth.json` persists across runs and `getAvailable()` sees every logged-in
  * provider. Auth and the oMLX/OpenRouter runtime overrides all flow through it.
@@ -100,9 +113,61 @@ export function getModelRuntime(): Promise<ModelRuntime> {
     runtimePromise = ModelRuntime.create({
       authPath: path.join(dir, "auth.json"),
       modelsPath: path.join(dir, "models.json"),
+      // Without this the SDK refreshes catalogs from disk only, so Radulf's
+      // model list is frozen at whatever static catalog the installed pi
+      // package was built with, plus whatever a `pi` CLI run happened to
+      // leave in models-store.json. New provider models would then never
+      // appear without a `make login`. The fetch is etag-conditional and the
+      // SDK rate-limits it to once per REMOTE_CATALOG_REFRESH_INTERVAL_MS
+      // (4h), so this costs one 304 a few times a day.
+      allowModelNetwork: true,
+      // A slow or unreachable pi.dev must not hold up the first model call —
+      // on timeout the SDK keeps the on-disk catalog.
+      modelRefreshTimeoutMs: CATALOG_REFRESH_TIMEOUT_MS,
     });
   }
   return runtimePromise;
+}
+
+/** Cap on the pi.dev catalog fetch, at startup and per refresh. */
+const CATALOG_REFRESH_TIMEOUT_MS = 5_000;
+
+/**
+ * Re-sync one provider's catalog before listing it. The runtime is a
+ * process-wide singleton (auth has to persist across runs), so without this it
+ * reads models-store.json exactly once, at construction: a `make login` that
+ * pulls a newer catalog mid-session stays invisible until Radulf restarts.
+ * `refresh` re-reads the store when its file revision changed and only hits
+ * the network past the SDK's own 4h window, so the common case is local.
+ *
+ * Best-effort by design — a refresh failure leaves the previously loaded
+ * catalog in place, which is strictly better than failing the picker.
+ */
+async function refreshProviderCatalog(
+  runtime: ModelRuntime,
+  piProviderId: string,
+  force = false,
+): Promise<void> {
+  try {
+    await runtime.refresh({
+      providers: [piProviderId],
+      allowNetwork: true,
+      // `force` skips the SDK's 4h freshness window and re-fetches now. Only
+      // the operator's explicit "Load models" sets it — a model that shipped
+      // an hour ago is otherwise invisible until the window rolls over, and
+      // clicking a button that silently does nothing is worse than waiting.
+      force,
+      signal: AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS),
+    });
+  } catch {
+    // Stale catalog beats no catalog.
+  }
+}
+
+/** Resync `piProviderId`'s catalog, then look the model up again. */
+async function refreshCatalogAndGetModel(runtime: ModelRuntime, piProviderId: string, model: string) {
+  await refreshProviderCatalog(runtime, piProviderId);
+  return runtime.getModel(piProviderId, model);
 }
 
 /** Reset the runtime singleton — test seam only. */
@@ -180,7 +245,10 @@ async function resolveModel(
 
   // anthropic / chatgpt / copilot: subscription auth lives in the Radulf agent dir.
   if (model) {
-    const m = runtime.getModel(pid, model);
+    // A miss is usually a stale catalog — the settings picker can offer a
+    // model this long-lived runtime loaded before it existed. Resync once
+    // (throttled, usually a local read) before calling it unserved.
+    const m = runtime.getModel(pid, model) ?? (await refreshCatalogAndGetModel(runtime, pid, model));
     if (!m) throw new Error(`${provider} does not serve model "${model}"`);
     return m;
   }
@@ -188,9 +256,8 @@ async function resolveModel(
   // authenticated models for the provider; the first is pi's default.
   const available = await runtime.getAvailable(pid);
   if (available.length === 0) {
-    throw new Error(
-      `no ${provider} models available — run \`make login\` and type /login in pi to establish the subscription (agent dir: ${piAgentDir()})`,
-    );
+    if (!(await runtime.checkAuth(pid))) throw notLoggedInError(provider);
+    throw new Error(`no ${provider} models available for the authenticated subscription`);
   }
   return available[0];
 }
@@ -525,6 +592,7 @@ export function harnessPackageVersion(): string {
  */
 export async function listAuthedModels(
   provider: ProviderId,
+  opts: { force?: boolean } = {},
 ): Promise<
   {
     value: string;
@@ -535,7 +603,14 @@ export async function listAuthedModels(
   }[]
 > {
   const runtime = await getModelRuntime();
-  const models = await runtime.getAvailable(PI_PROVIDER[provider]);
+  const pid = PI_PROVIDER[provider];
+  await refreshProviderCatalog(runtime, pid, opts.force);
+  // getAvailable() returns [] for BOTH "no credential" and "authenticated but
+  // the plan serves nothing", which left the picker reporting a cheerful
+  // "0 models" for a provider that was simply never logged in. checkAuth()
+  // separates them: undefined means no usable credential for this provider.
+  if (!(await runtime.checkAuth(pid))) throw notLoggedInError(provider);
+  const models = await runtime.getAvailable(pid);
   // pi's model catalog already prices in USD per 1M tokens (its cost rates
   // are applied directly against raw token counts elsewhere), so these pass
   // straight through with no unit conversion.

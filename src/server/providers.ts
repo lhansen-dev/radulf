@@ -70,14 +70,24 @@ export function resetProviderModelsCacheForTests(): void {
   modelListCache.clear();
 }
 
-/** List models a provider can serve, for the settings/card pickers. */
-export async function listProviderModels(provider: ProviderId, s: Settings = getSettings()): Promise<ProviderModel[]> {
+/**
+ * List models a provider can serve, for the settings/card pickers.
+ *
+ * `force` is the operator pressing "Load models": it skips this cache and, for
+ * the pi-authenticated providers, the SDK's own catalog freshness window too.
+ * Everything automatic (picker mount, preflight before a run) leaves it off.
+ */
+export async function listProviderModels(
+  provider: ProviderId,
+  s: Settings = getSettings(),
+  opts: { force?: boolean } = {}
+): Promise<ProviderModel[]> {
   const cacheKey = modelListCacheKey(provider, s);
   const cached = modelListCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < MODEL_LIST_TTL_MS) {
+  if (!opts.force && cached && Date.now() - cached.fetchedAt < MODEL_LIST_TTL_MS) {
     return cached.models;
   }
-  const models = await fetchProviderModels(provider, s);
+  const models = await fetchProviderModels(provider, s, opts.force ?? false);
   // Only successful fetches are cached — a transient outage shouldn't poison
   // the cache for the full TTL; fetchJson's own retry logic already handles
   // transient failures before we'd ever get here.
@@ -85,13 +95,17 @@ export async function listProviderModels(provider: ProviderId, s: Settings = get
   return models;
 }
 
-async function fetchProviderModels(provider: ProviderId, s: Settings): Promise<ProviderModel[]> {
+async function fetchProviderModels(
+  provider: ProviderId,
+  s: Settings,
+  force: boolean
+): Promise<ProviderModel[]> {
   switch (provider) {
     case "anthropic":
     case "chatgpt":
     case "copilot":
       // pi-authenticated subscriptions — one source (ModelRuntime.getAvailable).
-      return listAuthedModels(provider);
+      return listAuthedModels(provider, { force });
     case "omlx": {
       const data = await fetchJson(
         `${s.omlxBaseUrl.replace(/\/$/, "")}/v1/models`,

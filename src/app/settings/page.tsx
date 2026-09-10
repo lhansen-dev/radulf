@@ -291,7 +291,7 @@ export default function SettingsPage() {
           />
         </label>
         <p className="text-xs text-foreground/40">
-          The oMLX and OpenRouter providers run the loop under the{" "}
+          Every provider runs the loop under the{" "}
           <a
             href="https://github.com/earendil-works/pi"
             target="_blank"
@@ -300,8 +300,10 @@ export default function SettingsPage() {
           >
             pi coding agent
           </a>
-          . The Anthropic and ChatGPT subscription paths run under their own
-          CLIs.
+          . The Anthropic, ChatGPT, and Copilot subscription paths authenticate
+          through Radulf&rsquo;s own pi agent dir — run <code>make login</code>{" "}
+          and type <code>/login</code> there; a login in your personal{" "}
+          <code>~/.pi</code> is not read.
         </p>
       </section>
 
@@ -672,8 +674,9 @@ function AgentSection({
 
   // setState only happens in the promise callbacks, never synchronously,
   // so this is safe to call from the effect below.
-  const load = useCallback((p: string) => {
-    return api<{ models: ProviderModel[] }>(`/api/providers/${p}/models`)
+  // `force` is only ever set by the "Load models" button — see the route.
+  const load = useCallback((p: string, force = false) => {
+    return api<{ models: ProviderModel[] }>(`/api/providers/${p}/models${force ? "?refresh=1" : ""}`)
       .then((r) => {
         setModels(r.models);
         setStatus(`✓ ${r.models.length} model${r.models.length === 1 ? "" : "s"}`);
@@ -738,9 +741,9 @@ function AgentSection({
             <button
               onClick={() => {
                 setStatus("…");
-                saveFirst().then(() => load(provider)).catch(() => setStatus(""));
+                saveFirst().then(() => load(provider, true)).catch(() => setStatus(""));
               }}
-              title="Save settings, then fetch this provider's model list"
+              title="Save settings, then re-fetch this provider's model list, skipping every cache"
               className="rounded bg-foreground/10 px-3 text-sm whitespace-nowrap hover:bg-foreground/15"
             >
               Load models

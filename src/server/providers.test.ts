@@ -74,6 +74,23 @@ describe("listProviderModels caching", () => {
     expect(second).toEqual(first);
   });
 
+  it("re-fetches when force is set, and refreshes the cached entry", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { data: [{ id: "m1" }] }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: [{ id: "m1" }, { id: "m2" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listProviderModels("omlx", omlxSettings);
+    const forced = await listProviderModels("omlx", omlxSettings, { force: true });
+    // The forced result replaces the cache, so the next unforced call sees it.
+    const afterForce = await listProviderModels("omlx", omlxSettings);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(forced.map((m) => m.value)).toEqual(["m1", "m2"]);
+    expect(afterForce).toEqual(forced);
+  });
+
   it("does not cache a failed fetch — the next call retries", async () => {
     const fetchMock = vi
       .fn()
