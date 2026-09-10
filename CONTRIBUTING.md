@@ -81,6 +81,29 @@ git switch beta && git merge main   # carry the version bump back
 `main`, which is what keeps the branch honest. `make release` refuses to tag a
 stable version from anywhere but `main`, or a prerelease from anywhere but `beta`.
 
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
+
+```
+<type>(<optional scope>): <subject>
+```
+
+`feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore` — see
+the table in [`AGENTS.md`](AGENTS.md#commit-messages) for which is which, plus
+the footer conventions agents use. The subject is imperative and lowercase
+(`fix: reject repos with no commits`), the first line stays under 72
+characters, and the reasoning goes in the body.
+
+Two things worth knowing before your first PR:
+
+- A breaking change takes a `!` before the colon (`feat(db)!: …`) and a
+  `BREAKING CHANGE:` footer. That footer is what surfaces it in the release
+  notes when `beta` is promoted to `main`.
+- When a commit implements a spec, name it — `feat: deliver an approved diff as
+  a GitHub pull request (spec 15)`. The spec itself lands first, as its own
+  `docs:` commit.
+
 ## Before you open a PR
 
 Run the full gate locally — this is exactly what CI runs on every push and PR:

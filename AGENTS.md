@@ -80,6 +80,58 @@ PRs target `beta`, not `main`. `main` only ever receives a merge from `beta`
 at release time — see [`CONTRIBUTING.md`](CONTRIBUTING.md#branches-and-releases)
 for the full release flow.
 
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
+
+```
+<type>(<optional scope>): <subject>
+
+<optional body>
+
+<optional footers>
+```
+
+The types in use here:
+
+| Type | Use it for |
+|---|---|
+| `feat` | New user-visible behavior |
+| `fix` | A bug fix |
+| `docs` | `docs/`, `specs/`, `README.md`, this file |
+| `refactor` | Restructuring with no behavior change |
+| `test` | Tests only |
+| `perf` | A change made for speed, with a measurement behind it |
+| `build` | Dependencies, `Makefile`, `next.config.ts`, migrations tooling |
+| `ci` | `.github/workflows/`, Dependabot |
+| `chore` | Anything else that touches no product code |
+
+Rules for the subject line:
+
+- Imperative mood, lowercase, no trailing period — `fix: reject repos with no commits`, not `Fixed repos…`.
+- Keep the whole first line under 72 characters; put the reasoning in the body.
+- Scope is optional and, when used, names an area of the tree rather than a
+  file — `orchestrator`, `sandbox`, `docs`, `db`, `ui`.
+
+Breaking changes take a `!` before the colon (`feat(db)!: …`) **and** a
+`BREAKING CHANGE:` footer explaining the migration. Since `main` only receives
+merges from `beta` at release time, a breaking change lands on `beta` like any
+other commit — the footer is what makes it visible in the release notes.
+
+Repo-specific footers and conventions:
+
+- Reference a spec by number when a commit implements one — `feat: deliver an
+  approved diff as a GitHub pull request (spec 15)`. Adding the spec itself is
+  a separate `docs:` commit that lands first.
+- Agents (including self-improvement runs) keep their `Co-Authored-By:` and
+  session trailers in the footer block, after any `BREAKING CHANGE:`.
+- The `nextjs-agent-rules` block that `next dev` rewrites into this file is
+  committed alongside whatever work you were doing — it does not need its own
+  commit.
+
+One logical change per commit. If `make check` only passes with two unrelated
+fixes in the tree, that's two commits.
+
 ## Everything else
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the full guideline list,
