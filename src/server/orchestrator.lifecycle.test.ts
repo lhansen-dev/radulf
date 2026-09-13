@@ -1489,6 +1489,50 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(worktreeRow.removedAt).not.toBeNull();
     });
 
+    it("keeps aged runs and worktrees of unfinished cards", () => {
+      const aged = { startedAt: "2020-01-01T00:00:00.000Z", endedAt: "2020-01-01T00:05:00.000Z" };
+      // A card still waiting in review behind an old evaluation.
+      card("aged-review", "review");
+      plan("aged-review");
+      completedRun("aged-review", "aged-review-eval", { ...aged, kind: "evaluate" });
+      const reviewWorktree = getRun("aged-review").worktreePath;
+      fs.writeFileSync(path.join(reviewWorktree, "uncommitted.txt"), "pending\n");
+      // An old plan whose worktree a live loop on the same card now reuses.
+      card("aged-plan", "looping");
+      plan("aged-plan");
+      completedRun("aged-plan", "aged-plan-run", { ...aged, kind: "plan" });
+      completedRun("aged-plan", "aged-plan-loop", { status: "running" });
+      const sharedWorktree = path.join(testDataDir, "worktrees", "aged-plan-run");
+      db.update(runs).set({ worktreePath: sharedWorktree }).where(eq(runs.id, "aged-plan-loop")).run();
+      // A finished card whose old run reuses a directory a recent run still holds.
+      card("done-shared", "done");
+      plan("done-shared");
+      completedRun("done-shared", "done-shared-plan", { ...aged, kind: "plan" });
+      completedRun("done-shared", "done-shared-loop", { startedAt: now(), endedAt: now() });
+      const doneSharedWorktree = path.join(testDataDir, "worktrees", "done-shared-plan");
+      db.update(runs).set({ worktreePath: doneSharedWorktree }).where(eq(runs.id, "done-shared-loop")).run();
+      // A finished card with its own directory is still cleaned up.
+      card("aged-abandoned", "abandoned");
+      plan("aged-abandoned");
+      completedRun("aged-abandoned", "aged-abandoned-run", aged);
+      const abandonedWorktree = getRun("aged-abandoned").worktreePath;
+
+      const result = pruneRuntimeHistory(30);
+
+      expect(result.runsDeleted).toBe(2);
+      expect(result.worktreesRemoved).toBe(1);
+      expect(db.select().from(runs).all().map((run) => run.id).sort()).toEqual([
+        "aged-plan-loop",
+        "aged-plan-run",
+        "aged-review-eval",
+        "done-shared-loop",
+      ]);
+      expect(fs.existsSync(path.join(reviewWorktree, "uncommitted.txt"))).toBe(true);
+      expect(fs.existsSync(sharedWorktree)).toBe(true);
+      expect(fs.existsSync(doneSharedWorktree)).toBe(true);
+      expect(fs.existsSync(abandonedWorktree)).toBe(false);
+    });
+
     it("is a no-op, not an error, when the worktree directory or row is already gone", () => {
       card("old-history-2", "done");
       plan("old-history-2");
