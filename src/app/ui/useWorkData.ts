@@ -107,6 +107,7 @@ export function useWorkData() {
 
   useEffect(refetch, [refetch]);
   const eventTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasDisconnected = useRef(false);
   useEventStream((event) => {
     if (event.type === "improvement.completed") {
       try {
@@ -144,7 +145,20 @@ export function useWorkData() {
     }
     if (targets.includes("repos")) refetchRepos();
     if (targets.includes("improvementRuns")) refetchImprovementRuns();
-  }, setStreamConnected);
+  }, (connected) => {
+    setStreamConnected(connected);
+    if (!connected) {
+      wasDisconnected.current = true;
+      return;
+    }
+    // The stream doesn't replay events missed while it was down, so a genuine
+    // reconnect refetches; the first open after mount is covered by the
+    // initial load.
+    if (wasDisconnected.current) {
+      wasDisconnected.current = false;
+      refetch();
+    }
+  });
 
   useEffect(() => {
     const interval = setInterval(() => {
