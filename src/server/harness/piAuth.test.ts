@@ -20,7 +20,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importActual) => {
   };
 });
 
-const { listAuthedModels, resetModelRuntime } = await import("./pi");
+const { listAuthedModels, resetModelRuntime, resolveModel } = await import("./pi");
 
 let dataDir: string;
 let previousDataDir: string | undefined;
@@ -128,5 +128,44 @@ describe("listAuthedModels — logged out vs. empty catalog", () => {
 
     expect(checkAuth).toHaveBeenNthCalledWith(1, "openai-codex");
     expect(checkAuth).toHaveBeenNthCalledWith(2, "github-copilot");
+  });
+});
+
+describe("resolveModel — OpenRouter catalog miss", () => {
+  // resolveModel takes the runtime directly, so a hand-rolled fake stands in.
+  function fakeRuntime(getModel: ReturnType<typeof vi.fn>) {
+    return { getModel, refresh, setRuntimeApiKey: vi.fn() } as unknown as Parameters<typeof resolveModel>[0];
+  }
+  const settings = { openrouterApiKey: "sk-or-test" } as Parameters<typeof resolveModel>[3];
+
+  it("resyncs the catalog and retries when the model is missing", async () => {
+    // The picker offers OpenRouter's live list; a model added after this
+    // runtime loaded pi's catalog must not fail the run as "unserved".
+    const model = { id: "openai/gpt-6-astra" };
+    const getModel = vi.fn().mockReturnValueOnce(undefined).mockReturnValueOnce(model);
+
+    await expect(resolveModel(fakeRuntime(getModel), "openrouter", "openai/gpt-6-astra", settings)).resolves.toBe(
+      model,
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh.mock.calls[0][0]).toMatchObject({ providers: ["openrouter"], allowNetwork: true });
+    expect(getModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the resync when the loaded catalog already has the model", async () => {
+    const getModel = vi.fn().mockReturnValue({ id: "z-ai/glm-5.2" });
+
+    await resolveModel(fakeRuntime(getModel), "openrouter", "z-ai/glm-5.2", settings);
+
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("still reports the model unserved when the resync doesn't find it", async () => {
+    const getModel = vi.fn().mockReturnValue(undefined);
+
+    await expect(resolveModel(fakeRuntime(getModel), "openrouter", "nope/nope", settings)).rejects.toThrow(
+      'OpenRouter does not serve model "nope/nope"',
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

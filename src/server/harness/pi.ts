@@ -210,8 +210,10 @@ export function omlxProviderConfig(model: string, s: Settings) {
  *   default, wrong for both).
  * - `anthropic`/`chatgpt`/`copilot` treat a blank model as "the subscription
  *   default" — the same latitude `claude -p` / `codex exec` had.
+ *
+ * Exported as a test seam; runs reach it through `createRalphSession`.
  */
-async function resolveModel(
+export async function resolveModel(
   runtime: ModelRuntime,
   provider: ProviderId,
   model: string,
@@ -226,7 +228,13 @@ async function resolveModel(
       );
     }
     await runtime.setRuntimeApiKey("openrouter", s.openrouterApiKey);
-    const m = runtime.getModel(pid, model);
+    // The settings picker lists OpenRouter's live API, but runs resolve against
+    // pi's catalog. pi only fetches a provider's catalog when it holds a
+    // credential, and the key above is registered per run rather than at
+    // startup, so the startup refresh never updates OpenRouter's — a model
+    // added since is selectable yet missing here. Resync once (key now set)
+    // before calling it unserved, as for the subscription providers below.
+    const m = runtime.getModel(pid, model) ?? (await refreshCatalogAndGetModel(runtime, pid, model));
     if (!m) throw new Error(`OpenRouter does not serve model "${model}"`);
     return m;
   }
