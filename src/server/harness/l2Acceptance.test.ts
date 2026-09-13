@@ -51,6 +51,18 @@ const run = (t: ToolDefinition, params: unknown) =>
   t.execute("id", params as never, undefined, undefined, {} as never);
 const BOUNDARY = /path escapes this run's boundary/;
 
+it("wraps exactly pi's six file tools, keeping their built-in names", () => {
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  expect(createGuardedFsTools(wt, readRoots, writeRoots).map((t) => t.name).sort()).toEqual([
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "read",
+    "write",
+  ]);
+});
+
 describe("L2 acceptance — planner (read checkout, write .ralph only, no bash)", () => {
   it("allows reading source anywhere in the checkout", async () => {
     await expect(run(toolFor("planner", "read"), { path: "src/app.ts" })).resolves.toBeDefined();
@@ -96,9 +108,15 @@ describe.each(["loop", "evaluator"] as const)(
         }),
       ).resolves.toBeDefined();
     });
-    it("blocks a write into the prefix-sharing -evil sibling (segment-safe)", async () => {
+    it("blocks writes and edits into the prefix-sharing -evil sibling (segment-safe)", async () => {
       await expect(
         run(toolFor(role, "write"), { path: "../wt-evil/loot.ts", content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+      await expect(
+        run(toolFor(role, "edit"), {
+          path: path.join(evil, "loot.ts"),
+          edits: [{ oldText: "stolen", newText: "pwn" }],
+        }),
       ).rejects.toThrow(BOUNDARY);
       expect(fs.readFileSync(path.join(evil, "loot.ts"), "utf8")).toBe("stolen");
     });

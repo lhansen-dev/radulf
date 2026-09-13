@@ -56,7 +56,7 @@ const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-evaluationServ
 process.env.RADULF_DATA_DIR = testDataDir;
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
-const { EvaluationService } = await import("./evaluationService");
+const { EvaluationService, renderEvaluatorPrompt } = await import("./evaluationService");
 
 function seedRepo() {
   db.insert(repos)
@@ -211,6 +211,20 @@ function makeDeps() {
     approveReview: vi.fn(async () => ({ ok: true })),
   };
 }
+
+describe("renderEvaluatorPrompt", () => {
+  it("fills every placeholder", () => {
+    expect(
+      renderEvaluatorPrompt(
+        "{{TITLE}}|{{DESCRIPTION}}|{{BASE_BRANCH}}|{{CRITERIA}}",
+        "Evaluate me",
+        "Card details",
+        "main",
+        "grep -q health src/app.ts",
+      ),
+    ).toBe("Evaluate me|Card details|main|grep -q health src/app.ts");
+  });
+});
 
 describe("EvaluationService.runEvaluator", () => {
   beforeEach(() => {

@@ -18,47 +18,41 @@ afterEach(() => {
 });
 
 describe("fetchJson retry (via listProviderModels/omlx)", () => {
-  it("retries a transient 503 and succeeds on the following 200", async () => {
+  /** Settle `promise` on fake timers, so retry backoff costs no real time. */
+  async function withoutBackoff<T>(promise: Promise<T>): Promise<T> {
+    promise.catch(() => {});
+    await vi.runAllTimersAsync();
+    return promise;
+  }
+
+  it.each([
+    ["a transient 503", () => Promise.resolve(jsonResponse(503, "overloaded"))],
+    ["a network-level throw", () => Promise.reject(new TypeError("fetch failed"))],
+  ])("retries %s and succeeds on the following 200", async (_label, firstAttempt) => {
+    vi.useFakeTimers();
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(503, "overloaded"))
+      .mockImplementationOnce(firstAttempt)
       .mockResolvedValueOnce(jsonResponse(200, { data: [{ id: "m1" }] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const models = await listProviderModels("omlx", omlxSettings);
+    const models = await withoutBackoff(listProviderModels("omlx", omlxSettings));
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(models).toEqual([{ value: "m1", displayName: "m1", description: "" }]);
   });
 
-  it("does not retry a 401 — fails on the first attempt", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(401, "bad key"));
-    vi.stubGlobal("fetch", fetchMock);
+  it("does not retry a 401, but retries a 500 twice before throwing the same error shape", async () => {
+    vi.useFakeTimers();
+    const unauthorized = vi.fn().mockResolvedValue(jsonResponse(401, "bad key"));
+    vi.stubGlobal("fetch", unauthorized);
+    await expect(withoutBackoff(listProviderModels("omlx", omlxSettings))).rejects.toThrow(/responded 401/);
+    expect(unauthorized).toHaveBeenCalledTimes(1);
 
-    await expect(listProviderModels("omlx", omlxSettings)).rejects.toThrow(/responded 401/);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("throws the same error shape when every retry attempt fails", async () => {
-    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(500, "down"));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(listProviderModels("omlx", omlxSettings)).rejects.toThrow(/responded 500/);
-    // Initial attempt + 2 retries.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it("retries a network-level throw and succeeds once the connection recovers", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockRejectedValueOnce(new TypeError("fetch failed"))
-      .mockResolvedValueOnce(jsonResponse(200, { data: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const models = await listProviderModels("omlx", omlxSettings);
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(models).toEqual([]);
+    const down = vi.fn().mockImplementation(async () => jsonResponse(500, "down"));
+    vi.stubGlobal("fetch", down);
+    await expect(withoutBackoff(listProviderModels("omlx", omlxSettings))).rejects.toThrow(/responded 500/);
+    expect(down).toHaveBeenCalledTimes(3);
   });
 });
 

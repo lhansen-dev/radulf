@@ -21,23 +21,19 @@ describe("redactSettings", () => {
     }
   });
 
-  it("distinguishes an unset credential from a set one", () => {
-    const redacted = redactSettings({ ...SETTING_DEFAULTS, openrouterApiKey: "" });
-    expect(redacted.openrouterApiKey).toBe("");
-    expect(redacted.braveApiKey).toBe("");
-  });
-
-  it("leaves non-secret settings untouched", () => {
-    const input = { ...SETTING_DEFAULTS, omlxBaseUrl: "http://127.0.0.1:9999", theme: "nord" };
+  it("keeps unset credentials empty, leaves non-secret settings alone, and never mutates its input", () => {
+    const input = {
+      ...SETTING_DEFAULTS,
+      openrouterApiKey: "",
+      braveApiKey: "brave-secret",
+      omlxBaseUrl: "http://127.0.0.1:9999",
+      theme: "nord",
+    };
     const redacted = redactSettings(input);
+    expect(redacted.openrouterApiKey).toBe("");
     expect(redacted.omlxBaseUrl).toBe("http://127.0.0.1:9999");
     expect(redacted.theme).toBe("nord");
     expect(redacted.sandboxEnabled).toBe(true);
-  });
-
-  it("does not mutate its input", () => {
-    const input = { ...SETTING_DEFAULTS, braveApiKey: "brave-secret" };
-    redactSettings(input);
     expect(input.braveApiKey).toBe("brave-secret");
   });
 
@@ -53,14 +49,11 @@ describe("redactSettings", () => {
 });
 
 describe("validateSettingsPatch", () => {
-  it("enables auto-mode by default", () => {
+  it("defaults auto-mode on and the sandbox to strict isolation (spec 14 — the one escape hatch)", () => {
     expect(SETTING_DEFAULTS.autoMode).toBe(true);
-  });
-
-  it("defaults the sandbox on (spec 14 — the one escape hatch)", () => {
     expect(SETTING_DEFAULTS.sandboxEnabled).toBe(true);
     expect(SETTING_DEFAULTS.sandboxNetworkAllowlist).toBe("");
-    // Go/TLS trustd carve-out is opt-in — strict isolation by default.
+    // The Go/TLS trustd carve-out is opt-in.
     expect(SETTING_DEFAULTS.sandboxWeakerIsolationForGoTls).toBe(false);
   });
 

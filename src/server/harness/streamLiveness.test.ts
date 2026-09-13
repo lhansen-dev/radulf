@@ -149,10 +149,10 @@ describe("runHarness with a ping-only provider stream", () => {
   }
 
   it("does not stall while only keep-alive comments arrive", async () => {
-    // Eight pings 100ms apart: every gap is under the 400ms watchdog, but not
+    // Eight pings 20ms apart: every gap is under the 100ms watchdog, but not
     // one of them produces an AgentSessionEvent. Before the probe, the run was
-    // killed at 400ms as "stream hung".
-    respond = async () => sseResponse(Array(8).fill(": OPENROUTER PROCESSING\n\n"), 100);
+    // killed at 100ms as "stream hung".
+    respond = async () => sseResponse(Array(8).fill(": OPENROUTER PROCESSING\n\n"), 20);
     fs.mkdirSync(scratch, { recursive: true });
 
     const result = await runHarness({
@@ -163,7 +163,7 @@ describe("runHarness with a ping-only provider stream", () => {
       cwd: scratch,
       transcriptPath: path.join(scratch, "pings.jsonl"),
       timeoutMs: 60_000,
-      stallTimeoutMs: 400,
+      stallTimeoutMs: 100,
       createSession: pingOnlySession(),
     });
 
@@ -179,7 +179,7 @@ describe("runHarness with a ping-only provider stream", () => {
         new ReadableStream<Uint8Array>({
           async start(controller) {
             for (let i = 0; i < 2; i++) {
-              await new Promise((r) => setTimeout(r, 100));
+              await new Promise((r) => setTimeout(r, 20));
               controller.enqueue(new TextEncoder().encode(": OPENROUTER PROCESSING\n\n"));
             }
             await new Promise((r) => setTimeout(r, 30_000)); // never resolves in time
@@ -198,7 +198,7 @@ describe("runHarness with a ping-only provider stream", () => {
       cwd: scratch,
       transcriptPath: path.join(scratch, "dead.jsonl"),
       timeoutMs: 60_000,
-      stallTimeoutMs: 400,
+      stallTimeoutMs: 100,
       createSession: pingOnlySession(),
     });
 

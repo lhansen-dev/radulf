@@ -134,53 +134,29 @@ beforeEach(() => {
 });
 
 describe("CardDetail", () => {
-  it("renders the Planned by badge with the model tag", async () => {
+  it("shows the planner badge and each role's resolved provider, model, and reasoning level", async () => {
     render(<CardDetail />);
 
     expect(await screen.findByText(/Planned by/)).toBeTruthy();
     expect(screen.getByText("claude-subscription/opus")).toBeTruthy();
-  });
-
-  it("shows the resolved planner/loop/evaluator provider, model, and reasoning level on the overview", async () => {
-    render(<CardDetail />);
-
-    expect(await screen.findByText("anthropic/opus (medium)")).toBeTruthy();
+    expect(screen.getByText("anthropic/opus (medium)")).toBeTruthy();
     expect(screen.getByText("anthropic/sonnet (high)")).toBeTruthy();
     expect(screen.getByText("anthropic/default (off)")).toBeTruthy();
   });
 
-  it.each(["plan", "loop", "evaluate"])(
-    "offers to retry a failed %s step on a needs-attention card",
-    async (kind) => {
-      cardStatus = "needs_attention";
-      cardRuns = [
-        {
-          id: `failed-${kind}`,
-          kind,
-          status: "failed",
-          iterationsDone: 0,
-          exitReason: `${kind} failed`,
-          startedAt: "2026-07-17T10:00:00.000Z",
-          endedAt: "2026-07-17T10:01:00.000Z",
-          iterations: [],
-        },
-      ];
-
-      render(<CardDetail />);
-
-      expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
-    },
-  );
-
-  it("offers to retry a failed evaluator from needs_attention", async () => {
+  it.each([
+    ["plan", "failed"],
+    ["loop", "failed"],
+    ["evaluate", "timeout"],
+  ])("offers to retry a %s step that ended %s on a needs-attention card", async (kind, status) => {
     cardStatus = "needs_attention";
     cardRuns = [
       {
-        id: "failed-evaluate",
-        kind: "evaluate",
-        status: "timeout",
+        id: `failed-${kind}`,
+        kind,
+        status,
         iterationsDone: 0,
-        exitReason: "evaluation timed out",
+        exitReason: `${kind} ${status}`,
         startedAt: "2026-07-17T10:00:00.000Z",
         endedAt: "2026-07-17T10:01:00.000Z",
         iterations: [],
@@ -238,34 +214,23 @@ describe("CardDetail", () => {
   });
 
   // The plan lives on the Task tab, which is the default — no click needed.
-  it("shows 'Plan is running…' when planning is active and no plan exists", async () => {
-    cardStatus = "planning";
+  it.each([
+    ["planning", "Plan is running…"],
+    ["todo", "No plan yet — start the task to run planning."],
+  ])("shows a %s card with no plan as %j", async (status, text) => {
+    cardStatus = status;
     cardPlans = [];
 
     render(<CardDetail />);
 
-    expect(await screen.findByText("Plan is running…")).toBeTruthy();
+    expect(await screen.findByText(text)).toBeTruthy();
   });
 
-  it("shows 'No plan yet' fallback when status is todo and no plan exists", async () => {
-    cardStatus = "todo";
-    cardPlans = [];
-
-    render(<CardDetail />);
-
-    expect(await screen.findByText("No plan yet — start the task to run planning.")).toBeTruthy();
-  });
-
-  it("offers only Task and Activity tabs", async () => {
+  it("offers only Task and Activity tabs, with the plan documents on Task", async () => {
     render(<CardDetail />);
 
     const tabs = (await screen.findAllByRole("tab")).map((t) => t.textContent);
     expect(tabs).toEqual(["Task", "Activity"]);
-  });
-
-  it("renders the plan documents on the Task tab without a second tab", async () => {
-    render(<CardDetail />);
-
     expect(await screen.findByText(/PLAN.md/)).toBeTruthy();
     expect(screen.getByText(/CRITERIA.md/)).toBeTruthy();
     expect(screen.getByText(/PROMPT.md/)).toBeTruthy();

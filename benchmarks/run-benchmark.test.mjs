@@ -25,19 +25,9 @@ describe("selectReviewRun", () => {
     expect(selectReviewRun(cardRuns)).toEqual(loopRun("r4"));
   });
 
-  it("ignores a loop run that has not completed", () => {
-    const cardRuns = [
-      loopRun("r2", { status: "running" }),
-      loopRun("r1"),
-    ];
-
-    expect(selectReviewRun(cardRuns)).toEqual(loopRun("r1"));
-  });
-
-  it("returns null when no completed loop run exists", () => {
-    const cardRuns = [evaluateRun("r2"), planRun("r1")];
-
-    expect(selectReviewRun(cardRuns)).toBeNull();
+  it("ignores unfinished loop runs, returning null when no completed one exists", () => {
+    expect(selectReviewRun([loopRun("r2", { status: "running" }), loopRun("r1")])).toEqual(loopRun("r1"));
+    expect(selectReviewRun([loopRun("r2", { status: "running" }), evaluateRun("r1")])).toBeNull();
   });
 });
 
@@ -76,19 +66,12 @@ describe("aggregateTokens", () => {
     expect(agg.costByKind.loop).toBeCloseTo(0.075, 10);
   });
 
-  it("treats missing iteration fields as zero", () => {
-    const runDetails = [{ run: loopRun("r1"), iterations: [{}] }];
-
-    const agg = aggregateTokens(runDetails);
-
-    expect(agg.sumPromptTokens).toBe(0);
-    expect(agg.sumCostUsd).toBe(0);
-  });
-
-  it("handles runs with no iterations key at all", () => {
-    const runDetails = [{ run: planRun("r1") }];
-
-    expect(aggregateTokens(runDetails)).toMatchObject({
+  it("treats missing iteration fields, or a missing iterations key, as zero", () => {
+    expect(aggregateTokens([{ run: loopRun("r1"), iterations: [{}] }])).toMatchObject({
+      sumPromptTokens: 0,
+      sumCostUsd: 0,
+    });
+    expect(aggregateTokens([{ run: planRun("r1") }])).toMatchObject({
       allIterations: [],
       loopIterations: [],
       sumCostUsd: 0,

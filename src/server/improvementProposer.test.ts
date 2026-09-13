@@ -35,22 +35,13 @@ function leakedWorktrees(): string[] {
 }
 
 describe("renderImprovePrompt", () => {
-  it("substitutes existing cards and an explicit focus", () => {
-    expect(renderImprovePrompt(["A"], "{{EXISTING_CARDS}} / {{FOCUS}}", "Speed up tests")).toBe(
-      "- A / Speed up tests"
-    );
-  });
+  const noFocus = "(none — use your own judgment about what is most valuable to improve next.)";
 
-  it("renders the none-yet card placeholder and a neutral focus fallback when both are absent", () => {
-    expect(renderImprovePrompt([], "{{EXISTING_CARDS}} / {{FOCUS}}", undefined)).toBe(
-      "- (none) / (none — use your own judgment about what is most valuable to improve next.)"
-    );
-  });
-
-  it("treats a blank/whitespace-only focus the same as no focus", () => {
-    expect(renderImprovePrompt([], "{{FOCUS}}", "   ")).toBe(
-      "(none — use your own judgment about what is most valuable to improve next.)"
-    );
+  it("substitutes existing cards and the focus, with placeholders when either is absent or blank", () => {
+    const template = "{{EXISTING_CARDS}} / {{FOCUS}}";
+    expect(renderImprovePrompt(["A"], template, "Speed up tests")).toBe("- A / Speed up tests");
+    expect(renderImprovePrompt([], template, undefined)).toBe(`- (none) / ${noFocus}`);
+    expect(renderImprovePrompt([], "{{FOCUS}}", "   ")).toBe(noFocus);
   });
 });
 

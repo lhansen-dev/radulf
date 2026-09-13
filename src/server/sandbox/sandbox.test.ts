@@ -127,11 +127,19 @@ describe("agentEnv — spec 14 L3 allowlist", () => {
 });
 
 describe("createRunSandbox", () => {
-  afterAll(() => {
-    fs.rmSync(runScratchRoot(), { recursive: true, force: true });
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-ctx-git-"));
+    await execFileAsync("git", ["-C", repoDir, "init"]);
   });
 
-  it("creates and removes the run-private TMPDIR and cache root", async () => {
+  afterAll(() => {
+    fs.rmSync(runScratchRoot(), { recursive: true, force: true });
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it("creates the run-private TMPDIR and cache root, and cleanup removes them idempotently", async () => {
     const ctx = createRunSandbox("test-run-1");
     expect(fs.existsSync(ctx.tmpdir)).toBe(true);
     expect(fs.existsSync(ctx.cacheRoot)).toBe(true);
@@ -142,12 +150,6 @@ describe("createRunSandbox", () => {
     // or the commandPrefix's in-sandbox `echo "$$" >> pgids` is denied and
     // process-group reaping (1f) is inert for every sandboxed run.
     expect(ctx.pgidFile.startsWith(ctx.tmpdir + path.sep)).toBe(true);
-    await ctx.cleanup();
-    expect(fs.existsSync(ctx.root)).toBe(false);
-  });
-
-  it("cleanup removes the root even after failures (idempotent)", async () => {
-    const ctx = createRunSandbox("test-run-2");
     await ctx.cleanup();
     await ctx.cleanup();
     expect(fs.existsSync(ctx.root)).toBe(false);
@@ -161,109 +163,44 @@ describe("createRunSandbox", () => {
     expect(prefix).not.toMatch(/ulimit -v/);
   });
 
-  describe("srtConfig (spec 14 Phase 6)", () => {
-    let repoDir: string;
-
-    afterAll(() => {
-      fs.rmSync(repoDir, { recursive: true, force: true });
+  // sandboxWeakerIsolationForGoTls admits a residual OCSP/CRL exfil channel
+  // (see srt.ts), so every run that applies it must warn and report
+  // `weakerIsolationEnabled` for its caller to emit an event. It must NOT call
+  // emitEvent itself: it runs before the caller's `runs` row exists and
+  // `events.run_id` is a real FK (emitting here once crashed run start).
+  it("builds a real srtConfig, and warns once for weaker isolation, when sandboxing a cwd", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ctx = createRunSandbox("test-run-srt-1", {
+      cwd: repoDir,
+      s: testSettings({ sandboxEnabled: true, sandboxWeakerIsolationForGoTls: true }),
     });
-
-    it("builds a real srtConfig when given a cwd and sandboxEnabled", async () => {
-      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-ctx-git-"));
-      await execFileAsync("git", ["-C", repoDir, "init"]);
-      await execFileAsync("git", ["-C", repoDir, "config", "user.email", "t@t.com"]);
-      await execFileAsync("git", ["-C", repoDir, "config", "user.name", "T"]);
-      fs.writeFileSync(path.join(repoDir, "f"), "x");
-      await execFileAsync("git", ["-C", repoDir, "add", "."]);
-      await execFileAsync("git", ["-C", repoDir, "commit", "-m", "init"]);
-
-      const ctx = createRunSandbox("test-run-srt-1", {
-        cwd: repoDir,
-        s: testSettings({ sandboxEnabled: true }),
-      });
-      try {
-        expect(ctx.srtConfig).toBeDefined();
-        expect(ctx.srtConfig!.filesystem.allowWrite).toContain(repoDir);
-        expect(ctx.srtConfig!.network.allowedDomains).toContain("registry.npmjs.org");
-      } finally {
-        await ctx.cleanup();
-      }
-    });
-
-    it("leaves srtConfig undefined when sandboxEnabled is off, even with a cwd", () => {
-      const ctx = createRunSandbox("test-run-srt-2", {
-        cwd: "/does/not/matter/when/disabled",
-        s: testSettings({ sandboxEnabled: false }),
-      });
-      expect(ctx.srtConfig).toBeUndefined();
-      return ctx.cleanup();
-    });
-
-    it("leaves srtConfig undefined when no cwd is given, regardless of sandboxEnabled", async () => {
-      const ctx = createRunSandbox("test-run-srt-3", { s: testSettings({ sandboxEnabled: true }) });
-      expect(ctx.srtConfig).toBeUndefined();
+    try {
+      expect(ctx.srtConfig!.filesystem.allowWrite).toContain(repoDir);
+      expect(ctx.srtConfig!.network.allowedDomains).toContain("registry.npmjs.org");
+      expect(ctx.weakerIsolationEnabled).toBe(true);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/weaker network isolation/);
+    } finally {
+      warnSpy.mockRestore();
       await ctx.cleanup();
-    });
+    }
   });
 
-  // PLAN.md Phase 15: sandboxWeakerIsolationForGoTls's own doc comment
-  // (srt.ts) admits a residual OCSP/CRL exfil channel — every run that
-  // actually applies it must log and (per PLAN.md Phase 18.1) let its caller
-  // emit an event, once per run. createRunSandbox itself only warns and
-  // reports `weakerIsolationEnabled` — it must NOT call emitEvent directly,
-  // since it runs before the caller's own `runs` row exists and
-  // `events.run_id` is a real FK (Phase 18.1's bug: emitting here crashed
-  // run start whenever the flag was on).
-  describe("weaker-isolation observability (PLAN.md Phase 15 / 18.1)", () => {
-    let repoDir: string;
-
-    beforeAll(async () => {
-      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-ctx-weaker-"));
-      await execFileAsync("git", ["-C", repoDir, "init"]);
-      await execFileAsync("git", ["-C", repoDir, "config", "user.email", "t@t.com"]);
-      await execFileAsync("git", ["-C", repoDir, "config", "user.name", "T"]);
-      fs.writeFileSync(path.join(repoDir, "f"), "x");
-      await execFileAsync("git", ["-C", repoDir, "add", "."]);
-      await execFileAsync("git", ["-C", repoDir, "commit", "-m", "init"]);
+  it.each([
+    ["the weaker-isolation flag is off", { cwd: true, sandboxEnabled: true, weaker: false }, true],
+    ["sandboxing is off", { cwd: true, sandboxEnabled: false, weaker: true }, false],
+    ["no cwd is given", { cwd: false, sandboxEnabled: true, weaker: true }, false],
+  ])("applies no weaker isolation when %s", async (_label, o, hasConfig) => {
+    const ctx = createRunSandbox("test-run-srt-2", {
+      cwd: o.cwd ? repoDir : undefined,
+      s: testSettings({ sandboxEnabled: o.sandboxEnabled, sandboxWeakerIsolationForGoTls: o.weaker }),
     });
-
-    afterAll(() => {
-      fs.rmSync(repoDir, { recursive: true, force: true });
-    });
-
-    it("reports weakerIsolationEnabled: true and warns once when the flag is on — never calls emitEvent itself", async () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const ctx = createRunSandbox("test-run-weaker-1", {
-        cwd: repoDir,
-        s: testSettings({ sandboxEnabled: true, sandboxWeakerIsolationForGoTls: true }),
-      });
-      try {
-        expect(ctx.weakerIsolationEnabled).toBe(true);
-        expect(warnSpy).toHaveBeenCalledTimes(1);
-        expect(warnSpy.mock.calls[0][0]).toMatch(/weaker network isolation/);
-      } finally {
-        warnSpy.mockRestore();
-        await ctx.cleanup();
-      }
-    });
-
-    it("reports weakerIsolationEnabled: false when the flag is off (the default)", () => {
-      const ctx = createRunSandbox("test-run-weaker-2", {
-        cwd: repoDir,
-        s: testSettings({ sandboxEnabled: true, sandboxWeakerIsolationForGoTls: false }),
-      });
+    try {
+      expect(ctx.srtConfig !== undefined).toBe(hasConfig);
       expect(ctx.weakerIsolationEnabled).toBe(false);
-      return ctx.cleanup();
-    });
-
-    it("reports weakerIsolationEnabled: false when sandboxing itself is off, even if the flag is on", () => {
-      const ctx = createRunSandbox("test-run-weaker-3", {
-        cwd: repoDir,
-        s: testSettings({ sandboxEnabled: false, sandboxWeakerIsolationForGoTls: true }),
-      });
-      expect(ctx.weakerIsolationEnabled).toBe(false);
-      return ctx.cleanup();
-    });
+    } finally {
+      await ctx.cleanup();
+    }
   });
 });
 
@@ -397,16 +334,12 @@ describe("apfs-quota detection (spec 14 verification checklist #9)", () => {
     `<key>TotalSize</key><integer>${totalSize}</integer>` +
     `</dict></plist>`;
 
-  it("stamps apfs-quota when TotalSize is below the container size", () => {
-    expect(mechanismFromDiskutilPlist(plist(200003584, 994662584320))).toBe("apfs-quota");
-  });
-
-  it("stamps watchdog when a plain volume reports total === container", () => {
-    expect(mechanismFromDiskutilPlist(plist(994662584320, 994662584320))).toBe("watchdog");
-  });
-
-  it("falls back to watchdog when the fields are absent or unparseable", () => {
-    expect(mechanismFromDiskutilPlist("<plist><dict></dict></plist>")).toBe("watchdog");
-    expect(mechanismFromDiskutilPlist("not a plist at all")).toBe("watchdog");
+  it.each([
+    ["apfs-quota when TotalSize is below the container size", plist(200003584, 994662584320), "apfs-quota"],
+    ["watchdog when a plain volume reports total === container", plist(994662584320, 994662584320), "watchdog"],
+    ["watchdog when the fields are absent", "<plist><dict></dict></plist>", "watchdog"],
+    ["watchdog when the output is unparseable", "not a plist at all", "watchdog"],
+  ])("stamps %s", (_label, output, expected) => {
+    expect(mechanismFromDiskutilPlist(output)).toBe(expected);
   });
 });

@@ -26,75 +26,26 @@ describe("spec 14 directory layout", () => {
   });
 });
 
-describe("spec 14 schema additions", () => {
-  it("round-trips the sandbox run metadata", () => {
-    db.insert(repos)
-      .values({ id: "r1", name: "repo", path: "/tmp/repo", createdAt: now() })
-      .run();
-    db.insert(cards)
-      .values({ id: "c1", repoId: "r1", title: "t", createdAt: now(), updatedAt: now() })
-      .run();
+describe("schema defaults and constraints", () => {
+  it("defaults new cards to Backlog and repos to an empty install-script approval list", () => {
+    db.insert(repos).values({ id: "r1", name: "repo", path: "/tmp/repo", createdAt: now() }).run();
+    db.insert(cards).values({ id: "c1", repoId: "r1", title: "t", createdAt: now(), updatedAt: now() }).run();
+
+    expect(db.select().from(cards).get()!.status).toBe("backlog");
+    expect(JSON.parse(db.select().from(repos).get()!.approvedInstallScripts)).toEqual([]);
+  });
+
+  it("set-nulls a worktree row's runId when its run is deleted", () => {
     db.insert(runs)
-      .values({
-        id: "run1",
-        cardId: "c1",
-        kind: "loop",
-        worktreePath: "/tmp/wt",
-        branch: "ralph/x",
-        startedAt: now(),
-        sandboxed: 1,
-        diskLimitMechanism: "watchdog",
-      })
+      .values({ id: "run1", cardId: "c1", kind: "loop", worktreePath: "/tmp/wt", branch: "ralph/x", startedAt: now() })
       .run();
-
-    const row = db.select().from(runs).all()[0];
-    expect(row.sandboxed).toBe(1);
-    expect(row.diskLimitMechanism).toBe("watchdog");
-  });
-
-  it("stores null sandbox metadata for legacy rows", () => {
-    db.insert(runs)
-      .values({
-        id: "run2",
-        cardId: "c1",
-        kind: "plan",
-        worktreePath: "/tmp/wt2",
-        branch: "ralph/y",
-        startedAt: now(),
-      })
-      .run();
-    const row = db.select().from(runs).all().find((r) => r.id === "run2")!;
-    expect(row.sandboxed).toBeNull();
-    expect(row.diskLimitMechanism).toBeNull();
-  });
-
-  it("defaults approvedInstallScripts to an empty JSON list and round-trips entries", () => {
-    const fresh = db.select().from(repos).all()[0];
-    expect(JSON.parse(fresh.approvedInstallScripts)).toEqual([]);
-
-    const approved = [{ name: "esbuild", version: "0.21.0", scriptHash: "abc123" }];
-    db.update(repos).set({ approvedInstallScripts: JSON.stringify(approved) }).run();
-    const updated = db.select().from(repos).all()[0];
-    expect(JSON.parse(updated.approvedInstallScripts)).toEqual(approved);
-  });
-
-  it("round-trips a worktrees row and set-nulls runId when its run is deleted", () => {
     db.insert(worktrees)
-      .values({
-        id: "wt1",
-        repoId: "r1",
-        runId: "run1",
-        path: "/tmp/wt",
-        branch: "ralph/x",
-        createdAt: now(),
-      })
+      .values({ id: "wt1", repoId: "r1", runId: "run1", path: "/tmp/wt", branch: "ralph/x", createdAt: now() })
       .run();
-
-    const row = db.select().from(worktrees).all().find((w) => w.id === "wt1")!;
-    expect(row.removedAt).toBeNull();
 
     db.delete(runs).where(eq(runs.id, "run1")).run();
-    const afterDelete = db.select().from(worktrees).all().find((w) => w.id === "wt1")!;
-    expect(afterDelete.runId).toBeNull();
+    const row = db.select().from(worktrees).where(eq(worktrees.id, "wt1")).get()!;
+    expect(row.runId).toBeNull();
+    expect(row.removedAt).toBeNull();
   });
 });

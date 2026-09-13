@@ -193,37 +193,25 @@ describe("NewTaskDialog", () => {
       expect(screen.queryByText(/no `origin` remote/)).toBeNull();
     });
 
-    it("is disabled, naming the remote, when the repo has no origin", async () => {
-      stubGithubStatus({ ok: true, reason: null, detail: null, hasRemote: false });
+    it.each([
+      ["the remote, when the repo has no origin", { ok: true, reason: null, detail: null, hasRemote: false }, /no `origin` remote/],
+      [
+        "the login, when gh is not authenticated",
+        { ok: false, reason: "unauthenticated", detail: "`gh` is not authenticated — run `gh auth login` in a terminal", hasRemote: true },
+        /gh auth login/,
+      ],
+      [
+        "the install, when gh is missing",
+        { ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed or not on PATH", hasRemote: true },
+        /not installed or not on PATH/,
+      ],
+    ])("is disabled, naming %s", async (_label, status, reason) => {
+      stubGithubStatus(status);
       const box = await openAdvanced();
       // Await the reason, not the disabled flag: the box is disabled before the
       // probe resolves, so asserting `disabled` alone would pass even if the
       // response were ignored entirely.
-      expect(await screen.findByText(/no `origin` remote/)).toBeTruthy();
-      expect(box.disabled).toBe(true);
-    });
-
-    it("is disabled, naming the login, when gh is not authenticated", async () => {
-      stubGithubStatus({
-        ok: false,
-        reason: "unauthenticated",
-        detail: "`gh` is not authenticated — run `gh auth login` in a terminal",
-        hasRemote: true,
-      });
-      const box = await openAdvanced();
-      expect(await screen.findByText(/gh auth login/)).toBeTruthy();
-      expect(box.disabled).toBe(true);
-    });
-
-    it("is disabled, naming the install, when gh is missing", async () => {
-      stubGithubStatus({
-        ok: false,
-        reason: "missing",
-        detail: "the GitHub CLI (`gh`) is not installed or not on PATH",
-        hasRemote: true,
-      });
-      const box = await openAdvanced();
-      expect(await screen.findByText(/not installed or not on PATH/)).toBeTruthy();
+      expect(await screen.findByText(reason)).toBeTruthy();
       expect(box.disabled).toBe(true);
     });
   });
@@ -248,7 +236,7 @@ describe("NewTaskDialog", () => {
       }));
     });
 
-    it("submits true when checkbox is checked", async () => {
+    it("submits true when checked (the full-payload test covers the false default)", async () => {
       const fetchMock = vi.mocked(fetch);
       const user = userEvent.setup();
       render(
@@ -273,32 +261,6 @@ describe("NewTaskDialog", () => {
         expect(cardsCall).toBeDefined();
         const body = JSON.parse((cardsCall as [string, RequestInit])[1].body as string);
         expect(body.reviewPlanBeforeImplementation).toBe(true);
-      });
-    });
-
-    it("submits false when checkbox is left unchecked", async () => {
-      const fetchMock = vi.mocked(fetch);
-      const user = userEvent.setup();
-      render(
-        <NewTaskDialog
-          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
-          onClose={() => {}}
-          onCreated={() => {}}
-        />
-      );
-
-      await user.click(screen.getByLabelText("Title"));
-      await user.keyboard("Test task");
-
-      await user.click(screen.getByText("Create task"));
-
-      await waitFor(() => {
-        const cardsCall = fetchMock.mock.calls.find(
-          ([url]: unknown[]) => url === "/api/cards"
-        );
-        expect(cardsCall).toBeDefined();
-        const body = JSON.parse((cardsCall as [string, RequestInit])[1].body as string);
-        expect(body.reviewPlanBeforeImplementation).toBe(false);
       });
     });
   });

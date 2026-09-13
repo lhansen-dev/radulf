@@ -1,52 +1,19 @@
-// @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { formatDuration } from "./formatDuration";
 
+const START = "2025-01-01T00:00:00Z";
+
 describe("formatDuration", () => {
-  it("returns a completed range", () => {
-    const result = formatDuration("2025-01-01T00:00:00Z", "2025-01-01T00:00:05Z");
-    expect(result).toBe("5s");
+  it.each([
+    ["2025-01-01T00:00:05Z", "5s"],
+    ["2025-01-01T00:02:15Z", "2m 15s"],
+  ])("formats a completed range ending %s as %s", (endedAt, expected) => {
+    expect(formatDuration(START, endedAt)).toBe(expected);
   });
 
-  it("returns sub-minute duration", () => {
-    const result = formatDuration("2025-01-01T00:00:00Z", "2025-01-01T00:00:03Z");
-    expect(result).toBe("3s");
-  });
-
-  it("returns minute+second duration", () => {
-    const result = formatDuration("2025-01-01T00:00:00Z", "2025-01-01T00:02:15Z");
-    expect(result).toBe("2m 15s");
-  });
-
-  it("returns em-dash when endedAt is null and nowMs is omitted", () => {
-    const result = formatDuration("2025-01-01T00:00:00Z", null);
-    expect(result).toBe("—");
-  });
-
-  it("returns live elapsed time when endedAt is null and nowMs is supplied", () => {
-    const result = formatDuration(
-      "2025-01-01T00:00:00Z",
-      null,
-      new Date("2025-01-01T00:00:03Z").getTime(),
-    );
-    expect(result).toBe("3s");
-  });
-
-  it("returns live sub-minute elapsed from nowMs", () => {
-    const result = formatDuration(
-      "2025-01-01T00:00:00Z",
-      null,
-      new Date("2025-01-01T00:00:01Z").getTime(),
-    );
-    expect(result).toBe("1s");
-  });
-
-  it("returns live minute+second from nowMs", () => {
-    const result = formatDuration(
-      "2025-01-01T00:00:00Z",
-      null,
-      new Date("2025-01-01T00:01:45Z").getTime(),
-    );
-    expect(result).toBe("1m 45s");
+  it("counts live elapsed time from nowMs while running, or shows an em dash without it", () => {
+    expect(formatDuration(START, null)).toBe("—");
+    expect(formatDuration(START, null, Date.parse("2025-01-01T00:00:03Z"))).toBe("3s");
+    expect(formatDuration(START, null, Date.parse("2025-01-01T00:01:45Z"))).toBe("1m 45s");
   });
 });

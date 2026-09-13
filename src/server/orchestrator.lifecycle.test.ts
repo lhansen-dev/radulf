@@ -306,20 +306,6 @@ describe("Orchestrator cancellation lifecycle", () => {
     delete process.env.RADULF_DATA_DIR;
   });
 
-  it("uses Backlog as the storage default for new cards", () => {
-    db.insert(cards)
-      .values({
-        id: "default-backlog",
-        repoId: "repo-1",
-        title: "Default Backlog card",
-        createdAt: now(),
-        updatedAt: now(),
-      })
-      .run();
-
-    expect(getCard("default-backlog").status).toBe("backlog");
-  });
-
   it("moves a Backlog card to the end of Todo without starting it when auto-mode is off", () => {
     card("queued-before", "todo");
     db.update(cards).set({ position: 4 }).where(eq(cards.id, "queued-before")).run();

@@ -39,14 +39,11 @@ describe("docs registry", () => {
     }
   });
 
-  it("readDoc loads content for a known slug and returns null otherwise", async () => {
+  it("readDoc / getDocMeta / listDocs expose the registry, returning nothing for unknown slugs", async () => {
     const doc = await readDoc("how-it-works");
     expect(doc?.meta.slug).toBe("how-it-works");
     expect(doc?.content.length).toBeGreaterThan(0);
     expect(await readDoc("does-not-exist")).toBeNull();
-  });
-
-  it("getDocMeta / listDocs expose the registry", () => {
     expect(listDocs()).toBe(DOCS);
     expect(getDocMeta("how-it-works")?.sourcePath).toBe("docs/HOW_IT_WORKS.md");
     expect(getDocMeta("nope")).toBeUndefined();
@@ -91,65 +88,21 @@ describe("stripLayoutHtml", () => {
 });
 
 describe("resolveDocHref", () => {
-  it("keeps same-page anchors in place", () => {
-    expect(resolveDocHref("docs/HOW_IT_WORKS.md", "#card-states")).toEqual({
-      href: "#card-states",
-      external: false,
-    });
-  });
+  const GITHUB = "https://github.com/lhansen-dev/radulf/blob/main";
 
-  it("passes through http(s) and mailto as external", () => {
-    expect(resolveDocHref("README.md", "https://ghuntley.com/loop/")).toEqual({
-      href: "https://ghuntley.com/loop/",
-      external: true,
-    });
-    expect(resolveDocHref("README.md", "mailto:x@y.com").external).toBe(true);
-  });
-
-  it("neutralizes dangerous schemes", () => {
-    expect(resolveDocHref("README.md", "javascript:alert(1)")).toEqual({
-      href: "#",
-      external: false,
-    });
-  });
-
-  it("rewrites a relative cross-doc link between registered docs to a wiki route", () => {
-    // docs/DESIGN_HISTORY.md -> HOW_IT_WORKS.md resolves to docs/HOW_IT_WORKS.md
-    expect(resolveDocHref("docs/DESIGN_HISTORY.md", "HOW_IT_WORKS.md")).toEqual({
-      href: "/docs/how-it-works",
-      external: false,
-    });
-  });
-
-  it("sends links into specs/ out to GitHub now that specs are unregistered", () => {
-    // The design-history page links every spec this way, and the guides carry
-    // ../specs/ references of their own. None of them should dead-end.
-    expect(resolveDocHref("docs/DESIGN_HISTORY.md", "../specs/09-multi-harness.md")).toEqual({
-      href: "https://github.com/lhansen-dev/radulf/blob/main/specs/09-multi-harness.md",
-      external: true,
-    });
-    expect(resolveDocHref("docs/SANDBOXING.md", "../specs/14-sandboxing.md").external).toBe(
-      true,
-    );
-  });
-
-  it("preserves an anchor when rewriting to a wiki route", () => {
-    expect(resolveDocHref("docs/DESIGN_HISTORY.md", "SANDBOXING.md#role-capability-split")).toEqual(
-      { href: "/docs/sandboxing#role-capability-split", external: false },
-    );
-  });
-
-  it("preserves an anchor when sending a spec link to GitHub", () => {
-    expect(
-      resolveDocHref("docs/DESIGN_HISTORY.md", "../specs/00-overview.md#locked-decisions").href,
-    ).toBe(
-      "https://github.com/lhansen-dev/radulf/blob/main/specs/00-overview.md#locked-decisions",
-    );
-  });
-
-  it("sends unregistered relative files to GitHub so nothing dead-ends", () => {
-    const r = resolveDocHref("README.md", "LICENSE");
-    expect(r.external).toBe(true);
-    expect(r.href).toBe("https://github.com/lhansen-dev/radulf/blob/main/LICENSE");
+  it.each([
+    ["keeps a same-page anchor", "docs/HOW_IT_WORKS.md", "#card-states", "#card-states", false],
+    ["passes https through as external", "README.md", "https://ghuntley.com/loop/", "https://ghuntley.com/loop/", true],
+    ["passes mailto through as external", "README.md", "mailto:x@y.com", "mailto:x@y.com", true],
+    ["neutralizes a dangerous scheme", "README.md", "javascript:alert(1)", "#", false],
+    ["rewrites a relative link between registered docs to a wiki route", "docs/DESIGN_HISTORY.md", "HOW_IT_WORKS.md", "/docs/how-it-works", false],
+    ["keeps the anchor on a wiki route", "docs/DESIGN_HISTORY.md", "SANDBOXING.md#role-capability-split", "/docs/sandboxing#role-capability-split", false],
+    // specs/ is unregistered: links into it (from the design-history page and
+    // the guides' ../specs/ references) must not dead-end.
+    ["sends a spec link to GitHub", "docs/SANDBOXING.md", "../specs/14-sandboxing.md", `${GITHUB}/specs/14-sandboxing.md`, true],
+    ["keeps the anchor on a spec link", "docs/DESIGN_HISTORY.md", "../specs/00-overview.md#locked-decisions", `${GITHUB}/specs/00-overview.md#locked-decisions`, true],
+    ["sends any other unregistered file to GitHub", "README.md", "LICENSE", `${GITHUB}/LICENSE`, true],
+  ])("%s", (_label, from, href, expected, external) => {
+    expect(resolveDocHref(from, href)).toEqual({ href: expected, external });
   });
 });

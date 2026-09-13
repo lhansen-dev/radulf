@@ -25,110 +25,58 @@ afterEach(() => {
 });
 
 describe("CONN_ERROR_PATTERN", () => {
-  it("matches connection/auth-shaped errors", () => {
-    expect(CONN_ERROR_PATTERN.test("fetch failed")).toBe(true);
-    expect(CONN_ERROR_PATTERN.test("401 Unauthorized")).toBe(true);
-    expect(CONN_ERROR_PATTERN.test("ECONNREFUSED")).toBe(true);
-  });
-
-  it("does not match an unrelated failure", () => {
+  it("matches connection/auth-shaped errors only", () => {
+    for (const e of ["fetch failed", "401 Unauthorized", "ECONNREFUSED"]) {
+      expect(CONN_ERROR_PATTERN.test(e)).toBe(true);
+    }
     expect(CONN_ERROR_PATTERN.test("plan checklist unparseable")).toBe(false);
   });
 });
 
 describe("circuit breaker state machine", () => {
-  it("starts closed", () => {
-    expect(isProviderOpen("anthropic")).toBe(false);
-  });
+  const fail = (provider: Parameters<typeof recordProviderOutcome>[0], times: number) => {
+    for (let i = 0; i < times; i++) recordProviderOutcome(provider, false);
+  };
 
-  it("stays closed until the failure threshold is reached", () => {
-    recordProviderOutcome("anthropic", false);
+  it("opens on a per-provider consecutive-failure threshold, tracking providers independently", () => {
+    // omlx's threshold (2) is lower than anthropic's (3): a local process is
+    // expected to fail and recover fast, so it trips sooner.
     expect(isProviderOpen("anthropic")).toBe(false);
-    recordProviderOutcome("anthropic", false);
+    fail("anthropic", 2);
+    fail("omlx", 2);
     expect(isProviderOpen("anthropic")).toBe(false);
-  });
-
-  it("opens after the third consecutive failure and blocks calls within the cooldown", () => {
-    recordProviderOutcome("openrouter", false);
-    recordProviderOutcome("openrouter", false);
-    recordProviderOutcome("openrouter", false);
-    expect(isProviderOpen("openrouter")).toBe(true);
-  });
-
-  it("goes half-open (allowed through) once the cooldown elapses", () => {
-    vi.useFakeTimers();
-    recordProviderOutcome("omlx", false);
-    recordProviderOutcome("omlx", false);
-    recordProviderOutcome("omlx", false);
     expect(isProviderOpen("omlx")).toBe(true);
 
-    vi.advanceTimersByTime(61_000);
-    expect(isProviderOpen("omlx")).toBe(false);
-  });
-
-  it("half-open success closes the breaker", () => {
-    vi.useFakeTimers();
-    recordProviderOutcome("chatgpt", false);
-    recordProviderOutcome("chatgpt", false);
-    recordProviderOutcome("chatgpt", false);
-    vi.advanceTimersByTime(61_000);
-    expect(isProviderOpen("chatgpt")).toBe(false); // half-open probe allowed
-
-    recordProviderOutcome("chatgpt", true);
-    expect(isProviderOpen("chatgpt")).toBe(false);
-
-    // A single subsequent failure should not reopen it — the breaker was
-    // fully reset, not left mid-count.
-    recordProviderOutcome("chatgpt", false);
-    expect(isProviderOpen("chatgpt")).toBe(false);
-  });
-
-  it("half-open failure re-opens the breaker immediately", () => {
-    vi.useFakeTimers();
-    recordProviderOutcome("copilot", false);
-    recordProviderOutcome("copilot", false);
-    recordProviderOutcome("copilot", false);
-    vi.advanceTimersByTime(61_000);
-    expect(isProviderOpen("copilot")).toBe(false); // half-open probe allowed
-
-    recordProviderOutcome("copilot", false);
-    expect(isProviderOpen("copilot")).toBe(true);
-  });
-
-  it("tracks providers independently", () => {
-    recordProviderOutcome("anthropic", false);
-    recordProviderOutcome("anthropic", false);
-    recordProviderOutcome("anthropic", false);
+    fail("anthropic", 1);
     expect(isProviderOpen("anthropic")).toBe(true);
     expect(isProviderOpen("openrouter")).toBe(false);
   });
 
-  it("omlx trips open in fewer consecutive failures than anthropic (per-provider thresholds)", () => {
-    // omlx's failureThreshold (2) is lower than anthropic's (3) — a local
-    // process is expected to fail/recover fast, so it should trip sooner.
-    recordProviderOutcome("omlx", false);
-    expect(isProviderOpen("omlx")).toBe(false);
-    recordProviderOutcome("omlx", false);
-    expect(isProviderOpen("omlx")).toBe(true);
+  it("goes half-open after a per-provider cooldown: omlx's 15s elapses before anthropic's 60s", () => {
+    vi.useFakeTimers();
+    fail("omlx", 2);
+    fail("anthropic", 3);
 
-    // The same two failures leave anthropic's breaker (threshold 3) closed.
-    recordProviderOutcome("anthropic", false);
-    recordProviderOutcome("anthropic", false);
+    vi.advanceTimersByTime(16_000);
+    expect(isProviderOpen("omlx")).toBe(false);
+    expect(isProviderOpen("anthropic")).toBe(true);
+
+    vi.advanceTimersByTime(45_000);
     expect(isProviderOpen("anthropic")).toBe(false);
   });
 
-  it("omlx's cooldown (15s) elapses before anthropic's (60s)", () => {
+  it("closes fully on a half-open success, but re-opens immediately on a half-open failure", () => {
     vi.useFakeTimers();
-    recordProviderOutcome("omlx", false);
-    recordProviderOutcome("omlx", false);
-    recordProviderOutcome("anthropic", false);
-    recordProviderOutcome("anthropic", false);
-    recordProviderOutcome("anthropic", false);
-    expect(isProviderOpen("omlx")).toBe(true);
-    expect(isProviderOpen("anthropic")).toBe(true);
+    fail("chatgpt", 3);
+    fail("copilot", 3);
+    vi.advanceTimersByTime(61_000);
 
-    vi.advanceTimersByTime(16_000);
-    expect(isProviderOpen("omlx")).toBe(false); // omlx's 15s cooldown has elapsed
-    expect(isProviderOpen("anthropic")).toBe(true); // anthropic's 60s cooldown has not
+    recordProviderOutcome("chatgpt", true);
+    // Fully reset, not left mid-count: one more failure keeps it closed.
+    fail("chatgpt", 1);
+    expect(isProviderOpen("chatgpt")).toBe(false);
+
+    fail("copilot", 1);
+    expect(isProviderOpen("copilot")).toBe(true);
   });
 });

@@ -2,36 +2,13 @@ import { describe, it, expect } from "vitest";
 import { parseEvaluation } from "./evaluation";
 
 describe("parseEvaluation", () => {
-  it("parses an approve verdict with a note", () => {
-    expect(parseEvaluation("VERDICT: approve\n\nAll criteria pass.")).toEqual({
-      verdict: "approve",
-      feedback: "All criteria pass.",
-      findings: [],
-    });
-  });
-
-  it("parses an approve verdict without a note", () => {
-    expect(parseEvaluation("VERDICT: approve")).toEqual({
-      verdict: "approve",
-      feedback: "",
-      findings: [],
-    });
-  });
-
-  it("parses a revise verdict with feedback", () => {
-    expect(parseEvaluation("VERDICT: revise\n\nsrc/foo.ts never handles null.")).toEqual({
-      verdict: "revise",
-      feedback: "src/foo.ts never handles null.",
-      findings: [],
-    });
-  });
-
-  it("is case-insensitive and tolerates surrounding whitespace", () => {
-    expect(parseEvaluation("\n  verdict:  APPROVE  \nnote")).toEqual({
-      verdict: "approve",
-      feedback: "note",
-      findings: [],
-    });
+  it.each([
+    ["an approve verdict with a note", "VERDICT: approve\n\nAll criteria pass.", "approve", "All criteria pass."],
+    ["an approve verdict without a note", "VERDICT: approve", "approve", ""],
+    ["a revise verdict with feedback", "VERDICT: revise\n\nsrc/foo.ts never handles null.", "revise", "src/foo.ts never handles null."],
+    ["a verdict in any case with surrounding whitespace", "\n  verdict:  APPROVE  \nnote", "approve", "note"],
+  ])("parses %s, defaulting findings to []", (_label, content, verdict, feedback) => {
+    expect(parseEvaluation(content)).toEqual({ verdict, feedback, findings: [] });
   });
 
   it("rejects a revise verdict without feedback — nothing to act on", () => {
@@ -67,11 +44,6 @@ describe("parseEvaluation", () => {
           { severity: "suggestion", issue: "consider extracting a helper" },
         ],
       });
-    });
-
-    it("defaults to an empty array when no findings block is present (old-format compat)", () => {
-      const result = parseEvaluation("VERDICT: approve\n\nAll criteria pass.");
-      expect(result?.findings).toEqual([]);
     });
 
     it("fails the whole evaluation when the findings fence contains unparseable JSON", () => {
