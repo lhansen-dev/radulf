@@ -11,6 +11,7 @@ import {
   iterations,
   events,
   repos,
+  improvementRuns,
   type CardStatus,
 } from "@/db";
 import { emitEvent } from "./events";
@@ -528,6 +529,38 @@ export class Orchestrator {
         .limit(1)
         .get() !== undefined
     );
+  }
+
+  /** Throw a 409 while `repoId` has work that deleting the repo would orphan:
+   * a harness run in flight (or a loop still tearing down), a card holding the
+   * `reviewing` merge claim, or a running improvement run — including one
+   * still proposing before it has created a card. Synchronous, so a caller can
+   * delete the repo with no intervening await. */
+  assertRepoRemovable(repoId: string): void {
+    const reviewing = db
+      .select({ id: cards.id })
+      .from(cards)
+      .where(and(eq(cards.repoId, repoId), eq(cards.status, "reviewing")))
+      .limit(1)
+      .get();
+    if (this.pipelineBusy(repoId) || reviewing) {
+      throw new ClientError(
+        "cannot remove a repository while one of its tasks is running or merging — cancel it or wait for it to finish",
+        409,
+      );
+    }
+    const improvementRun = db
+      .select({ id: improvementRuns.id })
+      .from(improvementRuns)
+      .where(and(eq(improvementRuns.repoId, repoId), eq(improvementRuns.status, "running")))
+      .limit(1)
+      .get();
+    if (improvementRun) {
+      throw new ClientError(
+        "cannot remove a repository with a running improvement run — stop it and wait for its current task to finish",
+        409,
+      );
+    }
   }
 
   /** Advance every repo's queue independently. Each repo gets its own single

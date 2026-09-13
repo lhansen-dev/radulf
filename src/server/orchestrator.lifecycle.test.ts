@@ -81,6 +81,7 @@ const {
   db,
   cards,
   events,
+  improvementRuns,
   iterations,
   now,
   plans,
@@ -96,6 +97,7 @@ const { recordProviderOutcome } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
 const { POST: postAbandon } = await import("@/app/api/cards/[id]/abandon/route");
 const { pruneRuntimeHistory } = await import("./retention");
+const { DELETE: deleteRepo } = await import("@/app/api/repos/[id]/route");
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -261,6 +263,7 @@ async function settle() {
 describe("Orchestrator cancellation lifecycle", () => {
   beforeEach(() => {
     db.delete(worktrees).run();
+    db.delete(improvementRuns).run();
     db.delete(reviews).run();
     db.delete(iterations).run();
     db.delete(runs).run();
@@ -1396,6 +1399,87 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(getCard("active-abandon").status).toBe("looping");
       expect(getRun("active-abandon").status).toBe("running");
       expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("repository removal", () => {
+    function removeRepo1() {
+      return deleteRepo(new Request("http://localhost/api/repos/repo-1", { method: "DELETE" }), {
+        params: Promise.resolve({ id: "repo-1" }),
+      });
+    }
+
+    function repo1Exists() {
+      return db.select().from(repos).all().some((row) => row.id === "repo-1");
+    }
+
+    it.each(["planning", "looping", "evaluating", "reviewing"] as const)(
+      "refuses to remove a repository with a %s card",
+      async (status) => {
+        card("busy-card", status);
+        plan("busy-card");
+        completedRun("busy-card", "busy-run", { status: "running" });
+        routeOrchestrator();
+
+        const response = await removeRepo1();
+
+        expect(response.status).toBe(409);
+        expect((await response.json()).error).toMatch(/cannot remove a repository/);
+        expect(repo1Exists()).toBe(true);
+        expect(getCard("busy-card").status).toBe(status);
+        expect(getRun("busy-card").status).toBe("running");
+      },
+    );
+
+    it("refuses to remove a repository while a loop is still tearing down", async () => {
+      card("teardown-card", "needs_attention");
+      const orchestrator = routeOrchestrator();
+      (orchestrator as unknown as { activeLoopCards: Map<string, string> }).activeLoopCards.set(
+        "teardown-card",
+        "repo-1",
+      );
+
+      const response = await removeRepo1();
+
+      expect(response.status).toBe(409);
+      expect(repo1Exists()).toBe(true);
+    });
+
+    it("refuses to remove a repository whose improvement run is still proposing", async () => {
+      db.insert(improvementRuns)
+        .values({
+          id: "proposing-run",
+          repoId: "repo-1",
+          status: "running",
+          featureBranch: "ralph/improve-1",
+          baseBranch: "main",
+          deadlineAt: "2999-01-01T00:00:00.000Z",
+          createdAt: now(),
+          updatedAt: now(),
+        })
+        .run();
+      routeOrchestrator();
+
+      const response = await removeRepo1();
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toMatch(/improvement run/);
+      expect(repo1Exists()).toBe(true);
+      expect(db.select().from(improvementRuns).all()).toHaveLength(1);
+    });
+
+    it("removes an idle repository and its records", async () => {
+      card("idle-card", "review");
+      plan("idle-card");
+      completedRun("idle-card", "idle-run");
+      routeOrchestrator();
+
+      const response = await removeRepo1();
+
+      expect(response.status).toBe(200);
+      expect(repo1Exists()).toBe(false);
+      expect(db.select().from(cards).all()).toHaveLength(0);
+      expect(db.select().from(runs).all()).toHaveLength(0);
     });
   });
 

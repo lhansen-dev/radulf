@@ -877,6 +877,9 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   const [path, setPath] = useState("");
   const [branch, setBranch] = useState("");
   const [error, setError] = useState("");
+  // Shown on the row it belongs to — e.g. the conflict when a repo still has
+  // running work — rather than below the add form.
+  const [removeError, setRemoveError] = useState<{ repoId: string; message: string } | null>(null);
   const [picking, setPicking] = useState(false);
   const [notARepo, setNotARepo] = useState(false);
   const [emptyRepo, setEmptyRepo] = useState(false);
@@ -938,12 +941,16 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 <span className="rounded border border-foreground/10 px-1.5 py-0.5 font-mono text-[11px] text-foreground/50">{r.defaultBranch}</span>
               </div>
               <p title={r.path} className="mt-1.5 truncate font-mono text-xs text-foreground/45">{r.path}</p>
+              {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
             </div>
             <button
-              onClick={() =>
-                confirm(`Remove "${r.name}"? Its tasks and history will be deleted.`) &&
-                api(`/api/repos/${r.id}`, { method: "DELETE" }).then(onChange).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
-              }
+              onClick={() => {
+                if (!confirm(`Remove "${r.name}"? Its tasks and history will be deleted.`)) return;
+                setRemoveError(null);
+                api(`/api/repos/${r.id}`, { method: "DELETE" })
+                  .then(onChange)
+                  .catch((cause) => setRemoveError({ repoId: r.id, message: cause instanceof Error ? cause.message : String(cause) }));
+              }}
               className="min-h-11 px-2 text-xs text-red-400/70 hover:text-red-400"
             >
               Remove

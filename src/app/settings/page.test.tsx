@@ -53,6 +53,9 @@ describe("SettingsPage", () => {
         }
         return json(repositories);
       }
+      if (url.startsWith("/api/repos/") && init?.method === "DELETE") {
+        return json({ error: "cannot remove a repository while one of its tasks is running or merging" }, 409);
+      }
       if (url.startsWith("/api/providers/")) return json({
         models: [
           { value: "planner", displayName: "Planning model", description: "A planning model" },
@@ -95,6 +98,23 @@ describe("SettingsPage", () => {
     expect(savedSettings).toMatchObject({ theme: "nord", plannerModel: "custom/planner" });
     expect(document.documentElement.dataset.theme).toBe("nord");
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows a repository removal conflict on that repository's row", async () => {
+    repositories = [
+      { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", createdAt: "2026-09-12" },
+    ];
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    window.history.replaceState(null, "", "/settings#repos");
+    render(<SettingsPage />);
+    await screen.findByText("Busy repo");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "cannot remove a repository while one of its tasks is running or merging",
+    );
+    expect(screen.getByText("Busy repo")).toBeTruthy();
   });
 
   it("opens existing deep links and responds to browser history", async () => {
