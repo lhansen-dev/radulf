@@ -202,6 +202,33 @@ export function omlxProviderConfig(model: string, s: Settings) {
   };
 }
 
+/** The OpenRouter endpoint pi's installed `openai-completions` API expects. */
+const OPENROUTER_COMPLETIONS_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * Keep a refreshed OpenRouter catalog entry on the one API the installed pi
+ * can send to OpenRouter.
+ *
+ * pi.dev's remote catalog now lists OpenRouter's Anthropic models as
+ * `anthropic-messages` at `https://openrouter.ai/api`, which pi ≥ 0.85 can
+ * dispatch. The pinned 0.84 OpenRouter provider implements only
+ * `openai-completions` and ignores `model.api`, so it sent OpenAI-shaped
+ * requests to `https://openrouter.ai/api/chat/completions` and every run failed
+ * with OpenRouter's HTML 404 page. Re-shape those entries to match pi 0.84's
+ * bundled catalog for the same models. Remove this once pi is upgraded.
+ */
+export function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
+  m: M,
+): M {
+  if (m.api !== "anthropic-messages") return m;
+  return {
+    ...m,
+    api: "openai-completions",
+    baseUrl: OPENROUTER_COMPLETIONS_BASE_URL,
+    compat: { thinkingFormat: "openrouter", cacheControlFormat: "anthropic" },
+  };
+}
+
 /**
  * Resolve a concrete pi `Model` for a run, applying the blank-model rules and
  * the per-provider auth setup:
@@ -236,7 +263,7 @@ export async function resolveModel(
     // before calling it unserved, as for the subscription providers below.
     const m = runtime.getModel(pid, model) ?? (await refreshCatalogAndGetModel(runtime, pid, model));
     if (!m) throw new Error(`OpenRouter does not serve model "${model}"`);
-    return m;
+    return openRouterServableModel(m);
   }
 
   if (provider === "omlx") {

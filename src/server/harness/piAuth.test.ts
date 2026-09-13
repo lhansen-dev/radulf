@@ -160,6 +160,41 @@ describe("resolveModel — OpenRouter catalog miss", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("re-shapes an anthropic-messages catalog entry onto OpenRouter's completions API", async () => {
+    // pi 0.84's OpenRouter provider sends every model through
+    // openai-completions, so this entry would POST to /api/chat/completions.
+    const getModel = vi.fn().mockReturnValue({
+      id: "anthropic/claude-opus-5",
+      api: "anthropic-messages",
+      baseUrl: "https://openrouter.ai/api",
+      compat: { forceAdaptiveThinking: true },
+      thinkingLevelMap: { high: "high" },
+    });
+
+    await expect(
+      resolveModel(fakeRuntime(getModel), "openrouter", "anthropic/claude-opus-5", settings),
+    ).resolves.toEqual({
+      id: "anthropic/claude-opus-5",
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+      compat: { thinkingFormat: "openrouter", cacheControlFormat: "anthropic" },
+      thinkingLevelMap: { high: "high" },
+    });
+  });
+
+  it("leaves an openai-completions catalog entry untouched", async () => {
+    const model = {
+      id: "deepseek/deepseek-v4-flash",
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+    };
+    const getModel = vi.fn().mockReturnValue(model);
+
+    await expect(
+      resolveModel(fakeRuntime(getModel), "openrouter", "deepseek/deepseek-v4-flash", settings),
+    ).resolves.toBe(model);
+  });
+
   it("still reports the model unserved when the resync doesn't find it", async () => {
     const getModel = vi.fn().mockReturnValue(undefined);
 
