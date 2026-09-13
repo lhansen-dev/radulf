@@ -19,6 +19,7 @@
  *   6. Done flow         (performDoneBookkeeping)
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { firstUnchecked, markChecked } from "./checklist";
@@ -147,9 +148,12 @@ export function readIterationDone(ralphDir: string): string | null {
 
 /**
  * Build a progress-state string for stall detection: the `HEAD` commit hash,
- * any `git status --porcelain` output (non-empty = worktree is dirty), and
- * the current private-plan checklist.  Dirty state counts as progress so an
- * uncommitted useful edit is not mislabeled as "no activity".
+ * any `git status --porcelain` output (non-empty = worktree is dirty) plus a
+ * hash of the dirty content, and the current private-plan checklist.  Dirty
+ * state counts as progress so an uncommitted useful edit is not mislabeled as
+ * "no activity" — and the content hash matters because porcelain lists only
+ * paths: once a file is modified, further edits to it leave the status
+ * output byte-identical.
  */
 export async function buildProgressState(
   worktreePath: string,
@@ -159,8 +163,36 @@ export async function buildProgressState(
   const checklist = fs.existsSync(/* turbopackIgnore: true */ planPath)
     ? fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8")
     : "";
-  const dirty = (await tryGit(worktreePath, "status", "--porcelain")).out;
+  const status = (await tryGit(worktreePath, "status", "--porcelain")).out;
+  const dirty = status ? `${status}\n${await dirtyContentHash(worktreePath)}` : "";
   return `${head}\n${dirty}\n${checklist}`;
+}
+
+/**
+ * Hash of every uncommitted change: the tracked diff against HEAD (staged and
+ * unstaged alike) plus the path and bytes of each untracked, non-ignored file.
+ */
+async function dirtyContentHash(worktreePath: string): Promise<string> {
+  const hash = crypto.createHash("sha256");
+  hash.update(
+    (await tryGit(worktreePath, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD")).out,
+  );
+  const untracked = (await tryGit(worktreePath, "ls-files", "--others", "--exclude-standard", "-z")).out;
+  for (const rel of untracked.split("\0").filter(Boolean)) {
+    const abs = path.join(/* turbopackIgnore: true */ worktreePath, rel);
+    hash.update(`\0${rel}\0`);
+    try {
+      const stat = fs.lstatSync(/* turbopackIgnore: true */ abs);
+      hash.update(
+        stat.isSymbolicLink()
+          ? fs.readlinkSync(/* turbopackIgnore: true */ abs)
+          : fs.readFileSync(/* turbopackIgnore: true */ abs),
+      );
+    } catch {
+      // Removed between the listing and the read — the path alone still counts.
+    }
+  }
+  return hash.digest("hex");
 }
 
 /** Snapshot of the worktree taken just before a loop iteration runs. */
@@ -188,10 +220,21 @@ function statusWithoutSignal(status: string): string {
 }
 
 /**
- * Whether the iteration changed anything beyond writing the signal file:
- * a new HEAD (the agent committed) or any status delta other than
- * `.ralph/ITERATION_DONE`. Guards against phantom completions — tasks
- * marked done whose edits were never applied.
+ * Whether there is work to credit for this iteration's `ITERATION_DONE`:
+ * a new HEAD (the agent committed), or any uncommitted change other than
+ * `.ralph/ITERATION_DONE` — whether it appeared during this iteration or was
+ * already sitting in the worktree when it started. Guards against phantom
+ * completions — tasks marked done whose edits were never applied.
+ *
+ * Pre-existing changes count because every other writer to a loop worktree
+ * (planner, evaluator, this bookkeeping) commits its own output, so anything
+ * uncommitted is loop-agent work not yet accounted for — typically edits from
+ * an iteration that failed or timed out before signalling, or from an earlier
+ * run of the same card. The checklist only advances on a commit, so that work
+ * always belongs to the task still unchecked. Comparing only this iteration's
+ * delta instead used to wedge the loop: an agent that found the task already
+ * done had nothing left to change, so every completion was a phantom until the
+ * run stalled, and every retry reused the same dirty worktree.
  */
 export async function hasIterationWorkProduct(
   worktreePath: string,
@@ -200,7 +243,8 @@ export async function hasIterationWorkProduct(
   const current = await captureIterationState(worktreePath);
   return (
     current.head !== pre.head ||
-    statusWithoutSignal(current.status) !== statusWithoutSignal(pre.status)
+    statusWithoutSignal(pre.status) !== "" ||
+    statusWithoutSignal(current.status) !== ""
   );
 }
 
@@ -220,8 +264,9 @@ export async function hasIterationWorkProduct(
  *   - `git add -A && git commit` with a deterministic message
  *   - return `{ advanced: true, isLast, taskNumber, summary }`
  *
- * When `opts.pre` is provided and the iteration produced no work product
- * (no new HEAD, no status delta beyond the signal file), the completion is
+ * When `opts.pre` is provided and there is no work product (no new HEAD and
+ * no uncommitted change beyond the signal file — see
+ * `hasIterationWorkProduct`), the completion is
  * a phantom: the signal is removed, the checklist is NOT advanced, and
  * `{ advanced: false, phantom: true, ... }` is returned so the caller can
  * surface it — the unchanged worktree then feeds normal stall detection.
