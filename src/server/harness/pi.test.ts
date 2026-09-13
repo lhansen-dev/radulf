@@ -257,9 +257,12 @@ describe("piNormalize", () => {
     expect(norm(evt)).toEqual([{ t: "result", exit: "failed", detail: "429 rate limited" }]);
   });
 
-  it("ignores a successful auto_retry_end (falls through to raw)", () => {
+  it("keeps a successful auto_retry_end as raw and marks the retry completed", () => {
     const evt = { type: "auto_retry_end", success: true, attempt: 1 };
-    expect(norm(evt)).toEqual([{ t: "raw", line: JSON.stringify(evt) }]);
+    expect(norm(evt)).toEqual([
+      { t: "raw", line: JSON.stringify(evt) },
+      { t: "result", exit: "completed" },
+    ]);
   });
 
   it("preserves tool_execution_end and unknown events as raw", () => {

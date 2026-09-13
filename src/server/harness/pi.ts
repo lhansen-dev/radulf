@@ -357,6 +357,12 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
     return events;
   }
 
+  // pi retried a failed request and it went through: the error its message_end
+  // already reported is resolved, so the run must not end failed because of it.
+  if (evt.type === "auto_retry_end" && evt.success === true) {
+    return [...raw(), { t: "result", exit: "completed" }];
+  }
+
   if (evt.type === "auto_retry_end" && evt.success === false) {
     return [
       {

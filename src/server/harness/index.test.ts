@@ -19,6 +19,21 @@ describe("foldTranscriptEvent", () => {
     return totals;
   }
 
+  it("clears a request error that pi's auto-retry then recovered from", () => {
+    expect(
+      fold([
+        { t: "result", exit: "failed", detail: "Connection error." },
+        { t: "result", exit: "completed" },
+      ]).error,
+    ).toBe("");
+    expect(
+      fold([
+        { t: "result", exit: "failed", detail: "Connection error." },
+        { t: "result", exit: "failed", detail: "429 rate limited" },
+      ]).error,
+    ).toBe("429 rate limited");
+  });
+
   it("sums per-turn usage events and counts them as model turns", () => {
     const totals = fold([
       {

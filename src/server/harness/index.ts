@@ -190,6 +190,10 @@ export function foldTranscriptEvent(totals: TranscriptTotals, event: TranscriptE
   } else if (event.t === "result") {
     if (event.exit === "failed") {
       totals.error = event.detail ?? "unknown error";
+    } else {
+      // A completed result after a failed one (pi's successful auto-retry)
+      // supersedes it.
+      totals.error = "";
     }
     if (event.numTurns !== undefined) {
       totals.modelTurns = event.numTurns;
