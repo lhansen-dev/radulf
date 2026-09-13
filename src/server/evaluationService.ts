@@ -5,8 +5,6 @@ import { nanoid } from "nanoid";
 import { db, now, cards, plans, runs, repos, type CardStatus } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
-import { planStatePath } from "./bookkeeping";
-import { appendTask } from "./checklist";
 import { parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { runHarness, runTelemetry, type RunTelemetry } from "./harness";
@@ -27,11 +25,6 @@ type Run = typeof runs.$inferSelect;
  * re-looping it and escalates to the human, unresolved feedback attached —
  * an evaluator and a struggling loop must not ping-pong forever. */
 const MAX_EVALUATOR_REVISIONS = 2;
-/** Checklist task injected so the resumed loop picks the feedback up —
- * every iteration runs on an injected task, never on prose in PROMPT.md. */
-const EVALUATOR_FEEDBACK_TASK =
-  'Address the feedback in the "Evaluator feedback — address this first" section at the top of your prompt: fix every point it raises, then re-run the checks it names.';
-
 /** Evaluator attempts share a worktree, but never another attempt's verdict. */
 export function clearEvaluationArtifact(ralphDir: string) {
   fs.rmSync(
@@ -54,18 +47,6 @@ export function renderEvaluatorPrompt(
     .replaceAll("{{CRITERIA}}", criteria.trim() || "(no acceptance criteria were recorded)");
 }
 
-/**
- * Pure helper: a plan's PROMPT.md with any previous evaluator-feedback
- * preamble stripped, so only the newest verdict ever claims "address this
- * first". Reviewer (human) feedback sections are left untouched.
- */
-export function basePromptMd(promptMd: string): string {
-  if (!promptMd.startsWith("## Evaluator feedback — address this first\n")) return promptMd;
-  const separator = "\n\n---\n\n";
-  const index = promptMd.indexOf(separator);
-  return index === -1 ? promptMd : promptMd.slice(index + separator.length);
-}
-
 export type EvaluationServiceDependencies = {
   getCard(cardId: string): Card | undefined;
   latestPlan(cardId: string): Plan | undefined;
@@ -79,7 +60,9 @@ export type EvaluationServiceDependencies = {
   ): boolean;
   registerController(runId: string, controller: AbortController): void;
   releaseController(runId: string): void;
-  pump(): void;
+  /** Run the planner on a card already moved to `planning` — a revise verdict
+   * re-plans rather than re-entering the loop. */
+  replan(cardId: string): void;
   /** Run the human-approval merge path automatically (auto-approve). Reuses the
    * exact review flow — integrity re-check, merge, conflict re-loop — so
    * auto-approve never bypasses the load-bearing pre-merge checks. */
@@ -90,9 +73,8 @@ export type EvaluationServiceDependencies = {
  * Phase 3 — evaluate a DONE-signalled loop before human review. The
  * evaluator is the sole whole-card verifier: it runs CRITERIA.md and reads
  * the diff, then writes a verdict to `.ralph/EVALUATION.md`: `approve`
- * forwards the card to review with the evaluation attached; `revise` writes
- * the feedback into plan v(n+1) and hands the card straight back to the
- * loop. A missing or malformed verdict fails loudly to needs_attention —
+ * forwards the card to review with the evaluation attached; `revise` records
+ * the feedback on the run and sends the card back to the planner. A missing or malformed verdict fails loudly to needs_attention —
  * never a silent pass-through.
  */
 export class EvaluationService {
@@ -392,46 +374,19 @@ export class EvaluationService {
         return;
       }
 
-      // A revise that re-loops carries only the verdict artifact back (the
-      // prompt forbids doc edits on revise, so `.ralph` is all that changed).
+      // A revise goes back to the planner, not straight to the loop: it
+      // re-plans on top of the branch with this feedback in its prompt (see
+      // `pendingReplanFeedback`). Only the verdict artifact is committed — the
+      // prompt forbids doc edits on revise, so `.ralph` is all that changed.
       await tryGit(loopRun.worktreePath, "add", ".ralph");
       await tryGit(loopRun.worktreePath, "commit", "-m", "ralph: evaluation — revise");
-
-      const promptMd = `## Evaluator feedback — address this first\n\n${evaluation.feedback}\n\n---\n\n${basePromptMd(plan.promptMd)}`;
-      const revisionPlanId = nanoid();
-      const planPath = planStatePath(cardId);
-      if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) {
-        throw new Error("evaluator cannot requeue feedback: private plan state is missing");
-      }
-      const updatedPlanState = appendTask(
-        fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
-        EVALUATOR_FEEDBACK_TASK,
-      );
-      try {
-        db.insert(plans)
-          .values({
-            id: revisionPlanId,
-            cardId,
-            version: plan.version + 1,
-            // Snapshot the checklist this revision actually runs — ticks and
-            // the appended feedback task included — so the version history
-            // shows each PLAN.md as it was, not a copy of the planner's.
-            planMd: updatedPlanState,
-            promptMd,
-            acceptanceCriteria: plan.acceptanceCriteria,
-            feedback: evaluation.feedback,
-            createdAt: now(),
-          })
-          .run();
-        fs.writeFileSync(/* turbopackIgnore: true */ planPath, updatedPlanState);
-      } catch (error) {
-        db.delete(plans).where(eq(plans.id, revisionPlanId)).run();
-        throw error;
-      }
-      emitEvent("plan.created", { cardId, runId, payload: { version: plan.version + 1 } });
+      db.update(runs).set({ feedback: evaluation.feedback }).where(eq(runs.id, runId)).run();
       deps.finishRun(runId, "completed", "revise", runTelemetry(result));
-      deps.moveCard(cardId, "evaluating", "ready", "evaluator requested changes");
-      deps.pump();
+      // The card keeps its repo's pipeline slot: straight into planning,
+      // never back through a queue another card could claim first.
+      if (deps.moveCard(cardId, "evaluating", "planning", "evaluator requested changes — re-planning")) {
+        deps.replan(cardId);
+      }
     } catch (error) {
       if (!controller.signal.aborted) {
         const reason = `evaluator failed: ${error instanceof Error ? error.message : String(error)}`;

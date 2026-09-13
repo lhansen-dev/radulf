@@ -9,10 +9,10 @@ three agents. This page is the map.
    you write        ┌──────────────── the pipeline ────────────────┐        you judge
                     │                                              │
   Backlog ──▶ Todo ─┼─▶ Plan ──▶ Loop ──▶ Evaluate ──▶ ...         ─┼─▶ In Review ──▶ Done
-                    │             ▲          │                     │
-                    │             └──────────┘                     │
-                    │           revise: feedback becomes           │
-                    │           the loop's next task               │
+                    │    ▲                   │                     │
+                    │    └───────────────────┘                     │
+                    │    revise: re-plan with the                  │
+                    │    evaluator's feedback                      │
                     └──────────────────────────────────────────────┘
                                        │
                                        └──▶ Needs Attention (stuck, capped, or errored)
@@ -35,9 +35,10 @@ directly.
 deliberately not the agent that did the work. It independently inspects the diff
 and runs every acceptance criterion, then returns one of two verdicts:
 
-- **revise** — concrete feedback, which becomes the loop's next assigned task.
-  The card goes back to step 2. This can happen twice; a third would escalate
-  the card to you instead of burning more budget.
+- **revise** — concrete feedback, which goes back to the planner. The card
+  returns to step 1: the planner writes a new plan on top of the work already on
+  the branch, and the loop and evaluator run again. This can happen twice; a
+  third would escalate the card to you instead of burning more budget.
 - **approve** — the change is cleared and the card moves to In Review. On
   approve the evaluator also writes the card summary and refreshes any
   documentation the change made stale.

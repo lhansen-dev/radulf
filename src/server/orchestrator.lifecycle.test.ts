@@ -519,8 +519,8 @@ describe("Orchestrator cancellation lifecycle", () => {
       );
 
       // The rejection is spent: restarting now goes to the loop, not the planner.
-      const { pendingRejectionFeedback } = await import("./planningService");
-      expect(pendingRejectionFeedback("rejected-replan")).toBeNull();
+      const { pendingReplanFeedback } = await import("./planningService");
+      expect(pendingReplanFeedback("rejected-replan")).toBeNull();
     });
 
     it("persists the planner's telemetry on the plan run row", async () => {
@@ -978,7 +978,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(reviews).all()).toHaveLength(0);
     });
 
-    it("turns a revise verdict into the loop's next assigned task", async () => {
+    it("sends a revise verdict back to the planner with its feedback", async () => {
       card("evaluate-revise");
       plan("evaluate-revise");
       const resumedLoop = deferred<never>();
@@ -994,34 +994,52 @@ describe("Orchestrator cancellation lifecycle", () => {
           );
           return successfulHarnessResult;
         })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writePlannerArtifacts(cwd, {
+            ...completePlannerArtifacts,
+            "PLAN.md": "## Tasks\n- [ ] handle the empty input\n",
+          });
+          return successfulHarnessResult;
+        })
         .mockReturnValueOnce(resumedLoop.promise);
       const orchestrator = new Orchestrator({ autoStart: false });
 
       orchestrator.startCard("evaluate-revise");
-      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(3));
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(4));
 
       expect(getCard("evaluate-revise").status).toBe("looping");
+      expect(mocks.runHarness.mock.calls.map((call) => call[0].role)).toEqual([
+        "loop",
+        "evaluator",
+        "planner",
+        "loop",
+      ]);
+      const plannerPrompt = String(mocks.runHarness.mock.calls[2][0].prompt);
+      expect(plannerPrompt).toContain("PREVIOUS ATTEMPT — REVIEWER FEEDBACK");
+      expect(plannerPrompt).toContain("src/feature.ts does not handle the empty-input case.");
+      const evaluateRun = db
+        .select()
+        .from(runs)
+        .all()
+        .find((row) => row.cardId === "evaluate-revise" && row.kind === "evaluate")!;
+      expect(evaluateRun).toMatchObject({
+        exitReason: "revise",
+        feedback: "src/feature.ts does not handle the empty-input case.",
+      });
+
+      // The planner, not the evaluator, writes v2 — carrying the feedback.
       const cardPlans = db
         .select()
         .from(plans)
         .all()
         .filter((row) => row.cardId === "evaluate-revise")
         .sort((a, b) => a.version - b.version);
-      expect(cardPlans).toHaveLength(2);
-      expect(cardPlans[1]).toMatchObject({
-        version: 2,
-        feedback: "src/feature.ts does not handle the empty-input case.",
-      });
-      expect(cardPlans[1].promptMd).toContain("Evaluator feedback — address this first");
-      expect(String(mocks.runHarness.mock.calls[2][0].prompt)).toContain(
-        "Address the feedback in the \"Evaluator feedback — address this first\" section",
-      );
-      expect(fs.readFileSync(planStatePath("evaluate-revise"), "utf8")).toContain(
-        "Address the feedback in the \"Evaluator feedback — address this first\" section",
-      );
-      // v2 records the checklist it runs, not a copy of v1's.
-      expect(cardPlans[1].planMd).toBe(fs.readFileSync(planStatePath("evaluate-revise"), "utf8"));
-      expect(cardPlans[1].planMd).toContain("- [x] implement the task");
+      expect(cardPlans.map((row) => [row.version, row.feedback])).toEqual([
+        [1, null],
+        [2, "src/feature.ts does not handle the empty-input case."],
+      ]);
+      expect(cardPlans[1].planMd).toBe("## Tasks\n- [ ] handle the empty input");
+      expect(String(mocks.runHarness.mock.calls[3][0].prompt)).toContain("handle the empty input");
 
       // Each iteration records the task it was given and whether it got ticked.
       const iterationTasks = db
@@ -1036,12 +1054,7 @@ describe("Orchestrator cancellation lifecycle", () => {
         }));
       expect(iterationTasks).toEqual([
         { taskNumber: 1, taskCount: 1, taskText: "implement the task", taskCompleted: 1 },
-        {
-          taskNumber: 2,
-          taskCount: 2,
-          taskText: expect.stringContaining("Address the feedback"),
-          taskCompleted: null,
-        },
+        { taskNumber: 1, taskCount: 1, taskText: "handle the empty input", taskCompleted: null },
       ]);
 
       orchestrator.cancelCard("evaluate-revise");

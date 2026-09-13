@@ -134,6 +134,9 @@ export const runs = sqliteTable("runs", {
   baseBranch: text("base_branch"),
   iterationsDone: integer("iterations_done").notNull().default(0),
   exitReason: text("exit_reason"),
+  // An evaluate run's feedback on a `revise` verdict — what the planner
+  // re-plans from (see planningService's `pendingReplanFeedback`).
+  feedback: text("feedback"),
   startedAt: text("started_at").notNull(),
   endedAt: text("ended_at"),
   provider: text("provider"),

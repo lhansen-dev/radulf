@@ -11,7 +11,7 @@ const execFileAsync = promisify(execFile);
 // Direct unit tests for EvaluationService — the orchestrator-level lifecycle
 // tests exercise the happy paths (approve, revise-with-zero-priors,
 // revise-with-three-priors); this file drives MAX_EVALUATOR_REVISIONS to its
-// exact boundary instead: revision #2 must still re-loop, revision #3 must
+// exact boundary instead: revision #2 must still re-plan, revision #3 must
 // trip the cap. See PLAN.md Phase 11.
 
 const mocks = vi.hoisted(() => ({
@@ -57,7 +57,6 @@ process.env.RADULF_DATA_DIR = testDataDir;
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
 const { EvaluationService } = await import("./evaluationService");
-const { planStatePath } = await import("./bookkeeping");
 
 function seedRepo() {
   db.insert(repos)
@@ -179,14 +178,6 @@ function seedPriorRevisions(cardId: string, count: number) {
   }
 }
 
-/** Seed the orchestrator-private PLAN.md a revise verdict appends its
- * feedback task to (evaluationService.ts throws if this is missing). */
-function seedPlanState(cardId: string) {
-  const p = planStatePath(cardId);
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, "## Tasks\n- [ ] implement the thing\n");
-}
-
 /** Queue runHarness to write EVALUATION.md as a side effect, mirroring what
  * the real evaluator harness does. Must be a mock side effect, not written
  * ahead of the call — runEvaluator unconditionally clears any pre-existing
@@ -216,7 +207,7 @@ function makeDeps() {
     finishRun: vi.fn(() => true),
     registerController: vi.fn(),
     releaseController: vi.fn(),
-    pump: vi.fn(),
+    replan: vi.fn(),
     approveReview: vi.fn(async () => ({ ok: true })),
   };
 }
@@ -258,7 +249,7 @@ describe("EvaluationService.runEvaluator", () => {
     expect(mocks.runHarness).toHaveBeenCalledWith(
       expect.objectContaining({ timeoutMs: 17 * 60 * 1000 }),
     );
-    expect(deps.pump).not.toHaveBeenCalled();
+    expect(deps.replan).not.toHaveBeenCalled();
     expect(deps.approveReview).not.toHaveBeenCalled();
   });
 
@@ -327,7 +318,6 @@ describe("EvaluationService.runEvaluator", () => {
     const planId = seedPlan("card-revise-below-cap");
     seedLoopRun("card-revise-below-cap", planId);
     seedPriorRevisions("card-revise-below-cap", 1);
-    seedPlanState("card-revise-below-cap");
     mockEvaluationVerdict("VERDICT: revise\n\nStill missing tests.");
     const deps = makeDeps();
 
@@ -336,21 +326,29 @@ describe("EvaluationService.runEvaluator", () => {
     expect(deps.moveCard).toHaveBeenCalledWith(
       "card-revise-below-cap",
       "evaluating",
-      "ready",
-      "evaluator requested changes",
+      "planning",
+      "evaluator requested changes — re-planning",
     );
     expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "revise", expect.any(Object));
-    expect(deps.pump).toHaveBeenCalledTimes(1);
-
-    // A new plan version was queued rather than escalating to human review.
-    const versions = db
+    // Re-planned rather than escalated to human review; the planner, not the
+    // evaluator, writes the next plan version.
+    expect(deps.replan).toHaveBeenCalledWith("card-revise-below-cap");
+    expect(
+      db.select().from(plans).where(eq(plans.cardId, "card-revise-below-cap")).all(),
+    ).toHaveLength(1);
+    // finishRun is mocked, so this run is the one evaluate row still running.
+    const evaluateRun = db
       .select()
-      .from(plans)
-      .where(eq(plans.cardId, "card-revise-below-cap"))
-      .all()
-      .map((p) => p.version)
-      .sort();
-    expect(versions).toEqual([1, 2]);
+      .from(runs)
+      .where(
+        and(
+          eq(runs.cardId, "card-revise-below-cap"),
+          eq(runs.kind, "evaluate"),
+          eq(runs.status, "running"),
+        ),
+      )
+      .get();
+    expect(evaluateRun?.feedback).toBe("Still missing tests.");
   });
 
   it("trips MAX_EVALUATOR_REVISIONS exactly at 2 prior revisions — not 1 before, not 3 after", async () => {
@@ -358,7 +356,6 @@ describe("EvaluationService.runEvaluator", () => {
     const planId = seedPlan("card-revise-at-cap");
     seedLoopRun("card-revise-at-cap", planId);
     seedPriorRevisions("card-revise-at-cap", 2);
-    seedPlanState("card-revise-at-cap");
     mockEvaluationVerdict("VERDICT: revise\n\nStill missing tests.");
     const deps = makeDeps();
 
@@ -376,10 +373,10 @@ describe("EvaluationService.runEvaluator", () => {
       "revise — revision limit reached",
       expect.any(Object),
     );
-    // The capped path never re-queues the loop.
-    expect(deps.pump).not.toHaveBeenCalled();
+    // The capped path never re-plans.
+    expect(deps.replan).not.toHaveBeenCalled();
 
-    // No new plan version — the card escalates instead of looping again.
+    // No new plan version — the card escalates instead of going round again.
     const versions = db
       .select()
       .from(plans)

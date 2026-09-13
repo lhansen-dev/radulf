@@ -47,23 +47,15 @@ export function renderPlanPrompt(
 }
 
 /**
- * The feedback from a human rejection the planner has not planned from yet.
+ * Feedback the planner has not re-planned from yet: a human rejection of the
+ * diff, or an evaluator `revise` verdict.
  *
- * A rejected diff goes back through planning rather than straight to the loop,
- * so a pending rejection is also what tells `startCard` to re-plan a card that
- * already has a plan. "Pending" means the rejected loop ran on the card's
- * latest plan — once the planner writes a new version, the rejection is spent.
+ * Both send the card back through planning rather than straight to the loop,
+ * so pending feedback is also what tells `startCard` to re-plan a card that
+ * already has a plan. "Pending" means the feedback was given on the card's
+ * latest plan — once the planner writes a new version, it is spent.
  */
-export function pendingRejectionFeedback(cardId: string): string | null {
-  const rejection = db
-    .select({ feedback: reviews.feedback, planId: runs.planId })
-    .from(reviews)
-    .innerJoin(runs, eq(reviews.runId, runs.id))
-    .where(and(eq(runs.cardId, cardId), eq(reviews.decision, "rejected")))
-    .orderBy(desc(reviews.createdAt))
-    .limit(1)
-    .get();
-  if (!rejection?.feedback || !rejection.planId) return null;
+export function pendingReplanFeedback(cardId: string): string | null {
   const latest = db
     .select({ id: plans.id })
     .from(plans)
@@ -71,7 +63,35 @@ export function pendingRejectionFeedback(cardId: string): string | null {
     .orderBy(desc(plans.version))
     .limit(1)
     .get();
-  return latest?.id === rejection.planId ? rejection.feedback : null;
+  if (!latest) return null;
+  const rejection = db
+    .select({ feedback: reviews.feedback, at: reviews.createdAt })
+    .from(reviews)
+    .innerJoin(runs, eq(reviews.runId, runs.id))
+    .where(
+      and(eq(runs.cardId, cardId), eq(runs.planId, latest.id), eq(reviews.decision, "rejected")),
+    )
+    .orderBy(desc(reviews.createdAt))
+    .limit(1)
+    .get();
+  const revise = db
+    .select({ feedback: runs.feedback, at: runs.startedAt })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.cardId, cardId),
+        eq(runs.planId, latest.id),
+        eq(runs.kind, "evaluate"),
+        eq(runs.exitReason, "revise"),
+      ),
+    )
+    .orderBy(desc(runs.startedAt))
+    .limit(1)
+    .get();
+  const newest = [rejection, revise]
+    .filter((row) => row?.feedback)
+    .sort((a, b) => b!.at.localeCompare(a!.at))[0];
+  return newest?.feedback ?? null;
 }
 
 /**
@@ -171,7 +191,7 @@ export class PlanningService {
       return;
     }
     const prevPlan = deps.latestPlan(cardId);
-    const rejectionFeedback = pendingRejectionFeedback(cardId);
+    const replanFeedback = pendingReplanFeedback(cardId);
     try {
       // Circuit breaker: a provider with recent connection/auth failures
       // fails this run fast instead of repeating the same slow failure.
@@ -197,7 +217,7 @@ export class PlanningService {
             settings.plannerPromptTemplate,
             card.title,
             card.description,
-            rejectionFeedback ?? prevPlan?.feedback ?? undefined,
+            replanFeedback ?? prevPlan?.feedback ?? undefined,
           ),
           cwd: worktreePath,
           transcriptPath: planTranscriptPath,
@@ -297,7 +317,7 @@ export class PlanningService {
           planMd: contents["PLAN.md"],
           promptMd: contents["PROMPT.md"],
           acceptanceCriteria: contents["CRITERIA.md"],
-          feedback: rejectionFeedback,
+          feedback: replanFeedback,
           createdAt: now(),
         })
         .run();

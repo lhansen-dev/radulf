@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, it, expect } from "vitest";
 import { planningCandidates } from "./orchestrator";
 import { planningDestination, renderPlanPrompt } from "./planningService";
-import { basePromptMd, renderEvaluatorPrompt } from "./evaluationService";
+import { renderEvaluatorPrompt } from "./evaluationService";
 import {
   buildProgressState,
   captureIterationState,
@@ -954,20 +954,3 @@ describe("phantom-completion guard", () => {
   });
 });
 
-describe("basePromptMd", () => {
-  const original = "# Ralph Prompt\n\nDo the work.";
-
-  it("returns a prompt without an evaluator preamble unchanged", async () => {
-    expect(basePromptMd(original)).toBe(original);
-  });
-
-  it("strips a previous evaluator-feedback preamble", async () => {
-    const stacked = `## Evaluator feedback — address this first\n\nold feedback\n\n---\n\n${original}`;
-    expect(basePromptMd(stacked)).toBe(original);
-  });
-
-  it("leaves reviewer-feedback preambles untouched", async () => {
-    const reviewer = `## Reviewer feedback — address this first\n\nhuman words\n\n---\n\n${original}`;
-    expect(basePromptMd(reviewer)).toBe(reviewer);
-  });
-});

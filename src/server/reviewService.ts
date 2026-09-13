@@ -189,7 +189,7 @@ export class ReviewService {
   /**
    * A rejected diff goes back to the planner, not straight to the loop: the
    * planner re-plans on top of the branch with the feedback in its prompt
-   * (see `pendingRejectionFeedback`). The card waits in Todo as a manual
+   * (see `pendingReplanFeedback`). The card waits in Todo as a manual
    * start, so `pump` plans it as soon as the repo's pipeline slot is free.
    */
   reject(runId: string, feedback: string) {

@@ -41,7 +41,7 @@ import {
   currentBranch,
 } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
-import { PlanningService, pendingRejectionFeedback } from "./planningService";
+import { PlanningService, pendingReplanFeedback } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService } from "./reviewService";
 import { ClientError } from "./clientError";
@@ -134,7 +134,13 @@ export class Orchestrator {
       this.finishRun(runId, status, exitReason, undefined, telemetry),
     registerController: (runId, controller) => this.controllers.set(runId, controller),
     releaseController: (runId) => this.controllers.delete(runId),
-    pump: () => this.pump(),
+    replan: (cardId) => {
+      void this.planningService.runPlanning(cardId).catch((err) => {
+        if (this.getCard(cardId)?.status === "planning") {
+          this.moveCard(cardId, "planning", "needs_attention", String(err));
+        }
+      });
+    },
     // "auto": the evaluator released this diff, not a human. Spec 15 makes a
     // pull request delivered this way a draft.
     approveReview: (runId) => this.reviewService.approve(runId, "auto"),
@@ -313,9 +319,10 @@ export class Orchestrator {
     if (!card.startedAt)
       db.update(cards).set({ startedAt: now() }).where(eq(cards.id, cardId)).run();
 
-    if (this.latestPlan(cardId) && !pendingRejectionFeedback(cardId)) {
+    if (this.latestPlan(cardId) && !pendingReplanFeedback(cardId)) {
       // Restart path — plan exists, go straight to the loop queue. A card
-      // whose diff was rejected falls through: rejections re-plan first.
+      // with unplanned feedback (a rejection or an evaluator revise) falls
+      // through: feedback re-plans first.
       this.moveCard(cardId, card.status, "ready");
       this.pump();
     } else if (this.pipelineBusy(card.repoId)) {

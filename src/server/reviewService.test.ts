@@ -29,7 +29,7 @@ process.env.RADULF_DATA_DIR = testDataDir;
 const { db, cards, plans, runs, repos, reviews, now } = await import("@/db");
 const { ReviewService } = await import("./reviewService");
 const { planStatePath } = await import("./bookkeeping");
-const { pendingRejectionFeedback } = await import("./planningService");
+const { pendingReplanFeedback } = await import("./planningService");
 
 function seedRepo() {
   db.insert(repos)
@@ -156,7 +156,7 @@ describe("ReviewService — feedback re-entry", () => {
     const versions = db.select().from(plans).where(eq(plans.cardId, "card-reject")).all().map((p) => p.version);
     expect(versions).toEqual([1]);
     expect(fs.readFileSync(planStatePath("card-reject"), "utf8")).toBe(before);
-    expect(pendingRejectionFeedback("card-reject")).toBe("Please handle the empty-input case.");
+    expect(pendingReplanFeedback("card-reject")).toBe("Please handle the empty-input case.");
   });
 
   it("a rejection stops being pending once the planner writes a newer plan", () => {
@@ -165,10 +165,10 @@ describe("ReviewService — feedback re-entry", () => {
     const { id: runId } = seedLoopRun("card-replanned", planId);
 
     new ReviewService(makeDeps()).reject(runId, "Rename the flag.");
-    expect(pendingRejectionFeedback("card-replanned")).toBe("Rename the flag.");
+    expect(pendingReplanFeedback("card-replanned")).toBe("Rename the flag.");
 
     seedPlan("card-replanned", 2);
-    expect(pendingRejectionFeedback("card-replanned")).toBeNull();
+    expect(pendingReplanFeedback("card-replanned")).toBeNull();
   });
 
   it("does not touch the plan state when reject() throws before claiming the run", () => {

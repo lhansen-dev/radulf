@@ -5,7 +5,7 @@ Radulf is a local-first agent loop that turns a task into a reviewable diff.
 You describe a coding task against a Git repo on your machine. Radulf's agents
 take it from there: one plans the work, one implements it inside an isolated copy
 of your repo, and one checks the result against acceptance criteria — sending
-concrete failures back through the loop until they hold. What comes back to you
+concrete failures back to the planner until they hold. What comes back to you
 is a diff. You approve it, and Radulf merges.
 
 ```
@@ -26,7 +26,7 @@ The loop is self-driving by degrees, and you pick the degree:
 - **Auto Mode** (on by default) claims the next queued task as soon as a loop
   slot frees, so the queue drains without you pressing Start.
 - The **evaluator** is the machine gate before you see anything. It runs the
-  acceptance criteria and returns concrete failures to the loop; you only get
+  acceptance criteria and returns concrete failures to the planner; you only get
   handed work it already believes is done.
 - **[Improvement Runs](IMPROVEMENT_RUNS.md)** close the last gap. Radulf proposes
   its own next improvement to a repo, drives it end to end on auto-approve, and
