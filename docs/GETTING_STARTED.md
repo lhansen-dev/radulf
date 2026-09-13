@@ -50,14 +50,15 @@ know why, [Providers and models](PROVIDERS.md#the-five-providers) explains where
 the credential lands and what goes wrong otherwise.
 
 OpenRouter and oMLX need no login at all — set an API key or a base URL on the
-**Settings** page instead. The full matrix is in
+**Settings → Providers & keys** page instead. The full matrix is in
 [Providers and models](PROVIDERS.md).
 
 ## Your first card
 
-1. **Register a repo.** Give it a name, an absolute path, and its default
-   branch. Radulf never writes to this checkout except when merging an approved
-   card.
+1. **Register a repo.** Open **Settings → Repositories → Add repository**.
+   Give it a name, choose its folder (or type an absolute path), and set its
+   default branch or leave it blank to auto-detect. Radulf never writes to this
+   checkout except when merging an approved card.
 2. **Write a card.** A title, and a description that states the definition of
    done. Be concrete about what "finished" means — the evaluator will hold the
    loop to exactly that. The card lands in **Backlog**, where nothing will start

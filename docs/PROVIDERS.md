@@ -35,8 +35,8 @@ are available for the provider.
 
 ## Configuring a role
 
-Open **Settings** in the app. Each of the three roles — planner, loop, and
-evaluator — gets its own three pickers:
+Open **Settings → Agents & models** in the app. Each of the three roles —
+planner, loop, and evaluator — gets its own three pickers:
 
 - **Provider** — one of the five above.
 - **Model** — a model id. Leaving it blank means "the subscription's default
@@ -44,6 +44,13 @@ evaluator — gets its own three pickers:
 - **Reasoning level** — pi's thinking level, defaulting to **medium**. Because
   everything runs through one harness this applies across every provider; pi
   clamps a level a given model does not support to the nearest one it honors.
+
+Use **Browse available models** to expand a short model list, or type in the
+model field to search. **Load models** saves your settings and refreshes the
+provider's list. Configure API keys and the local server under
+**Providers & keys**, and time and iteration budgets under **Run limits**.
+Edits stay with you as you switch sections; **Save settings** at the top applies
+them together.
 
 Cards can also carry per-card model overrides, which is what lets you pause a
 struggling loop, raise its model, and continue.
