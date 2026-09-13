@@ -19,7 +19,6 @@ type Card = typeof cards.$inferSelect;
 type Plan = typeof plans.$inferSelect;
 type Run = typeof runs.$inferSelect;
 
-const PLAN_TIMEOUT_MS = 30 * 60 * 1000;
 const RALPH_FILES = ["PLAN.md", "CRITERIA.md", "PROMPT.md"] as const;
 const PLANNER_FILES = ["QUESTIONS.md", ...RALPH_FILES] as const;
 
@@ -173,7 +172,7 @@ export class PlanningService {
           ),
           cwd: worktreePath,
           transcriptPath: planTranscriptPath,
-          timeoutMs: PLAN_TIMEOUT_MS,
+          timeoutMs: settings.plannerTimeoutMinutes * 60 * 1000,
           signal: controller.signal,
           role: "planner",
           runContext: ctx,

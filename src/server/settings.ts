@@ -41,11 +41,17 @@ export const SETTING_DEFAULTS = {
   plannerReasoningLevel: "medium",
   loopReasoningLevel: "medium",
   evaluatorReasoningLevel: "medium",
+  // A planning pass is one harness invocation, separate from the loop's
+  // card-wide budget below.
+  plannerTimeoutMinutes: 30,
   defaultMaxIterations: 50,
   defaultTimeoutMinutes: 60,
   // Spec 11: per-iteration hard cap, always bounded by the run's remaining
   // timeout. A single timeout retries once; two consecutive ones end the run.
   iterationHardTimeoutMinutes: 10,
+  // Like planning, evaluation is one harness invocation after a completed
+  // loop, rather than part of the loop's card-wide budget.
+  evaluatorTimeoutMinutes: 10,
   // Kill ANY harness invocation that emits nothing for this long — planner,
   // loop, evaluator, improvement proposer, planner chat. A hung provider
   // stream, dropped wifi, or laptop sleep otherwise burns that call's whole
@@ -144,9 +150,11 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "openPr",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
+  plannerTimeoutMinutes: [1, 10_080],
   defaultMaxIterations: [1, 1_000],
   defaultTimeoutMinutes: [1, 10_080],
   iterationHardTimeoutMinutes: [1, 1_440],
+  evaluatorTimeoutMinutes: [1, 10_080],
   stallTimeoutSeconds: [30, 86_400],
 };
 /** Renamed keys, old → new. `getSettings` replays a stored legacy row onto its

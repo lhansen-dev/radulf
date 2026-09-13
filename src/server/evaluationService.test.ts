@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
     evaluatorProvider: "anthropic",
     evaluatorModel: "evaluator-model",
     evaluatorReasoningLevel: "medium",
+    evaluatorTimeoutMinutes: 10,
     evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}\n{{CRITERIA}}",
     // Lifecycle tests use plain mkdtemp worktrees, not real git repos — same
     // reasoning applies here: sandboxEnabled:false keeps createRunSandbox
@@ -233,6 +234,7 @@ describe("EvaluationService.runEvaluator", () => {
     mocks.settings.sandboxEnabled = false;
     mocks.settings.sandboxWeakerIsolationForGoTls = false;
     mocks.settings.autoApprove = false;
+    mocks.settings.evaluatorTimeoutMinutes = 10;
     seedRepo();
   });
 
@@ -242,6 +244,7 @@ describe("EvaluationService.runEvaluator", () => {
   });
 
   it("approves and advances the card to review", async () => {
+    mocks.settings.evaluatorTimeoutMinutes = 17;
     seedCard("card-approve");
     const planId = seedPlan("card-approve");
     seedLoopRun("card-approve", planId);
@@ -252,6 +255,9 @@ describe("EvaluationService.runEvaluator", () => {
 
     expect(deps.moveCard).toHaveBeenCalledWith("card-approve", "evaluating", "review", "evaluator approved");
     expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "approve", expect.any(Object));
+    expect(mocks.runHarness).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 17 * 60 * 1000 }),
+    );
     expect(deps.pump).not.toHaveBeenCalled();
     expect(deps.approveReview).not.toHaveBeenCalled();
   });

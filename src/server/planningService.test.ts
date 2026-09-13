@@ -80,6 +80,7 @@ vi.mock("./settings", () => ({
     plannerProvider: "anthropic",
     plannerModel: "planner-model",
     plannerReasoningLevel: "medium",
+    plannerTimeoutMinutes: 42,
     plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
     sandboxEnabled: false,
     sandboxNetworkAllowlist: "",
@@ -189,6 +190,9 @@ describe("PlanningService.runPlanning", () => {
       expect.any(Object),
     );
     expect(deps.moveCard).toHaveBeenCalledWith("card-ready", "planning", "ready");
+    expect(mocks.runHarness).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 42 * 60 * 1000 }),
+    );
     const planRow = db.select().from(plans).where(eq(plans.cardId, "card-ready")).get();
     // Artifact contents are trimmed on read before being persisted.
     expect(planRow).toMatchObject({ version: 1, planMd: completeArtifacts["PLAN.md"].trim() });

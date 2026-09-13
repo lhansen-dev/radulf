@@ -43,6 +43,8 @@ vi.mock("./settings", () => ({
     defaultMaxIterations: 5,
     defaultTimeoutMinutes: 10,
     iterationHardTimeoutMinutes: 2,
+    plannerTimeoutMinutes: 30,
+    evaluatorTimeoutMinutes: 10,
     stallTimeoutSeconds: 60,
     autoMode: false,
     minimalToolset: false,

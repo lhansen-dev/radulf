@@ -63,9 +63,9 @@ session. The role is what decides the tool set — see the capability split belo
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
-| Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `PLAN_TIMEOUT_MS`, 30 min |
+| Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
-| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `EVALUATE_TIMEOUT_MS`, 10 min |
+| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
 
 The loop is not a separate service — it is the orchestrator's own method,
 because it is the thing the single pipeline slot exists to serialize.

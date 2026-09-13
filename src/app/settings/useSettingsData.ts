@@ -13,6 +13,7 @@ export type Settings = {
   evaluatorProvider: string;
   evaluatorModel: string;
   evaluatorReasoningLevel: string;
+  plannerTimeoutMinutes: number;
   omlxBaseUrl: string;
   omlxApiKey: string;
   openrouterApiKey: string;
@@ -20,6 +21,7 @@ export type Settings = {
   defaultMaxIterations: number;
   defaultTimeoutMinutes: number;
   iterationHardTimeoutMinutes: number;
+  evaluatorTimeoutMinutes: number;
   stallTimeoutSeconds: number;
   minimalToolset: boolean;
   sandboxEnabled: boolean;

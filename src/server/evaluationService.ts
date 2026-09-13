@@ -23,7 +23,6 @@ type Card = typeof cards.$inferSelect;
 type Plan = typeof plans.$inferSelect;
 type Run = typeof runs.$inferSelect;
 
-const EVALUATE_TIMEOUT_MS = 10 * 60 * 1000;
 /** After this many revise verdicts on one card the evaluator stops
  * re-looping it and escalates to the human, unresolved feedback attached —
  * an evaluator and a struggling loop must not ping-pong forever. */
@@ -211,7 +210,7 @@ export class EvaluationService {
           prompt,
           cwd: loopRun.worktreePath,
           transcriptPath: evaluateTranscriptPath,
-          timeoutMs: EVALUATE_TIMEOUT_MS,
+          timeoutMs: settings.evaluatorTimeoutMinutes * 60 * 1000,
           signal: controller.signal,
           role: "evaluator",
           runContext: ctx,

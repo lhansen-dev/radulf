@@ -211,7 +211,18 @@ export default function SettingsPage() {
       </header>
       <nav aria-label="Settings sections" className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6">
         <div className="flex w-max gap-2">
-          {[["repos", "Repos"], ["agents", "Agents"], ["templates", "Templates"], ["appearance", "Appearance"], ["notifications", "Notifications"], ["defaults", "Run defaults"], ["github", "GitHub"], ["maintenance", "Maintenance"]].map(([id, label]) => <a key={id} href={`#${id}`} className="touch-target flex items-center rounded-full border border-foreground/10 bg-foreground/[0.03] px-3 text-sm text-foreground/65">{label}</a>)}
+          {[
+            ["repos", "Repos"],
+            ["agents", "Agents"],
+            ["templates", "Templates"],
+            ["appearance", "Appearance"],
+            ["notifications", "Notifications"],
+            ["planner-defaults", "Planner defaults"],
+            ["defaults", "Looper defaults"],
+            ["evaluator-defaults", "Evaluator defaults"],
+            ["github", "GitHub"],
+            ["maintenance", "Maintenance"],
+          ].map(([id, label]) => <a key={id} href={`#${id}`} className="touch-target flex items-center rounded-full border border-foreground/10 bg-foreground/[0.03] px-3 text-sm text-foreground/65">{label}</a>)}
         </div>
       </nav>
       {error && <p className="text-red-400 text-sm">{error}</p>}
@@ -321,7 +332,7 @@ export default function SettingsPage() {
       />
 
       <AgentSection
-        title="Loop agent"
+        title="Looper agent"
         subtitle="runs the ralph iterations"
         provider={settings.loopProvider}
         model={settings.loopModel}
@@ -335,7 +346,7 @@ export default function SettingsPage() {
 
       <AgentSection
         title="Evaluator agent"
-        subtitle="reviews the loop's work after DONE — revise loops it back, approve goes to you"
+        subtitle="reviews the looper's work after DONE — revise sends it back, approve goes to you"
         provider={settings.evaluatorProvider}
         model={settings.evaluatorModel}
         onProvider={(p) => setSettings({ ...settings, evaluatorProvider: p, evaluatorModel: "" })}
@@ -346,7 +357,7 @@ export default function SettingsPage() {
         datalistId="evaluator-models"
         warning={
           evaluatorMatchesLoop
-            ? "The evaluator is currently the same provider and model as the loop agent, so it may share the loop's blind spots when grading its own work. Consider picking a different provider/model for the evaluator."
+            ? "The evaluator is currently the same provider and model as the looper agent, so it may share the looper's blind spots when grading its own work. Consider picking a different provider/model for the evaluator."
             : undefined
         }
       />
@@ -429,8 +440,27 @@ export default function SettingsPage() {
         </button>
       </section>
 
+      <section id="planner-defaults" className="scroll-mt-4 flex flex-col gap-3">
+        <h2 className="font-medium">Planner defaults</h2>
+        <label className="max-w-xs text-sm text-foreground/70">
+          Timeout (minutes)
+          <input
+            type="number"
+            min={1}
+            value={settings.plannerTimeoutMinutes}
+            onChange={(e) =>
+              setSettings({ ...settings, plannerTimeoutMinutes: Number(e.target.value) || 1 })
+            }
+            className={inputCls}
+          />
+          <span className="mt-1 block text-xs text-foreground/40">
+            Caps each card&apos;s planning pass.
+          </span>
+        </label>
+      </section>
+
       <section id="defaults" className="scroll-mt-4 flex flex-col gap-3">
-        <h2 className="font-medium">Loop defaults</h2>
+        <h2 className="font-medium">Looper defaults</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <label className="text-sm text-foreground/70">
             Max iterations
@@ -483,7 +513,7 @@ export default function SettingsPage() {
               className={inputCls}
             />
             <span className="mt-1 block text-xs text-foreground/40">
-              Kills any model call — planner, loop, evaluator, proposer, chat — that emits
+              Kills any model call — planner, looper, evaluator, proposer, chat — that emits
               nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts
               as output, so this never cuts off a merely slow model.
             </span>
@@ -497,7 +527,26 @@ export default function SettingsPage() {
               setSettings({ ...settings, minimalToolset: e.target.checked })
             }
           />
-          Minimal tool set (deny-by-default tool permissions for the loop agent)
+          Minimal tool set (deny-by-default tool permissions for the looper agent)
+        </label>
+      </section>
+
+      <section id="evaluator-defaults" className="scroll-mt-4 flex flex-col gap-3">
+        <h2 className="font-medium">Evaluator defaults</h2>
+        <label className="max-w-xs text-sm text-foreground/70">
+          Timeout (minutes)
+          <input
+            type="number"
+            min={1}
+            value={settings.evaluatorTimeoutMinutes}
+            onChange={(e) =>
+              setSettings({ ...settings, evaluatorTimeoutMinutes: Number(e.target.value) || 1 })
+            }
+            className={inputCls}
+          />
+          <span className="mt-1 block text-xs text-foreground/40">
+            Caps each evaluation pass after the looper finishes.
+          </span>
         </label>
       </section>
 
