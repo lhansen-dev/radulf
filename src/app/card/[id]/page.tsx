@@ -153,7 +153,10 @@ export default function CardDetail() {
         {card.status === "paused" && (
           <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/resume`, { json: {} }))}>Continue</ActionButton>
         )}
-        {card.status === "paused" && (
+        {/* Every stage reads the card's model override when it starts, so a
+            change made here takes effect on Continue / Retry failed step
+            without discarding the worktree, plan, or iterations so far. */}
+        {["paused", "needs_attention"].includes(card.status) && (
           <ActionButton onClick={() => setShowEdit(true)}>Edit model overrides</ActionButton>
         )}
         {["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status) && <ActionButton primary onClick={() => chooseTab("Activity")}>View activity</ActionButton>}

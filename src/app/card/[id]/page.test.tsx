@@ -192,6 +192,51 @@ describe("CardDetail", () => {
     expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
   });
 
+  it("lets a needs-attention card change its model overrides before retrying", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      {
+        id: "failed-evaluate",
+        kind: "evaluate",
+        status: "failed",
+        iterationsDone: 0,
+        exitReason: "evaluator failed: 402",
+        startedAt: "2026-07-17T10:00:00.000Z",
+        endedAt: "2026-07-17T10:01:00.000Z",
+        iterations: [],
+      },
+    ];
+    const baseFetch = globalThis.fetch;
+    const patches: unknown[] = [];
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/providers/anthropic/models") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ models: [{ value: "haiku", displayName: "Haiku" }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/api/cards/c1" && init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)));
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+
+    render(<CardDetail />);
+
+    expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit model overrides" }));
+    const evaluatorSelect = (await screen.findByRole("option", { name: "Evaluator model: Haiku" }))
+      .parentElement as HTMLSelectElement;
+    fireEvent.change(evaluatorSelect, { target: { value: "haiku" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({ plannerModel: null, loopModel: null, evaluatorModel: "haiku" });
+  });
+
   // The plan lives on the Task tab, which is the default — no click needed.
   it("shows 'Plan is running…' when planning is active and no plan exists", async () => {
     cardStatus = "planning";
