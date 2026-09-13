@@ -482,6 +482,47 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(plans).all()).toHaveLength(0);
     });
 
+    it("re-plans a rejected card with the reviewer's feedback instead of re-looping it", async () => {
+      // reviewPlanBeforeImplementation=1 stops at plan_review so the loop the
+      // new plan would start stays out of this test.
+      card("rejected-replan", "review", 1);
+      db.update(cards)
+        .set({ startedAt: "2026-07-16T01:00:00.000Z" })
+        .where(eq(cards.id, "rejected-replan"))
+        .run();
+      plan("rejected-replan");
+      completedRun("rejected-replan", "rejected-loop");
+      mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        writePlannerArtifacts(cwd, {
+          ...completePlannerArtifacts,
+          "PLAN.md": "## Tasks\n- [ ] address the review\n",
+        });
+        return successfulHarnessResult;
+      });
+      routeOrchestrator();
+
+      const response = await postReview(reviewRequest("rejected-loop", "rejected"));
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(getCard("rejected-replan").status).toBe("plan_review"));
+
+      const call = mocks.runHarness.mock.calls[0][0];
+      expect(call.role).toBe("planner");
+      expect(call.prompt).toContain("PREVIOUS ATTEMPT — REVIEWER FEEDBACK");
+      expect(call.prompt).toContain("Please revise this.");
+      const cardPlans = db.select().from(plans).all().filter((row) => row.cardId === "rejected-replan");
+      expect(cardPlans.map((row) => [row.version, row.feedback])).toEqual([
+        [1, null],
+        [2, "Please revise this."],
+      ]);
+      expect(fs.readFileSync(planStatePath("rejected-replan"), "utf8")).toBe(
+        "## Tasks\n- [ ] address the review",
+      );
+
+      // The rejection is spent: restarting now goes to the loop, not the planner.
+      const { pendingRejectionFeedback } = await import("./planningService");
+      expect(pendingRejectionFeedback("rejected-replan")).toBeNull();
+    });
+
     it("persists the planner's telemetry on the plan run row", async () => {
       // reviewPlanBeforeImplementation=1 stops at plan_review — otherwise
       // pump() immediately auto-starts the loop, which is beside the point

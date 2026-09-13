@@ -4,8 +4,8 @@ import path from "node:path";
 import { desc, eq } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Direct unit tests for ReviewService. `appendFeedbackTask` (private, line 28)
-// is exercised only through its two public call sites' observable effect —
+// Direct unit tests for ReviewService. `appendFeedbackTask` (private) is
+// exercised only through its public call site's observable effect —
 // the orchestrator-private plan-state file gaining the injected feedback
 // task — rather than exporting it just to test it directly. See PLAN.md
 // Phase 11.
@@ -29,6 +29,7 @@ process.env.RADULF_DATA_DIR = testDataDir;
 const { db, cards, plans, runs, repos, reviews, now } = await import("@/db");
 const { ReviewService } = await import("./reviewService");
 const { planStatePath } = await import("./bookkeeping");
+const { pendingRejectionFeedback } = await import("./planningService");
 
 function seedRepo() {
   db.insert(repos)
@@ -115,7 +116,7 @@ function makeDeps() {
   };
 }
 
-describe("ReviewService — appendFeedbackTask's observable effect", () => {
+describe("ReviewService — feedback re-entry", () => {
   beforeEach(() => {
     db.delete(reviews).run();
     db.delete(runs).run();
@@ -131,29 +132,43 @@ describe("ReviewService — appendFeedbackTask's observable effect", () => {
     delete process.env.RADULF_DATA_DIR;
   });
 
-  it("reject() appends the reviewer-feedback task to the private plan state", async () => {
+  it("reject() sends the card back to the planner with the feedback pending", async () => {
     seedCard("card-reject");
     const planId = seedPlan("card-reject");
     const { id: runId } = seedLoopRun("card-reject", planId);
     seedPlanState("card-reject");
+    const before = fs.readFileSync(planStatePath("card-reject"), "utf8");
     const deps = makeDeps();
 
     new ReviewService(deps).reject(runId, "Please handle the empty-input case.");
 
-    const planState = fs.readFileSync(planStatePath("card-reject"), "utf8");
-    expect(planState).toContain(
-      'Address the feedback in the "Reviewer feedback — address this first" section at the top of your prompt: fix every point it raises, then re-run the checks it names.',
+    expect(deps.moveCard).toHaveBeenCalledWith(
+      "card-reject",
+      "reviewing",
+      "todo",
+      "rejected with feedback — re-planning",
     );
-
-    // Other call-site effects, so a broken appendFeedbackTask surfaces as an
-    // obviously-wrong plan-state file rather than a silently-passing test.
-    expect(deps.moveCard).toHaveBeenCalledWith("card-reject", "reviewing", "ready", "rejected with feedback");
     expect(deps.pump).toHaveBeenCalledTimes(1);
     const reviewRows = db.select().from(reviews).where(eq(reviews.runId, runId)).all();
     expect(reviewRows).toHaveLength(1);
     expect(reviewRows[0].decision).toBe("rejected");
+    // The planner writes the next plan version and checklist, not the reject.
     const versions = db.select().from(plans).where(eq(plans.cardId, "card-reject")).all().map((p) => p.version);
-    expect(versions.sort()).toEqual([1, 2]);
+    expect(versions).toEqual([1]);
+    expect(fs.readFileSync(planStatePath("card-reject"), "utf8")).toBe(before);
+    expect(pendingRejectionFeedback("card-reject")).toBe("Please handle the empty-input case.");
+  });
+
+  it("a rejection stops being pending once the planner writes a newer plan", () => {
+    seedCard("card-replanned");
+    const planId = seedPlan("card-replanned");
+    const { id: runId } = seedLoopRun("card-replanned", planId);
+
+    new ReviewService(makeDeps()).reject(runId, "Rename the flag.");
+    expect(pendingRejectionFeedback("card-replanned")).toBe("Rename the flag.");
+
+    seedPlan("card-replanned", 2);
+    expect(pendingRejectionFeedback("card-replanned")).toBeNull();
   });
 
   it("does not touch the plan state when reject() throws before claiming the run", () => {

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
@@ -29,8 +28,9 @@ import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { checkRepoIntegrity, loadBaseline, removeBaseline } from "./integrity";
 
-/** Every iteration runs on an injected checklist task, so feedback re-entry
- * must append one to the private plan — a prompt preamble alone never runs. */
+/** Every iteration runs on an injected checklist task, so a merge-conflict
+ * re-entry must append one to the private plan — a prompt preamble alone
+ * never runs. */
 function appendFeedbackTask(cardId: string, text: string) {
   const planPath = planStatePath(cardId);
   if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return;
@@ -187,6 +187,12 @@ export class ReviewService {
     return this.approveClaimedRun(run.id, "needs_attention", "human");
   }
 
+  /**
+   * A rejected diff goes back to the planner, not straight to the loop: the
+   * planner re-plans on top of the branch with the feedback in its prompt
+   * (see `pendingRejectionFeedback`). The card waits in Todo as a manual
+   * start, so `pump` plans it as soon as the repo's pipeline slot is free.
+   */
   reject(runId: string, feedback: string) {
     if (!feedback.trim()) throw new ClientError("feedback is required to reject");
     const existing = this.reviewForRun(runId);
@@ -194,58 +200,26 @@ export class ReviewService {
       if (existing.decision === "rejected") return;
       throw new ClientError("run was already approved");
     }
-    const { run, card } = this.claimReviewRun(runId, "review");
-    const plan = this.dependencies.latestPlan(card.id);
-    if (!plan) {
+    const { card } = this.claimReviewRun(runId, "review");
+    if (!this.dependencies.latestPlan(card.id)) {
       this.dependencies.moveCard(card.id, "reviewing", "review", "review operation failed");
       throw new ClientError("card has no plan");
     }
 
     const reviewId = nanoid();
-    const planId = nanoid();
-    const promptMd = `## Reviewer feedback — address this first\n\n${feedback.trim()}\n\n---\n\n${plan.promptMd}`;
     try {
       db.insert(reviews)
         .values({ id: reviewId, runId, decision: "rejected", feedback, createdAt: now() })
         .run();
-      db.insert(plans)
-        .values({
-          id: planId,
-          cardId: card.id,
-          version: plan.version + 1,
-          planMd: plan.planMd,
-          promptMd,
-          acceptanceCriteria: plan.acceptanceCriteria,
-          feedback,
-          createdAt: now(),
-        })
-        .run();
-
-      if (fs.existsSync(/* turbopackIgnore: true */ run.worktreePath)) {
-        const ralphDir = path.join(/* turbopackIgnore: true */ run.worktreePath, ".ralph");
-        fs.mkdirSync(/* turbopackIgnore: true */ ralphDir, { recursive: true });
-        fs.writeFileSync(
-          path.join(/* turbopackIgnore: true */ ralphDir, "PROMPT.md"),
-          promptMd,
-        );
-        fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "DONE"), { force: true });
-        fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "DONE.md"), { force: true });
-      }
-      appendFeedbackTask(
-        card.id,
-        'Address the feedback in the "Reviewer feedback — address this first" section at the top of your prompt: fix every point it raises, then re-run the checks it names.',
-      );
-      if (!this.dependencies.moveCard(card.id, "reviewing", "ready", "rejected with feedback")) {
+      if (!this.dependencies.moveCard(card.id, "reviewing", "todo", "rejected with feedback — re-planning")) {
         throw new ClientError("review claim was lost before rejection completed");
       }
     } catch (error) {
-      db.delete(plans).where(eq(plans.id, planId)).run();
       db.delete(reviews).where(eq(reviews.id, reviewId)).run();
       this.dependencies.moveCard(card.id, "reviewing", "review", "review operation failed");
       throw error;
     }
 
-    emitEvent("plan.created", { cardId: card.id, payload: { version: plan.version + 1 } });
     emitEvent("review.decided", {
       cardId: card.id,
       runId,

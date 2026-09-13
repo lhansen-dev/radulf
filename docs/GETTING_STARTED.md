@@ -71,8 +71,8 @@ OpenRouter and oMLX need no login at all — set an API key or a base URL on the
    files it has touched.
 5. **Review the diff.** When the evaluator clears the change the card lands in
    **In Review** with the diff and the transcript. **Approve** merges it into
-   the repo's default branch and moves the card to **Done**; **Reject** takes
-   your feedback and sends the card back for another pass.
+   the repo's default branch and moves the card to **Done**; **Reject** sends
+   the card back to the planner with your feedback for another pass.
 
 For what happens between steps 4 and 5, see [How it works](HOW_IT_WORKS.md).
 

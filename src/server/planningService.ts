@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, cards, plans, runs, repos, type CardStatus } from "@/db";
+import { db, now, cards, plans, runs, repos, reviews, type CardStatus } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
@@ -38,12 +38,40 @@ export function renderPlanPrompt(
   feedback?: string,
 ) {
   const feedbackSection = feedback
-    ? `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n`
+    ? `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n\nThe working directory already holds the previous attempt's implementation,\ncommitted on this branch. Plan only the work needed to address the feedback\nabove on top of that code — do not re-plan tasks it already satisfies.\n`
     : "";
   return template
     .replaceAll("{{TITLE}}", title)
     .replaceAll("{{DESCRIPTION}}", description || "(no description)")
     .replaceAll("{{FEEDBACK_SECTION}}", feedbackSection);
+}
+
+/**
+ * The feedback from a human rejection the planner has not planned from yet.
+ *
+ * A rejected diff goes back through planning rather than straight to the loop,
+ * so a pending rejection is also what tells `startCard` to re-plan a card that
+ * already has a plan. "Pending" means the rejected loop ran on the card's
+ * latest plan — once the planner writes a new version, the rejection is spent.
+ */
+export function pendingRejectionFeedback(cardId: string): string | null {
+  const rejection = db
+    .select({ feedback: reviews.feedback, planId: runs.planId })
+    .from(reviews)
+    .innerJoin(runs, eq(reviews.runId, runs.id))
+    .where(and(eq(runs.cardId, cardId), eq(reviews.decision, "rejected")))
+    .orderBy(desc(reviews.createdAt))
+    .limit(1)
+    .get();
+  if (!rejection?.feedback || !rejection.planId) return null;
+  const latest = db
+    .select({ id: plans.id })
+    .from(plans)
+    .where(eq(plans.cardId, cardId))
+    .orderBy(desc(plans.version))
+    .limit(1)
+    .get();
+  return latest?.id === rejection.planId ? rejection.feedback : null;
 }
 
 /**
@@ -143,6 +171,7 @@ export class PlanningService {
       return;
     }
     const prevPlan = deps.latestPlan(cardId);
+    const rejectionFeedback = pendingRejectionFeedback(cardId);
     try {
       // Circuit breaker: a provider with recent connection/auth failures
       // fails this run fast instead of repeating the same slow failure.
@@ -168,7 +197,7 @@ export class PlanningService {
             settings.plannerPromptTemplate,
             card.title,
             card.description,
-            prevPlan?.feedback ?? undefined,
+            rejectionFeedback ?? prevPlan?.feedback ?? undefined,
           ),
           cwd: worktreePath,
           transcriptPath: planTranscriptPath,
@@ -268,6 +297,7 @@ export class PlanningService {
           planMd: contents["PLAN.md"],
           promptMd: contents["PROMPT.md"],
           acceptanceCriteria: contents["CRITERIA.md"],
+          feedback: rejectionFeedback,
           createdAt: now(),
         })
         .run();

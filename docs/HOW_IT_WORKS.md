@@ -48,8 +48,9 @@ so the judge provably cannot edit the implementation it just judged.
 
 **4 · Review.** The diff waits for you in **In Review** with the transcript
 alongside it. Approve merges the branch into the repo's default branch and moves
-the card to Done. Reject takes your feedback, appends it to the plan, and sends
-the card back for another pass.
+the card to Done. Reject sends the card back to the planner with your feedback:
+it writes a new plan on top of the work already on the branch, and the card
+goes through the loop and the evaluator again.
 
 **Where the approved diff goes.** By default, approving merges the branch into
 the local base branch. Turn on **Open pull requests** — per card in the New Task

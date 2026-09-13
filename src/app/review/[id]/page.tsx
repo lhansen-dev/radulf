@@ -309,8 +309,8 @@ export default function ReviewPage() {
           >
             <h3 id="reject-title" className="font-medium mb-2">Reject with feedback</h3>
             <p className="text-xs text-foreground/50 mb-2">
-              The feedback becomes the loop’s first task on the next run — be concrete about what to
-              change.
+              The planner re-plans this task with your feedback, on top of the work already done — be
+              concrete about what to change.
             </p>
             <textarea
               autoFocus
@@ -333,7 +333,7 @@ export default function ReviewPage() {
                 onClick={() => decide("rejected")}
                 className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-on-accent font-medium rounded px-3 py-1.5 text-sm"
               >
-                Reject &amp; resume loop
+                Reject &amp; re-plan
               </button>
             </div>
           </div>

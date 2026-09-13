@@ -41,7 +41,7 @@ import {
   currentBranch,
 } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
-import { PlanningService } from "./planningService";
+import { PlanningService, pendingRejectionFeedback } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService } from "./reviewService";
 import { ClientError } from "./clientError";
@@ -301,8 +301,9 @@ export class Orchestrator {
     if (!card.startedAt)
       db.update(cards).set({ startedAt: now() }).where(eq(cards.id, cardId)).run();
 
-    if (this.latestPlan(cardId)) {
-      // Restart / reject path — plan exists, go straight to the loop queue.
+    if (this.latestPlan(cardId) && !pendingRejectionFeedback(cardId)) {
+      // Restart path — plan exists, go straight to the loop queue. A card
+      // whose diff was rejected falls through: rejections re-plan first.
       this.moveCard(cardId, card.status, "ready");
       this.pump();
     } else if (this.pipelineBusy(card.repoId)) {
