@@ -6,6 +6,7 @@ import { List, useDynamicRowHeight, useListRef, type RowComponentProps } from "r
 import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
+import { PlanVersions } from "./planVersions";
 import { describeToolCall } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
@@ -304,35 +305,7 @@ export default function CardDetail() {
             {latestPlan ? (
               <>
                 <PlanModelBadge tag={planTag} />
-                {(
-                  [
-                    ["PLAN.md", latestPlan.planMd],
-                    ["CRITERIA.md", latestPlan.acceptanceCriteria],
-                    ["PROMPT.md", latestPlan.promptMd],
-                  ] as const
-                ).map(([name, content]) => (
-                  <details key={name} open={name === "PLAN.md"} className="mt-1">
-                    <summary className="text-sm font-medium cursor-pointer text-foreground/80">
-                      {name} <span className="text-foreground/40">(plan v{latestPlan.version})</span>
-                    </summary>
-                    <pre className="whitespace-pre-wrap text-xs bg-foreground/[0.04] rounded p-3 mt-1 font-mono overflow-x-auto">
-                      {content}
-                    </pre>
-                  </details>
-                ))}
-                {plans.length > 1 && (
-                  <div className="mt-3">
-                    <h4 className="text-xs font-medium uppercase tracking-wider text-foreground/40 mb-1">
-                      Earlier versions
-                    </h4>
-                    {plans.slice(1).map((p) => (
-                      <div key={p.id} className="text-sm text-foreground/60">
-                        v{p.version} · {timeAgo(p.createdAt)} ago
-                        {p.feedback && <span className="text-amber-400"> · from feedback: &ldquo;{p.feedback.slice(0, 80)}&rdquo;</span>}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <PlanVersions plans={plans} livePlan={detail.livePlan} />
               </>
             ) : (
               <p className="text-foreground/50 text-sm">

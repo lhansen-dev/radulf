@@ -3,6 +3,7 @@ import { asc, desc, eq, inArray } from "drizzle-orm";
 import { db, cards, plans, runs, iterations, reviews, events, repos } from "@/db";
 import { now } from "@/db";
 import { planStatePath } from "@/server/bookkeeping";
+import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
 import { groupBy } from "@/server/queryGrouping";
 import { removeRunTranscripts } from "@/server/retention";
@@ -84,7 +85,16 @@ export async function GET(_req: Request, { params }: Ctx) {
       reasoningLevel: settings.evaluatorReasoningLevel,
     },
   };
-  return json({ card, repo, plans: cardPlans, runs: cardRuns, events: cardEvents, models });
+  // The orchestrator-private checklist the loop is ticking off — the latest
+  // plan version as it stands right now, which its plan row can't show.
+  const planPath = planStatePath(id);
+  let livePlan: { planMd: string; done: number; total: number } | null = null;
+  if (cardPlans.length > 0 && fs.existsSync(/* turbopackIgnore: true */ planPath)) {
+    const planMd = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
+    const items = parseChecklist(planMd)?.items ?? [];
+    livePlan = { planMd, done: items.filter((item) => item.checked).length, total: items.length };
+  }
+  return json({ card, repo, plans: cardPlans, livePlan, runs: cardRuns, events: cardEvents, models });
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {

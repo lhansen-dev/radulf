@@ -413,7 +413,10 @@ export class EvaluationService {
             id: revisionPlanId,
             cardId,
             version: plan.version + 1,
-            planMd: plan.planMd,
+            // Snapshot the checklist this revision actually runs — ticks and
+            // the appended feedback task included — so the version history
+            // shows each PLAN.md as it was, not a copy of the planner's.
+            planMd: updatedPlanState,
             promptMd,
             acceptanceCriteria: plan.acceptanceCriteria,
             feedback: evaluation.feedback,

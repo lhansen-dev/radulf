@@ -1019,6 +1019,30 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(fs.readFileSync(planStatePath("evaluate-revise"), "utf8")).toContain(
         "Address the feedback in the \"Evaluator feedback — address this first\" section",
       );
+      // v2 records the checklist it runs, not a copy of v1's.
+      expect(cardPlans[1].planMd).toBe(fs.readFileSync(planStatePath("evaluate-revise"), "utf8"));
+      expect(cardPlans[1].planMd).toContain("- [x] implement the task");
+
+      // Each iteration records the task it was given and whether it got ticked.
+      const iterationTasks = db
+        .select()
+        .from(iterations)
+        .all()
+        .map(({ taskNumber, taskCount, taskText, taskCompleted }) => ({
+          taskNumber,
+          taskCount,
+          taskText,
+          taskCompleted,
+        }));
+      expect(iterationTasks).toEqual([
+        { taskNumber: 1, taskCount: 1, taskText: "implement the task", taskCompleted: 1 },
+        {
+          taskNumber: 2,
+          taskCount: 2,
+          taskText: expect.stringContaining("Address the feedback"),
+          taskCompleted: null,
+        },
+      ]);
 
       orchestrator.cancelCard("evaluate-revise");
       resumedLoop.reject(new Error("child exited after abort"));

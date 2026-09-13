@@ -217,6 +217,27 @@ describe("RunsTable", () => {
     expect(screen.getByText("added the totals row")).toBeTruthy();
   });
 
+  it("shows which checklist task each iteration worked on and how many are left", () => {
+    const [first, second] = loopRun().iterations;
+    renderTable([
+      loopRun({
+        status: "running",
+        iterations: [
+          { ...first, taskNumber: 1, taskCount: 2, taskText: "Wire the table", taskCompleted: 1 },
+          { ...second, status: "running", taskNumber: 2, taskCount: 2, taskText: "Add totals", taskCompleted: null },
+        ],
+      }),
+    ]);
+
+    expect(screen.getByText("Task 1/2")).toBeTruthy();
+    expect(screen.getByText("done")).toBeTruthy();
+    expect(screen.getByText("Wire the table")).toBeTruthy();
+    expect(screen.getByText("Task 2/2")).toBeTruthy();
+    expect(screen.getByText("working")).toBeTruthy();
+    expect(screen.getByText("Add totals")).toBeTruthy();
+    expect(screen.getAllByText("1 left")).toHaveLength(2);
+  });
+
   it("expands a planning run onto the plan it wrote", () => {
     renderTable([planRun()]);
 

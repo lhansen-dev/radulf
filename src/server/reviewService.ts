@@ -31,13 +31,12 @@ import { checkRepoIntegrity, loadBaseline, removeBaseline } from "./integrity";
 /** Every iteration runs on an injected checklist task, so a merge-conflict
  * re-entry must append one to the private plan — a prompt preamble alone
  * never runs. */
-function appendFeedbackTask(cardId: string, text: string) {
+function appendFeedbackTask(cardId: string, text: string): string | null {
   const planPath = planStatePath(cardId);
-  if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return;
-  fs.writeFileSync(
-    /* turbopackIgnore: true */ planPath,
-    appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), text),
-  );
+  if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return null;
+  const updated = appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), text);
+  fs.writeFileSync(/* turbopackIgnore: true */ planPath, updated);
+  return updated;
 }
 
 /** Who released this particular diff. Spec 15 uses it to decide draft-ness of
@@ -557,12 +556,17 @@ export class ReviewService {
       ? `## Merge conflict — resolve this first\n\nYour branch conflicts with \`${baseBranch}\`, which changed while you worked. \`${baseBranch}\` has been merged into your branch and the conflicted files now contain \`<<<<<<<\` / \`=======\` / \`>>>>>>>\` markers. Resolve every marker (keep both your work and the base's intent), remove the markers, and write the normal completion signals so the orchestrator can record the merge. Only once the working tree is clean, finish the task and write DONE as usual.`
       : `## Rebased onto \`${baseBranch}\`\n\nThe base branch moved on and has been merged into your branch cleanly. Re-check that your work still applies on top of it, then finish and write DONE as usual.`;
     const promptMd = `${preamble}\n\n---\n\n${plan.promptMd}`;
+    const mergeTask = merged.conflicted
+      ? "Follow the base-branch merge section at the top of your prompt: resolve every conflict marker while keeping both intents, then run `git diff --check` as this task's targeted verification."
+      : "Follow the base-branch merge section at the top of your prompt: confirm the implementation still applies after the clean base-branch merge, then run `git diff --check` as this task's targeted verification.";
+    const planState = appendFeedbackTask(card.id, mergeTask);
     db.insert(plans)
       .values({
         id: nanoid(),
         cardId: card.id,
         version: plan.version + 1,
-        planMd: plan.planMd,
+        // The checklist this re-entry runs, so the version history shows it.
+        planMd: planState ?? plan.planMd,
         promptMd,
         acceptanceCriteria: plan.acceptanceCriteria,
         feedback: `merge conflict with ${baseBranch}: ${error}`,
@@ -570,10 +574,6 @@ export class ReviewService {
       })
       .run();
     emitEvent("plan.created", { cardId: card.id, payload: { version: plan.version + 1 } });
-    const mergeTask = merged.conflicted
-      ? "Follow the base-branch merge section at the top of your prompt: resolve every conflict marker while keeping both intents, then run `git diff --check` as this task's targeted verification."
-      : "Follow the base-branch merge section at the top of your prompt: confirm the implementation still applies after the clean base-branch merge, then run `git diff --check` as this task's targeted verification.";
-    appendFeedbackTask(card.id, mergeTask);
     this.dependencies.moveCard(card.id, card.status, "ready", "merge conflict — resolving in loop");
     this.dependencies.pump();
     return true;

@@ -34,6 +34,10 @@ export type CardDetailData = {
   };
   repo: { id: string; name: string; path: string; defaultBranch: string } | null;
   plans: Plan[];
+  /** The latest plan's orchestrator-private checklist as it stands now, with
+   * its tick counts; null before planning or once the card's state is gone.
+   * Absent on older cached responses. */
+  livePlan?: { planMd: string; done: number; total: number } | null;
   runs: Run[];
   events: {
     id: number;

@@ -24,7 +24,7 @@ import {
   performDoneBookkeeping,
   planStatePath,
 } from "./bookkeeping";
-import { firstUnchecked } from "./checklist";
+import { firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
 import { runHarness, type RunTelemetry } from "./harness";
 import {
@@ -73,6 +73,18 @@ export function doneFilePath(ralphDir: string): string | null {
     if (fs.existsSync(/* turbopackIgnore: true */ p)) return p;
   }
   return null;
+}
+
+/** Record on the iteration row whether its injected task is now ticked off —
+ * read from the checklist itself, so every bookkeeping path agrees. */
+function recordTaskCompleted(iterationId: number, planPath: string, taskNumber: number) {
+  const item = parseChecklist(
+    fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
+  )?.items[taskNumber - 1];
+  db.update(iterations)
+    .set({ taskCompleted: item?.checked ? 1 : 0 })
+    .where(eq(iterations.id, iterationId))
+    .run();
 }
 
 /** Build planning candidates from the Todo queue. Explicit manual starts are
@@ -795,7 +807,8 @@ export class Orchestrator {
         // fallback prompt. An exhausted checklist here means the final task
         // ended without a DONE signal (e.g. its criteria failed).
         const planMd = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
-        if (!firstUnchecked(planMd)) {
+        const task = firstUnchecked(planMd);
+        if (!task) {
           const reason = "plan checklist exhausted without a DONE signal";
           this.finishRun(runId, "failed", reason, n);
           this.moveCard(cardId, "looping", "needs_attention", reason);
@@ -806,7 +819,15 @@ export class Orchestrator {
         const transcriptPath = path.join(runTranscriptDir(runId), iterName);
         const iter = db
           .insert(iterations)
-          .values({ runId, n, transcriptPath, startedAt: now() })
+          .values({
+            runId,
+            n,
+            transcriptPath,
+            taskNumber: task.taskNumber,
+            taskCount: parseChecklist(planMd)?.items.length ?? task.taskNumber,
+            taskText: task.item.text,
+            startedAt: now(),
+          })
           .returning()
           .get();
         emitEvent("iteration.started", { cardId, runId, payload: { n, maxIterations } });
@@ -901,6 +922,7 @@ export class Orchestrator {
         if (doneFilePath(ralphDir)) {
           await performIterationBookkeeping({ ralphDir, worktreePath, planPath, pre: preIteration });
           await performDoneBookkeeping({ ralphDir, worktreePath, planPath });
+          recordTaskCompleted(iter.id, planPath, task.taskNumber);
           // Spec 14 L3 run-end ordering: reap the process group FIRST (a
           // surviving process could plant hooks after a check that already
           // passed), then verify parent-repo integrity, then the install gate
@@ -996,6 +1018,7 @@ export class Orchestrator {
           });
         }
         // If bkResult is null (missing signal), fall through to stall detection
+        recordTaskCompleted(iter.id, planPath, task.taskNumber);
 
         // Install-script gate (spec 14): fire on any lockfile change, after
         // bookkeeping so the iteration's signal files are fully consumed and
