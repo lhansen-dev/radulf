@@ -123,9 +123,9 @@ const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "m
 /**
  * Levels to offer for the picked model, ordered by the canonical ladder. When
  * the provider advertises the model's supported efforts (OpenRouter), narrow to
- * those — plus "off" unless reasoning is mandatory. Otherwise (oMLX, an
- * unlisted/custom id, or the list not yet loaded) offer the full ladder; pi
- * clamps anything the model can't honor. `current` is always kept so the
+ * those — plus "off" unless reasoning is mandatory. Otherwise (the subscription
+ * providers, oMLX, an unlisted/custom id, or the list not yet loaded) offer the
+ * full ladder; pi clamps anything the model can't honor. `current` is always kept so the
  * <select> never renders blank against a stored value the model dropped.
  */
 function availableReasoningLevels(
@@ -799,29 +799,27 @@ function AgentSection({
             </button>
           </div>
         </label>
-        {(provider === "omlx" || provider === "openrouter") && (
-          <label className="text-sm text-foreground/70 sm:w-40 sm:shrink-0">
-            Reasoning
-            <select
-              value={reasoningLevel}
-              onChange={(e) => onReasoningLevel(e.target.value)}
-              title="Thinking effort passed to pi (--thinking). pi clamps it to the model's supported range."
-              className={inputCls}
-            >
-              {reasoningOptions.map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
-            {reasoningClamped && (
-              <span className="mt-1 block text-xs text-amber-400/80">
-                {selectedModel!.displayName} supports {selectedModel!.reasoningEfforts!.join(", ")} —
-                {" "}pi will clamp &ldquo;{reasoningLevel}&rdquo; to the nearest.
-              </span>
-            )}
-          </label>
-        )}
+        <label className="text-sm text-foreground/70 sm:w-40 sm:shrink-0">
+          Reasoning
+          <select
+            value={reasoningLevel}
+            onChange={(e) => onReasoningLevel(e.target.value)}
+            title="Thinking effort passed to pi (--thinking). pi clamps it to the model's supported range."
+            className={inputCls}
+          >
+            {reasoningOptions.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+          {reasoningClamped && (
+            <span className="mt-1 block text-xs text-amber-400/80">
+              {selectedModel!.displayName} supports {selectedModel!.reasoningEfforts!.join(", ")} —
+              {" "}pi will clamp &ldquo;{reasoningLevel}&rdquo; to the nearest.
+            </span>
+          )}
+        </label>
       </div>
       {warning && <p className="text-xs text-amber-400/80">{warning}</p>}
       {selectedModel &&
