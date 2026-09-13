@@ -5,6 +5,71 @@ self-improvement runs (`src/server/improvementRuns.ts`), which check this
 codebase out into a worktree and edit it the same way any other contributor
 would.
 
+## How to work
+
+Adapted from [Andrej Karpathy's agent guidelines](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md).
+They bias toward caution over speed — for trivial tasks, use judgment.
+
+### 1. Think before coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing.
+
+Radulf's own runs have no human to ask mid-run. There, pick the most
+conservative reading of the card, and write down the assumption and the
+alternatives you rejected in the commit body so the reviewer sees them.
+
+### 2. Simplicity first
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes,
+simplify.
+
+### 3. Surgical changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
+- Remove imports, variables, and functions that *your* change made unused;
+  leave pre-existing dead code alone unless asked.
+
+The test: every changed line should trace directly to the request. This is the
+same rule as "one logical change per commit" below, applied line by line.
+
+### 4. Goal-driven execution
+
+**Define success criteria. Loop until verified.**
+
+Turn tasks into verifiable goals:
+
+- "Add validation" → write tests for invalid inputs, then make them pass.
+- "Fix the bug" → write a test that reproduces it, then make it pass.
+- "Refactor X" → `make check` passes before and after.
+
+For multi-step tasks, state a brief plan with a check for each step:
+
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently; "make it work" doesn't.
+Whatever the per-step checks, the final one is always `make check`.
+
 ## Never run tools directly — always go through `make`
 
 `node_modules/.bin` (where `next`, `eslint`, `tsc`, `vitest`, `drizzle-kit`
