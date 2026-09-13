@@ -5,6 +5,7 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
   createTranscriptTotals,
   foldTranscriptEvent,
+  MAX_REPLY_CHARS,
   runHarness,
   type HarnessSession,
 } from "./index";
@@ -324,6 +325,74 @@ describe("runHarness watchdogs", () => {
 
     expect(result.stuck).toBe(false);
     expect(result.code).toBe(0);
+  }, 15_000);
+
+  /** One streamed text delta inside an assistant message. */
+  function textDeltaEvt(delta: string): AgentSessionEvent {
+    return {
+      type: "message_update",
+      message: { role: "assistant", content: [] },
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta },
+    } as unknown as AgentSessionEvent;
+  }
+
+  const messageStartEvt = {
+    type: "message_start",
+    message: { role: "assistant", content: [] },
+  } as unknown as AgentSessionEvent;
+
+  it("aborts an invocation whose single reply streams past MAX_REPLY_CHARS", async () => {
+    fs.mkdirSync(scratch, { recursive: true });
+    let deltasSent = 0;
+    const result = await runHarness({
+      provider: "openrouter",
+      prompt: "",
+      model: "m",
+      reasoningLevel: "medium",
+      cwd: scratch,
+      transcriptPath: path.join(scratch, "oversized.jsonl"),
+      timeoutMs: 60_000,
+      stallTimeoutMs: 0,
+      createSession: fakeSession(async ({ emit, signal }) => {
+        emit(messageStartEvt);
+        const chunk = "x".repeat(100_000);
+        for (let i = 0; i < 50 && !signal.aborted; i++) {
+          emit(textDeltaEvt(chunk));
+          deltasSent += 1;
+          await sleep(1, signal);
+        }
+      }),
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.error).toContain("assistant reply exceeded 1 MiB");
+    // Tripped on the delta that crossed the limit, not after the stream ended.
+    expect(deltasSent).toBe(Math.floor(MAX_REPLY_CHARS / 100_000) + 1);
+  }, 15_000);
+
+  it("counts reply size per message, not across the whole invocation", async () => {
+    fs.mkdirSync(scratch, { recursive: true });
+    const result = await runHarness({
+      provider: "openrouter",
+      prompt: "",
+      model: "m",
+      reasoningLevel: "medium",
+      cwd: scratch,
+      transcriptPath: path.join(scratch, "many-replies.jsonl"),
+      timeoutMs: 60_000,
+      stallTimeoutMs: 0,
+      createSession: fakeSession(async ({ emit }) => {
+        // Three replies of ~0.6 MiB each: 1.8 MiB in total, none over the cap.
+        for (let reply = 0; reply < 3; reply++) {
+          emit(messageStartEvt);
+          for (let i = 0; i < 6; i++) emit(textDeltaEvt("x".repeat(100_000)));
+          emit(textEvt(`reply ${reply}`));
+        }
+      }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.error).toBe("");
   }, 15_000);
 
   it("surfaces a session-construction failure as an error result", async () => {

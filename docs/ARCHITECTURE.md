@@ -83,8 +83,14 @@ one harness invocation → consume the iteration's signal files.
 
 Progress is measured, not claimed. `buildProgressState` before and after the
 iteration is compared; three consecutive iterations that change nothing exit as
-`stalled`. An `ITERATION_DONE` without a work product is a *phantom completion*
-— the checklist is not advanced and the stall counter still sees it.
+`stalled`. The progress state hashes uncommitted content, not just the list of
+dirty paths, so repeated edits to an already-modified file still count. An
+`ITERATION_DONE` without a work product is a *phantom completion* — the
+checklist is not advanced and the stall counter still sees it. Uncommitted
+changes already in the worktree when the iteration started count as work
+product: only loop agents leave a worktree dirty (planner, evaluator and
+bookkeeping all commit), so that is work from a failed iteration or an earlier
+run that the still-unchecked task gets credit for.
 
 On a DONE signal the run-end ordering matters and is deliberate: reap the
 process group first (a surviving process could plant hooks after a check that
@@ -96,11 +102,14 @@ gate, and only then hand to the evaluator.
 `src/server/harness/` is the only place that knows about pi.
 
 - `index.ts` — `runHarness(opts)` drives one session and normalizes its events
-  into a JSONL transcript. Three watchdogs race the prompt: the iteration
-  timeout, the stall watchdog (`stallTimeoutSeconds`, universal by default so a
-  new call site gets it without opting in), and an external `AbortSignal`. All
-  three call `session.abort()`; `dispose()` in the `finally` releases the
-  session regardless.
+  into a JSONL transcript. Watchdogs race the prompt: the iteration timeout,
+  the stall watchdog (`stallTimeoutSeconds`, universal by default so a new call
+  site gets it without opting in), the stuck detector (the same tool call four
+  times in a row), the reply-size guard (`MAX_REPLY_CHARS`, 1 MiB of streamed
+  text, thinking, and tool-call arguments in one assistant reply — a corrupt
+  stream, aborted before it can overflow the context window), and an external
+  `AbortSignal`. All of them call `session.abort()`; `dispose()` in the
+  `finally` releases the session regardless.
 - `pi.ts` — session construction, provider mapping, and event normalization
   (`piNormalize`). `toolsForRole` and `pathRootsForRole` are the capability
   split: the planner gets `web_search` and no `bash`; the loop and evaluator get

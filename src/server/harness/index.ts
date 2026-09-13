@@ -197,6 +197,16 @@ export function foldTranscriptEvent(totals: TranscriptTotals, event: TranscriptE
   }
 }
 
+/**
+ * Most characters (text, thinking, and tool-call arguments combined) a single
+ * assistant reply may stream before the invocation is aborted. Normal turns
+ * are a few KB; a large file write is tens of KB. Past this the stream is
+ * corrupt, not verbose — e.g. a provider re-sending the whole reply-so-far as
+ * every delta, which once turned a 4k-token turn into 8.4 MB of text and
+ * overflowed a 1M-token context on the next request.
+ */
+export const MAX_REPLY_CHARS = 1024 * 1024;
+
 type RunHarnessOpts = {
   provider: ProviderId;
   prompt: string;
@@ -243,6 +253,8 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   let timedOut = false;
   let stalled = false;
   let stuck = false;
+  let oversized = false;
+  let replyChars = 0;
   const stuckDetector = new StuckDetector();
   const startedAtMs = Date.now();
   const version = harnessPackageVersion();
@@ -328,6 +340,23 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   const unsubscribe = session.subscribe((evt) => {
     resetStallTimer();
+    // Reply-size guard: counted from the streaming deltas so the session is
+    // aborted before an oversized reply lands in the context window.
+    if (evt.type === "message_start" || evt.type === "message_end") {
+      replyChars = 0;
+    } else if (evt.type === "message_update") {
+      const update = evt.assistantMessageEvent;
+      if (
+        update.type === "text_delta" ||
+        update.type === "thinking_delta" ||
+        update.type === "toolcall_delta"
+      ) {
+        replyChars += update.delta.length;
+        if (replyChars > MAX_REPLY_CHARS && !oversized) {
+          trip(() => (oversized = true));
+        }
+      }
+    }
     for (const e of piNormalize(evt)) {
       out.write(JSON.stringify(e) + "\n");
       if (firstTokenMs === null && e.t !== "raw") {
@@ -365,10 +394,12 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     totals.error = `harness emitted no output for ${Math.round(stallTimeoutMs / 1000)}s — stream hung (network drop or machine sleep?)`;
   } else if (stuck) {
     totals.error = "harness repeated the same tool call 4 times in a row — likely stuck";
+  } else if (oversized) {
+    totals.error = `assistant reply exceeded ${MAX_REPLY_CHARS / (1024 * 1024)} MiB in a single turn — likely a corrupted stream (duplicated deltas or leaked tool-call markup)`;
   } else if (!totals.error && promptError) {
     totals.error = promptError;
   }
 
-  const failed = Boolean(totals.error) || timedOut || stalled || stuck;
+  const failed = Boolean(totals.error) || timedOut || stalled || stuck || oversized;
   return result(failed ? 1 : 0);
 }
