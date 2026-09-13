@@ -144,3 +144,11 @@ Individual pieces, if you want faster feedback:
 
 Open a [GitHub issue](https://github.com/lhansen-dev/radulf/issues). For security
 issues, follow [SECURITY.md](SECURITY.md) instead of filing a public issue.
+
+To turn an idea into a ticket in your local Radulf backlog, use
+`/create-card <rough idea>` in Claude Code, or `$create-card <rough idea>` in
+Codex. The repo's [create-card skill](.claude/skills/create-card/SKILL.md) asks
+follow-up questions, suggests options, and creates a card with scope and
+acceptance criteria once the work is clear. It leaves the card in Backlog for
+you to queue. The skill lives in `.claude/skills/create-card`, with a symlink in
+`.agents/skills` for Codex discovery.
