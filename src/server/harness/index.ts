@@ -83,47 +83,29 @@ export type RunnerResult = {
   harnessVersion: string | null;
 };
 
+/** Telemetry persisted per iteration and per `runs` row, in column order. */
+export const TELEMETRY_KEYS = [
+  "promptTokens", "completionTokens", "cachedInputTokens", "cacheWriteTokens",
+  "reasoningTokens", "modelTurns", "toolCalls", "toolDurationMs", "firstTokenMs",
+  "costUsd", "harness", "harnessVersion",
+] as const;
+
 /**
  * The telemetry persisted on a `runs` row: a plan or evaluate run writes its
- * single invocation's numbers directly (via runTelemetry() below); a loop
- * run writes the sum of its iterations. Mirrors the iterations column set —
- * every field nullable (a loop run with zero iterations, or a field no
- * iteration reported, sums to null — never coerced to zero), which is why
- * this isn't just `Pick<RunnerResult, ...>`: RunnerResult's promptTokens/
- * completionTokens/toolCalls/harness are non-null for one real invocation,
- * but a roll-up over zero or partial iterations needs the nullable form.
+ * single invocation's numbers (via runTelemetry() below); a loop run writes
+ * the sum of its iterations. Every field is nullable — unlike RunnerResult,
+ * a roll-up over zero or partial iterations can lack any fact, and an
+ * unreported fact is never coerced to zero.
  */
 export type RunTelemetry = {
-  promptTokens: number | null;
-  completionTokens: number | null;
-  cachedInputTokens: number | null;
-  cacheWriteTokens: number | null;
-  reasoningTokens: number | null;
-  modelTurns: number | null;
-  toolCalls: number | null;
-  toolDurationMs: number | null;
-  firstTokenMs: number | null;
-  costUsd: number | null;
-  harness: string | null;
-  harnessVersion: string | null;
+  [K in (typeof TELEMETRY_KEYS)[number]]: K extends "harness" | "harnessVersion"
+    ? string | null
+    : number | null;
 };
 
 /** Project a RunnerResult down to the RunTelemetry persisted on a `runs` row. */
 export function runTelemetry(result: RunnerResult): RunTelemetry {
-  return {
-    promptTokens: result.promptTokens,
-    completionTokens: result.completionTokens,
-    cachedInputTokens: result.cachedInputTokens,
-    cacheWriteTokens: result.cacheWriteTokens,
-    reasoningTokens: result.reasoningTokens,
-    modelTurns: result.modelTurns,
-    toolCalls: result.toolCalls,
-    toolDurationMs: result.toolDurationMs,
-    firstTokenMs: result.firstTokenMs,
-    costUsd: result.costUsd,
-    harness: result.harness,
-    harnessVersion: result.harnessVersion,
-  };
+  return Object.fromEntries(TELEMETRY_KEYS.map((key) => [key, result[key]])) as RunTelemetry;
 }
 
 /**

@@ -12,11 +12,11 @@ import {
   events,
   repos,
   improvementRuns,
+  type ApprovedInstallScript,
   type CardStatus,
 } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
-import { startTranscriptPush } from "./transcript";
 import {
   buildLoopPrompt,
   buildProgressState,
@@ -27,20 +27,10 @@ import {
 } from "./bookkeeping";
 import { firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
-import { runHarness, type RunTelemetry } from "./harness";
-import {
-  listProviderModels,
-  normalizeProvider,
-  preflightProvider,
-} from "./providers";
-import { CONN_ERROR_PATTERN, isProviderOpen, recordProviderOutcome } from "./circuitBreaker";
-import {
-  createWorktree,
-  recordWorktree,
-  removeWorktree,
-  tryGit,
-  currentBranch,
-} from "./git";
+import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
+import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
+import { CONN_ERROR_PATTERN, recordProviderOutcome } from "./circuitBreaker";
+import { removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { PlanningService, pendingReplanFeedback } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
@@ -49,23 +39,28 @@ import { ClientError } from "./clientError";
 import { retryableFailedStep } from "@/shared/failedStep";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
-import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
-import {
-  checkRepoIntegrity,
-  removeBaseline,
-  saveBaseline,
-  snapshotRepoIntegrity,
-} from "./integrity";
+import { removeBaseline, saveBaseline, snapshotRepoIntegrity } from "./integrity";
 import {
   collectLifecycleScripts,
   lockfileFingerprint,
   rebuildPackages,
   unapprovedScripts,
 } from "./installGate";
-import type { ApprovedInstallScript } from "@/db";
+import {
+  circuitOpenReason,
+  integrityViolationReason,
+  resolveWorktree,
+  runWithTranscript,
+  sandboxUnavailableReason,
+  startRunRow,
+  type FinishStatus,
+  type StageDependencies,
+} from "./stage";
 
 type Card = typeof cards.$inferSelect;
 type Run = typeof runs.$inferSelect;
+
+const HARNESS_STATUSES: CardStatus[] = ["planning", "looping", "evaluating"];
 
 /** Small models write DONE.md as often as DONE — accept both. */
 export function doneFilePath(ralphDir: string): string | null {
@@ -88,6 +83,16 @@ function recordTaskCompleted(iterationId: number, planPath: string, taskNumber: 
     .run();
 }
 
+const scriptKey = (p: ApprovedInstallScript) => `${p.name}@${p.version}#${p.scriptHash}`;
+
+function approvedScripts(repo: typeof repos.$inferSelect): ApprovedInstallScript[] {
+  try {
+    return JSON.parse(repo.approvedInstallScripts) as ApprovedInstallScript[];
+  } catch {
+    return []; // Corrupt store — treat as nothing approved (the safe direction).
+  }
+}
+
 /** Build planning candidates from the Todo queue. Explicit manual starts are
  * oldest-first by ISO timestamp, independent of their queue position. */
 export function planningCandidates(
@@ -105,17 +110,17 @@ export function planningCandidates(
 
 export class Orchestrator {
   /** Card ID → repoId for every async loop currently running in the
-   * background. A Map (not just a Set of card IDs) so pipelineBusy(repoId)
-   * can answer "is repo X busy" without an extra DB round-trip per call. */
+   * background, so pipelineBusy(repoId) needs no extra DB round-trip. */
   private activeLoopCards = new Map<string, string>();
   /** Card IDs that have requested a pause on next iteration boundary. */
   private pausedCards = new Set<string>();
-  /** Set by startDraining() during graceful shutdown — pump() stops starting
-   * new runs but any run already in flight keeps going until it finishes. */
+  /** Set on graceful shutdown — pump() stops starting new runs, but any run
+   * already in flight keeps going until it finishes. */
   private draining = false;
-  /** runId → controller for every live child process (plan or loop). */
+  /** runId → controller for every live harness invocation. */
   private controllers = new Map<string, AbortController>();
-  private planningService = new PlanningService({
+
+  private stageDeps: StageDependencies = {
     getCard: (cardId) => this.getCard(cardId),
     latestPlan: (cardId) => this.latestPlan(cardId),
     latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
@@ -124,35 +129,16 @@ export class Orchestrator {
       this.finishRun(runId, status, exitReason, undefined, telemetry),
     registerController: (runId, controller) => this.controllers.set(runId, controller),
     releaseController: (runId) => this.controllers.delete(runId),
-    pump: () => this.pump(),
-  });
+  };
+  private planningService = new PlanningService({ ...this.stageDeps, pump: () => this.pump() });
   private evaluationService = new EvaluationService({
-    getCard: (cardId) => this.getCard(cardId),
-    latestPlan: (cardId) => this.latestPlan(cardId),
-    latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
-    moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
-    finishRun: (runId, status, exitReason, telemetry) =>
-      this.finishRun(runId, status, exitReason, undefined, telemetry),
-    registerController: (runId, controller) => this.controllers.set(runId, controller),
-    releaseController: (runId) => this.controllers.delete(runId),
-    replan: (cardId) => {
-      void this.planningService.runPlanning(cardId).catch((err) => {
-        if (this.getCard(cardId)?.status === "planning") {
-          this.moveCard(cardId, "planning", "needs_attention", String(err));
-        }
-      });
-    },
+    ...this.stageDeps,
+    replan: (cardId) => this.startStage("planning", cardId),
     // "auto": the evaluator released this diff, not a human. Spec 15 makes a
     // pull request delivered this way a draft.
     approveReview: (runId) => this.reviewService.approve(runId, "auto"),
   });
-  private reviewService = new ReviewService({
-    getCard: (cardId) => this.getCard(cardId),
-    latestPlan: (cardId) => this.latestPlan(cardId),
-    latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
-    moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
-    pump: () => this.pump(),
-  });
+  private reviewService = new ReviewService({ ...this.stageDeps, pump: () => this.pump() });
 
   constructor(options: { autoStart?: boolean } = {}) {
     if (options.autoStart !== false) {
@@ -170,10 +156,7 @@ export class Orchestrator {
         .set({ status: "interrupted", exitReason: "server restarted mid-run", endedAt: now() })
         .where(eq(runs.id, run.id))
         .run();
-      db.update(iterations)
-        .set({ status: "failed", summary: "interrupted by server restart", endedAt: now() })
-        .where(eq(iterations.runId, run.id))
-        .run();
+      this.failIterations(run.id, "interrupted by server restart");
       emitEvent("run.finished", {
         cardId: run.cardId,
         runId: run.id,
@@ -188,7 +171,7 @@ export class Orchestrator {
     const orphans = db
       .select()
       .from(cards)
-      .where(inArray(cards.status, ["planning", "looping", "evaluating", "reviewing"]))
+      .where(inArray(cards.status, [...HARNESS_STATUSES, "reviewing"]))
       .all();
     for (const card of orphans) {
       this.moveCard(card.id, card.status, "needs_attention", "interrupted");
@@ -199,6 +182,12 @@ export class Orchestrator {
 
   private getCard(cardId: string): Card | undefined {
     return db.select().from(cards).where(eq(cards.id, cardId)).get();
+  }
+
+  private requireCard(cardId: string): Card {
+    const card = this.getCard(cardId);
+    if (!card) throw new ClientError("card not found", 404);
+    return card;
   }
 
   private moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean {
@@ -212,10 +201,31 @@ export class Orchestrator {
     return true;
   }
 
+  private failIterations(runId: string, summary: string) {
+    db.update(iterations)
+      .set({ status: "failed", summary, endedAt: now() })
+      .where(eq(iterations.runId, runId))
+      .run();
+  }
+
+  /** Run the planner or evaluator in the background on a card already moved
+   * into that stage; a crash lands the card in needs_attention. */
+  private startStage(stage: "planning" | "evaluating", cardId: string) {
+    const run =
+      stage === "planning"
+        ? this.planningService.runPlanning(cardId)
+        : this.evaluationService.runEvaluator(cardId);
+    void run.catch((err) => {
+      if (this.getCard(cardId)?.status === stage) {
+        this.moveCard(cardId, stage, "needs_attention", String(err));
+      }
+    });
+  }
+
   /** Mark a run finished — only if it is still `running` (guards cancel races). */
   private finishRun(
     runId: string,
-    status: "completed" | "failed" | "timeout" | "cancelled",
+    status: FinishStatus,
     exitReason: string,
     iterationsDone?: number,
     telemetry?: RunTelemetry,
@@ -225,9 +235,8 @@ export class Orchestrator {
     // A pause request only applies to the live loop — a run that ends for any
     // other reason (cancel, DONE, timeout) must not pause the card's next run.
     this.pausedCards.delete(run.cardId);
-    // Plan/evaluate pass their single runHarness invocation's telemetry
-    // explicitly; a loop run has none passed (its telemetry lives per
-    // iteration), so roll it up from the iterations just recorded.
+    // Plan/evaluate pass their single invocation's telemetry; a loop run's
+    // lives per iteration, so roll it up from the iterations just recorded.
     const rollup = telemetry ?? (run.kind === "loop" ? this.loopTelemetryRollup(runId) : undefined);
     db.update(runs)
       .set({
@@ -239,17 +248,14 @@ export class Orchestrator {
       })
       .where(eq(runs.id, runId))
       .run();
-    emitEvent("run.finished", {
-      cardId: run.cardId,
-      runId,
-      payload: { status, exitReason },
-    });
+    emitEvent("run.finished", { cardId: run.cardId, runId, payload: { status, exitReason } });
     return true;
   }
 
-  /** Run-level telemetry roll-up for a loop run: sum its iterations, mirroring
-   * the "null means unreported" convention — a field is null only when NO
-   * iteration reported it, so a partial sample still sums the facts it has. */
+  /** Sum a loop run's iterations. A field is null only when NO iteration
+   * reported it, so a partial sample still sums the facts it has. Time to
+   * first token and harness identity describe the run's start — the first
+   * iteration's value. */
   private loopTelemetryRollup(runId: string): RunTelemetry {
     const rows = db
       .select()
@@ -257,26 +263,17 @@ export class Orchestrator {
       .where(eq(iterations.runId, runId))
       .orderBy(asc(iterations.n))
       .all();
-    const sum = (values: (number | null)[]): number | null => {
-      const present = values.filter((v): v is number => v != null);
-      return present.length > 0 ? present.reduce((s, v) => s + v, 0) : null;
-    };
-    return {
-      promptTokens: sum(rows.map((r) => r.promptTokens)),
-      completionTokens: sum(rows.map((r) => r.completionTokens)),
-      cachedInputTokens: sum(rows.map((r) => r.cachedInputTokens)),
-      cacheWriteTokens: sum(rows.map((r) => r.cacheWriteTokens)),
-      reasoningTokens: sum(rows.map((r) => r.reasoningTokens)),
-      modelTurns: sum(rows.map((r) => r.modelTurns)),
-      toolCalls: sum(rows.map((r) => r.toolCalls)),
-      toolDurationMs: sum(rows.map((r) => r.toolDurationMs)),
-      // Time to first token describes the run's start, not a sum — the first
-      // iteration's value.
-      firstTokenMs: rows[0]?.firstTokenMs ?? null,
-      costUsd: sum(rows.map((r) => r.costUsd)),
-      harness: rows[0]?.harness ?? null,
-      harnessVersion: rows[0]?.harnessVersion ?? null,
-    };
+    const firstOnly = new Set<keyof RunTelemetry>(["firstTokenMs", "harness", "harnessVersion"]);
+    const rollup = {} as Record<keyof RunTelemetry, unknown>;
+    for (const key of TELEMETRY_KEYS) {
+      if (firstOnly.has(key)) {
+        rollup[key] = rows[0]?.[key] ?? null;
+        continue;
+      }
+      const present = rows.map((r) => r[key] as number | null).filter((v): v is number => v != null);
+      rollup[key] = present.length > 0 ? present.reduce((s, v) => s + v, 0) : null;
+    }
+    return rollup as RunTelemetry;
   }
 
   /** External awaits may finish after a user cancellation. Never let their
@@ -284,8 +281,7 @@ export class Orchestrator {
   private isRunActive(runId: string, cardId: string, signal: AbortSignal): boolean {
     if (signal.aborted) return false;
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
-    const card = this.getCard(cardId);
-    return run?.status === "running" && card?.status === "looping";
+    return run?.status === "running" && this.getCard(cardId)?.status === "looping";
   }
 
   private latestPlan(cardId: string) {
@@ -309,46 +305,52 @@ export class Orchestrator {
     return rows.find((r) => fs.existsSync(/* turbopackIgnore: true */ r.worktreePath));
   }
 
+  /** Cancel the card's live run, if any, and abort its harness. */
+  private cancelActiveRun(cardId: string, reason: string) {
+    const active = db
+      .select()
+      .from(runs)
+      .where(and(eq(runs.cardId, cardId), eq(runs.status, "running")))
+      .orderBy(desc(runs.startedAt))
+      .limit(1)
+      .get();
+    if (!active) return;
+    this.finishRun(active.id, "cancelled", reason);
+    this.failIterations(active.id, reason);
+    this.controllers.get(active.id)?.abort();
+  }
+
   // ---- entry points --------------------------------------------------------
 
   /** Todo → In Progress. Plans if needed, otherwise queues for the loop slot. */
   startCard(cardId: string) {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
+    const card = this.requireCard(cardId);
     if (!["todo", "needs_attention"].includes(card.status))
       throw new ClientError(`cannot start card in status ${card.status}`);
     if (!card.startedAt)
       db.update(cards).set({ startedAt: now() }).where(eq(cards.id, cardId)).run();
 
     if (this.latestPlan(cardId) && !pendingReplanFeedback(cardId)) {
-      // Restart path — plan exists, go straight to the loop queue. A card
-      // with unplanned feedback (a rejection or an evaluator revise) falls
-      // through: feedback re-plans first.
+      // Restart path — plan exists, go straight to the loop queue. Unplanned
+      // feedback (a rejection or an evaluator revise) re-plans first.
       this.moveCard(cardId, card.status, "ready");
       this.pump();
     } else if (this.pipelineBusy(card.repoId)) {
       // One ticket runs at a time. The startedAt set above marks this a manual
-      // start; land it back in todo so pump picks it up (oldest manual start
-      // first) when the pipeline frees. pump only scans todo for planning, so
-      // a restarted needs_attention card must return there or it would never
-      // be picked up.
+      // start; land it back in todo (pump only scans todo for planning) so it
+      // is picked up, oldest manual start first, when the pipeline frees.
       if (card.status !== "todo") {
         this.moveCard(cardId, card.status, "todo", "queued for planning");
       }
     } else {
       this.moveCard(cardId, card.status, "planning");
-      void this.planningService.runPlanning(cardId).catch((err) => {
-        if (this.getCard(cardId)?.status === "planning") {
-          this.moveCard(cardId, "planning", "needs_attention", String(err));
-        }
-      });
+      this.startStage("planning", cardId);
     }
   }
 
   /** Backlog → Todo. Auto-mode may immediately claim the queued card. */
   queueCard(cardId: string) {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
+    const card = this.requireCard(cardId);
     if (card.status !== "backlog") {
       throw new ClientError(`cannot queue card in status ${card.status}`);
     }
@@ -362,61 +364,34 @@ export class Orchestrator {
           .get()?.max ?? 0;
       return tx
         .update(cards)
-        .set({
-          status: "todo",
-          position: maxPosition + 1,
-          startedAt: null,
-          updatedAt: now(),
-        })
+        .set({ status: "todo", position: maxPosition + 1, startedAt: null, updatedAt: now() })
         .where(and(eq(cards.id, cardId), eq(cards.status, "backlog")))
         .run();
     });
     if (result.changes !== 1) {
       throw new ClientError("card status changed before it could be queued");
     }
-    emitEvent("card.moved", {
-      cardId,
-      payload: { from: "backlog", to: "todo", reason: "queued" },
-    });
+    emitEvent("card.moved", { cardId, payload: { from: "backlog", to: "todo", reason: "queued" } });
     this.pump();
   }
 
   pauseCard(cardId: string) {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
-    if (card.status !== "looping")
-      throw new ClientError(`cannot pause a ${card.status} card`);
+    const card = this.requireCard(cardId);
+    if (card.status !== "looping") throw new ClientError(`cannot pause a ${card.status} card`);
     this.pausedCards.add(cardId);
   }
 
   resumeCard(cardId: string) {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
-    if (card.status !== "paused")
-      throw new ClientError(`cannot resume a ${card.status} card`);
+    const card = this.requireCard(cardId);
+    if (card.status !== "paused") throw new ClientError(`cannot resume a ${card.status} card`);
     this.pausedCards.delete(cardId);
     this.moveCard(cardId, "paused", "ready");
     this.pump();
   }
 
   cancelCard(cardId: string) {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
-    const active = db
-      .select()
-      .from(runs)
-      .where(and(eq(runs.cardId, cardId), eq(runs.status, "running")))
-      .orderBy(desc(runs.startedAt))
-      .limit(1)
-      .get();
-    if (active) {
-      this.finishRun(active.id, "cancelled", "cancelled by user");
-      db.update(iterations)
-        .set({ status: "failed", summary: "cancelled by user", endedAt: now() })
-        .where(eq(iterations.runId, active.id))
-        .run();
-      this.controllers.get(active.id)?.abort();
-    }
+    const card = this.requireCard(cardId);
+    this.cancelActiveRun(cardId, "cancelled by user");
     // Pulling work back must always land somewhere auto-mode cannot claim.
     // Clear the durable manual-start marker in the same write.
     db.update(cards)
@@ -432,8 +407,7 @@ export class Orchestrator {
 
   /** Needs Attention → In Progress. */
   restartCard(cardId: string) {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
+    const card = this.requireCard(cardId);
     if (card.status !== "needs_attention")
       throw new ClientError(`cannot restart card in status ${card.status}`);
     this.startCard(cardId);
@@ -441,27 +415,11 @@ export class Orchestrator {
 
   /** Retry the latest failed pipeline stage without replaying completed ones. */
   retryFailedStep(cardId: string): { ok: true; step: NonNullable<ReturnType<typeof retryableFailedStep>> } {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
-    const cardRuns = db.select().from(runs).where(eq(runs.cardId, cardId)).all();
-    const step = retryableFailedStep(cardRuns);
+    const card = this.requireCard(cardId);
+    const step = retryableFailedStep(db.select().from(runs).where(eq(runs.cardId, cardId)).all());
     if (!step) throw new ClientError("the latest pipeline step did not fail");
-
     if (card.status !== "needs_attention") {
       throw new ClientError(`cannot retry ${step} for card in status ${card.status}`);
-    }
-
-    if (step === "plan") {
-      if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
-      if (!this.moveCard(cardId, "needs_attention", "planning", "retrying failed planner")) {
-        throw new ClientError("card status changed before the planner could retry");
-      }
-      void this.planningService.runPlanning(cardId).catch((error) => {
-        if (this.getCard(cardId)?.status === "planning") {
-          this.moveCard(cardId, "planning", "needs_attention", String(error));
-        }
-      });
-      return { ok: true, step };
     }
 
     if (step === "loop") {
@@ -474,60 +432,47 @@ export class Orchestrator {
     }
 
     if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
-
-    // step === "evaluate"
-    if (!this.moveCard(cardId, "needs_attention", "evaluating", "retrying failed evaluator")) {
-      throw new ClientError("card status changed before the evaluator could retry");
+    const [stage, agent] = step === "plan"
+      ? (["planning", "planner"] as const)
+      : (["evaluating", "evaluator"] as const);
+    if (!this.moveCard(cardId, "needs_attention", stage, `retrying failed ${agent}`)) {
+      throw new ClientError(`card status changed before the ${agent} could retry`);
     }
-    void this.evaluationService.runEvaluator(cardId).catch((error) => {
-      if (this.getCard(cardId)?.status === "evaluating") {
-        this.moveCard(cardId, "evaluating", "needs_attention", String(error));
-      }
-    });
+    this.startStage(stage, cardId);
     return { ok: true, step };
   }
 
   // ---- pipeline pump -------------------------------------------------------
 
-  /** Stop pump() from starting new runs. Called once, on shutdown signal —
-   * any run already in flight keeps going until it finishes or the caller's
-   * own timeout gives up on waiting (see instrumentation.ts). */
+  /** Stop pump() from starting new runs. Called once, on shutdown signal. */
   startDraining() {
     this.draining = true;
   }
 
-  /** True while any repo has a run in flight (planning, looping, or
-   * evaluating) — used by graceful shutdown to know whether it's safe to
-   * exit immediately. Deliberately global, unlike pipelineBusy(repoId):
-   * shutdown drains the whole process, not one repo. */
+  /** True while any repo has a run in flight — used by graceful shutdown.
+   * Deliberately global, unlike pipelineBusy(repoId). */
   hasInFlightWork(): boolean {
-    if (this.activeLoopCards.size > 0) return true;
+    return this.activeLoopCards.size > 0 || this.cardInStatus(HARNESS_STATUSES);
+  }
+
+  private cardInStatus(statuses: CardStatus[], repoId?: string): boolean {
     return (
       db
         .select({ id: cards.id })
         .from(cards)
-        .where(inArray(cards.status, ["planning", "looping", "evaluating"]))
+        .where(and(inArray(cards.status, statuses), repoId ? eq(cards.repoId, repoId) : undefined))
         .limit(1)
         .get() !== undefined
     );
   }
 
-  /** True while a card in `repoId` is actively running a harness (planning,
-   * looping, or evaluating) — that repo's single pipeline slot is occupied.
-   * Cards queued (todo, ready) or waiting on a human (plan_review, paused,
-   * needs_attention) do not count. Repos never share a slot, so this is
-   * always scoped to one repoId, never global. */
+  /** True while a card in `repoId` is actively running a harness — that
+   * repo's single pipeline slot is occupied. Queued or human-waiting cards do
+   * not count. Repos never share a slot. */
   private pipelineBusy(repoId: string): boolean {
-    for (const activeRepoId of this.activeLoopCards.values()) {
-      if (activeRepoId === repoId) return true;
-    }
     return (
-      db
-        .select({ id: cards.id })
-        .from(cards)
-        .where(and(eq(cards.repoId, repoId), inArray(cards.status, ["planning", "looping", "evaluating"])))
-        .limit(1)
-        .get() !== undefined
+      [...this.activeLoopCards.values()].includes(repoId) ||
+      this.cardInStatus(HARNESS_STATUSES, repoId)
     );
   }
 
@@ -537,13 +482,7 @@ export class Orchestrator {
    * still proposing before it has created a card. Synchronous, so a caller can
    * delete the repo with no intervening await. */
   assertRepoRemovable(repoId: string): void {
-    const reviewing = db
-      .select({ id: cards.id })
-      .from(cards)
-      .where(and(eq(cards.repoId, repoId), eq(cards.status, "reviewing")))
-      .limit(1)
-      .get();
-    if (this.pipelineBusy(repoId) || reviewing) {
+    if (this.pipelineBusy(repoId) || this.cardInStatus(["reviewing"], repoId)) {
       throw new ClientError(
         "cannot remove a repository while one of its tasks is running or merging — cancel it or wait for it to finish",
         409,
@@ -563,19 +502,15 @@ export class Orchestrator {
     }
   }
 
-  /** Advance every repo's queue independently. Each repo gets its own single
-   * pipeline slot: one card per repo runs at a time — a ready card loops
-   * before any new card in that repo is planned, and nothing new starts in a
-   * repo while a card there is planning, looping, or evaluating. Unrelated
-   * repos never wait on each other. */
+  /** Advance every repo's queue independently. Each repo gets one pipeline
+   * slot: a ready card loops before any new card in that repo is planned, and
+   * nothing new starts while a card there is planning, looping, or
+   * evaluating. Unrelated repos never wait on each other. */
   pump() {
     if (this.draining) return;
 
-    // Finish in-flight tickets first: a planned (ready) card loops before any
-    // fresh Todo card in the same repo is planned. Both queries are read once
-    // up front and then filtered per repo below, preserving the existing
-    // tie-break order (ready before todo, oldest startedAt/position first)
-    // within each repo.
+    // Read once, then filter per repo — preserving the tie-break order
+    // (ready before todo, oldest startedAt/position first) within each repo.
     const readyCards = db
       .select()
       .from(cards)
@@ -612,13 +547,9 @@ export class Orchestrator {
         continue;
       }
 
-      // Otherwise plan the next eligible Todo card in this repo: explicit
-      // manual starts (startedAt set, oldest first) first, then the queue in
-      // position order when auto-mode is on. Backlog is never queried here.
-      const next = planningCandidates(
-        todoCards.filter((c) => c.repoId === repoId),
-        autoMode,
-      )[0];
+      // Otherwise plan the next eligible Todo card in this repo. Backlog is
+      // never queried here.
+      const next = planningCandidates(todoCards.filter((c) => c.repoId === repoId), autoMode)[0];
       if (!next) continue;
       try {
         this.startCard(next.cardId);
@@ -637,23 +568,16 @@ export class Orchestrator {
     const settings = getSettings();
     const maxIterations = card.maxIterations ?? settings.defaultMaxIterations;
     const timeoutMs = (card.timeoutMinutes ?? settings.defaultTimeoutMinutes) * 60 * 1000;
-    const loopProvider = normalizeProvider(settings.loopProvider, "anthropic");
+    const provider = normalizeProvider(settings.loopProvider, "anthropic");
     const loopModel = card.loopModel || settings.loopModel;
 
     const runId = nanoid();
-    // Reuse the card's existing worktree (reject/restart) or make a fresh one.
-    const prev = this.latestWorktreeRun(cardId);
-    const baseBranch =
-      prev?.baseBranch ?? card.baseBranch ?? (await currentBranch(repo.path, repo.defaultBranch));
-    let worktreePath: string;
-    let branch: string;
-    if (prev) {
-      ({ worktreePath, branch } = prev);
-    } else {
-      ({ worktreePath, branch } = await createWorktree(repo.path, baseBranch, card.title, runId));
-    }
+    const { worktreePath, branch, baseBranch, created } = await resolveWorktree(
+      repo, card, runId, this.latestWorktreeRun(cardId),
+    );
     // Ensure the worktree carries the current plan's artifacts.
     const ralphDir = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+    const ralphFile = (name: string) => path.join(/* turbopackIgnore: true */ ralphDir, name);
     fs.mkdirSync(/* turbopackIgnore: true */ ralphDir, { recursive: true });
     // The private PLAN.md holds the task checklist the orchestrator ticks off —
     // its checked state is the loop's memory, so never clobber an existing
@@ -661,7 +585,7 @@ export class Orchestrator {
     // cards) so its ticks survive, then remove it: the loop agent must never
     // be able to read PLAN.md.
     const planPath = planStatePath(cardId);
-    const legacyPlanPath = path.join(/* turbopackIgnore: true */ ralphDir, "PLAN.md");
+    const legacyPlanPath = ralphFile("PLAN.md");
     if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) {
       fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(planPath), { recursive: true });
       fs.writeFileSync(
@@ -671,61 +595,32 @@ export class Orchestrator {
           : plan.planMd,
       );
     }
-    fs.rmSync(/* turbopackIgnore: true */ legacyPlanPath, { force: true });
-    // CRITERIA.md is orchestrator-private like PLAN.md: the loop must never see
-    // the whole-card acceptance criteria (the evaluator gets them injected into
-    // its prompt from plan.acceptanceCriteria). Drop any planner-authored copy
-    // from the worktree so only PROMPT.md and the signal files remain.
-    fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "CRITERIA.md"), { force: true });
-    fs.writeFileSync(
-      path.join(/* turbopackIgnore: true */ ralphDir, "PROMPT.md"),
-      plan.promptMd,
-    );
-    fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "DONE"), { force: true });
-    fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "DONE.md"), { force: true });
+    // CRITERIA.md is orchestrator-private like PLAN.md (the evaluator gets the
+    // criteria injected into its prompt). Only PROMPT.md and the signal files
+    // may remain in the worktree.
+    for (const name of ["PLAN.md", "CRITERIA.md", "DONE", "DONE.md"]) {
+      fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
+    }
+    fs.writeFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), plan.promptMd);
     clearEvaluationArtifact(ralphDir);
     await tryGit(worktreePath, "add", ".ralph");
     await tryGit(worktreePath, "commit", "-m", `ralph: sync plan v${plan.version}`);
 
-    // Spec 14 L3: per-run sandbox context (private TMPDIR + caches, allowlist
-    // env, ulimit/pgid preamble) and the parent-repo integrity baseline. The
-    // baseline persists to disk because the pre-merge re-check may run long
-    // after this process is gone.
+    // Spec 14 L3: per-run sandbox context and the parent-repo integrity
+    // baseline. The baseline persists to disk because the pre-merge re-check
+    // may run long after this process is gone.
     const ctx = createRunSandbox(runId, { cwd: worktreePath, s: settings });
     // Multi-GB allocation — skipped under test, fire-and-forget otherwise.
     if (process.env.NODE_ENV !== "test") void ensureBallast(this.ballastPath());
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
     if (integrityBaseline) saveBaseline(runId, integrityBaseline);
 
-    db.insert(runs)
-      .values({
-        id: runId,
-        cardId,
-        planId: plan.id,
-        kind: "loop",
-        worktreePath,
-        branch,
-        baseBranch,
-        provider: loopProvider,
-        model: loopModel,
-        startedAt: now(),
-        diskLimitMechanism: ctx.diskLimitMechanism,
-        sandboxed: settings.sandboxEnabled ? 1 : 0,
-      })
-      .run();
-    // events.run_id is a real FK too — emit only now that the run row exists
-    // (PLAN.md Phase 18.1: createRunSandbox used to emit this itself, before
-    // this insert, and crashed run start whenever the flag was on).
-    if (ctx.weakerIsolationEnabled) {
-      emitEvent("sandbox.weaker_isolation_enabled", {
-        cardId,
-        runId,
-        payload: { reason: "sandboxWeakerIsolationForGoTls" },
-      });
-    }
-    // worktrees.runId is a real FK — record the worktree only now that its
-    // owning run row exists (creating it earlier would violate the constraint).
-    if (!prev) recordWorktree(repo.id, runId, worktreePath, branch);
+    startRunRow(
+      { id: runId, cardId, planId: plan.id, kind: "loop", worktreePath, branch, baseBranch, provider, model: loopModel },
+      ctx,
+      settings,
+      created ? repo.id : undefined,
+    );
     // The awaited git calls above open a window where the user can cancel
     // before this run row existed — the CAS failing means the card left the
     // queue, so never start the loop for it.
@@ -744,11 +639,14 @@ export class Orchestrator {
     // not be abortable, but its continuation is guarded below.
     const controller = new AbortController();
     this.controllers.set(runId, controller);
+    const active = () => this.isRunActive(runId, cardId, controller.signal);
+    const fail = (reason: string, n?: number, status: FinishStatus = "failed") => {
+      this.finishRun(runId, status, reason, n);
+      this.moveCard(cardId, "looping", "needs_attention", reason);
+    };
 
-    // Disk watchdog (spec 14 L3): the default disk bound on macOS and the
-    // cross-platform backstop beside the Linux cgroup. A trip finalizes the
-    // run itself, then aborts the harness — the abort-guard below treats an
-    // already-finalized run like a cancellation.
+    // Disk watchdog (spec 14 L3): a trip finalizes the run itself, then aborts
+    // the harness — the abort-guard below treats that like a cancellation.
     const watchdog = startDiskWatchdog({
       paths: [worktreePath, ctx.root],
       ballastPath: this.ballastPath(),
@@ -761,108 +659,65 @@ export class Orchestrator {
     });
 
     try {
-      // Circuit breaker: a provider that has recently shown connection/auth
-      // failures fails this run fast instead of repeating the same slow
-      // preflight-then-iterate failure.
-      if (isProviderOpen(loopProvider)) {
-        const reason = `provider ${loopProvider} circuit breaker open — recent connection failures, will retry automatically after cooldown`;
-        this.finishRun(runId, "failed", reason);
-        this.moveCard(cardId, "looping", "needs_attention", reason);
-        return;
-      }
+      const breaker = circuitOpenReason(provider);
+      if (breaker) return fail(breaker);
 
-      // Fail fast if the loop provider is down or not serving the model, rather
+      // Fail fast if the provider is down or not serving the model, rather
       // than spending iterations discovering it mid-run.
       try {
-        await preflightProvider(loopProvider, loopModel, settings);
-        if (!this.isRunActive(runId, cardId, controller.signal)) return;
+        await preflightProvider(provider, loopModel, settings);
+        if (!active()) return;
       } catch (e) {
-        if (!this.isRunActive(runId, cardId, controller.signal)) return;
-        const reason = `loop provider unreachable: ${e instanceof Error ? e.message : String(e)}`;
-        this.finishRun(runId, "failed", reason);
-        this.moveCard(cardId, "looping", "needs_attention", reason);
-        return;
+        if (!active()) return;
+        return fail(`loop provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
       }
 
-      // Spec 14 Phase 6: fail loudly before the first iteration if
-      // sandboxEnabled but srt isn't actually usable — never fall back to
-      // an unsandboxed loop silently. sandboxEnabled=false skips this
-      // entirely; that operator choice is what `ctx.srtConfig` being
-      // absent already communicates to the harness.
-      if (settings.sandboxEnabled) {
-        const preflight = await initializeSandboxRuntimeOnce();
-        if (!this.isRunActive(runId, cardId, controller.signal)) return;
-        if (!preflight.ok) {
-          const reason = `sandbox unavailable: ${preflight.errors.join("; ")}`;
-          this.finishRun(runId, "failed", reason);
-          this.moveCard(cardId, "looping", "needs_attention", reason);
-          return;
-        }
-      }
+      const sandboxError = await sandboxUnavailableReason(settings);
+      if (settings.sandboxEnabled && !active()) return;
+      if (sandboxError) return fail(sandboxError);
 
-      let resolvedLoopModel = loopModel;
-      if (loopProvider === "openrouter" && !loopModel) {
-        const reason = "no model selected for the OpenRouter provider — pick one in Settings";
-        this.finishRun(runId, "failed", reason);
-        this.moveCard(cardId, "looping", "needs_attention", reason);
-        return;
+      let model = loopModel;
+      if (provider === "openrouter" && !loopModel) {
+        return fail("no model selected for the OpenRouter provider — pick one in Settings");
       }
-      if (loopProvider === "omlx" && !loopModel) {
+      if (provider === "omlx" && !loopModel) {
         try {
           const models = await listProviderModels("omlx", settings);
-          if (!this.isRunActive(runId, cardId, controller.signal)) return;
-          if (models.length > 0 && models[0].value) {
-            resolvedLoopModel = models[0].value;
-          } else {
-            throw new Error("no models available from oMLX");
-          }
+          if (!active()) return;
+          if (!models[0]?.value) throw new Error("no models available from oMLX");
+          model = models[0].value;
         } catch (e) {
-          if (!this.isRunActive(runId, cardId, controller.signal)) return;
-          const reason = `failed to resolve oMLX model: ${e instanceof Error ? e.message : String(e)}`;
-          this.finishRun(runId, "failed", reason);
-          this.moveCard(cardId, "looping", "needs_attention", reason);
-          return;
+          if (!active()) return;
+          return fail(`failed to resolve oMLX model: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
 
       const deadline = Date.now() + timeoutMs;
       // Spec 11: per-iteration hard timeout, capped by the run's remaining
-      // budget. Floors keep a mistyped setting from making loops unrunnable.
+      // budget. The floor keeps a mistyped setting from making loops unrunnable.
       const hardTimeoutMs = Math.max(60_000, settings.iterationHardTimeoutMinutes * 60_000);
       let consecutiveFailures = 0;
       let consecutiveStalls = 0;
       let consecutiveIterationTimeouts = 0;
       let n = 0;
 
-      const progressState = () => buildProgressState(worktreePath, planPath);
-
       while (n < maxIterations) {
         const remaining = deadline - Date.now();
-        if (remaining < 30_000) {
-          this.finishRun(runId, "timeout", "timeout", n);
-          this.moveCard(cardId, "looping", "needs_attention", "timeout");
-          return;
-        }
+        if (remaining < 30_000) return fail("timeout", n, "timeout");
         // Every iteration needs an unchecked task to inject — there is no
         // fallback prompt. An exhausted checklist here means the final task
         // ended without a DONE signal (e.g. its criteria failed).
         const planMd = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
         const task = firstUnchecked(planMd);
-        if (!task) {
-          const reason = "plan checklist exhausted without a DONE signal";
-          this.finishRun(runId, "failed", reason, n);
-          this.moveCard(cardId, "looping", "needs_attention", reason);
-          return;
-        }
+        if (!task) return fail("plan checklist exhausted without a DONE signal", n);
         n += 1;
-        const iterName = `iter-${String(n).padStart(3, "0")}.jsonl`;
-        const transcriptPath = path.join(runTranscriptDir(runId), iterName);
+        const transcriptFile = `iter-${String(n).padStart(3, "0")}.jsonl`;
         const iter = db
           .insert(iterations)
           .values({
             runId,
             n,
-            transcriptPath,
+            transcriptPath: path.join(runTranscriptDir(runId), transcriptFile),
             taskNumber: task.taskNumber,
             taskCount: parseChecklist(planMd)?.items.length ?? task.taskNumber,
             taskText: task.item.text,
@@ -872,40 +727,28 @@ export class Orchestrator {
           .get();
         emitEvent("iteration.started", { cardId, runId, payload: { n, maxIterations } });
 
-        // Push new transcript lines over the SSE bus as the harness writes
-        // them, instead of the UI polling (Phase 16 chunk A). Stopped in the
-        // `finally` below, once runHarness settles and this iteration's file
-        // is done being written.
-        const stopTranscriptPush = startTranscriptPush(transcriptPath, runId, n);
-
-        const before = await progressState();
+        const before = await buildProgressState(worktreePath, planPath);
         const preIteration = await captureIterationState(worktreePath);
         // Install-script gate trigger (spec 14): a changed lockfile
         // fingerprint after the iteration means an install happened.
         const lockfilesBefore = lockfileFingerprint(worktreePath);
-        const promptMd = fs.readFileSync(
-          path.join(/* turbopackIgnore: true */ ralphDir, "PROMPT.md"),
-          "utf8",
-        );
-        const prompt = buildLoopPrompt(promptMd, planMd);
+        const promptMd = fs.readFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), "utf8");
         // Soft signal only — spec 11 forbids terminating an iteration merely
-        // for being slow; the hard timeout below is the enforcement point.
+        // for being slow; the hard timeout is the enforcement point.
         const slowTimer = setTimeout(() => {
-          emitEvent("iteration.slow", {
-            cardId,
-            runId,
-            payload: { n, thresholdMs: SLOW_ITERATION_MS },
-          });
+          emitEvent("iteration.slow", { cardId, runId, payload: { n, thresholdMs: SLOW_ITERATION_MS } });
         }, SLOW_ITERATION_MS);
         let result;
         try {
-          result = await runHarness({
-            provider: loopProvider,
-            model: resolvedLoopModel,
+          result = await runWithTranscript({
+            runId,
+            file: transcriptFile,
+            iteration: n,
+            provider,
+            model,
             reasoningLevel: settings.loopReasoningLevel,
-            prompt,
+            prompt: buildLoopPrompt(promptMd, planMd),
             cwd: worktreePath,
-            transcriptPath,
             timeoutMs: Math.min(remaining, hardTimeoutMs),
             signal: controller.signal,
             role: "loop",
@@ -913,7 +756,6 @@ export class Orchestrator {
           });
         } finally {
           clearTimeout(slowTimer);
-          stopTranscriptPush();
         }
 
         if (controller.signal.aborted) return; // cancelCard already finalized
@@ -922,24 +764,11 @@ export class Orchestrator {
         db.update(iterations)
           .set({
             status: failed ? "failed" : "completed",
-            summary: result.error
-              ? result.error.slice(0, 2000)
-              : result.lastText.slice(0, 2000) || null,
+            summary: (result.error || result.lastText).slice(0, 2000) || null,
             endedAt: now(),
-            promptTokens: result.promptTokens,
-            completionTokens: result.completionTokens,
-            cachedInputTokens: result.cachedInputTokens,
-            cacheWriteTokens: result.cacheWriteTokens,
-            reasoningTokens: result.reasoningTokens,
-            modelTurns: result.modelTurns,
-            toolCalls: result.toolCalls,
-            toolDurationMs: result.toolDurationMs,
-            firstTokenMs: result.firstTokenMs,
-            costUsd: result.costUsd,
-            actualProvider: loopProvider,
-            actualModel: resolvedLoopModel || null,
-            harness: result.harness,
-            harnessVersion: result.harnessVersion,
+            ...runTelemetry(result),
+            actualProvider: provider,
+            actualModel: model || null,
           })
           .where(eq(iterations.id, iter.id))
           .run();
@@ -947,12 +776,7 @@ export class Orchestrator {
         emitEvent("iteration.completed", {
           cardId,
           runId,
-          payload: {
-            n,
-            failed,
-            stuck: result.stuck,
-            summary: (result.error || result.lastText).slice(0, 200),
-          },
+          payload: { n, failed, stuck: result.stuck, summary: (result.error || result.lastText).slice(0, 200) },
         });
 
         // DONE is the trigger for independent evaluation, not a direct pass to
@@ -963,46 +787,23 @@ export class Orchestrator {
           await performIterationBookkeeping({ ralphDir, worktreePath, planPath, pre: preIteration });
           await performDoneBookkeeping({ ralphDir, worktreePath, planPath });
           recordTaskCompleted(iter.id, planPath, task.taskNumber);
-          // Spec 14 L3 run-end ordering: reap the process group FIRST (a
-          // surviving process could plant hooks after a check that already
-          // passed), then verify parent-repo integrity, then the install gate
-          // (forced — nothing unapproved may reach the evaluator), and only
-          // then hand over to evaluation.
-          await ctx.reap();
-          if (integrityBaseline) {
-            const violations = await checkRepoIntegrity(repo.path, integrityBaseline, {
-              runBranch: branch,
-              checkRefs: true,
-            });
-            if (violations.length > 0) {
-              const reason = `repo integrity violation: ${violations.join("; ")}`;
-              this.finishRun(runId, "failed", reason, n);
-              this.moveCard(cardId, "looping", "needs_attention", reason);
-              return;
-            }
-          }
-          if (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n })) {
-            return;
-          }
+          // Spec 14 L3 run-end ordering: reap, verify parent-repo integrity,
+          // then the install gate (forced — nothing unapproved may reach the
+          // evaluator), and only then hand over to evaluation.
+          const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
+          if (violation) return fail(violation, n);
+          if (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n })) return;
           this.finishRun(runId, "completed", "done-signal", n);
           // Phase 3: every DONE goes through the evaluator before a human
           // sees it. An evaluator crash is a loud failure, not a pass-through.
           this.moveCard(cardId, "looping", "evaluating");
-          void this.evaluationService.runEvaluator(cardId).catch((err) => {
-            if (this.getCard(cardId)?.status === "evaluating") {
-              this.moveCard(cardId, "evaluating", "needs_attention", String(err));
-            }
-          });
+          this.startStage("evaluating", cardId);
           return;
         }
         if (result.timedOut) {
           // When the iteration budget WAS the remaining run budget, this is
-          // the run-level wall-clock cap — final, as before.
-          if (remaining <= hardTimeoutMs) {
-            this.finishRun(runId, "timeout", "timeout", n);
-            this.moveCard(cardId, "looping", "needs_attention", "timeout");
-            return;
-          }
+          // the run-level wall-clock cap — final.
+          if (remaining <= hardTimeoutMs) return fail("timeout", n, "timeout");
           // Per-iteration hard timeout: one retry with the worktree
           // preserved; two consecutive timeouts end the run (spec 11).
           consecutiveIterationTimeouts += 1;
@@ -1011,71 +812,52 @@ export class Orchestrator {
             runId,
             payload: { n, hardTimeoutMs, consecutive: consecutiveIterationTimeouts },
           });
-          if (consecutiveIterationTimeouts >= 2) {
-            this.finishRun(runId, "timeout", "iteration-timeout", n);
-            this.moveCard(cardId, "looping", "needs_attention", "iteration-timeout");
-            return;
-          }
+          if (consecutiveIterationTimeouts >= 2) return fail("iteration-timeout", n, "timeout");
           continue;
         }
         consecutiveIterationTimeouts = 0;
         if (failed) {
           consecutiveFailures += 1;
-          // A first-iteration connection/auth failure means the loop provider
-          // is down or misconfigured — no point retrying. Status codes are
-          // word-bounded so "4010 tokens" or a port number never matches.
+          // A first-iteration connection/auth failure means the provider is
+          // down or misconfigured — no point retrying.
           const isConnErr = CONN_ERROR_PATTERN.test(result.error);
-          if (isConnErr) recordProviderOutcome(loopProvider, false);
+          if (isConnErr) recordProviderOutcome(provider, false);
           if (consecutiveFailures >= 3 || (n === 1 && isConnErr)) {
-            const reason = `loop failed: ${result.error.slice(0, 300)}`;
-            this.finishRun(runId, "failed", reason, n);
-            this.moveCard(cardId, "looping", "needs_attention", reason);
-            return;
+            return fail(`loop failed: ${result.error.slice(0, 300)}`, n);
           }
           continue;
         }
         consecutiveFailures = 0;
-        recordProviderOutcome(loopProvider, true);
+        recordProviderOutcome(provider, true);
 
         // Handle the ITERATION_DONE signal: the orchestrator performs the
         // checklist tick and commit — the agent never does.
-        const bkResult = await performIterationBookkeeping({
-          ralphDir,
-          worktreePath,
-          planPath,
-          pre: preIteration,
-        });
-        if (bkResult !== null && bkResult.advanced) {
+        const bkResult = await performIterationBookkeeping({ ralphDir, worktreePath, planPath, pre: preIteration });
+        if (bkResult?.advanced) {
           consecutiveStalls = 0;
-        } else if (bkResult !== null) {
-          // Phantom completion: ITERATION_DONE without any work product.
-          // The checklist was NOT advanced, so the unchanged progress state
-          // below feeds the normal stall counter.
+        } else if (bkResult) {
+          // Phantom completion: ITERATION_DONE without any work product. The
+          // checklist was NOT advanced, so the stall counter below catches it.
           emitEvent("iteration.phantom", {
             cardId,
             runId,
             payload: { n, taskNumber: bkResult.taskNumber, summary: bkResult.summary.slice(0, 200) },
           });
         }
-        // If bkResult is null (missing signal), fall through to stall detection
         recordTaskCompleted(iter.id, planPath, task.taskNumber);
 
         // Install-script gate (spec 14): fire on any lockfile change, after
-        // bookkeeping so the iteration's signal files are fully consumed and
-        // a resumed run starts its next iteration cleanly.
-        if (lockfileFingerprint(worktreePath) !== lockfilesBefore) {
-          if (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n })) {
-            return;
-          }
+        // bookkeeping so a resumed run starts its next iteration cleanly.
+        if (
+          lockfileFingerprint(worktreePath) !== lockfilesBefore &&
+          (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n }))
+        ) {
+          return;
         }
 
-        if ((await progressState()) === before) {
+        if ((await buildProgressState(worktreePath, planPath)) === before) {
           consecutiveStalls += 1;
-          if (consecutiveStalls >= 3) {
-            this.finishRun(runId, "failed", "stalled", n);
-            this.moveCard(cardId, "looping", "needs_attention", "stalled");
-            return;
-          }
+          if (consecutiveStalls >= 3) return fail("stalled", n);
         } else {
           consecutiveStalls = 0;
         }
@@ -1086,8 +868,7 @@ export class Orchestrator {
           return;
         }
       }
-      this.finishRun(runId, "failed", "max-iterations", n);
-      this.moveCard(cardId, "looping", "needs_attention", "max-iterations");
+      fail("max-iterations", n);
     } finally {
       watchdog.stop();
       this.controllers.delete(runId);
@@ -1104,11 +885,10 @@ export class Orchestrator {
   }
 
   /**
-   * Install-script gate (spec 14). Scans the resolved dependency tree in the
-   * worktree and, when any package's lifecycle scripts are unapproved for
-   * this repo, halts the run into Needs Attention with the verbatim script
-   * bodies in the event payload. Returns true when the gate fired. The model
-   * never sees a prompt — decision 7 is intact.
+   * Install-script gate (spec 14). When any package in the worktree's resolved
+   * dependency tree has lifecycle scripts unapproved for this repo, halt the
+   * run into Needs Attention with the verbatim script bodies in the event
+   * payload. Returns true when the gate fired. The model never sees a prompt.
    */
   private async checkInstallGate(opts: {
     cardId: string;
@@ -1119,52 +899,33 @@ export class Orchestrator {
   }): Promise<boolean> {
     const repo = db.select().from(repos).where(eq(repos.id, opts.repoId)).get();
     if (!repo) return false;
-    let approved: ApprovedInstallScript[] = [];
-    try {
-      approved = JSON.parse(repo.approvedInstallScripts) as ApprovedInstallScript[];
-    } catch {
-      // Corrupt store — treat as nothing approved (the safe direction).
-    }
-    const unapproved = unapprovedScripts(
-      collectLifecycleScripts(opts.worktreePath),
-      approved,
-    );
+    const unapproved = unapprovedScripts(collectLifecycleScripts(opts.worktreePath), approvedScripts(repo));
     if (unapproved.length === 0) return false;
 
-    const names = unapproved.map((p) => `${p.name}@${p.version}`).join(", ");
-    const reason = `install-script gate: unapproved lifecycle scripts in ${names}`;
     emitEvent("install.gate", {
       cardId: opts.cardId,
       runId: opts.runId,
       payload: {
-        packages: unapproved.map(({ name, version, scripts, scriptHash }) => ({
-          name,
-          version,
-          scripts,
-          scriptHash,
-        })),
+        packages: unapproved.map(({ name, version, scripts, scriptHash }) => ({ name, version, scripts, scriptHash })),
       },
     });
     // The run pauses with its state preserved (worktree + checklist ticks);
     // approval resumes it in place rather than requeueing to Todo.
+    const names = unapproved.map((p) => `${p.name}@${p.version}`).join(", ");
     this.finishRun(opts.runId, "completed", "install-script gate", opts.n);
-    this.moveCard(opts.cardId, "looping", "needs_attention", reason);
+    this.moveCard(opts.cardId, "looping", "needs_attention", `install-script gate: unapproved lifecycle scripts in ${names}`);
     return true;
   }
 
   /**
    * Approve specific packages' lifecycle scripts for a gate-halted card:
-   * `npm rebuild` for the approved packages ONLY (per-package granularity),
-   * record them in the repo's approved list, and resume the paused run in
-   * place — back to the loop queue, or straight to evaluation when the
-   * checklist finished before the gate fired.
+   * `npm rebuild` for the approved packages ONLY, record them in the repo's
+   * approved list, and resume the paused run in place — back to the loop
+   * queue, or straight to evaluation when the checklist finished before the
+   * gate fired.
    */
-  async approveInstallScripts(
-    cardId: string,
-    packages: ApprovedInstallScript[],
-  ): Promise<{ ok: true }> {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
+  async approveInstallScripts(cardId: string, packages: ApprovedInstallScript[]): Promise<{ ok: true }> {
+    const card = this.requireCard(cardId);
     if (card.status !== "needs_attention") {
       throw new ClientError(`cannot approve install scripts for a ${card.status} card`);
     }
@@ -1177,38 +938,24 @@ export class Orchestrator {
     // Approve only what is actually present in the resolved tree, matched on
     // the full {name, version, scriptHash} triple — a stale UI payload must
     // not approve a script body the human never saw.
-    const requested = new Set(
-      packages.map((p) => `${p.name}@${p.version}#${p.scriptHash}`),
-    );
-    const present = collectLifecycleScripts(run.worktreePath).filter((p) =>
-      requested.has(`${p.name}@${p.version}#${p.scriptHash}`),
-    );
+    const requested = new Set(packages.map(scriptKey));
+    const present = collectLifecycleScripts(run.worktreePath).filter((p) => requested.has(scriptKey(p)));
     if (present.length === 0) {
       throw new ClientError(
         "none of the requested packages match the worktree's resolved tree — re-open the card to see the current gate state",
       );
     }
 
-    const rebuild = await rebuildPackages(
-      run.worktreePath,
-      [...new Set(present.map((p) => p.name))],
-    );
-    if (!rebuild.ok) {
-      throw new ClientError(`npm rebuild failed: ${rebuild.out.slice(0, 500)}`);
-    }
+    const rebuild = await rebuildPackages(run.worktreePath, [...new Set(present.map((p) => p.name))]);
+    if (!rebuild.ok) throw new ClientError(`npm rebuild failed: ${rebuild.out.slice(0, 500)}`);
 
-    let approved: ApprovedInstallScript[] = [];
-    try {
-      approved = JSON.parse(repo.approvedInstallScripts) as ApprovedInstallScript[];
-    } catch {
-      approved = [];
-    }
-    const keys = new Set(approved.map((a) => `${a.name}@${a.version}#${a.scriptHash}`));
-    for (const p of present) {
-      const key = `${p.name}@${p.version}#${p.scriptHash}`;
-      if (!keys.has(key)) {
-        keys.add(key);
-        approved.push({ name: p.name, version: p.version, scriptHash: p.scriptHash });
+    const approved = approvedScripts(repo);
+    const keys = new Set(approved.map(scriptKey));
+    for (const { name, version, scriptHash } of present) {
+      const entry = { name, version, scriptHash };
+      if (!keys.has(scriptKey(entry))) {
+        keys.add(scriptKey(entry));
+        approved.push(entry);
       }
     }
     db.update(repos)
@@ -1222,19 +969,14 @@ export class Orchestrator {
     });
 
     // Resume in place. A checklist with no unchecked task means the gate
-    // fired on the DONE path — the loop already finished, so evaluation is
-    // the next step, not another loop run.
+    // fired on the DONE path — evaluation is next, not another loop run.
     const planPath = planStatePath(cardId);
     const planMd = fs.existsSync(/* turbopackIgnore: true */ planPath)
       ? fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8")
       : "";
     if (planMd && !firstUnchecked(planMd)) {
       if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
-        void this.evaluationService.runEvaluator(cardId).catch((error) => {
-          if (this.getCard(cardId)?.status === "evaluating") {
-            this.moveCard(cardId, "evaluating", "needs_attention", String(error));
-          }
-        });
+        this.startStage("evaluating", cardId);
       }
     } else {
       this.moveCard(cardId, "needs_attention", "ready", "install scripts approved");
@@ -1245,15 +987,15 @@ export class Orchestrator {
 
   // ---- review actions ------------------------------------------------------
 
-  approvePlan(cardId: string): { ok: boolean; error?: string } {
+  approvePlan(cardId: string) {
     return this.reviewService.approvePlan(cardId);
   }
 
-  approve(runId: string): Promise<{ ok: boolean; error?: string }> {
+  approve(runId: string) {
     return this.reviewService.approve(runId);
   }
 
-  retryMerge(cardId: string): Promise<{ ok: boolean; error?: string }> {
+  retryMerge(cardId: string) {
     return this.reviewService.retryMerge(cardId);
   }
 
@@ -1264,27 +1006,11 @@ export class Orchestrator {
   abandon(cardId: string) {
     return this.reviewService.abandon(cardId);
   }
-  async resetCard(cardId: string) {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get()!;
 
-    // Abort any currently running run.
-    const active = db
-      .select()
-      .from(runs)
-      .where(eq(runs.cardId, cardId))
-      .orderBy(desc(runs.startedAt))
-      .limit(1)
-      .get();
-    if (active && active.status === "running") {
-      this.finishRun(active.id, "cancelled", "reset by user");
-      db.update(iterations)
-        .set({ status: "failed", summary: "reset by user", endedAt: now() })
-        .where(eq(iterations.runId, active.id))
-        .run();
-      this.controllers.get(active.id)?.abort();
-    }
+  async resetCard(cardId: string) {
+    const card = this.requireCard(cardId);
+    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get()!;
+    this.cancelActiveRun(cardId, "reset by user");
 
     // Remove worktrees for ALL runs before deleting their rows.
     const allRuns = db.select().from(runs).where(eq(runs.cardId, cardId)).all();
@@ -1292,18 +1018,15 @@ export class Orchestrator {
       if (fs.existsSync(/* turbopackIgnore: true */ run.worktreePath)) {
         await removeWorktree(repo.path, run.worktreePath, run.branch);
       }
+      removeBaseline(run.id);
     }
     removeRunTranscripts(allRuns.map((run) => run.id));
-    for (const run of allRuns) removeBaseline(run.id);
 
-    // Delete runs (cascades iterations + reviews), plans, and the private
-    // plan checklist.
+    // Runs cascade to iterations + reviews.
     db.delete(runs).where(eq(runs.cardId, cardId)).run();
     db.delete(plans).where(eq(plans.cardId, cardId)).run();
     db.delete(events).where(eq(events.cardId, cardId)).run();
     fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
-
-    // Clear card progress fields.
     db.update(cards)
       .set({ summary: null, startedAt: null, updatedAt: now() })
       .where(eq(cards.id, cardId))
@@ -1316,12 +1039,9 @@ export class Orchestrator {
 // Survive Next.js dev hot-reload: one orchestrator per process.
 //
 // Hazard: instrumentation.ts (which constructs this singleton) and a route
-// handler can end up in different module graphs — Next.js bundles
-// instrumentation separately from routes, in both dev and production builds.
-// A class instantiated on one side (e.g. `new ClientError(...)` thrown
-// through the orchestrator) is a *different* class object than the same
-// class imported on the other side, so `instanceof` across that boundary is
-// unreliable. See src/app/api/_lib.ts's `isClientError` for the fallback.
+// handler can end up in different module graphs, so `instanceof` on a class
+// thrown through the orchestrator (e.g. ClientError) is unreliable across
+// that boundary. See src/app/api/_lib.ts's `isClientError` for the fallback.
 const g = globalThis as unknown as { __radulfOrchestrator?: Orchestrator };
 
 export function getOrchestrator(): Orchestrator {

@@ -1,0 +1,156 @@
+import path from "node:path";
+import { db, now, cards, plans, runs, repos, type CardStatus } from "@/db";
+import { emitEvent } from "./events";
+import type { Settings } from "./settings";
+import { runHarness, type RunnerResult, type RunTelemetry } from "./harness";
+import type { ProviderId } from "./providers";
+import { CONN_ERROR_PATTERN, isProviderOpen, recordProviderOutcome } from "./circuitBreaker";
+import { createWorktree, currentBranch, recordWorktree } from "./git";
+import { runTranscriptDir } from "./retention";
+import { startTranscriptPush } from "./transcript";
+import type { RunSandboxContext } from "./sandbox/context";
+import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
+import { checkRepoIntegrity, type RepoIntegrityBaseline } from "./integrity";
+
+/** Shared scaffolding for the three pipeline stages (plan, loop, evaluate). */
+
+type Card = typeof cards.$inferSelect;
+type Run = typeof runs.$inferSelect;
+type Repo = typeof repos.$inferSelect;
+type Plan = typeof plans.$inferSelect;
+
+export type FinishStatus = "completed" | "failed" | "timeout" | "cancelled";
+
+/** Reuse the card's existing worktree (retry, reject, restart) or make a fresh
+ * one. `created` tells the caller to record it once its run row exists —
+ * worktrees.runId is a real FK. */
+export async function resolveWorktree(repo: Repo, card: Card, runId: string, prev: Run | undefined) {
+  const baseBranch =
+    prev?.baseBranch ?? card.baseBranch ?? (await currentBranch(repo.path, repo.defaultBranch));
+  const { worktreePath, branch } =
+    prev ?? (await createWorktree(repo.path, baseBranch, card.title, runId));
+  return { worktreePath, branch, baseBranch, created: !prev };
+}
+
+/** Insert a stage's run row, then emit the events that reference it
+ * (events.run_id is a real FK, so never before the insert). */
+export function startRunRow(
+  values: Omit<typeof runs.$inferInsert, "startedAt" | "diskLimitMechanism" | "sandboxed"> & {
+    id: string;
+    cardId: string;
+  },
+  ctx: RunSandboxContext,
+  settings: Pick<Settings, "sandboxEnabled">,
+  worktreeRepoId?: string,
+) {
+  db.insert(runs)
+    .values({
+      ...values,
+      startedAt: now(),
+      diskLimitMechanism: ctx.diskLimitMechanism,
+      sandboxed: settings.sandboxEnabled ? 1 : 0,
+    })
+    .run();
+  const ids = { cardId: values.cardId, runId: values.id };
+  if (worktreeRepoId) {
+    recordWorktree(worktreeRepoId, values.id, values.worktreePath, values.branch);
+  }
+  if (ctx.weakerIsolationEnabled) {
+    emitEvent("sandbox.weaker_isolation_enabled", {
+      ...ids,
+      payload: { reason: "sandboxWeakerIsolationForGoTls" },
+    });
+  }
+  return ids;
+}
+
+/** Fail fast on a provider whose circuit breaker is open. */
+export function circuitOpenReason(provider: ProviderId): string | null {
+  return isProviderOpen(provider)
+    ? `provider ${provider} circuit breaker open — recent connection failures, will retry automatically after cooldown`
+    : null;
+}
+
+/** Spec 14 Phase 6: never fall back to an unsandboxed run silently. */
+export async function sandboxUnavailableReason(settings: Pick<Settings, "sandboxEnabled">) {
+  if (!settings.sandboxEnabled) return null;
+  const preflight = await initializeSandboxRuntimeOnce();
+  return preflight.ok ? null : `sandbox unavailable: ${preflight.errors.join("; ")}`;
+}
+
+/** Run one harness invocation with its transcript pushed live over SSE.
+ * Single-file transcripts (plan/evaluate) use iteration 0. */
+export async function runWithTranscript(
+  opts: Omit<Parameters<typeof runHarness>[0], "transcriptPath"> & {
+    runId: string;
+    file: string;
+    iteration?: number;
+  },
+): Promise<RunnerResult> {
+  const { runId, file, iteration = 0, ...harnessOpts } = opts;
+  const transcriptPath = path.join(runTranscriptDir(runId), file);
+  const stop = startTranscriptPush(transcriptPath, runId, iteration);
+  try {
+    return await runHarness({ ...harnessOpts, transcriptPath });
+  } finally {
+    stop();
+  }
+}
+
+/** Classify a single-invocation stage's harness failure (timeout, stall,
+ * error) and record the provider outcome. Null means the harness succeeded. */
+export function harnessFailure(
+  result: RunnerResult,
+  provider: ProviderId,
+  label: "planner" | "evaluator",
+): { status: FinishStatus; exitReason: string; moveReason: string } | null {
+  if (result.timedOut) {
+    const reason = label === "planner" ? "planning timed out" : "evaluation timed out";
+    return { status: "timeout", exitReason: reason, moveReason: reason };
+  }
+  // A dead stream, not the model's answer — worth its own reason.
+  if (result.stalled) {
+    return {
+      status: "failed",
+      exitReason: `${label} stalled: ${result.error.slice(0, 500)}`,
+      moveReason: `${label} stalled`,
+    };
+  }
+  if (result.error) {
+    if (CONN_ERROR_PATTERN.test(result.error)) recordProviderOutcome(provider, false);
+    return {
+      status: "failed",
+      exitReason: `${label} failed: ${result.error.slice(0, 500)}`,
+      moveReason: `${label} failed`,
+    };
+  }
+  recordProviderOutcome(provider, true);
+  return null;
+}
+
+/** Spec 14 run-end ordering: reap surviving processes before drawing any
+ * integrity conclusion, then verify the parent repo. */
+export async function integrityViolationReason(
+  ctx: RunSandboxContext,
+  repoPath: string,
+  baseline: RepoIntegrityBaseline | null,
+  runBranch: string,
+): Promise<string | null> {
+  await ctx.reap();
+  if (!baseline) return null;
+  const violations = await checkRepoIntegrity(repoPath, baseline, { runBranch, checkRefs: true });
+  return violations.length > 0 ? `repo integrity violation: ${violations.join("; ")}` : null;
+}
+
+
+/** The orchestrator state a stage service reads and mutates, injected so each
+ * service stays independently testable. */
+export type StageDependencies = {
+  getCard(cardId: string): Card | undefined;
+  latestPlan(cardId: string): Plan | undefined;
+  latestWorktreeRun(cardId: string): Run | undefined;
+  moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean;
+  finishRun(runId: string, status: FinishStatus, exitReason: string, telemetry?: RunTelemetry): boolean;
+  registerController(runId: string, controller: AbortController): void;
+  releaseController(runId: string): void;
+};
