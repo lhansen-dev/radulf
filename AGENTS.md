@@ -197,6 +197,19 @@ Repo-specific footers and conventions:
 One logical change per commit. If `make check` only passes with two unrelated
 fixes in the tree, that's two commits.
 
+## Always commit your changes
+
+Commit finished work before you hand it back — don't leave changes sitting
+uncommitted in the working tree for someone else to pick up. The only exception
+is when the user explicitly asks you not to commit.
+
+- Commit once `make check` passes, following the message format above.
+- Split unrelated changes into separate commits rather than skipping the commit.
+- Committing is not pushing: don't push or open a PR unless asked.
+- Radulf's own loop runs are the exception by design — there the orchestrator
+  makes every commit, and the loop prompt forbids the agent from running git
+  commands that change state. Follow the prompt.
+
 ## Everything else
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the full guideline list,
