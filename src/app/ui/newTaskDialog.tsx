@@ -1,34 +1,18 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { CreateCardRequest } from "@/shared/cardRequests";
 import { api, type PlannerMessage, type Repo } from "./api";
-
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: "Anthropic (Claude subscription)",
-  chatgpt: "ChatGPT (Codex subscription)",
-  copilot: "GitHub Copilot (subscription)",
-  omlx: "oMLX (local)",
-  openrouter: "OpenRouter",
-};
-
-function providerLabel(id: string): string {
-  return PROVIDER_LABELS[id] ?? id;
-}
+import { DialogShell, EMPTY_ROLE_MODELS, RoleModelSelects, useBranches, useRoleModelOptions } from "./taskDialog";
 
 export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { repos: Repo[]; onClose: () => void; onCreated: () => void; defaultRepoId?: string }) {
   const [title, setTitle] = useState("");
   const [repoId, setRepoId] = useState(defaultRepoId && repos.some((r) => r.id === defaultRepoId) ? defaultRepoId : repos[0]?.id ?? "");
   const [description, setDescription] = useState("");
-  const [plannerModel, setPlannerModel] = useState("");
-  const [loopModel, setLoopModel] = useState("");
-  const [evaluatorModel, setEvaluatorModel] = useState("");
-  const [plannerProvider, setPlannerProvider] = useState("");
-  const [loopProvider, setLoopProvider] = useState("");
-  const [evaluatorProvider, setEvaluatorProvider] = useState("");
+  const [roleModels, setRoleModels] = useState(EMPTY_ROLE_MODELS);
+  const { providers, models } = useRoleModelOptions();
   const [maxIterations, setMaxIterations] = useState("");
   const [timeoutMinutes, setTimeoutMinutes] = useState("");
-  const [models, setModels] = useState<{ planner: { value: string; displayName: string }[]; loop: { value: string; displayName: string }[]; evaluator: { value: string; displayName: string }[] }>({ planner: [], loop: [], evaluator: [] });
   const [showPlanner, setShowPlanner] = useState(false);
   const [reviewPlanBeforeImplementation, setReviewPlanBeforeImplementation] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
@@ -40,12 +24,10 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [prReady, setPrReady] = useState<{ repoId: string; ok: boolean; detail: string | null; hasRemote: boolean | null } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [branches, setBranches] = useState<string[]>([]);
+  const [branches, setBranches] = useBranches(repoId);
   const [selectedBranch, setSelectedBranch] = useState("");
   const [showNewBranch, setShowNewBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const invoker = useRef<HTMLElement | null>(null);
   const prStatus = prReady && prReady.repoId === repoId ? prReady : null;
   const prDeliverable = Boolean(prStatus?.ok && prStatus.hasRemote);
   // Say which of the three preconditions is missing — install a tool, run a
@@ -55,49 +37,12 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     : prStatus.ok
       ? "This repo has no `origin` remote to open a pull request against."
       : prStatus.detail;
-  const dirty = Boolean(title || description || plannerModel || loopModel || evaluatorModel || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || autoApprove || openPr;
+  const dirty = Boolean(title || description || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || autoApprove || openPr;
 
   const requestClose = useCallback(() => {
     if (dirty && !confirm("Discard your unsaved task?")) return;
     onClose();
   }, [dirty, onClose]);
-  const requestCloseRef = useRef(requestClose);
-  useEffect(() => { requestCloseRef.current = requestClose; });
-
-  useEffect(() => {
-    invoker.current = document.activeElement as HTMLElement;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const dialog = dialogRef.current;
-    const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary') ?? []);
-    focusable()[0]?.focus();
-    const keydown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); requestCloseRef.current(); }
-      if (event.key === "Tab") {
-        const items = focusable();
-        if (!items.length) return;
-        const first = items[0];
-        const last = items[items.length - 1];
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      }
-    };
-    document.addEventListener("keydown", keydown);
-    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", keydown); invoker.current?.focus(); };
-  }, []);
-
-  useEffect(() => {
-    api<{ plannerProvider: string; loopProvider: string; evaluatorProvider: string }>("/api/settings")
-      .then(async (settings) => {
-        setPlannerProvider(settings.plannerProvider);
-        setLoopProvider(settings.loopProvider);
-        setEvaluatorProvider(settings.evaluatorProvider);
-        const load = (provider: string) => api<{ models: { value: string; displayName: string }[] }>(`/api/providers/${provider}/models`).catch(() => ({ models: [] }));
-        const [planner, loop, evaluator] = await Promise.all([load(settings.plannerProvider), load(settings.loopProvider), load(settings.evaluatorProvider)]);
-        setModels({ planner: planner.models, loop: loop.models, evaluator: evaluator.models });
-      }).catch(() => {});
-  }, []);
-
   useEffect(() => {
     if (!repoId) return;
     let live = true;
@@ -112,21 +57,6 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     return () => { live = false; };
   }, [repoId]);
 
-  useEffect(() => {
-    if (!repoId) return;
-    fetch(`/api/repos/${repoId}/branches`)
-      .then(async (res) => {
-        if (!res.ok) { setBranches([]); return; }
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setBranches(data as string[]);
-        } else {
-          setBranches([]);
-        }
-      })
-      .catch(() => { setBranches([]); });
-  }, [repoId]);
-
   async function create() {
     setBusy(true); setError("");
     try {
@@ -134,9 +64,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         repoId,
         title,
         description,
-        plannerModel,
-        loopModel,
-        evaluatorModel,
+        plannerModel: roleModels.planner,
+        loopModel: roleModels.loop,
+        evaluatorModel: roleModels.evaluator,
         maxIterations,
         timeoutMinutes,
         reviewPlanBeforeImplementation,
@@ -150,13 +80,17 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4" onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="new-task-title" className="flex max-h-[min(92dvh,800px)] w-full flex-col rounded-t-2xl border border-foreground/10 bg-surface shadow-2xl sm:max-w-xl sm:rounded-2xl">
-        <header className="flex shrink-0 items-center border-b border-foreground/10 px-4 py-3">
-          <h2 id="new-task-title" className="grow text-lg font-semibold">New task</h2>
-          <button type="button" onClick={requestClose} aria-label="Close new task" className="grid size-11 place-items-center rounded-lg text-xl text-foreground/55 hover:bg-foreground/[0.06]">×</button>
-        </header>
-        <div className="min-h-0 grow space-y-4 overflow-y-auto p-4 sm:p-5">
+    <DialogShell
+      titleId="new-task-title"
+      title="New task"
+      closeLabel="Close new task"
+      onRequestClose={requestClose}
+      footer={<>
+        <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
+        <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+        <button type="button" onClick={create} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Creating…" : "Create task"}</button>
+      </>}
+    >
           {repos.length === 0 ? <p className="text-sm text-foreground/60">Register a repository in <Link href="/settings" className="text-amber-300 underline">Settings</Link> first.</p> : <>
             <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" required /></label>
             <label className="block text-sm text-foreground/70">Repository<select value={repoId} onChange={(e) => { setRepoId(e.target.value); setBranches([]); setSelectedBranch(""); setShowNewBranch(false); setNewBranchName(""); }} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3">{repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}</select></label>
@@ -166,9 +100,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
             <details className="rounded-lg border border-foreground/10 bg-foreground/[0.02]">
               <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium">Advanced</summary>
               <div className="space-y-3 border-t border-foreground/10 p-3">
-                <ModelSelect label="Planner model" providerId={plannerProvider} value={plannerModel} setValue={setPlannerModel} models={models.planner} inputId="planner-model-input" datalistId="planner-models" />
-                <ModelSelect label="Loop model" providerId={loopProvider} value={loopModel} setValue={setLoopModel} models={models.loop} inputId="loop-model-input" datalistId="loop-models" />
-                <ModelSelect label="Evaluator model" providerId={evaluatorProvider} value={evaluatorModel} setValue={setEvaluatorModel} models={models.evaluator} inputId="evaluator-model-input" datalistId="evaluator-models" />
+                <RoleModelSelects providers={providers} models={models} values={roleModels} onChange={setRoleModels} />
                 <div className="grid grid-cols-2 gap-3"><label className="text-sm text-foreground/70">Iteration cap<input type="number" min="1" value={maxIterations} onChange={(e) => setMaxIterations(e.target.value)} placeholder="Default" className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label><label className="text-sm text-foreground/70">Timeout (min)<input type="number" min="1" value={timeoutMinutes} onChange={(e) => setTimeoutMinutes(e.target.value)} placeholder="Default" className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label></div>
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={reviewPlanBeforeImplementation} onChange={(e) => setReviewPlanBeforeImplementation(e.target.checked)} className="size-4 accent-amber-600" />Review plan before implementation</label>
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
@@ -182,59 +114,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
             </details>
           </>}
           {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
-        </div>
-        <footer className="flex shrink-0 justify-end gap-2 border-t border-foreground/10 bg-surface p-3 pb-[calc(.75rem+env(safe-area-inset-bottom))] sm:p-4">
-          <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
-          <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
-          <button type="button" onClick={create} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Creating…" : "Create task"}</button>
-        </footer>
-      </div>
-    </div>
-  );
-}
-
-export function ModelSelect({ label, providerId, value, setValue, models, inputId, datalistId }: { label: string; providerId: string; value: string; setValue: (value: string) => void; models: { value: string; displayName: string }[]; inputId: string; datalistId: string }) {
-  return (
-    <div>
-      <label htmlFor={inputId} className="block text-sm text-foreground/70">{label}</label>
-      <p className="mt-0.5 text-xs text-foreground/40">Provider: {providerLabel(providerId)}</p>
-      <input
-        id={inputId}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="Default from settings"
-        className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3"
-        list={datalistId}
-      />
-      <datalist id={datalistId}>
-        {models.map((model) => (
-          <option key={model.value} value={model.value}>
-            {model.displayName}
-          </option>
-        ))}
-      </datalist>
-      {models.length > 0 && models.length <= 30 && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {models.map((model) => (
-            <button
-              key={model.value}
-              type="button"
-              onClick={() => setValue(model.value)}
-              className={`text-xs rounded px-2 py-1 border ${
-                value === model.value
-                  ? "border-amber-500 text-amber-400"
-                  : "border-foreground/10 text-foreground/60 hover:text-foreground"
-              }`}
-            >
-              {model.displayName}
-            </button>
-          ))}
-        </div>
-      )}
-      {models.length > 30 && (
-        <p className="mt-1 text-xs text-foreground/40">Type in the model field to search the list.</p>
-      )}
-    </div>
+    </DialogShell>
   );
 }
 
