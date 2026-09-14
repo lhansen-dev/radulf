@@ -169,13 +169,9 @@ export default function WorkPage() {
     }
   }
 
-  async function start(card: BoardCard) {
-    await runAction(() => api(`/api/cards/${card.id}/move`, { json: { to: "in_progress" } }));
-  }
-
-  async function addToQueue(card: BoardCard) {
-    await runAction(() => api(`/api/cards/${card.id}/move`, { json: { to: "todo" } }));
-  }
+  const move = (card: BoardCard, json: object) => runAction(() => api(`/api/cards/${card.id}/move`, { json }));
+  const start = (card: BoardCard) => move(card, { to: "in_progress" });
+  const addToQueue = (card: BoardCard) => move(card, { to: "todo" });
 
   async function reorder(card: BoardCard, direction: -1 | 1) {
     const index = queue.findIndex((item) => item.id === card.id);
@@ -195,46 +191,40 @@ export default function WorkPage() {
     }
   }
 
-  async function toggleAutoMode() {
-    const previous = autoMode;
-    setAutoMode(!previous);
+  /** Flip a workspace toggle optimistically. Auto-approve and pull-request
+   * delivery hand authority away (merge without review; code leaving the
+   * machine), so turning those ON asks first; turning anything off never does. */
+  async function toggleSetting(
+    key: "autoMode" | "autoApprove" | "openPr",
+    current: boolean,
+    setValue: (value: boolean) => void,
+    confirmOn?: string,
+  ) {
+    if (!current && confirmOn && !confirm(confirmOn)) return;
+    setValue(!current);
     try {
-      await api("/api/settings", { method: "PATCH", json: { autoMode: !previous } });
+      await api("/api/settings", { method: "PATCH", json: { [key]: !current } });
     } catch (e) {
-      setAutoMode(previous);
+      setValue(current);
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-
-  // Unlike Auto Mode, this one hands merge authority to the evaluator for
-  // every card that reaches a verdict, so turning it ON asks first. Turning it
-  // off is always safe and never prompts.
-  async function toggleAutoApprove() {
-    const previous = autoApprove;
-    if (!previous && !confirm("Turn on auto-approve?\n\nAn evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you.")) return;
-    setAutoApprove(!previous);
-    try {
-      await api("/api/settings", { method: "PATCH", json: { autoApprove: !previous } });
-    } catch (e) {
-      setAutoApprove(previous);
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  // Spec 15: switches every approval's delivery target from a local merge to a
-  // pushed branch + pull request. Turning it ON asks first — it is the setting
-  // that lets an approved diff leave the machine.
-  async function toggleOpenPr() {
-    const previous = openPr;
-    if (!previous && !confirm("Deliver approved work as pull requests?\n\nApproving a card will push its branch to \u201Corigin\u201D and open a pull request instead of merging into the local base branch. Requires the GitHub CLI (`gh`) to be installed and logged in. Radulf never merges the pull request it opens.")) return;
-    setOpenPr(!previous);
-    try {
-      await api("/api/settings", { method: "PATCH", json: { openPr: !previous } });
-    } catch (e) {
-      setOpenPr(previous);
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
+  const workspaceToggles = [
+    { label: "Auto Mode", on: autoMode, onTone: "text-green-300", toggle: () => toggleSetting("autoMode", autoMode, setAutoMode) },
+    {
+      label: "Auto-approve",
+      on: autoApprove,
+      onTone: "text-amber-300",
+      toggle: () => toggleSetting("autoApprove", autoApprove, setAutoApprove, "Turn on auto-approve?\n\nAn evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you."),
+    },
+    {
+      label: "Open pull requests",
+      on: openPr,
+      onTone: "text-amber-300",
+      // Spec 15: every approval's delivery becomes a pushed branch + pull request.
+      toggle: () => toggleSetting("openPr", openPr, setOpenPr, "Deliver approved work as pull requests?\n\nApproving a card will push its branch to \u201Corigin\u201D and open a pull request instead of merging into the local base branch. Requires the GitHub CLI (`gh`) to be installed and logged in. Radulf never merges the pull request it opens."),
+    },
+  ];
 
   async function stopImprovementRun(run: ImprovementRun) {
     if (!confirm(`Stop the improvement run on “${run.featureBranch}”? The current task finishes, then the run ends.`)) return;
@@ -258,6 +248,7 @@ export default function WorkPage() {
     setTimeout(() => { clearInterval(poll); setRestarting(false); setError("Server did not return after restart."); }, 60_000);
   }
 
+  const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction };
   const showSection = (section: View) => view === "overview" || view === section;
   const filteredEmpty = !loading && scoped.length > 0 && counts[view] === 0;
 
@@ -280,15 +271,11 @@ export default function WorkPage() {
             {repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}
           </select>
           <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-xl text-foreground/70" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="Work actions" summary="•••">
-              <button type="button" onClick={toggleAutoMode} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
-                Auto Mode <span className={autoMode ? "text-green-300" : "text-foreground/40"}>{autoMode ? "On" : "Off"}</span>
-              </button>
-              <button type="button" onClick={toggleAutoApprove} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
-                Auto-approve <span className={autoApprove ? "text-amber-300" : "text-foreground/40"}>{autoApprove ? "On" : "Off"}</span>
-              </button>
-              <button type="button" onClick={toggleOpenPr} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
-                Open pull requests <span className={openPr ? "text-amber-300" : "text-foreground/40"}>{openPr ? "On" : "Off"}</span>
-              </button>
+              {workspaceToggles.map((t) => (
+                <button key={t.label} type="button" onClick={() => void t.toggle()} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
+                  {t.label} <span className={t.on ? t.onTone : "text-foreground/40"}>{t.on ? "On" : "Off"}</span>
+                </button>
+              ))}
               <button type="button" onClick={() => setShowImprovementRun(true)} disabled={repos.length === 0} className="min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] disabled:opacity-40">
                 Start improvement run
               </button>
@@ -351,13 +338,13 @@ export default function WorkPage() {
           <div className="mt-3 flex flex-col gap-7">
             {showSection("needs") && needs.length > 0 && (
               <WorkSection title="Needs you" count={needs.length} tone="text-violet-300">
-                {needs.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                {needs.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
               </WorkSection>
             )}
             {showSection("active") && (active.length > 0 || runningImprovementRuns.length > 0) && (
               <WorkSection title="Active now" count={active.length + runningImprovementRuns.length} tone="text-amber-300">
                 {runningImprovementRuns.map((r) => <ImprovementRunRow key={r.id} run={r} repos={repos} cards={cards} onStop={stopImprovementRun} />)}
-                {active.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                {active.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
               </WorkSection>
             )}
             {showSection("queue") && queue.length > 0 && (
@@ -368,9 +355,7 @@ export default function WorkPage() {
                     card={card}
                     repos={repos}
                     position={index + 1}
-                    onStart={start}
-                    onQueue={addToQueue}
-                    onAction={runAction}
+                    {...rowActions}
                     onMove={(direction) => reorder(card, direction)}
                     canMoveUp={index > 0}
                     canMoveDown={index < queue.length - 1}
@@ -380,7 +365,7 @@ export default function WorkPage() {
             )}
             {showSection("backlog") && backlog.length > 0 && (
               <WorkSection title="Backlog" count={backlog.length} tone="text-foreground/50">
-                {backlog.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                {backlog.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
               </WorkSection>
             )}
             {showSection("done") && done.length > 0 && (
@@ -389,12 +374,12 @@ export default function WorkPage() {
                   <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold uppercase tracking-[0.12em] text-green-300/80">
                     Recently completed <span className="text-foreground/35">{Math.min(5, done.length)}</span><span className="ml-auto normal-case tracking-normal text-foreground/40 group-open:hidden">Show</span>
                   </summary>
-                  <div className="divide-y divide-white/[0.07] border-y border-foreground/[0.08]">{done.slice(0, 5).map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}</div>
+                  <div className="divide-y divide-white/[0.07] border-y border-foreground/[0.08]">{done.slice(0, 5).map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}</div>
                   {done.length > 5 && <button type="button" onClick={() => updateScope(repoFilter, "done")} className="mt-2 min-h-11 text-sm text-foreground/55 underline">View all completed tasks</button>}
                 </details>
               ) : (
                 <WorkSection title="Completed" count={done.length} tone="text-green-300">
-                  {done.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                  {done.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
                 </WorkSection>
               )
             )}

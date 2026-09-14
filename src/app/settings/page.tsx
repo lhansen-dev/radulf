@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Repo } from "../ui/api";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
-import { useSettingsData, type PromptTemplateSettings } from "./useSettingsData";
+import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import {
   SETTINGS_SECTIONS, SettingsNav, SettingsPanel, ThemePicker, ToggleRow,
   inputCls, secondaryButtonCls, sectionCls, useSettingsSection,
@@ -113,6 +113,14 @@ function formatPricePerMillion(usd: number): string {
   return usd < 1 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
 }
 
+/** "$3.00 / 1M input · $15.00 / 1M output", or "" when the provider reports no pricing. */
+function priceLabel(m: ProviderModel, input = " / 1M input", output = " / 1M output", sep = " · "): string {
+  return [
+    m.costPerMillionInput != null && `${formatPricePerMillion(m.costPerMillionInput)}${input}`,
+    m.costPerMillionOutput != null && `${formatPricePerMillion(m.costPerMillionOutput)}${output}`,
+  ].filter(Boolean).join(sep);
+}
+
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude subscription)" },
   { id: "omlx", label: "oMLX (local)" },
@@ -153,19 +161,34 @@ const MODEL_HINTS: Record<string, string> = {
   openrouter: "Type a model id to search the available models.",
 };
 
+type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
+type StringKey = { [K in keyof Settings]: Settings[K] extends string ? K : never }[keyof Settings];
+
+const AGENTS = [
+  { role: "planner", title: "Planner agent", subtitle: "Turns a task into a plan and acceptance criteria." },
+  { role: "loop", title: "Looper agent", subtitle: "Works through the plan, one iteration at a time." },
+  { role: "evaluator", title: "Evaluator agent", subtitle: "Reviews completed work before it reaches you." },
+] as const;
+
+const TEMPLATES = [
+  { key: "plannerPromptTemplate", title: "Planning artifacts", description: "Instructions for generating PLAN.md, CRITERIA.md, and the loop's PROMPT.md.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{FEEDBACK_SECTION}}"] },
+  { key: "evaluatorPromptTemplate", title: "Evaluation", description: "Instructions used when the evaluator reviews a completed loop.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{BASE_BRANCH}}", "{{CRITERIA}}"] },
+  { key: "improvePromptTemplate", title: "Self-improvement", description: "Instructions used by an improvement run to propose the next change from a repository review.", placeholders: ["{{EXISTING_CARDS}}", "{{FOCUS}}"] },
+] as const;
+
+function SectionHeading({ title, children }: { title: string; children?: React.ReactNode }) {
+  return (
+    <div>
+      <h3 className="font-medium">{title}</h3>
+      {children && <p className="mt-1 text-sm leading-relaxed text-foreground/55">{children}</p>}
+    </div>
+  );
+}
+
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
 export default function SettingsPage() {
-  const {
-    settings,
-    setSettings,
-    repos,
-    saved,
-    saving,
-    dirty,
-    error,
-    setError,
-    refetch,
-    save,
-  } = useSettingsData();
+  const { settings, setSettings, repos, saved, saving, dirty, error, setError, refetch, save } = useSettingsData();
   const activeSection = useSettingsSection();
   const currentSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection)!;
   const [cleanupDays, setCleanupDays] = useState(90);
@@ -175,39 +198,50 @@ export default function SettingsPage() {
     setError("");
     setCleanupResult("");
     try {
-      const result = await api<{
-        runsDeleted: number;
-        eventsDeleted: number;
-        transcriptEntriesDeleted: number;
-      }>("/api/maintenance/cleanup", { json: { olderThanDays: cleanupDays } });
+      const result = await api<{ runsDeleted: number; eventsDeleted: number; transcriptEntriesDeleted: number }>(
+        "/api/maintenance/cleanup", { json: { olderThanDays: cleanupDays } },
+      );
       setCleanupResult(
         `Deleted ${result.runsDeleted} runs, ${result.eventsDeleted} events, and ${result.transcriptEntriesDeleted} transcript entries.`,
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
   async function restoreBuiltInPromptTemplates() {
     setError("");
     try {
-      const defaults = await api<PromptTemplateSettings>(
-        "/api/settings/prompt-template-defaults",
-      );
+      const defaults = await api<PromptTemplateSettings>("/api/settings/prompt-template-defaults");
       setSettings((current) => current ? { ...current, ...defaults } : current);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+    } catch (e) {
+      setError(errorMessage(e));
     }
   }
 
   if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
 
+  const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
+  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls") =>
+    ({ checked: settings[key], onChange: (value: boolean) => set({ [key]: value }) });
+  const textInput = (key: StringKey, props: { label: string; type?: string; placeholder?: string }) => (
+    <label className="text-sm text-foreground/70">
+      {props.label}
+      <input type={props.type} value={settings[key]} onChange={(e) => set({ [key]: e.target.value })} placeholder={props.placeholder} className={inputCls} />
+    </label>
+  );
+  const numberInput = (key: NumberKey, label: string, hint?: string, min = 1, className = "text-sm text-foreground/70") => (
+    <label className={className}>
+      {label}
+      <input type="number" min={min} value={settings[key]} onChange={(e) => set({ [key]: Number(e.target.value) || min })} className={inputCls} />
+      {hint && <span className="mt-1 block text-xs text-foreground/40">{hint}</span>}
+    </label>
+  );
+
   // Same provider+model as the loop means the evaluator grades the model that
-  // did the work, sharing its blind spots when grading its own output —
-  // advisory only, never a save-blocking validation error.
+  // did the work, sharing its blind spots — advisory only, never blocks saving.
   const evaluatorMatchesLoop =
-    settings.evaluatorProvider === settings.loopProvider &&
-    settings.evaluatorModel === settings.loopModel;
+    settings.evaluatorProvider === settings.loopProvider && settings.evaluatorModel === settings.loopModel;
 
   return (
     <AppShell>
@@ -241,13 +275,32 @@ export default function SettingsPage() {
             {error && <p role="alert" className="rounded-lg border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-400">{error}</p>}
 
             <SettingsPanel active={activeSection} section="general">
-              <section id="appearance" className={sectionCls}>
-                <div>
-                  <h3 className="font-medium">Appearance</h3>
-                  <p className="mt-1 text-sm text-foreground/55">Pick a color theme. Save your changes to apply it across Radulf.</p>
-                </div>
-                <ThemePicker value={settings.theme} onChange={(theme) => setSettings({ ...settings, theme })} />
-              </section>
+              <div className="flex flex-col gap-5">
+                <section id="appearance" className={sectionCls}>
+                  <SectionHeading title="Appearance">Pick a color theme. Save your changes to apply it across Radulf.</SectionHeading>
+                  <ThemePicker value={settings.theme} onChange={(theme) => set({ theme })} />
+                </section>
+                <section id="notifications" className={sectionCls}>
+                  <SectionHeading title="Notifications & sounds" />
+                  <div className="flex flex-col gap-4 divide-y divide-foreground/10">
+                    <ToggleRow title="Desktop notifications" description="Get notified when a task is ready for review or needs your attention." {...toggle("notificationsEnabled")} />
+                    <div className="pt-4">
+                      <ToggleRow title="Alert sounds" description="Play a sound alongside task notifications." {...toggle("soundEnabled")} />
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      requestNotificationPermission().then((granted) => {
+                        if (granted) showCardNotification("Radulf", "Notifications are enabled.");
+                        playAlertSound();
+                      });
+                    }}
+                    className={`${secondaryButtonCls} self-start`}
+                  >
+                    Test notification & sound
+                  </button>
+                </section>
+              </div>
             </SettingsPanel>
 
             <SettingsPanel active={activeSection} section="repos">
@@ -260,66 +313,23 @@ export default function SettingsPage() {
             <SettingsPanel active={activeSection} section="agents">
               <div id="agents" className="flex scroll-mt-32 flex-col gap-5">
                 <section className={sectionCls}>
-                  <div>
-                    <h3 className="font-medium">Subscriptions</h3>
-                    <p className="mt-1 text-sm leading-relaxed text-foreground/55">Use your Anthropic, ChatGPT, or GitHub Copilot subscription.</p>
-                  </div>
+                  <SectionHeading title="Subscriptions">Use your Anthropic, ChatGPT, or GitHub Copilot subscription.</SectionHeading>
                   <p className="rounded-lg border border-foreground/10 bg-background px-4 py-3 text-sm leading-relaxed text-foreground/70">
                     Run <code className="text-foreground">make login</code> in a terminal, then type <code className="text-foreground">/login</code> to connect a provider.
                   </p>
                   <p className="text-xs leading-relaxed text-foreground/50">Sign in through Radulf so your agents can use the connection. Logins in your personal pi or Claude directory are separate.</p>
                 </section>
                 <section className={sectionCls}>
-                  <div>
-                    <h3 className="font-medium">Local models · oMLX</h3>
-                    <p className="mt-1 text-sm text-foreground/55">Connect a local server with models that support tool use.</p>
-                  </div>
+                  <SectionHeading title="Local models · oMLX">Connect a local server with models that support tool use.</SectionHeading>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <label className="text-sm text-foreground/70">
-                      oMLX base URL
-                      <input
-                        value={settings.omlxBaseUrl}
-                        onChange={(e) => setSettings({ ...settings, omlxBaseUrl: e.target.value })}
-                        className={inputCls}
-                      />
-                    </label>
-                    <label className="text-sm text-foreground/70">
-                      oMLX API key
-                      <input
-                        type="password"
-                        value={settings.omlxApiKey}
-                        onChange={(e) => setSettings({ ...settings, omlxApiKey: e.target.value })}
-                        placeholder="from oMLX settings (optional)"
-                        className={inputCls}
-                      />
-                    </label>
+                    {textInput("omlxBaseUrl", { label: "oMLX base URL" })}
+                    {textInput("omlxApiKey", { label: "oMLX API key", type: "password", placeholder: "from oMLX settings (optional)" })}
                   </div>
                 </section>
                 <section className={sectionCls}>
-                  <div>
-                    <h3 className="font-medium">API keys</h3>
-                    <p className="mt-1 text-sm text-foreground/55">Optional services for hosted models and planner web search.</p>
-                  </div>
-                  <label className="text-sm text-foreground/70">
-                    OpenRouter API key
-                    <input
-                      type="password"
-                      value={settings.openrouterApiKey}
-                      onChange={(e) => setSettings({ ...settings, openrouterApiKey: e.target.value })}
-                      placeholder="sk-or-…"
-                      className={inputCls}
-                    />
-                  </label>
-                  <label className="text-sm text-foreground/70">
-                    Brave Search API key
-                    <input
-                      type="password"
-                      value={settings.braveApiKey}
-                      onChange={(e) => setSettings({ ...settings, braveApiKey: e.target.value })}
-                      placeholder="Brave Search API key"
-                      className={inputCls}
-                    />
-                  </label>
+                  <SectionHeading title="API keys">Optional services for hosted models and planner web search.</SectionHeading>
+                  {textInput("openrouterApiKey", { label: "OpenRouter API key", type: "password", placeholder: "sk-or-…" })}
+                  {textInput("braveApiKey", { label: "Brave Search API key", type: "password", placeholder: "Brave Search API key" })}
                 </section>
                 <p className="px-1 text-xs leading-relaxed text-foreground/50">
                   Saved keys are hidden as <code>••••••••</code>. Leave them as shown to keep them, replace to update, or clear and save to remove.
@@ -329,49 +339,26 @@ export default function SettingsPage() {
 
             <SettingsPanel active={activeSection} section="models">
               <div id="models" className="flex scroll-mt-32 flex-col gap-5">
-                <AgentSection
-                  title="Planner agent"
-                  subtitle="Turns a task into a plan and acceptance criteria."
-                  provider={settings.plannerProvider}
-                  model={settings.plannerModel}
-                  onProvider={(p) => setSettings({ ...settings, plannerProvider: p, plannerModel: "" })}
-                  onModel={(m) => setSettings({ ...settings, plannerModel: m })}
-                  reasoningLevel={settings.plannerReasoningLevel}
-                  onReasoningLevel={(r) => setSettings({ ...settings, plannerReasoningLevel: r })}
-                  saveFirst={save}
-                  datalistId="planner-models"
-                />
-
-                <AgentSection
-                  title="Looper agent"
-                  subtitle="Works through the plan, one iteration at a time."
-                  provider={settings.loopProvider}
-                  model={settings.loopModel}
-                  onProvider={(p) => setSettings({ ...settings, loopProvider: p, loopModel: "" })}
-                  onModel={(m) => setSettings({ ...settings, loopModel: m })}
-                  reasoningLevel={settings.loopReasoningLevel}
-                  onReasoningLevel={(r) => setSettings({ ...settings, loopReasoningLevel: r })}
-                  saveFirst={save}
-                  datalistId="loop-models"
-                />
-
-                <AgentSection
-                  title="Evaluator agent"
-                  subtitle="Reviews completed work before it reaches you."
-                  provider={settings.evaluatorProvider}
-                  model={settings.evaluatorModel}
-                  onProvider={(p) => setSettings({ ...settings, evaluatorProvider: p, evaluatorModel: "" })}
-                  onModel={(m) => setSettings({ ...settings, evaluatorModel: m })}
-                  reasoningLevel={settings.evaluatorReasoningLevel}
-                  onReasoningLevel={(r) => setSettings({ ...settings, evaluatorReasoningLevel: r })}
-                  saveFirst={save}
-                  datalistId="evaluator-models"
-                  warning={
-                    evaluatorMatchesLoop
-                      ? "The evaluator uses the same model as the looper and may share its blind spots. Choose a different model for a more independent review."
-                      : undefined
-                  }
-                />
+                {AGENTS.map(({ role, title, subtitle }) => (
+                  <AgentSection
+                    key={role}
+                    title={title}
+                    subtitle={subtitle}
+                    provider={settings[`${role}Provider`]}
+                    model={settings[`${role}Model`]}
+                    onProvider={(p) => set({ [`${role}Provider`]: p, [`${role}Model`]: "" })}
+                    onModel={(m) => set({ [`${role}Model`]: m })}
+                    reasoningLevel={settings[`${role}ReasoningLevel`]}
+                    onReasoningLevel={(r) => set({ [`${role}ReasoningLevel`]: r })}
+                    saveFirst={save}
+                    datalistId={`${role}-models`}
+                    warning={
+                      role === "evaluator" && evaluatorMatchesLoop
+                        ? "The evaluator uses the same model as the looper and may share its blind spots. Choose a different model for a more independent review."
+                        : undefined
+                    }
+                  />
+                ))}
               </div>
             </SettingsPanel>
 
@@ -386,187 +373,45 @@ export default function SettingsPage() {
                       existing card artifacts are not rewritten.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void restoreBuiltInPromptTemplates()}
-                    className={secondaryButtonCls}
-                  >
+                  <button type="button" onClick={() => void restoreBuiltInPromptTemplates()} className={secondaryButtonCls}>
                     Restore built-in templates
                   </button>
                 </div>
-                <PromptTemplateEditor
-                  title="Planning artifacts"
-                  description="Instructions for generating PLAN.md, CRITERIA.md, and the loop's PROMPT.md."
-                  placeholders={["{{TITLE}}", "{{DESCRIPTION}}", "{{FEEDBACK_SECTION}}"]}
-                  value={settings.plannerPromptTemplate}
-                  onChange={(plannerPromptTemplate) => setSettings({ ...settings, plannerPromptTemplate })}
-                />
-                <PromptTemplateEditor
-                  title="Evaluation"
-                  description="Instructions used when the evaluator reviews a completed loop."
-                  placeholders={["{{TITLE}}", "{{DESCRIPTION}}", "{{BASE_BRANCH}}", "{{CRITERIA}}"]}
-                  value={settings.evaluatorPromptTemplate}
-                  onChange={(evaluatorPromptTemplate) => setSettings({ ...settings, evaluatorPromptTemplate })}
-                />
-                <PromptTemplateEditor
-                  title="Self-improvement"
-                  description="Instructions used by an improvement run to propose the next change from a repository review."
-                  placeholders={["{{EXISTING_CARDS}}", "{{FOCUS}}"]}
-                  value={settings.improvePromptTemplate}
-                  onChange={(improvePromptTemplate) => setSettings({ ...settings, improvePromptTemplate })}
-                />
-              </section>
-            </SettingsPanel>
-
-            <SettingsPanel active={activeSection} section="general">
-              <section id="notifications" className={sectionCls}>
-                <h3 className="font-medium">Notifications & sounds</h3>
-                <div className="flex flex-col gap-4 divide-y divide-foreground/10">
-                  <ToggleRow
-                    title="Desktop notifications"
-                    description="Get notified when a task is ready for review or needs your attention."
-                    checked={settings.notificationsEnabled}
-                    onChange={(notificationsEnabled) => setSettings({ ...settings, notificationsEnabled })}
-                  />
-                  <div className="pt-4">
-                    <ToggleRow
-                      title="Alert sounds"
-                      description="Play a sound alongside task notifications."
-                      checked={settings.soundEnabled}
-                      onChange={(soundEnabled) => setSettings({ ...settings, soundEnabled })}
-                    />
-                  </div>
-                </div>
-                <button
-                  onClick={() => {
-                    requestNotificationPermission().then((granted) => {
-                      if (granted) {
-                        showCardNotification("Radulf", "Notifications are enabled.");
-                      }
-                      playAlertSound();
-                    });
-                  }}
-                  className={`${secondaryButtonCls} self-start`}
-                >
-                  Test notification & sound
-                </button>
+                {TEMPLATES.map(({ key, ...template }) => (
+                  <PromptTemplateEditor key={key} {...template} value={settings[key]} onChange={(value) => set({ [key]: value })} />
+                ))}
               </section>
             </SettingsPanel>
 
             <SettingsPanel active={activeSection} section="defaults">
               <div className="flex flex-col gap-5">
                 <section id="planner-defaults" className={sectionCls}>
-                  <h3 className="font-medium">Planning</h3>
-                  <label className="max-w-xs text-sm text-foreground/70">
-                    Timeout (minutes)
-                    <input
-                      type="number"
-                      min={1}
-                      value={settings.plannerTimeoutMinutes}
-                      onChange={(e) =>
-                        setSettings({ ...settings, plannerTimeoutMinutes: Number(e.target.value) || 1 })
-                      }
-                      className={inputCls}
-                    />
-                    <span className="mt-1 block text-xs text-foreground/40">
-                      Caps each card&apos;s planning pass.
-                    </span>
-                  </label>
+                  <SectionHeading title="Planning" />
+                  {numberInput("plannerTimeoutMinutes", "Timeout (minutes)", "Caps each card's planning pass.", 1, "max-w-xs text-sm text-foreground/70")}
                 </section>
-
                 <section id="defaults" className={sectionCls}>
-                  <h3 className="font-medium">Loop execution</h3>
+                  <SectionHeading title="Loop execution" />
                   <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                    <label className="text-sm text-foreground/70">
-                      Max iterations
-                      <input
-                        type="number"
-                        min={1}
-                        value={settings.defaultMaxIterations}
-                        onChange={(e) =>
-                          setSettings({ ...settings, defaultMaxIterations: Number(e.target.value) || 1 })
-                        }
-                        className={inputCls}
-                      />
-                    </label>
-                    <label className="text-sm text-foreground/70">
-                      Timeout (minutes)
-                      <input
-                        type="number"
-                        min={1}
-                        value={settings.defaultTimeoutMinutes}
-                        onChange={(e) =>
-                          setSettings({ ...settings, defaultTimeoutMinutes: Number(e.target.value) || 1 })
-                        }
-                        className={inputCls}
-                      />
-                    </label>
-                    <label className="text-sm text-foreground/70">
-                      Iteration hard timeout (minutes)
-                      <input
-                        type="number"
-                        min={1}
-                        value={settings.iterationHardTimeoutMinutes}
-                        onChange={(e) =>
-                          setSettings({ ...settings, iterationHardTimeoutMinutes: Number(e.target.value) || 1 })
-                        }
-                        className={inputCls}
-                      />
-                      <span className="mt-1 block text-xs text-foreground/40">
-                        Caps one iteration; a single timeout retries, two in a row end the run.
-                      </span>
-                    </label>
-                    <label className="text-sm text-foreground/70">
-                      Stall timeout (seconds)
-                      <input
-                        type="number"
-                        min={30}
-                        value={settings.stallTimeoutSeconds}
-                        onChange={(e) =>
-                          setSettings({ ...settings, stallTimeoutSeconds: Number(e.target.value) || 30 })
-                        }
-                        className={inputCls}
-                      />
-                      <span className="mt-1 block text-xs text-foreground/40">
-                        Kills any model call — planner, looper, evaluator, proposer, chat — that emits
-                        nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts
-                        as output, so this never cuts off a merely slow model.
-                      </span>
-                    </label>
+                    {numberInput("defaultMaxIterations", "Max iterations")}
+                    {numberInput("defaultTimeoutMinutes", "Timeout (minutes)")}
+                    {numberInput("iterationHardTimeoutMinutes", "Iteration hard timeout (minutes)", "Caps one iteration; a single timeout retries, two in a row end the run.")}
+                    {numberInput("stallTimeoutSeconds", "Stall timeout (seconds)", "Kills any model call — planner, looper, evaluator, proposer, chat — that emits nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts as output, so this never cuts off a merely slow model.", 30)}
                   </div>
                   <div className="border-t border-foreground/10 pt-4">
-                    <ToggleRow title="Minimal tool set" description="Deny tool permissions by default for the looper agent." checked={settings.minimalToolset} onChange={(minimalToolset) => setSettings({ ...settings, minimalToolset })} />
+                    <ToggleRow title="Minimal tool set" description="Deny tool permissions by default for the looper agent." {...toggle("minimalToolset")} />
                   </div>
                 </section>
-
                 <section id="evaluator-defaults" className={sectionCls}>
-                  <h3 className="font-medium">Evaluation</h3>
-                  <label className="max-w-xs text-sm text-foreground/70">
-                    Timeout (minutes)
-                    <input
-                      type="number"
-                      min={1}
-                      value={settings.evaluatorTimeoutMinutes}
-                      onChange={(e) =>
-                        setSettings({ ...settings, evaluatorTimeoutMinutes: Number(e.target.value) || 1 })
-                      }
-                      className={inputCls}
-                    />
-                    <span className="mt-1 block text-xs text-foreground/40">
-                      Caps each evaluation pass after the looper finishes.
-                    </span>
-                  </label>
+                  <SectionHeading title="Evaluation" />
+                  {numberInput("evaluatorTimeoutMinutes", "Timeout (minutes)", "Caps each evaluation pass after the looper finishes.", 1, "max-w-xs text-sm text-foreground/70")}
                 </section>
               </div>
             </SettingsPanel>
 
             <SettingsPanel active={activeSection} section="sandbox">
               <section id="sandbox" className={sectionCls}>
-                <h3 className="font-medium">Agent isolation</h3>
-                <p className="text-sm text-foreground/55">
-                  Restrict agent commands to their worktree and allowed network destinations.
-                </p>
-                <ToggleRow title="Sandbox enabled" checked={settings.sandboxEnabled} onChange={(sandboxEnabled) => setSettings({ ...settings, sandboxEnabled })} />
+                <SectionHeading title="Agent isolation">Restrict agent commands to their worktree and allowed network destinations.</SectionHeading>
+                <ToggleRow title="Sandbox enabled" {...toggle("sandboxEnabled")} />
                 <p className="text-xs text-foreground/40">
                   Turning this off runs agent bash unsandboxed on this host — a persistent warning
                   banner appears everywhere, and every affected run is stamped{" "}
@@ -577,9 +422,7 @@ export default function SettingsPage() {
                   <textarea
                     rows={3}
                     value={settings.sandboxNetworkAllowlist}
-                    onChange={(e) =>
-                      setSettings({ ...settings, sandboxNetworkAllowlist: e.target.value })
-                    }
+                    onChange={(e) => set({ sandboxNetworkAllowlist: e.target.value })}
                     placeholder="pypi.org"
                     className={`${inputCls} font-mono`}
                   />
@@ -591,7 +434,7 @@ export default function SettingsPage() {
                   needs.
                 </p>
                 <div className="border-t border-foreground/10 pt-5">
-                  <ToggleRow title="Allow Go/TLS toolchains" description="Weaker isolation · macOS only" checked={settings.sandboxWeakerIsolationForGoTls} onChange={(sandboxWeakerIsolationForGoTls) => setSettings({ ...settings, sandboxWeakerIsolationForGoTls })} />
+                  <ToggleRow title="Allow Go/TLS toolchains" description="Weaker isolation · macOS only" {...toggle("sandboxWeakerIsolationForGoTls")} />
                 </div>
                 <p className="text-xs text-foreground/40">
                   Off by default. Go-based tools (go, gh, gcloud, terraform, kubectl) verify TLS via the
@@ -605,11 +448,9 @@ export default function SettingsPage() {
 
             <SettingsPanel active={activeSection} section="maintenance">
               <section id="maintenance" className={sectionCls}>
-                <h3 className="font-medium">History retention</h3>
-                <p className="text-sm text-foreground/55">
-                  Delete terminal run history, events, and transcript files older than the selected age.
-                  Cards and plans are kept.
-                </p>
+                <SectionHeading title="History retention">
+                  Delete terminal run history, events, and transcript files older than the selected age. Cards and plans are kept.
+                </SectionHeading>
                 <label className="max-w-xs text-sm text-foreground/70">
                   Keep history for (days)
                   <input
@@ -647,7 +488,7 @@ function PromptTemplateEditor({
 }: {
   title: string;
   description: string;
-  placeholders: string[];
+  placeholders: readonly string[];
   value: string;
   onChange: (value: string) => void;
 }) {
@@ -821,16 +662,9 @@ function AgentSection({
         </label>
       </div>
       {warning && <p className="rounded-lg border border-accent/15 bg-accent/5 px-3 py-2.5 text-xs leading-relaxed text-accent/85">{warning}</p>}
-      {selectedModel &&
-        (selectedModel.costPerMillionInput != null || selectedModel.costPerMillionOutput != null) && (
-          <p className="text-xs text-foreground/40">
-            {selectedModel.costPerMillionInput != null &&
-              `${formatPricePerMillion(selectedModel.costPerMillionInput)} / 1M input`}
-            {selectedModel.costPerMillionInput != null && selectedModel.costPerMillionOutput != null && " · "}
-            {selectedModel.costPerMillionOutput != null &&
-              `${formatPricePerMillion(selectedModel.costPerMillionOutput)} / 1M output`}
-          </p>
-        )}
+      {selectedModel && priceLabel(selectedModel) && (
+        <p className="text-xs text-foreground/40">{priceLabel(selectedModel)}</p>
+      )}
       {status && !status.startsWith("✓") && (
         <p role="status" className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-foreground/40"}`}>
           {status}
@@ -847,13 +681,7 @@ function AgentSection({
               <button
                 key={m.value}
                 onClick={() => onModel(m.value)}
-                title={
-                  m.costPerMillionInput != null || m.costPerMillionOutput != null
-                    ? `${m.description || m.value} — ${m.costPerMillionInput != null ? `${formatPricePerMillion(m.costPerMillionInput)}/1M in` : ""
-                    }${m.costPerMillionInput != null && m.costPerMillionOutput != null ? ", " : ""}${m.costPerMillionOutput != null ? `${formatPricePerMillion(m.costPerMillionOutput)}/1M out` : ""
-                    }`
-                    : m.description || m.value
-                }
+                title={priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
                 className={`max-w-full rounded-lg border px-3 py-2 text-left text-xs break-words ${model === m.value
                     ? "border-amber-500 text-amber-400"
                     : "border-foreground/10 text-foreground/60 hover:text-foreground"

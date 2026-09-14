@@ -18,6 +18,12 @@ import { retryableFailedStep } from "@/shared/failedStep";
 
 const TABS = ["Task", "Activity"] as const;
 
+const ROLES = [
+  { key: "planner", label: "Planner" },
+  { key: "loop", label: "Loop" },
+  { key: "evaluator", label: "Evaluator" },
+] as const;
+
 /** Tab names this page used to have, so old links and bookmarks still land
  * somewhere sensible: the plan moved into Task, the transcript became a
  * drill-down inside Activity. */
@@ -116,6 +122,54 @@ export default function CardDetail() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
+  const post = (path: string, json: object = {}) => action(() => api(`/api/cards/${id}/${path}`, { json }));
+
+  const statusAction: Record<string, { label: string; run: () => void }> = {
+    backlog: { label: "Add to Todo", run: () => post("move", { to: "todo" }) },
+    todo: { label: "Start now", run: () => post("move", { to: "in_progress" }) },
+    needs_attention: canRetryMerge
+      ? { label: "Retry merge", run: () => post("retry-merge") }
+      : canRetryFailedStep
+        ? { label: "Retry failed step", run: () => post("retry-failed-step") }
+        : { label: "Restart task", run: () => post("restart") },
+    review: { label: "Review changes", run: () => router.push(`/review/${id}`) },
+    plan_review: { label: "Approve plan and implement", run: () => post("approve-plan") },
+    paused: { label: "Continue", run: () => post("resume") },
+  };
+  const headerActions: { label: string; show: boolean; primary?: boolean; run: () => void }[] = [
+    { ...statusAction[card.status], show: card.status in statusAction, primary: true },
+    { label: "Pause", show: card.status === "looping", run: () => confirm("Pause this task after the current iteration?") && post("pause") },
+    // Every stage reads the card's model override when it starts, so a change
+    // made here takes effect on Continue / Retry failed step without
+    // discarding the worktree, plan, or iterations so far.
+    { label: "Edit model overrides", show: ["paused", "needs_attention"].includes(card.status), run: () => setShowEdit(true) },
+    { label: "View activity", show: ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
+    { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
+  ];
+  const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
+  const menuActions: { label: string; when: string[]; danger?: boolean; run: () => void }[] = [
+    { label: "Edit task", when: ["backlog", "todo"], run: () => setShowEdit(true) },
+    {
+      label: "Move to backlog",
+      when: ["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"],
+      run: () => {
+        if (!["planning", "looping", "evaluating"].includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
+          post("move", { to: "backlog" });
+        }
+      },
+    },
+    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen("Abandon this task? Its worktree and branch will be deleted.", () => post("abandon")) },
+    { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen("Reset all progress? This deletes the branch, worktree, and plan, and moves the card back to Backlog.", () => post("reset")) },
+    {
+      label: "Delete task",
+      danger: true,
+      when: ["backlog", "todo", "done", "abandoned", "needs_attention"],
+      run: confirmThen("Delete this task and all its history?", () => action(async () => {
+        await api(`/api/cards/${id}`, { method: "DELETE" });
+        router.push("/");
+      })),
+    },
+  ];
 
   return (
     <AppShell>
@@ -133,86 +187,15 @@ export default function CardDetail() {
             <p className="text-sm text-foreground/75">{repo?.name ?? "Unknown repository"}</p>
             <p className="mt-1 text-xs text-foreground/45">{plainStatus(card.status)}{card.startedAt && ` · ${timeAgo(card.startedAt)} elapsed`}</p>
           </div>
-        {card.status === "backlog" && (
-          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/move`, { json: { to: "todo" } }))}>Add to Todo</ActionButton>
-        )}
-        {card.status === "todo" && (
-          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/move`, { json: { to: "in_progress" } }))}>Start now</ActionButton>
-        )}
-        {card.status === "needs_attention" && (
-          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/${canRetryMerge ? "retry-merge" : canRetryFailedStep ? "retry-failed-step" : "restart"}`, { json: {} }))}>{canRetryMerge ? "Retry merge" : canRetryFailedStep ? "Retry failed step" : "Restart task"}</ActionButton>
-        )}
-        {card.status === "review" && (
-          <ActionButton primary onClick={() => router.push(`/review/${id}`)}>Review changes</ActionButton>
-        )}
-        {card.status === "plan_review" && (
-          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/approve-plan`, { method: "POST" }))}>Approve plan and implement</ActionButton>
-        )}
-        {card.status === "looping" && (
-          <ActionButton onClick={() => confirm("Pause this task after the current iteration?") && action(() => api(`/api/cards/${id}/pause`, { json: {} }))}>Pause</ActionButton>
-        )}
-        {card.status === "paused" && (
-          <ActionButton primary onClick={() => action(() => api(`/api/cards/${id}/resume`, { json: {} }))}>Continue</ActionButton>
-        )}
-        {/* Every stage reads the card's model override when it starts, so a
-            change made here takes effect on Continue / Retry failed step
-            without discarding the worktree, plan, or iterations so far. */}
-        {["paused", "needs_attention"].includes(card.status) && (
-          <ActionButton onClick={() => setShowEdit(true)}>Edit model overrides</ActionButton>
-        )}
-        {["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status) && <ActionButton primary onClick={() => chooseTab("Activity")}>View activity</ActionButton>}
-        {card.status === "done" && <ActionButton primary onClick={() => chooseTab("Task")}>Open summary</ActionButton>}
+        {headerActions.filter((a) => a.show).map((a) => (
+          <ActionButton key={a.label} primary={a.primary} onClick={a.run}>{a.label}</ActionButton>
+        ))}
         <details className="relative">
           <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" aria-label="More task actions">•••</summary>
           <div className="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl">
-        {["backlog", "todo"].includes(card.status) && <button type="button" onClick={() => setShowEdit(true)} className="min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">Edit task</button>}
-        {["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"].includes(card.status) && (
-          <MenuButton
-            onClick={() =>
-              (["planning", "looping", "evaluating"].includes(card.status)
-                ? confirm("Cancel the active run and pull back to Backlog?")
-                : true) && action(() => api(`/api/cards/${id}/move`, { json: { to: "backlog" } }))
-            }
-          >
-            Move to backlog
-          </MenuButton>
-        )}
-        {["needs_attention", "review", "plan_review"].includes(card.status) && (
-          <MenuButton
-            danger
-            onClick={() =>
-              confirm("Abandon this task? Its worktree and branch will be deleted.") &&
-              action(() => api(`/api/cards/${id}/abandon`, { json: {} }))
-            }
-          >
-            Abandon task
-          </MenuButton>
-        )}
-        {["needs_attention", "review", "plan_review"].includes(card.status) && (
-          <MenuButton
-            danger
-            onClick={() =>
-              confirm("Reset all progress? This deletes the branch, worktree, and plan, and moves the card back to Backlog.") &&
-              action(() => api(`/api/cards/${id}/reset`, { json: {} }))
-            }
-          >
-            Reset all progress
-          </MenuButton>
-        )}
-        {["backlog", "todo", "done", "abandoned", "needs_attention"].includes(card.status) && (
-          <MenuButton
-            danger
-            onClick={() =>
-              confirm("Delete this task and all its history?") &&
-              action(async () => {
-                await api(`/api/cards/${id}`, { method: "DELETE" });
-                router.push("/");
-              })
-            }
-          >
-            Delete task
-          </MenuButton>
-        )}
+            {menuActions.filter((m) => m.when.includes(card.status)).map((m) => (
+              <MenuButton key={m.label} danger={m.danger} onClick={m.run}>{m.label}</MenuButton>
+            ))}
           </div>
         </details>
         </div>
@@ -278,9 +261,10 @@ export default function CardDetail() {
           </div>
           {detail.models && (
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-foreground/60">
-              <span>Planner: <span className="font-mono text-foreground/80">{formatProviderModel(detail.models.planner.provider, detail.models.planner.model, detail.models.planner.reasoningLevel)}</span></span>
-              <span>Loop: <span className="font-mono text-foreground/80">{formatProviderModel(detail.models.loop.provider, detail.models.loop.model, detail.models.loop.reasoningLevel)}</span></span>
-              <span>Evaluator: <span className="font-mono text-foreground/80">{formatProviderModel(detail.models.evaluator.provider, detail.models.evaluator.model, detail.models.evaluator.reasoningLevel)}</span></span>
+              {ROLES.map(({ key, label }) => {
+                const m = detail.models![key];
+                return <span key={key}>{label}: <span className="font-mono text-foreground/80">{formatProviderModel(m.provider, m.model, m.reasoningLevel)}</span></span>;
+              })}
             </div>
           )}
           <div className="flex flex-wrap gap-2">
@@ -479,27 +463,11 @@ function plainStatus(status: string): string {
   return ({ backlog: "Backlog", todo: "Queued in Todo", planning: "Planning", plan_review: "Plan ready for review", ready: "Ready to run", looping: "Running", evaluating: "Evaluating", paused: "Paused", review: "Ready for review", reviewing: "Applying review", needs_attention: "Needs attention", done: "Completed", abandoned: "Abandoned" } as Record<string, string>)[status] ?? status;
 }
 
-function ActionButton({
-  children,
-  onClick,
-  primary,
-  danger,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  primary?: boolean;
-  danger?: boolean;
-}) {
+function ActionButton({ children, onClick, primary }: { children: React.ReactNode; onClick: () => void; primary?: boolean }) {
   return (
     <button
       onClick={onClick}
-      className={`rounded px-3 py-1.5 text-sm ${
-        primary
-          ? "bg-amber-600 hover:bg-amber-500 text-on-accent font-medium"
-          : danger
-            ? "bg-red-950 hover:bg-red-900 text-red-300 border border-red-900"
-            : "bg-foreground/10 hover:bg-foreground/15"
-      }`}
+      className={`rounded px-3 py-1.5 text-sm ${primary ? "bg-amber-600 hover:bg-amber-500 text-on-accent font-medium" : "bg-foreground/10 hover:bg-foreground/15"}`}
     >
       {children}
     </button>
@@ -826,11 +794,15 @@ function EditCardModal({
 }) {
   const [title, setTitle] = useState(detail.card.title);
   const [description, setDescription] = useState(detail.card.description);
-  const [plannerModel, setPlannerModel] = useState(detail.card.plannerModel ?? "");
-  const [loopModel, setLoopModel] = useState(detail.card.loopModel ?? "");
-  const [evaluatorModel, setEvaluatorModel] = useState(detail.card.evaluatorModel ?? "");
+  const [models, setModels] = useState({
+    planner: detail.card.plannerModel ?? "",
+    loop: detail.card.loopModel ?? "",
+    evaluator: detail.card.evaluatorModel ?? "",
+  });
+  const options = { planner: plannerModels, loop: loopModels, evaluator: evaluatorModels };
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const fieldCls = "bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm";
 
   async function save() {
     setBusy(true);
@@ -838,7 +810,13 @@ function EditCardModal({
     try {
       await api(`/api/cards/${detail.card.id}`, {
         method: "PATCH",
-        json: { title, description, plannerModel: plannerModel || null, loopModel: loopModel || null, evaluatorModel: evaluatorModel || null },
+        json: {
+          title,
+          description,
+          plannerModel: models.planner || null,
+          loopModel: models.loop || null,
+          evaluatorModel: models.evaluator || null,
+        },
       });
       onSaved();
     } catch (e) {
@@ -848,10 +826,7 @@ function EditCardModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
@@ -861,64 +836,25 @@ function EditCardModal({
       >
         <h3 id="edit-task-title" className="font-medium mb-3">Edit task</h3>
         <div className="flex flex-col gap-3">
-          <input
-            autoFocus
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Title"
-            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
-          />
-          <select
-            value={plannerModel}
-            onChange={(e) => setPlannerModel(e.target.value)}
-            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
-          >
-            <option value="">Planner model: Default (from settings)</option>
-            {plannerModels.map((m) => (
-              <option key={m.value} value={m.value}>
-                Planner model: {m.displayName}
-              </option>
-            ))}
-          </select>
-          <select
-            value={loopModel}
-            onChange={(e) => setLoopModel(e.target.value)}
-            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
-          >
-            <option value="">Loop model: Default (from settings)</option>
-            {loopModels.map((m) => (
-              <option key={m.value} value={m.value}>
-                Loop model: {m.displayName}
-              </option>
-            ))}
-          </select>
-          <select
-            value={evaluatorModel}
-            onChange={(e) => setEvaluatorModel(e.target.value)}
-            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm"
-          >
-            <option value="">Evaluator model: Default (from settings)</option>
-            {evaluatorModels.map((m) => (
-              <option key={m.value} value={m.value}>
-                Evaluator model: {m.displayName}
-              </option>
-            ))}
-          </select>
+          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className={fieldCls} />
+          {ROLES.map(({ key, label }) => (
+            <select key={key} value={models[key]} onChange={(e) => setModels({ ...models, [key]: e.target.value })} className={fieldCls}>
+              <option value="">{label} model: Default (from settings)</option>
+              {options[key].map((m) => (
+                <option key={m.value} value={m.value}>{label} model: {m.displayName}</option>
+              ))}
+            </select>
+          ))}
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Description — include a definition of done. The planner only sees this."
             rows={6}
-            className="bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm font-mono"
+            className={`${fieldCls} font-mono`}
           />
           {error && <p className="text-red-400 text-sm">{error}</p>}
           <div className="flex gap-2 justify-end">
-            <button
-              onClick={onClose}
-              className="px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground"
-            >
-              Cancel
-            </button>
+            <button onClick={onClose} className="px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground">Cancel</button>
             <button
               onClick={save}
               disabled={busy || !title.trim()}
