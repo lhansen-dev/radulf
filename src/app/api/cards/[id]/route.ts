@@ -68,23 +68,13 @@ export async function GET(_req: Request, { params }: Ctx) {
   // (runHarness reads it straight off settings at call time), so this is
   // always the current global value, not necessarily what an old run used.
   const settings = getSettings();
-  const models = {
-    planner: {
-      provider: settings.plannerProvider,
-      model: card.plannerModel || settings.plannerModel || null,
-      reasoningLevel: settings.plannerReasoningLevel,
-    },
-    loop: {
-      provider: settings.loopProvider,
-      model: card.loopModel || settings.loopModel || null,
-      reasoningLevel: settings.loopReasoningLevel,
-    },
-    evaluator: {
-      provider: settings.evaluatorProvider,
-      model: card.evaluatorModel || settings.evaluatorModel || null,
-      reasoningLevel: settings.evaluatorReasoningLevel,
-    },
-  };
+  const models = Object.fromEntries(
+    (["planner", "loop", "evaluator"] as const).map((role) => [role, {
+      provider: settings[`${role}Provider`],
+      model: card[`${role}Model`] || settings[`${role}Model`] || null,
+      reasoningLevel: settings[`${role}ReasoningLevel`],
+    }]),
+  );
   // The orchestrator-private checklist the loop is ticking off — the latest
   // plan version as it stands right now, which its plan row can't show.
   const planPath = planStatePath(id);
