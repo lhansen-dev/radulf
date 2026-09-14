@@ -64,44 +64,12 @@ export default function AnalyticsPage() {
           <p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground/35">Runs and outcomes</p>
           <h1 tabIndex={-1} className="mt-0.5 text-2xl font-semibold tracking-tight">Activity</h1>
         </div>
-        <label className="sr-only" htmlFor="activity-range">Date range</label>
-        <select
-          id="activity-range"
-          value={range}
-          onChange={(e) => setRange(e.target.value as typeof range)}
-          className="min-w-36 grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm text-foreground/70 sm:grow-0"
-        >
-          <option value="all">All time</option>
-          <option value="today">Today</option>
-          <option value="7d">Last 7 days</option>
-          <option value="30d">Last 30 days</option>
-        </select>
-        <label className="sr-only" htmlFor="activity-provider">Provider</label><select
-          id="activity-provider"
-          value={provider}
-          onChange={(e) => setProvider(e.target.value)}
-          className="min-w-36 grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm text-foreground/70 sm:grow-0"
-        >
-          <option value="">All providers</option>
-          {data.providers.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-        <label className="sr-only" htmlFor="activity-model">Model</label><select
-          id="activity-model"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className="min-w-36 grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm text-foreground/70 sm:grow-0"
-        >
-          <option value="">All models</option>
-          {data.models.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        <FilterSelect id="activity-range" label="Date range" value={range} onChange={(v) => setRange(v as typeof range)}
+          options={[["all", "All time"], ["today", "Today"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]]} />
+        <FilterSelect id="activity-provider" label="Provider" value={provider} onChange={setProvider}
+          options={[["", "All providers"], ...data.providers.map((p) => [p, p] as const)]} />
+        <FilterSelect id="activity-model" label="Model" value={model} onChange={setModel}
+          options={[["", "All models"], ...data.models.map((m) => [m, m] as const)]} />
       </header>
 
       <main className="flex flex-col gap-5 p-4 sm:p-6">
@@ -226,46 +194,31 @@ export default function AnalyticsPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <ChartSection title="Tasks by Status">
-              <BarList data={data.cardsByStatus} />
-            </ChartSection>
-            <ChartSection title="Runs by Status">
-              <BarList data={data.runsByStatus} />
-            </ChartSection>
-            <ChartSection title="Tokens per Run">
-              <BarList data={data.tokensPerRun} />
-            </ChartSection>
-            <ChartSection title="Cost per Run">
-              <BarList data={data.costPerRun} format={formatCostUsd} />
-            </ChartSection>
+            {([
+              ["Tasks by Status", data.cardsByStatus],
+              ["Runs by Status", data.runsByStatus],
+              ["Tokens per Run", data.tokensPerRun],
+              ["Cost per Run", data.costPerRun, formatCostUsd],
+            ] as const).map(([title, bars, format]) => (
+              <ChartSection key={title} title={title}><BarList data={bars} format={format} /></ChartSection>
+            ))}
             <ChartSection title="Success Rate">
               <div className="flex items-center gap-3">
                 <div className="flex-1 h-5 bg-foreground/[0.06] rounded overflow-hidden">
-                  <div
-                    className="h-full bg-amber-500/70 rounded"
-                    style={{ width: `${(data.successRate * 100).toFixed(1)}%` }}
-                  />
+                  <div className="h-full bg-amber-500/70 rounded" style={{ width: fmtPercent(data.successRate) }} />
                 </div>
-                <span className="w-16 shrink-0 text-right text-sm text-foreground/70 tabular-nums">
-                  {(data.successRate * 100).toFixed(1)}%
-                </span>
+                <span className="w-16 shrink-0 text-right text-sm text-foreground/70 tabular-nums">{fmtPercent(data.successRate)}</span>
               </div>
             </ChartSection>
-            <ChartSection title="Tokens by Model">
-              <BarList data={data.tokensByModel} />
-            </ChartSection>
-            <ChartSection title="Cost by Model">
-              <BarList data={data.costByModel} format={formatCostUsd} />
-            </ChartSection>
-            <ChartSection title="Tokens by Role" hint="planner / loop / evaluator">
-              <BarList data={data.tokensByRole} />
-            </ChartSection>
-            <ChartSection title="Cost by Role" hint="planner / loop / evaluator">
-              <BarList data={data.costByRole} format={formatCostUsd} />
-            </ChartSection>
-            <ChartSection title="Runs by Provider">
-              <BarList data={data.runsByProvider} />
-            </ChartSection>
+            {([
+              ["Tokens by Model", data.tokensByModel],
+              ["Cost by Model", data.costByModel, formatCostUsd],
+              ["Tokens by Role", data.tokensByRole, undefined, "planner / loop / evaluator"],
+              ["Cost by Role", data.costByRole, formatCostUsd, "planner / loop / evaluator"],
+              ["Runs by Provider", data.runsByProvider],
+            ] as const).map(([title, bars, format, hint]) => (
+              <ChartSection key={title} title={title} hint={hint}><BarList data={bars} format={format} /></ChartSection>
+            ))}
           </div>
         )}
       </main>
@@ -298,6 +251,28 @@ function fmtDuration(ms: number | null): string {
 function fmtPercent(ratio: number | null): string {
   if (ratio == null) return "—";
   return `${(ratio * 100).toFixed(1)}%`;
+}
+
+function FilterSelect({ id, label, value, onChange, options }: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly (readonly [string, string])[];
+}) {
+  return (
+    <>
+      <label className="sr-only" htmlFor={id}>{label}</label>
+      <select
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-w-36 grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm text-foreground/70 sm:grow-0"
+      >
+        {options.map(([v, text]) => <option key={v} value={v}>{text}</option>)}
+      </select>
+    </>
+  );
 }
 
 function ChartSection({

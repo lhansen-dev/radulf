@@ -168,52 +168,26 @@ export default function ReviewPage() {
         </div>
       )}
       {sensitiveFlags.length > 0 && (
-        <div className="bg-red-950/40 border border-red-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-red-300">🛑 Touches sandbox / security-critical code</span>
-          <div className="mt-1 space-y-1">
-            {sensitiveFlags.map((flag) => (
-              <div key={flag.label} className="text-foreground/80">
-                <span className="text-red-400 font-medium">{flag.label}</span>
-                {flag.paths.length > 0 && (
-                  <span className="text-foreground/50 ml-1">({flag.paths.join(", ")})</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <Banner tone="red" title="🛑 Touches sandbox / security-critical code"><FlagList flags={sensitiveFlags} tone="text-red-400" /></Banner>
       )}
       {ignoreFilesChanged.length > 0 && (
-        <div className="bg-red-950/40 border border-red-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-red-300">🛑 .gitignore / .gitattributes changed</span>
-          <p className="mt-1 text-foreground/80">
+        <Banner tone="red" title="🛑 .gitignore / .gitattributes changed">
+          <p>
             These files can hide content from <code>git add</code> or from how a diff renders:{" "}
             {ignoreFilesChanged.join(", ")}
           </p>
-        </div>
+        </Banner>
       )}
       {hasSuspiciousChars && (
-        <div className="bg-red-950/40 border border-red-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-red-300">🛑 Invisible or confusable characters in the diff</span>
-          <p className="mt-1 text-foreground/80">
+        <Banner tone="red" title="🛑 Invisible or confusable characters in the diff">
+          <p>
             Highlighted inline below — bidi-override, zero-width, tag, or homoglyph characters can
             make code display differently than it executes.
           </p>
-        </div>
+        </Banner>
       )}
       {flags.length > 0 && (
-        <div className="bg-amber-950/40 border border-amber-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-amber-300">⚠️ Self-modifying / load-bearing diff</span>
-          <div className="mt-1 space-y-1">
-            {flags.map((flag) => (
-              <div key={flag.label} className="text-foreground/80">
-                <span className="text-amber-400 font-medium">{flag.label}</span>
-                {flag.paths.length > 0 && (
-                  <span className="text-foreground/50 ml-1">({flag.paths.join(", ")})</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <Banner tone="amber" title="⚠️ Self-modifying / load-bearing diff"><FlagList flags={flags} tone="text-amber-400" /></Banner>
       )}
       <div className="text-sm text-foreground/60">
         {loopRun ? `${loopRun.iterationsDone} iterations` : "no completed loop run"}
@@ -341,4 +315,23 @@ export default function ReviewPage() {
       )}
     </div>
   );
+}
+
+function Banner({ tone, title, children }: { tone: "red" | "amber"; title: string; children: React.ReactNode }) {
+  const box = tone === "red" ? "bg-red-950/40 border-red-800/50" : "bg-amber-950/40 border-amber-800/50";
+  return (
+    <div className={`border rounded p-3 text-sm ${box}`}>
+      <span className={`font-medium ${tone === "red" ? "text-red-300" : "text-amber-300"}`}>{title}</span>
+      <div className="mt-1 space-y-1 text-foreground/80">{children}</div>
+    </div>
+  );
+}
+
+function FlagList({ flags, tone }: { flags: { label: string; paths: string[] }[]; tone: string }) {
+  return flags.map((flag) => (
+    <div key={flag.label}>
+      <span className={`${tone} font-medium`}>{flag.label}</span>
+      {flag.paths.length > 0 && <span className="text-foreground/50 ml-1">({flag.paths.join(", ")})</span>}
+    </div>
+  ));
 }

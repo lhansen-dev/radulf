@@ -24,13 +24,9 @@ const KIND_LABEL = {
   evaluate: "🔎 Evaluator",
 } as const;
 
-/** Sum only the values that were actually reported, returning null when none
- * were — the same "don't invent a zero" rule `sumCostUsd` applies to money,
- * so an unmeasured run never reads as a free one. */
-function sumReported(values: (number | null | undefined)[]): number | null {
-  const reported = values.filter((v): v is number => v != null && Number.isFinite(v));
-  return reported.length > 0 ? reported.reduce((sum, v) => sum + v, 0) : null;
-}
+/** Same "don't invent a zero" sum `sumCostUsd` applies to money, so an
+ * unmeasured run never reads as a free one. */
+const sumReported = sumCostUsd;
 
 /**
  * Prompt/completion/cost for one run row.
@@ -153,15 +149,9 @@ export function RunsTable({
         </caption>
         <thead>
           <tr className="border-b border-foreground/10 text-left text-xs uppercase tracking-wider text-foreground/40">
-            <th scope="col" className="py-2 pr-3 font-medium">Run</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Status</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Model</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Iters</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Duration</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Prompt</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Completion</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Cost</th>
-            <th scope="col" className="py-2 text-right font-medium">Started</th>
+            {["Run", "Status", "Model", "Iters", "Duration", "Prompt", "Completion", "Cost", "Started"].map((label, i) => (
+              <th key={label} scope="col" className={`py-2 font-medium ${i < 8 ? "pr-3" : ""} ${i >= 3 ? "text-right" : ""}`}>{label}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
