@@ -95,7 +95,7 @@ const { Orchestrator } = await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
-const { POST: postAbandon } = await import("@/app/api/cards/[id]/abandon/route");
+const { POST: postCardAction } = await import("@/app/api/cards/[id]/[action]/route");
 const { pruneRuntimeHistory } = await import("./retention");
 const { DELETE: deleteRepo } = await import("@/app/api/repos/[id]/route");
 
@@ -1377,8 +1377,8 @@ describe("Orchestrator cancellation lifecycle", () => {
       completedRun("active-abandon", "active-run", { status: "running" });
       routeOrchestrator();
 
-      const response = await postAbandon(new Request("http://localhost"), {
-        params: Promise.resolve({ id: "active-abandon" }),
+      const response = await postCardAction(new Request("http://localhost"), {
+        params: Promise.resolve({ id: "active-abandon", action: "abandon" }),
       });
 
       expect(response.status).toBe(400);

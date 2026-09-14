@@ -205,9 +205,10 @@ moves `deadlineAt` in the database. See
 ## API surface
 
 `src/app/api/**/route.ts`, thin by design — a route handler validates, calls a
-service, and returns. Card actions are one route each under
-`api/cards/[id]/`: `move`, `pause`, `resume`, `restart`, `reset`, `abandon`,
-`approve-plan`, `approve-install`, `retry-merge`, `retry-failed-step`, `diff`.
+service, and returns. Card actions live under `api/cards/[id]/`: `move` and
+`diff` have their own routes; the single-verb transitions (`pause`, `resume`,
+`restart`, `reset`, `abandon`, `approve-plan`, `approve-install`,
+`retry-merge`, `retry-failed-step`) share the `[action]` route's table.
 
 ## Where to start reading
 
