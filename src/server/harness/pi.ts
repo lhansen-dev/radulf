@@ -18,6 +18,7 @@ import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
 import { createGuardedFsTools } from "./guardedTools";
+import { DEFAULT_MOCK_SCENARIO, mockProviderConfig } from "./mock";
 import { agentEnv, type TranscriptEvent } from "./types";
 import { createWebSearchTool } from "./webSearch";
 
@@ -55,8 +56,9 @@ function toThinkingLevel(level: string): ThinkingLevel {
 
 /**
  * Radulf provider id → pi provider id. pi calls the ChatGPT subscription
- * `openai-codex` and the Copilot subscription `github-copilot`; oMLX is a custom
- * provider we register at runtime; the rest match by name.
+ * `openai-codex` and the Copilot subscription `github-copilot`; oMLX and the
+ * scripted mock are custom providers we register at runtime; the rest match by
+ * name.
  */
 const PI_PROVIDER: Record<ProviderId, string> = {
   anthropic: "anthropic",
@@ -64,6 +66,7 @@ const PI_PROVIDER: Record<ProviderId, string> = {
   copilot: "github-copilot",
   omlx: "omlx",
   openrouter: "openrouter",
+  mock: "mock",
 };
 
 // ---------------------------------------------------------------------------
@@ -237,6 +240,7 @@ export function openRouterServableModel<M extends { id: string; api: string; bas
  *   default, wrong for both).
  * - `anthropic`/`chatgpt`/`copilot` treat a blank model as "the subscription
  *   default" — the same latitude `claude -p` / `codex exec` had.
+ * - `mock` treats a blank model as its happy-path scenario.
  *
  * Exported as a test seam; runs reach it through `createRalphSession`.
  */
@@ -275,6 +279,15 @@ export async function resolveModel(
     runtime.registerProvider("omlx", omlxProviderConfig(model, s));
     const m = runtime.getModel(pid, model);
     if (!m) throw new Error(`oMLX does not serve model "${model}"`);
+    return m;
+  }
+
+  // The scripted mock (./mock.ts): the model id names a scenario; blank runs
+  // the happy path.
+  if (provider === "mock") {
+    runtime.registerProvider("mock", mockProviderConfig());
+    const m = runtime.getModel(pid, model || DEFAULT_MOCK_SCENARIO);
+    if (!m) throw new Error(`the mock provider has no scenario "${model}"`);
     return m;
   }
 

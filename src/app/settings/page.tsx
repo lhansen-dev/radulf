@@ -127,6 +127,9 @@ const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "chatgpt", label: "ChatGPT (Codex subscription)" },
   { id: "copilot", label: "GitHub Copilot (subscription)" },
+  // Testing-only (RADULF_MOCK_LLM=1) — listed only while a role already uses
+  // it, so a stored "mock" renders as itself; select it via PATCH /api/settings.
+  { id: "mock", label: "Mock (scripted, no model)" },
 ] as const;
 
 // Mirror of REASONING_LEVELS in src/server/settings.ts (pi's --thinking ladder);
@@ -159,6 +162,7 @@ const MODEL_HINTS: Record<string, string> = {
   copilot: "Leave blank to use your subscription's default model.",
   omlx: "Use the id of a model on your oMLX server that supports tool use.",
   openrouter: "Type a model id to search the available models.",
+  mock: "The model id picks a scripted scenario. Leave blank for happy-path.",
 };
 
 type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
@@ -600,7 +604,7 @@ function AgentSection({
             onChange={(e) => onProvider(e.target.value)}
             className={inputCls}
           >
-            {PROVIDERS.map((p) => (
+            {PROVIDERS.filter((p) => p.id !== "mock" || provider === "mock").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
               </option>

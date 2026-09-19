@@ -8,6 +8,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   copilot: "GitHub Copilot (subscription)",
   omlx: "oMLX (local)",
   openrouter: "OpenRouter",
+  mock: "Mock (scripted, no model)",
 };
 
 export const ROLES = ["planner", "loop", "evaluator"] as const;

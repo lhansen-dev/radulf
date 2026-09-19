@@ -32,6 +32,8 @@ const THRESHOLDS = {
   // Runtime API key against a cloud aggregator — rate-limit windows are
   // typically >=60s, same tuning as the other cloud providers.
   openrouter: { failureThreshold: 3, cooldownMs: 60_000 },
+  // Scripted stand-in — tuned like the cloud providers it simulates.
+  mock: { failureThreshold: 3, cooldownMs: 60_000 },
 } satisfies Record<ProviderId, Thresholds>;
 
 function thresholdsFor(provider: ProviderId): Thresholds {

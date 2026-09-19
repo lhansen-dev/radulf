@@ -109,7 +109,11 @@ export const SETTING_DEFAULTS = {
 
 export type Settings = { [K in keyof typeof SETTING_DEFAULTS]: (typeof SETTING_DEFAULTS)[K] extends number ? number : (typeof SETTING_DEFAULTS)[K] extends boolean ? boolean : string };
 
-const PROVIDERS = new Set(["anthropic", "chatgpt", "copilot", "omlx", "openrouter"]);
+// "mock" is always a known provider, even on a server without
+// RADULF_MOCK_LLM=1: getSettings() drops values that fail validation back to
+// the default, so gating it here would silently turn a stored "mock" into a
+// paid provider. The run itself refuses instead (harness/mock.ts).
+const PROVIDERS = new Set(["anthropic", "chatgpt", "copilot", "omlx", "openrouter", "mock"]);
 // pi's thinking levels (pi --thinking): the full ladder pi accepts. Pi clamps
 // an unsupported level to the nearest one the chosen model supports.
 export const REASONING_LEVELS = [
