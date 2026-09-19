@@ -69,8 +69,7 @@ function seedRepo(name: string) {
 }
 
 /** Start a Todo card whose every role runs `scenario`; resolve once it rests. */
-async function runScenario(scenario: string) {
-  const repo = seedRepo(scenario);
+async function runScenario(scenario: string, repo = seedRepo(scenario)) {
   const cardId = `card-${scenario}`;
   db.insert(cards)
     .values({
@@ -112,8 +111,15 @@ async function waitFor(done: () => boolean, timeoutMs = 25_000) {
 }
 
 describe("mock provider — full pipeline", () => {
+  // happy-path merges into this repo; revise-once then runs on it, so its
+  // main already holds the same task files and history that isn't its own.
+  let shared: ReturnType<typeof seedRepo>;
+  beforeAll(() => {
+    shared = seedRepo("shared");
+  });
+
   it("happy-path: plans, loops both tasks, gets approved, and merges", async () => {
-    const { cardId, repo } = await runScenario("happy-path");
+    const { cardId, repo } = await runScenario("happy-path", shared);
     expect(cardStatus(cardId)).toBe("review");
 
     const [plan] = cardRuns(cardId, "plan");
@@ -135,11 +141,13 @@ describe("mock provider — full pipeline", () => {
 
     await orch.approve(loop.id);
     expect(cardStatus(cardId)).toBe("done");
-    expect(gitIn(repo.repoPath, "show", "main:mock-output/task-2.md")).toBe("Create mock-output/task-2.md");
+    expect(gitIn(repo.repoPath, "show", "main:mock-output/task-2.md").split("\n")[0]).toBe(
+      "Create mock-output/task-2.md",
+    );
   }, 30_000);
 
   it("revise-once: a revise verdict re-plans, re-loops, then approves", async () => {
-    const { cardId } = await runScenario("revise-once");
+    const { cardId } = await runScenario("revise-once", shared);
     expect(cardStatus(cardId)).toBe("review");
     expect(cardRuns(cardId, "evaluate").map((r) => r.exitReason)).toEqual(["revise", "approve"]);
     expect(cardRuns(cardId, "plan")).toHaveLength(2);

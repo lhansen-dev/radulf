@@ -104,9 +104,10 @@ const loop: Script = ({ prompt, step }) => {
   const signal = task.last ? ".ralph/DONE" : ".ralph/ITERATION_DONE";
   switch (step) {
     case 0:
-      // The task text differs between plan versions, so a re-plan's task 1
-      // still changes the file — a real work product, never a phantom.
-      return [write(`mock-output/task-${task.n}.md`, `${task.text}\n`)];
+      // Stamped per write: another card may already have merged this same
+      // path and text into the base branch, and identical bytes would be no
+      // work product at all — a phantom completion, then a stall.
+      return [write(`mock-output/task-${task.n}.md`, `${task.text}\n\nmock write ${Date.now()}-${++toolCallSeq}\n`)];
     case 1:
       return [bash("git status --short")];
     case 2:
@@ -122,7 +123,9 @@ const approve = (): Block[] => [
 ];
 
 const evaluator: Script = ({ step }) => {
-  if (step === 0) return [bash("git log --format=%s")];
+  // --first-parent: this branch's own commits, not ones other cards merged
+  // into the base branch.
+  if (step === 0) return [bash("git log --first-parent --format=%s")];
   if (step === 1) return approve();
   return [say("Evaluation written.")];
 };
