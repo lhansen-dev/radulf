@@ -22,6 +22,14 @@ via the JSON API plus a headless-Chrome screenshot of the page.
   child; it first cancels In Progress cards back to Todo — check
   `select status, count(*) from cards group by status` first and avoid
   restarting while cards are looping).
+- **Hot reload does not reach the orchestrator.** It is a `globalThis`
+  singleton built at boot, so after editing server code a run reaches
+  (`src/server/**`: providers, harness, stage services), pipeline runs keep
+  executing the *old* modules while routes serve the new ones. Seen live: a
+  just-added provider id failed `isProviderId` inside the stale orchestrator
+  and `normalizeProvider` fell back to `anthropic`. `POST /api/restart`
+  (after the in-progress check above) before driving a run, and confirm the
+  `next-server` PID changed — health answers `ok` from the old process too.
 - **Don't `kill` the `next-server` child by hand** as a restart shortcut —
   the signal takes the whole `make dev` → `next dev` chain down with it and
   kills the user's foreground terminal, rather than being respawned. Use
