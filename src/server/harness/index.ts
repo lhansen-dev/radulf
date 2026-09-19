@@ -247,6 +247,9 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   fs.mkdirSync(path.dirname(opts.transcriptPath), { recursive: true });
   const out = fs.createWriteStream(opts.transcriptPath, { flags: "a" });
+  // Resolve only once the transcript is flushed (or failed): a caller reads it
+  // back as soon as this returns. end()'s callback also fires on error.
+  const closeTranscript = () => new Promise<void>((resolve) => out.end(() => resolve()));
 
   const result = (code: number | null): RunnerResult => ({
     code,
@@ -282,7 +285,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
           s: s(),
         });
   } catch (err) {
-    out.end();
+    await closeTranscript();
     totals.error = String(err instanceof Error ? err.message : err);
     return result(1);
   }
@@ -373,7 +376,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     } catch {
       // Best-effort — the run is over regardless.
     }
-    out.end();
+    await closeTranscript();
   }
 
   if (stalled) {
