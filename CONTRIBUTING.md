@@ -121,6 +121,12 @@ Individual pieces, if you want faster feedback:
 | `make typecheck` | `tsc --noEmit` |
 | `make build` | Production build |
 
+To watch a change work end to end without spending tokens, run the app with
+the scripted **mock provider** (`RADULF_MOCK_LLM=1`): the full pipeline runs in
+seconds, with every tool call executed for real and only the model's decisions
+canned. See
+[Providers](docs/PROVIDERS.md#testing-without-a-model-the-mock-provider).
+
 ## Guidelines
 
 - **Keep the diff focused.** One logical change per PR; unrelated cleanups in

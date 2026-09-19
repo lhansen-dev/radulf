@@ -139,6 +139,46 @@ containment rule, not an oversight: those two roles hold `bash`, and a role with
 both command execution and network reach holds each half of an exfiltration
 chain. See [Sandboxing](SANDBOXING.md#role-capability-split).
 
+## Testing without a model: the mock provider
+
+For development there is a sixth, hidden provider: **`mock`**, a scripted
+stand-in that calls no model and costs nothing. Only the model's decisions are
+canned. pi still runs every tool call for real, so the worktree, file tools,
+sandboxed bash, signal files, commits, transcripts, telemetry, and the board
+all behave as they would on a real run, in seconds.
+
+It is off unless the server runs with `RADULF_MOCK_LLM=1` (in `.env.local`, or
+the environment of `make dev`). It doesn't appear in the Settings dropdown
+unless a role already uses it, so select it through the API:
+
+```bash
+curl -X PATCH http://localhost:3000/api/settings -H 'content-type: application/json' \
+  -d '{"plannerProvider":"mock","loopProvider":"mock","evaluatorProvider":"mock",
+       "plannerModel":"","loopModel":"","evaluatorModel":""}'
+```
+
+The model id picks a **scenario**, so a card's per-role models can steer one
+card down a failure path while the rest run the happy path:
+
+| Scenario | What happens |
+|----------|--------------|
+| `happy-path` (blank) | Two-task plan, both tasks done, evaluator approves |
+| `revise-once` | Evaluator asks for a revision once, then approves the re-planned work |
+| `planner-questions` | Planner raises follow-up questions; the card needs attention |
+| `provider-error` | Every request fails with a provider error |
+| `stuck` | Loop repeats one tool call until the stuck detector kills it |
+| `phantom` | Loop claims `ITERATION_DONE` without changing anything, until the stall limit |
+| `stall` | The stream never produces output, until the stall watchdog fires (≥ 30 s) |
+
+A server without the flag refuses to run a stored `mock` provider, with an
+error saying so. It never falls back to a paid provider. The scenarios live in
+`src/server/harness/mock.ts`, and `src/server/mockPipeline.test.ts` drives each
+one through the real orchestrator as part of `make check`.
+
+What the mock can't tell you is whether a real model follows the prompts, or
+how a real provider behaves: login, catalogs, and streaming quirks. Those
+still need an occasional real run.
+
 ## Where credentials live
 
 Provider credentials — the oMLX base URL and key, the OpenRouter key, the Brave

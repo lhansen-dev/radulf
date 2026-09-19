@@ -117,6 +117,9 @@ gate, and only then hand to the evaluator.
   chain — see [Sandboxing](SANDBOXING.md#role-capability-split).
 - `guardedTools.ts` — filesystem tools with path enforcement.
 - `webSearch.ts` — the planner's search tool, rate- and length-limited.
+- `mock.ts` — the scripted `mock` provider (`RADULF_MOCK_LLM=1`): canned model
+  decisions, real tool execution. See
+  [Providers](PROVIDERS.md#testing-without-a-model-the-mock-provider).
 
 Token and cost accounting is `foldTranscriptEvent` folding into
 `TranscriptTotals`, which is what the analytics page and the benchmark runner

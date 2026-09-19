@@ -30,7 +30,11 @@ via the JSON API plus a headless-Chrome screenshot of the page.
 - `make build` writes into the **same `.next`** the dev server is serving
   from and leaves it 500ing on every route. Don't run it against a live dev
   server without warning the user; recovery is `rm -rf .next` plus a real
-  dev-server restart.
+  dev-server restart. To run the build step of `make check` alongside a live
+  server, build a copy instead: `rsync` the tree (minus `node_modules`,
+  `.next`, `.git`, `.env.local`) into scratch, clone `node_modules` with
+  `cp -cR` (APFS copy-on-write, ~8s; Turbopack rejects a symlinked
+  `node_modules`), then `NODE_ENV=production node_modules/.bin/next build`.
 - The DB is at `$RADULF_DATA_DIR/radulf.db`, **not** `data/radulf.db` —
   `.env.local` points `RADULF_DATA_DIR` outside the repo so the dev watcher
   doesn't see WAL churn. Read the env file before reaching for sqlite. A
@@ -77,7 +81,40 @@ via the JSON API plus a headless-Chrome screenshot of the page.
 - A full live loop run (orchestrator → harness → LLM) spends real tokens and
   creates worktrees/commits. **Never start one silently — ask first** (see
   [Spending real credits](#spending-real-credits)). For routine verification,
-  cover adapters with the pinned fixtures in `src/server/harness/fixtures/`.
+  drive the pipeline with the [mock provider](#free-pipeline-runs-the-mock-provider)
+  instead.
+
+## Free pipeline runs: the mock provider
+
+The `mock` provider (`src/server/harness/mock.ts`) replaces only the model:
+scripted replies, real tool execution, so a card goes planner → loop →
+evaluator → In Review in seconds with worktrees, commits, transcripts,
+telemetry, and SSE all real. **This is the default way to see a pipeline
+change work**, and it spends nothing.
+
+- **Headless first:** `src/server/mockPipeline.test.ts` drives every scenario
+  through the real orchestrator against a temp repo + DB. Run it with
+  `node_modules/.bin/vitest run src/server/mockPipeline.test.ts` (~5s). Add a
+  case there when a change affects the pipeline's shape. Often that is all
+  the verification a change needs.
+- **Live server:** needs `RADULF_MOCK_LLM=1` in the server's env. Check
+  `.env.local`; if it's missing, ask the user to add it (a Next dev server
+  reloads env files on change). Without the flag a `mock` run fails with
+  "the mock provider is disabled". It never falls back to a paid provider.
+- Select it per role via
+  `curl -X PATCH localhost:3000/api/settings -H 'content-type: application/json' -d '{"plannerProvider":"mock","loopProvider":"mock","evaluatorProvider":"mock","plannerModel":"","loopModel":"","evaluatorModel":""}'`.
+  **Record the previous provider/model values first and restore them when
+  done** — these are the user's real settings.
+- The model id picks the scenario: `happy-path` (blank), `revise-once`,
+  `planner-questions`, `provider-error`, `stuck`, `phantom`, `stall` (≥30s,
+  the stall-watchdog floor). A card's per-role model fields
+  (`plannerModel`/`loopModel`/`evaluatorModel`) steer one card to a scenario.
+- Then create a card on a throwaway repo, start it, and watch
+  `GET /api/cards/<id>` (runs included) until it settles. The repo still gets
+  real worktrees and branches, but it's local and free.
+- What it can't verify: prompt quality or real-provider behavior (auth,
+  catalogs, streaming quirks). Those still need a real run, and that means
+  asking first.
 
 ## Spending real credits
 
@@ -88,9 +125,9 @@ driving any of those:
 **Ask the user whether to spend real credits**, and say what it will cost them
 in rough terms — which pipeline stages will run, roughly how long, and what it
 will leave behind (a branch, worktrees, `needs_attention` cards). Offer the
-no-spend alternative in the same breath: unit tests, the pinned harness
-fixtures, or a mocked-orchestrator path usually prove the same plumbing for
-free. Use `AskUserQuestion` so it's one click.
+no-spend alternative in the same breath: unit tests or the
+[mock provider](#free-pipeline-runs-the-mock-provider) usually prove the same
+plumbing for free. Use `AskUserQuestion` so it's one click.
 
 If they decline, or if there's no one to ask (an unattended/scheduled run), do
 the free verification instead and say plainly which parts stayed unverified —
