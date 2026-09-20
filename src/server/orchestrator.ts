@@ -115,6 +115,35 @@ export function iterationBudgetMs(ceilingMs: number, productiveMs: number[]): nu
   return Math.min(ceilingMs, Math.max(BUDGET_FLOOR_MS, BUDGET_MULTIPLIER * median));
 }
 
+/** How many earlier iterations a run needs before their prompt sizes say
+ * anything about what is normal for it. */
+const BLOAT_MIN_SAMPLES = 3;
+/** How many times the run's median prompt an iteration may reach before it is
+ * worth saying so. Chosen against a real run: 4 flags the 846k-token
+ * iteration that went on to hit the hard timeout (11.6x its run's median) and
+ * the 6.0M-token one that burned an hour (5.3x), and flags no iteration twice
+ * in a row that went on to finish its task. */
+const BLOAT_MULTIPLIER = 4;
+
+/**
+ * How far out of scale this iteration's prompt is with the run's own, or null
+ * while the run has too little history to say (spec 18 §9).
+ *
+ * Tokens rather than cost because every provider reports them. The card this
+ * was measured against ran entirely on a local model, where `costUsd` is 0 for
+ * every run, so the one budget signal Radulf had was blind on the provider
+ * actually in use.
+ */
+export function promptBloatRatio(
+  promptTokens: number | null | undefined,
+  earlier: number[],
+): number | null {
+  if (!promptTokens || earlier.length < BLOAT_MIN_SAMPLES) return null;
+  const sorted = [...earlier].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  return median > 0 ? promptTokens / median : null;
+}
+
 /** Appended to the next prompt for an agent that did the work and never wrote
  * the signal file. Without the file the orchestrator cannot tick or commit, so
  * the same task comes back around; saying nothing invites the same ending. */
@@ -868,6 +897,11 @@ export class Orchestrator {
       let iterationTimeouts = 0;
       let consecutiveUnsignalled = 0;
       let remindSignal = false;
+      let consecutiveBloat = 0;
+      /** Prompt size of every iteration that reported one, for the comparison
+       * in promptBloatRatio(). Per run: a resumed run starts from a fresh
+       * context, so the previous run's sizes are not its baseline. */
+      const promptTokensSeen: number[] = [];
       /** Wall-clock of the iterations that advanced the checklist, feeding
        * iterationBudgetMs() so the run paces itself. Seeded from this card's
        * earlier iterations on this plan (spec 18 §8) so the bound applies from
@@ -1114,6 +1148,32 @@ export class Orchestrator {
         } else {
           consecutiveStalls = 0;
         }
+
+        // Spec 18 §9: prompt growth is the one runaway nothing watched. On the
+        // card this came from, a loop run's prompt tokens went 645k, 1.9M,
+        // 3.2M, 6.8M on the same branch and the same plan, with no event and
+        // no ceiling. One bloated iteration is worth saying out loud; two in a
+        // row is a context that is not going to come back down.
+        const bloat = promptBloatRatio(result.promptTokens, promptTokensSeen);
+        if (bloat !== null && bloat >= BLOAT_MULTIPLIER) {
+          consecutiveBloat += 1;
+          emitEvent("iteration.bloat", {
+            cardId,
+            runId,
+            payload: {
+              n,
+              promptTokens: result.promptTokens,
+              ratio: Math.round(bloat * 10) / 10,
+              consecutive: consecutiveBloat,
+            },
+          });
+          if (consecutiveBloat >= 2) {
+            return fail(`prompt grew to ${Math.round(bloat)}x the run's median for two iterations`, n);
+          }
+        } else {
+          consecutiveBloat = 0;
+        }
+        if (result.promptTokens) promptTokensSeen.push(result.promptTokens);
 
         if (this.pausedCards.has(cardId)) {
           // Not "completed" (spec 18 §6): the operator stopped this run, it

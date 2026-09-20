@@ -98,7 +98,7 @@ const {
   settings,
   worktrees,
 } = await import("@/db");
-const { Orchestrator, iterationBudgetMs } = await import("./orchestrator");
+const { Orchestrator, iterationBudgetMs, promptBloatRatio } = await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome, providerBreakerStatus } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
@@ -710,6 +710,96 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(unsignalled).toHaveLength(2);
       const run = db.select().from(runs).all().find((row) => row.cardId === "no-signal")!;
       expect(run.exitReason).toBe("loop ended two iterations without writing .ralph/ITERATION_DONE");
+    });
+  });
+
+  describe("promptBloatRatio", () => {
+    it("says nothing until the run has shown what its prompts cost", () => {
+      expect(promptBloatRatio(900_000, [30_000, 20_000])).toBeNull();
+    });
+
+    it("says nothing about an iteration that reported no prompt size", () => {
+      expect(promptBloatRatio(null, [30_000, 20_000, 40_000])).toBeNull();
+    });
+
+    it("measures against the run's median", () => {
+      // The first seven prompts of a real run, then the eighth, which went on
+      // to hit the hard timeout.
+      const earlier = [28_749, 19_791, 40_179, 72_785, 206_051, 98_194, 171_760];
+      expect(promptBloatRatio(845_979, earlier)).toBeCloseTo(11.6, 1);
+      // Its successor, back in scale, must not inherit the reading.
+      expect(promptBloatRatio(29_590, earlier)).toBeCloseTo(0.4, 1);
+    });
+  });
+
+  describe("runaway prompt growth", () => {
+    it("ends the run when the context does not come back down", async () => {
+      // Spec 18 §9: a loop run's prompt tokens went 645k, 1.9M, 3.2M, 6.8M on
+      // the same branch and the same plan, with no event and no ceiling. Cost
+      // could not have caught it — every run was on a local model, where
+      // costUsd is 0.
+      card("bloat");
+      plan("bloat");
+      db.update(plans)
+        .set({ planMd: "## Tasks\n" + [1, 2, 3, 4, 5, 6].map((i) => `- [ ] task ${i}\n`).join("") })
+        .where(eq(plans.cardId, "bloat"))
+        .run();
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      let call = 0;
+      const PROMPT_TOKENS = [10_000, 10_000, 10_000, 100_000, 100_000];
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        const promptTokens = PROMPT_TOKENS[call] ?? 10_000;
+        call += 1;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), `work ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), `task ${call} done`);
+        return { ...successfulHarnessResult, promptTokens };
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("bloat");
+      await vi.waitFor(() => expect(getCard("bloat").status).toBe("needs_attention"));
+
+      // Three in scale, then two at ten times the median.
+      expect(mocks.runHarness).toHaveBeenCalledTimes(5);
+      expect(getRun("bloat").exitReason).toContain("prompt grew to 10x the run's median");
+      const bloatEvents = db.select().from(events).all()
+        .filter((e) => e.type === "iteration.bloat" && e.cardId === "bloat");
+      expect(bloatEvents.map((e) => JSON.parse(e.payload).n)).toEqual([4, 5]);
+    });
+
+    it("lets a single spike pass if the next iteration comes back down", async () => {
+      card("bloat-spike");
+      plan("bloat-spike");
+      db.update(plans)
+        .set({ planMd: "## Tasks\n" + [1, 2, 3, 4, 5, 6].map((i) => `- [ ] task ${i}\n`).join("") })
+        .where(eq(plans.cardId, "bloat-spike"))
+        .run();
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      let call = 0;
+      const PROMPT_TOKENS = [10_000, 10_000, 10_000, 100_000, 10_000, 10_000];
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        const promptTokens = PROMPT_TOKENS[call] ?? 10_000;
+        call += 1;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), `work ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), `task ${call} done`);
+        return { ...successfulHarnessResult, promptTokens };
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("bloat-spike");
+      // All six tasks tick, so the run ends on the exhausted checklist rather
+      // than on the spike at iteration 4.
+      await vi.waitFor(() => expect(getCard("bloat-spike").status).toBe("needs_attention"));
+      expect(getRun("bloat-spike").exitReason).not.toContain("prompt grew");
+      const bloatEvents = db.select().from(events).all()
+        .filter((e) => e.type === "iteration.bloat" && e.cardId === "bloat-spike");
+      expect(bloatEvents).toHaveLength(1);
     });
   });
 
