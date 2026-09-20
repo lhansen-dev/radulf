@@ -159,11 +159,25 @@ does collect include thrash that happened to end with a signal — 14.9 and 59.1
 minutes — so the median it would eventually learn is the thrash.
 
 **Decision.** Seed `productiveMs` from the iterations of this card's earlier
-loop runs on the same plan. This card had seventeen completed iterations to
-learn from when it started the run that burned the hour. Take the lower
-quartile rather than the median, so one 59-minute outlier cannot license the
-next one, and keep spec 11's floor so the bound can never make a loop
-unrunnable.
+loop runs on the same plan, counting only iterations that both completed and
+ticked their task. The budget then bounds the first iteration of a resumed run
+instead of the fourth, which is what spec 11 intended and never got.
+
+Keep the median. A lower quartile was measured against this card and rejected.
+Its six productive iterations on plan v3 are 2.0, 13.5, 14.9, 21.2, 38.6 and
+59.1 minutes; the lower quartile of those is 13.5, so the bound would have been
+40.5 minutes. That would have cut the 60-minute burn short by 20 minutes, and
+it would also have killed the 59.1-minute iteration, which completed its task.
+One saving, one loss and a redo is not an improvement.
+
+Worth recording plainly: seeding changes nothing for this card either. Three
+times its median is 63.6 minutes, above the 60-minute ceiling, so the budget
+and the ceiling coincide. Its productive iterations really are that slow, and a
+statistic over their duration cannot separate the hour that worked from the
+hour that did not. What actually bounds that iteration is §2, which ends the
+run on the second timeout, and §9, which watches the prompt rather than the
+clock. This section makes the mechanism work as designed; it does not claim
+the mechanism would have caught this.
 
 ## 9. Prompt growth is unbounded and unwatched
 

@@ -13,6 +13,10 @@ const mocks = vi.hoisted(() => ({
   removeWorktree: vi.fn(),
   tryGit: vi.fn(),
   rebuildPackages: vi.fn(),
+  /** Per-test settings overrides, spread over the defaults below. Cleared in
+   * beforeEach, so a test that needs a realistic ceiling can say so without
+   * moving the defaults every other test relies on. */
+  settings: {} as Record<string, unknown>,
 }));
 
 vi.mock("./harness", async (importOriginal) => ({
@@ -64,6 +68,7 @@ vi.mock("./settings", () => ({
     plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
     evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}",
     improvePromptTemplate: "Existing cards:\n{{EXISTING_CARDS}}\n{{FOCUS}}",
+    ...mocks.settings,
   }),
 }));
 vi.mock("./git", async (importOriginal) => ({
@@ -288,6 +293,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       .run();
 
     vi.clearAllMocks();
+    for (const key of Object.keys(mocks.settings)) delete mocks.settings[key];
     mocks.createWorktree.mockImplementation((_repoPath, _base, _title, runId) => {
       const worktreePath = path.join(testDataDir, "worktrees", String(runId));
       fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
@@ -704,6 +710,69 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(unsignalled).toHaveLength(2);
       const run = db.select().from(runs).all().find((row) => row.cardId === "no-signal")!;
       expect(run.exitReason).toBe("loop ended two iterations without writing .ralph/ITERATION_DONE");
+    });
+  });
+
+  describe("the iteration budget across runs", () => {
+    /** Record a finished iteration of `runId` as the DB would have it. */
+    function pastIteration(
+      runId: string,
+      n: number,
+      minutes: number,
+      overrides: { status?: "completed" | "failed"; taskCompleted?: number } = {},
+    ) {
+      const startedAt = `2026-09-20T1${n}:00:00.000Z`;
+      db.insert(iterations)
+        .values({
+          runId,
+          n,
+          transcriptPath: `${runId}/iter-${n}.jsonl`,
+          taskNumber: n,
+          taskCount: 9,
+          taskText: `task ${n}`,
+          status: overrides.status ?? "completed",
+          taskCompleted: overrides.taskCompleted ?? 1,
+          startedAt,
+          endedAt: new Date(Date.parse(startedAt) + minutes * 60_000).toISOString(),
+        })
+        .run();
+    }
+
+    it("paces a resumed run from what the card's earlier iterations cost", async () => {
+      // Spec 18 §8: productiveMs started empty on every run, so a run needed
+      // three productive iterations of its own before the budget bounded
+      // anything — and the run that burned an hour on one task never got
+      // there. Three 2-minute iterations on this plan cap the next one at the
+      // 10-minute floor rather than the 60-minute ceiling.
+      // A ceiling and a run budget with room to show the difference: without
+      // the seed this iteration would get the full 60-minute ceiling.
+      mocks.settings.iterationHardTimeoutMinutes = 60;
+      mocks.settings.defaultTimeoutMinutes = 120;
+      card("budget-seed");
+      plan("budget-seed");
+      completedRun("budget-seed", "earlier-loop", { kind: "loop" });
+      db.update(runs).set({ planId: "plan-budget-seed" }).where(eq(runs.id, "earlier-loop")).run();
+      pastIteration("earlier-loop", 1, 2);
+      pastIteration("earlier-loop", 2, 2);
+      pastIteration("earlier-loop", 3, 2);
+      // Neither of these may seed: one never ticked its task, the other was
+      // killed by the hard timeout and only banked its work afterwards.
+      pastIteration("earlier-loop", 4, 55, { taskCompleted: 0 });
+      pastIteration("earlier-loop", 5, 60, { status: "failed" });
+
+      const nextIteration = deferred<never>();
+      mocks.runHarness.mockReturnValueOnce(nextIteration.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("budget-seed");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(1));
+      try {
+        expect(mocks.runHarness.mock.calls[0][0].timeoutMs).toBe(10 * 60 * 1000);
+      } finally {
+        orchestrator.cancelCard("budget-seed");
+        nextIteration.reject(new Error("child exited after abort"));
+        await settle();
+      }
     });
   });
 

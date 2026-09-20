@@ -869,8 +869,12 @@ export class Orchestrator {
       let consecutiveUnsignalled = 0;
       let remindSignal = false;
       /** Wall-clock of the iterations that advanced the checklist, feeding
-       * iterationBudgetMs() so the run paces itself. */
-      const productiveMs: number[] = [];
+       * iterationBudgetMs() so the run paces itself. Seeded from this card's
+       * earlier iterations on this plan (spec 18 §8) so the bound applies from
+       * the first iteration of a resumed run rather than the fourth — which is
+       * what spec 11 intended and never got, because every run started
+       * counting from zero. */
+      const productiveMs: number[] = this.priorProductiveMs(cardId, plan.id);
       let n = 0;
 
       while (n < maxIterations) {
@@ -1140,6 +1144,35 @@ export class Orchestrator {
       // TMPDIR/caches — on every exit path including failure and cancel.
       await ctx.cleanup();
     }
+  }
+
+  /**
+   * How long this card's earlier iterations on this plan took, for the ones
+   * that both completed and ticked their task (spec 18 §8).
+   *
+   * Scoped to the plan because a re-plan changes what a task is, so durations
+   * from the previous checklist say nothing about this one. Both conditions
+   * matter: an iteration killed by the hard timeout can now tick its task
+   * (§1), and seeding the budget with a full hard-timeout duration is exactly
+   * the poisoning this is meant to avoid.
+   */
+  private priorProductiveMs(cardId: string, planId: string): number[] {
+    return db
+      .select({ startedAt: iterations.startedAt, endedAt: iterations.endedAt })
+      .from(iterations)
+      .innerJoin(runs, eq(iterations.runId, runs.id))
+      .where(
+        and(
+          eq(runs.cardId, cardId),
+          eq(runs.planId, planId),
+          eq(runs.kind, "loop"),
+          eq(iterations.status, "completed"),
+          eq(iterations.taskCompleted, 1),
+        ),
+      )
+      .all()
+      .map((row) => (row.endedAt ? Date.parse(row.endedAt) - Date.parse(row.startedAt) : NaN))
+      .filter((ms) => Number.isFinite(ms) && ms > 0);
   }
 
   /** Shared ballast file (spec 14): dead weight deleted on disk pressure so
