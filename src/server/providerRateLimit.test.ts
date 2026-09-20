@@ -41,7 +41,7 @@ describe("observeRateLimitHeaders", () => {
     expect(reading.bindingWindow).toBe("7d");
   });
 
-  it("overwrites rather than accumulating — only the current standing matters", () => {
+  it("overwrites rather than accumulating, since only the current standing matters", () => {
     observeRateLimitHeaders("anthropic", { "anthropic-ratelimit-unified-status": "allowed" });
     observeRateLimitHeaders("anthropic", { "anthropic-ratelimit-unified-status": "rejected" });
     expect(readProviderRateLimit("anthropic")!.status).toBe("exhausted");
@@ -89,7 +89,7 @@ describe("cooldowns from the observed reset", () => {
     expect(limitCooldownMs("anthropic", "429 Too Many Requests", nowMs)).toBeNull();
   });
 
-  it("ignores a reading that says the account is fine — a limit error then came from elsewhere", () => {
+  it("ignores a reading that says the account is fine, so a limit error came from elsewhere", () => {
     observeRateLimitHeaders("anthropic", {
       "anthropic-ratelimit-unified-status": "allowed",
       "anthropic-ratelimit-unified-reset": String(inOneHour),

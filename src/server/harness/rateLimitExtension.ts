@@ -7,7 +7,7 @@ import { observeRateLimitHeaders } from "../providerRateLimit";
  * rate-limit headers.
  *
  * Note on `noExtensions` (see createRalphSession): that flag disables
- * extensions discovered on DISK — the operator's and the repository's — which
+ * extensions discovered on DISK (the operator's and the repository's), which
  * is what context reproducibility requires. `extensionFactories` is a separate
  * loader input that is never gated on it, so this observer runs without
  * reopening the door to anything user-authored.

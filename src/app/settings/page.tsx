@@ -191,7 +191,7 @@ const AGENTS = [
     title: "Planner agent",
     subtitle: "Turns a task into a plan and acceptance criteria.",
     demand:
-      "Runs once per card. It reads an unfamiliar repository and produces items the looper executes blind, with no memory between iterations — the hardest reasoning in the pipeline, and the cheapest place to spend a strong model.",
+      "Runs once per card. It reads an unfamiliar repository and produces items the looper executes blind, with no memory between iterations. That is the hardest reasoning in the pipeline, and the cheapest place to spend a strong model.",
   },
   {
     role: "loop",
@@ -205,7 +205,7 @@ const AGENTS = [
     title: "Evaluator agent",
     subtitle: "Reviews completed work before it reaches you.",
     demand:
-      "Runs once per loop and is the only stage that executes the whole-card acceptance criteria — the looper never sees them. A reviewer that rubber-stamps sends broken work straight to you.",
+      "Runs once per loop and is the only stage that executes the whole-card acceptance criteria, which the looper never sees. A reviewer that rubber-stamps sends broken work straight to you.",
   },
 ] as const;
 
@@ -615,7 +615,7 @@ function PromptTemplateEditor({
  * Summary callout above the three agent sections. Silent when every role's
  * provider already suits it, so a deliberate setup is not nagged at; when it
  * does appear it names the roles and offers the split Radulf's pipeline is
- * designed around — strong models on the once-per-card stages, the cheap seat
+ * designed around: strong models on the once-per-card stages, the cheap seat
  * on the stage that runs every iteration.
  */
 /** How often the health panel re-reads usage while the settings page is open. */
@@ -627,7 +627,7 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-/** "in 42m" / "in 3h 10m" — how long a provider stays blocked. */
+/** "in 42m" / "in 3h 10m": how long a provider stays blocked. */
 function formatUntil(iso: string, nowMs: number): string {
   const ms = Date.parse(iso) - nowMs;
   if (!Number.isFinite(ms) || ms <= 0) return "shortly";
@@ -713,8 +713,8 @@ function ProviderHealthPanel() {
             {row.breaker.state === "open" && (
               <p className="mt-1 text-xs leading-relaxed text-amber-400/90">
                 {row.breaker.reason === "limit"
-                  ? `Usage limit reached — runs are paused, retrying ${row.breaker.openUntil ? formatUntil(row.breaker.openUntil, nowMs) : "after cooldown"}.`
-                  : `Connection failures — runs are paused, retrying ${row.breaker.openUntil ? formatUntil(row.breaker.openUntil, nowMs) : "after cooldown"}.`}
+                  ? `Usage limit reached. Runs are paused, retrying ${row.breaker.openUntil ? formatUntil(row.breaker.openUntil, nowMs) : "after cooldown"}.`
+                  : `Connection failures. Runs are paused, retrying ${row.breaker.openUntil ? formatUntil(row.breaker.openUntil, nowMs) : "after cooldown"}.`}
               </p>
             )}
           </div>
@@ -740,7 +740,7 @@ function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string
         <p className="mt-1 max-w-3xl text-sm leading-relaxed text-foreground/60">
           The planner and evaluator run once per card; the looper runs every iteration. Spending a
           strong model on the two that run once, and a local or low-cost model on the one that
-          repeats, is the split this pipeline is built around — the planner even writes its plan for
+          repeats, is the split this pipeline is built around. The planner even writes its plan for
           &ldquo;a much smaller local model&rdquo; to execute.
         </p>
         <p className="mt-2 text-xs text-foreground/45">
@@ -776,7 +776,7 @@ function AgentSection({
 }: {
   title: string;
   subtitle: string;
-  /** What this stage of the pipeline demands of a model, and why — shown
+  /** What this stage of the pipeline demands of a model, and why, shown
    * above the pickers so the trade-off is visible at the point of choosing. */
   demand: string;
   provider: string;

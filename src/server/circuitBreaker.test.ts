@@ -51,7 +51,7 @@ describe("LIMIT_ERROR_PATTERN", () => {
     }
   });
 
-  it("leaves transient capacity errors alone — they clear in seconds", () => {
+  it("leaves transient capacity errors alone, since they clear in seconds", () => {
     expect(LIMIT_ERROR_PATTERN.test("529 overloaded_error")).toBe(false);
     expect(LIMIT_ERROR_PATTERN.test("plan checklist unparseable")).toBe(false);
   });
@@ -59,7 +59,7 @@ describe("LIMIT_ERROR_PATTERN", () => {
 
 describe("classifyProviderError", () => {
   it("reads a limit before an auth phrase in the same body", () => {
-    expect(classifyProviderError("429 rate limit — check your api key")).toBe("limit");
+    expect(classifyProviderError("429 rate limit, check your api key")).toBe("limit");
   });
 
   it("still reads plain connection failures as conn", () => {

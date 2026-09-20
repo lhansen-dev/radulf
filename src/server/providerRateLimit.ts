@@ -37,7 +37,7 @@ export function readProviderRateLimit(provider: ProviderId): ProviderRateLimit |
 
 /**
  * When the provider's own reading says the binding window resets, as ms from
- * now — the cooldown a limit failure should actually wait, in preference to
+ * now: the cooldown a limit failure should actually wait, in preference to
  * any static guess. Null when there is no reading, it is already stale, or the
  * account is not actually out.
  */
@@ -65,7 +65,7 @@ export function observeRateLimitHeaders(
     const reading = parseRateLimitHeaders(provider, headers);
     if (reading) recordProviderRateLimit(reading);
   } catch {
-    // Intentionally silent — see above.
+    // Intentionally silent, see above.
   }
 }
 

@@ -224,7 +224,7 @@ describe("SettingsPage", () => {
     section("Agents & models");
 
     // The planner and evaluator are on the self-hosted endpoint, the looper on
-    // a subscription — every role is off the split, so all three are named.
+    // a subscription, so every role is off the split and all three are named.
     const summary = screen.getByRole("region", { name: "Suggested model split" });
     expect(summary.textContent).toContain("Planner agent");
     expect(summary.textContent).toContain("Looper agent");

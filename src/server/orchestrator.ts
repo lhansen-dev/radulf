@@ -898,7 +898,7 @@ export class Orchestrator {
           // A first-iteration connection/auth failure means the provider is
           // down or misconfigured — no point retrying.
           // A limit error means the allowance is gone, not that this
-          // iteration was unlucky — stop the run on the first one rather than
+          // iteration was unlucky. Stop the run on the first one rather than
           // spending the remaining failure budget re-hitting the same wall.
           const failureKind = classifyProviderError(result.error);
           if (failureKind) {

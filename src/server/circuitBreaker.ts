@@ -27,7 +27,7 @@ export const LIMIT_ERROR_PATTERN =
 export type FailureKind = "conn" | "limit";
 
 /**
- * Classify a harness error, or null when it is neither — an unparseable plan
+ * Classify a harness error, or null when it is neither. An unparseable plan
  * or a failing test says nothing about the provider's health. Limit is checked
  * first: a 429 body often also mentions the API key, and the limit reading is
  * the more specific one.
@@ -44,7 +44,7 @@ export function classifyProviderError(error: string): FailureKind | null {
  * Handles the two forms that appear verbatim in provider errors: a
  * `retry-after`/"try again in N <unit>" duration, and an ISO-8601 instant for
  * the window reset. Wall-clock phrasings ("resets at 3pm") are deliberately
- * not parsed — they carry no timezone, and guessing one would produce a
+ * not parsed: they carry no timezone, and guessing one would produce a
  * confidently wrong cooldown rather than an honest default.
  */
 export function parseLimitRetryAfterMs(error: string, nowMs = Date.now()): number | null {
@@ -82,7 +82,7 @@ type Thresholds = { failureThreshold: number; cooldownMs: number; limitCooldownM
 const THRESHOLDS = {
   // Claude subscription login — rate limits/outages are typically
   // minutes-long, so keep the original 3-strikes/60s tuning.
-  // A Claude Pro/Max window is measured in hours, not minutes — when the
+  // A Claude Pro/Max window is measured in hours, not minutes. When the
   // error carries no reset time, wait an hour before probing again rather
   // than re-failing every minute against a window that has not moved.
   anthropic: { failureThreshold: 3, cooldownMs: 60_000, limitCooldownMs: 3_600_000 },
@@ -98,7 +98,7 @@ const THRESHOLDS = {
   omlx: { failureThreshold: 2, cooldownMs: 15_000, limitCooldownMs: 30_000 },
   // Runtime API key against a cloud aggregator — rate-limit windows are
   // typically >=60s, same tuning as the other cloud providers.
-  // Pay-as-you-go credit or a per-key rate window — minutes, not hours.
+  // Pay-as-you-go credit or a per-key rate window: minutes, not hours.
   openrouter: { failureThreshold: 3, cooldownMs: 60_000, limitCooldownMs: 300_000 },
   // Scripted stand-in — tuned like the cloud providers it simulates.
   mock: { failureThreshold: 3, cooldownMs: 60_000, limitCooldownMs: 60_000 },
@@ -113,7 +113,7 @@ type BreakerState = {
   consecutiveFailures: number;
   openedAt: string | null;
   /** Why it opened, for the UI and for cooldown selection. Null on rows
-   * written before limit classification existed — treated as "conn". */
+   * written before limit classification existed, treated as "conn". */
   reason: FailureKind | null;
   /** When the breaker may be probed again. Set explicitly so a reset time
    * parsed out of the provider's own error wins over the static cooldown.

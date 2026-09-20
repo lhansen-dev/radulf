@@ -6,7 +6,7 @@ import type { ProviderId } from "../providers";
  *
  * This is the only first-party source of remaining allowance available to
  * Radulf. pi exposes no quota API, and the subscription providers publish no
- * endpoint for it — but they do stamp every response with where the account
+ * endpoint for it, but they do stamp every response with where the account
  * stands, and pi surfaces those headers through the `after_provider_response`
  * extension event. Reading them costs nothing extra: they arrive on requests
  * the agent was making anyway, and they are scoped to the credential Radulf
@@ -54,7 +54,7 @@ function num(value: string | undefined): number | null {
 
 /**
  * Epoch seconds (what Anthropic sends) or milliseconds, as an ISO instant.
- * Values below 1e11 are seconds — that boundary is the year 5138 in seconds
+ * Values below 1e11 are seconds. That boundary is the year 5138 in seconds
  * and 1973 in milliseconds, so no real timestamp is ambiguous.
  */
 function epochToIso(value: number | null): string | null {
@@ -161,7 +161,7 @@ function xRateLimit(
 
 /**
  * Normalize one provider response's rate-limit headers, or null when the
- * provider sends none — a self-hosted server usually does, and a missing
+ * provider sends none: a self-hosted server usually does, and a missing
  * reading must never be confused with a healthy one.
  */
 export function parseRateLimitHeaders(

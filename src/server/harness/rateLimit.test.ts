@@ -3,7 +3,7 @@ import { parseRateLimitHeaders } from "./rateLimit";
 
 /**
  * Captured verbatim from a live Claude subscription (OAuth) response on
- * 2026-09-20 — the headers the docs describe for API keys are NOT what the
+ * 2026-09-20. The headers the docs describe for API keys are NOT what the
  * subscription path sends, so this fixture is the record of what it really is.
  */
 const ANTHROPIC_SUBSCRIPTION_HEADERS: Record<string, string> = {
@@ -26,7 +26,7 @@ const ANTHROPIC_SUBSCRIPTION_HEADERS: Record<string, string> = {
 
 const OBSERVED_AT_MS = Date.parse("2026-09-20T15:51:05.000Z");
 
-describe("parseRateLimitHeaders — Anthropic subscription", () => {
+describe("parseRateLimitHeaders: Anthropic subscription", () => {
   it("reads both windows, the binding one, and the overage stance", () => {
     const reading = parseRateLimitHeaders("anthropic", ANTHROPIC_SUBSCRIPTION_HEADERS, OBSERVED_AT_MS)!;
     expect(reading.status).toBe("warning");
@@ -73,7 +73,7 @@ describe("parseRateLimitHeaders — Anthropic subscription", () => {
   });
 });
 
-describe("parseRateLimitHeaders — x-ratelimit providers", () => {
+describe("parseRateLimitHeaders: x-ratelimit providers", () => {
   it("derives utilization from limit and remaining", () => {
     const reading = parseRateLimitHeaders("openrouter", {
       "x-ratelimit-limit-requests": "1000",
@@ -107,7 +107,7 @@ describe("parseRateLimitHeaders — x-ratelimit providers", () => {
   });
 });
 
-describe("parseRateLimitHeaders — absence", () => {
+describe("parseRateLimitHeaders: absence", () => {
   it("returns null when the provider reports nothing, so callers read unknown rather than healthy", () => {
     expect(parseRateLimitHeaders("omlx", { "content-type": "application/json" }, OBSERVED_AT_MS)).toBeNull();
     expect(parseRateLimitHeaders("omlx", {}, OBSERVED_AT_MS)).toBeNull();
