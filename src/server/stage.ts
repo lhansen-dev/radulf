@@ -4,7 +4,12 @@ import { emitEvent } from "./events";
 import type { Settings } from "./settings";
 import { runHarness, type RunnerResult, type RunTelemetry } from "./harness";
 import type { ProviderId } from "./providers";
-import { CONN_ERROR_PATTERN, isProviderOpen, recordProviderOutcome } from "./circuitBreaker";
+import {
+  classifyProviderError,
+  providerBreakerStatus,
+  recordProviderOutcome,
+} from "./circuitBreaker";
+import { limitCooldownMs } from "./providerRateLimit";
 import { createWorktree, currentBranch, recordWorktree } from "./git";
 import { runTranscriptDir } from "./retention";
 import { startTranscriptPush } from "./transcript";
@@ -66,9 +71,12 @@ export function startRunRow(
 
 /** Fail fast on a provider whose circuit breaker is open. */
 export function circuitOpenReason(provider: ProviderId): string | null {
-  return isProviderOpen(provider)
-    ? `provider ${provider} circuit breaker open — recent connection failures, will retry automatically after cooldown`
-    : null;
+  const status = providerBreakerStatus(provider);
+  if (status.state !== "open") return null;
+  const until = status.openUntil ? `, retrying after ${status.openUntil}` : ", will retry after cooldown";
+  return status.reason === "limit"
+    ? `provider ${provider} circuit breaker open: usage limit reached${until}`
+    : `provider ${provider} circuit breaker open: recent connection failures${until}`;
 }
 
 /** Spec 14 Phase 6: never fall back to an unsandboxed run silently. */
@@ -117,7 +125,13 @@ export function harnessFailure(
     };
   }
   if (result.error) {
-    if (CONN_ERROR_PATTERN.test(result.error)) recordProviderOutcome(provider, false);
+    const kind = classifyProviderError(result.error);
+    if (kind) {
+      recordProviderOutcome(provider, false, {
+        kind,
+        retryAfterMs: kind === "limit" ? limitCooldownMs(provider, result.error) : null,
+      });
+    }
     return {
       status: "failed",
       exitReason: `${label} failed: ${result.error.slice(0, 500)}`,

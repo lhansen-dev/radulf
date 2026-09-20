@@ -29,7 +29,8 @@ import { firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
 import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
 import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
-import { CONN_ERROR_PATTERN, recordProviderOutcome } from "./circuitBreaker";
+import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
+import { limitCooldownMs } from "./providerRateLimit";
 import { removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { PlanningService, pendingReplanFeedback } from "./planningService";
@@ -820,9 +821,19 @@ export class Orchestrator {
           consecutiveFailures += 1;
           // A first-iteration connection/auth failure means the provider is
           // down or misconfigured — no point retrying.
-          const isConnErr = CONN_ERROR_PATTERN.test(result.error);
-          if (isConnErr) recordProviderOutcome(provider, false);
-          if (consecutiveFailures >= 3 || (n === 1 && isConnErr)) {
+          // A limit error means the allowance is gone, not that this
+          // iteration was unlucky. Stop the run on the first one rather than
+          // spending the remaining failure budget re-hitting the same wall.
+          const failureKind = classifyProviderError(result.error);
+          if (failureKind) {
+            recordProviderOutcome(provider, false, {
+              kind: failureKind,
+              retryAfterMs: failureKind === "limit" ? limitCooldownMs(provider, result.error) : null,
+            });
+          }
+          const isConnErr = failureKind === "conn";
+          const isLimitErr = failureKind === "limit";
+          if (consecutiveFailures >= 3 || isLimitErr || (n === 1 && isConnErr)) {
             return fail(`loop failed: ${result.error.slice(0, 300)}`, n);
           }
           continue;
