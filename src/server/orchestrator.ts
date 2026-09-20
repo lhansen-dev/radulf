@@ -779,10 +779,20 @@ export class Orchestrator {
           payload: { n, failed, stuck: result.stuck, summary: (result.error || result.lastText).slice(0, 200) },
         });
 
+        // A premature DONE must not skip the remaining tasks or let done
+        // bookkeeping credit the NEXT task after ITERATION_DONE credits this one.
+        // Remove both spellings before normal bookkeeping so neither is committed
+        // or counted as work product. Valid task work still advances normally.
+        if (!task.isLastUnchecked) {
+          for (const name of ["DONE", "DONE.md"]) {
+            fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
+          }
+        }
+
         // DONE is the trigger for independent evaluation, not a direct pass to
         // review. Consume a same-iteration ITERATION_DONE first so the final
         // task gets its own deterministic commit; performDoneBookkeeping then
-        // ticks whatever remains and commits the DONE file itself.
+        // can only tick the final task if ITERATION_DONE was absent.
         if (doneFilePath(ralphDir)) {
           await performIterationBookkeeping({ ralphDir, worktreePath, planPath, pre: preIteration });
           await performDoneBookkeeping({ ralphDir, worktreePath, planPath });

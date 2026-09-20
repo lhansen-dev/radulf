@@ -97,6 +97,10 @@ process group first (a surviving process could plant hooks after a check that
 already passed), then verify parent-repo integrity, then force the install-script
 gate, and only then hand to the evaluator.
 
+A DONE signal is accepted only when the iteration was assigned the final
+unchecked task. Earlier signals are removed; normal iteration bookkeeping
+still credits completed task work and the loop continues with the next task.
+
 ## The harness boundary
 
 `src/server/harness/` is the only place that knows about pi.

@@ -306,6 +306,44 @@ describe("Orchestrator cancellation lifecycle", () => {
     delete process.env.RADULF_DATA_DIR;
   });
 
+  it.each(["DONE", "DONE.md"])("ignores premature %s and assigns the next task before evaluation", async (doneName) => {
+    const cardId = `early-${doneName}`;
+    card(cardId);
+    plan(cardId);
+    db.update(plans).set({ planMd: "## Tasks\n- [ ] first task\n- [ ] second task\n- [ ] final task\n" })
+      .where(eq(plans.cardId, cardId)).run();
+    const nextIteration = deferred<never>();
+    let worktreePath = "";
+    mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+      ok: true,
+      out: args[0] === "status" ? " M feature.txt" : "",
+    }));
+    mocks.runHarness
+      .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        worktreePath = cwd;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), "implemented first task");
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), "first task complete");
+        fs.writeFileSync(path.join(cwd, ".ralph", doneName), "claims whole card is done");
+        return successfulHarnessResult;
+      })
+      .mockReturnValueOnce(nextIteration.promise);
+    const orchestrator = new Orchestrator({ autoStart: false });
+    orchestrator.startCard(cardId);
+    await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(2));
+    try {
+      expect(mocks.runHarness.mock.calls.map(([opts]) => opts.role)).toEqual(["loop", "loop"]);
+      expect(mocks.runHarness.mock.calls[1][0].prompt).toContain("second task");
+      expect(fs.readFileSync(planStatePath(cardId), "utf8"))
+        .toBe("## Tasks\n- [x] first task\n- [ ] second task\n- [ ] final task\n");
+      expect(fs.existsSync(path.join(worktreePath, ".ralph", doneName))).toBe(false);
+      expect(getCard(cardId).status).toBe("looping");
+    } finally {
+      orchestrator.cancelCard(cardId);
+      nextIteration.reject(new Error("child exited after abort"));
+      await settle();
+    }
+  });
+
   it("moves a Backlog card to the end of Todo without starting it when auto-mode is off", () => {
     card("queued-before", "todo");
     db.update(cards).set({ position: 4 }).where(eq(cards.id, "queued-before")).run();
