@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import {
   buildFilesystemConfig,
   buildNetworkConfig,
@@ -278,6 +279,24 @@ describe("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)",
     expect(first.ok).toBe(true);
     expect(second).toBe(first); // same cached promise resolution, not re-run
   });
+
+  it("fails preflight when dependencies exist but a wrapped command cannot start", async () => {
+    resetSandboxRuntimeForTests();
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandbox").mockResolvedValue(
+      "echo 'apply-seccomp: No such file or directory' >&2; exit 127",
+    );
+    try {
+      const result = await initializeSandboxRuntimeOnce();
+      expect(result.ok).toBe(false);
+      expect(result.errors.join("\n")).toContain("sandbox startup failed");
+      expect(result.errors.join("\n")).toContain("apply-seccomp: No such file or directory");
+      expect(await initializeSandboxRuntimeOnce()).toBe(result);
+      expect(wrap).toHaveBeenCalledTimes(1);
+    } finally {
+      wrap.mockRestore();
+      resetSandboxRuntimeForTests();
+    }
+  });
 });
 
 describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed process)", () => {
@@ -304,6 +323,39 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
       networkAllowlistText: "",
     });
   }
+
+  it.skipIf(process.platform !== "linux")("runs with a minimal PATH without exposing the helper's parent directory", async () => {
+    // make normally puts node_modules/.bin on PATH, incidentally reopening
+    // node_modules. A production server need not have that PATH entry.
+    vi.stubEnv("PATH", "/usr/bin:/bin");
+    try {
+      const cfg = config();
+      const helper = getApplySeccompBinaryPath()!;
+      expect(cfg.filesystem.allowRead).toContain(helper);
+      expect(cfg.filesystem.allowRead).not.toContain(path.dirname(helper));
+      const ops = createSandboxedBashOperations(cfg);
+      const chunks: Buffer[] = [];
+      const result = await ops.exec("printf sandbox-started", worktree, {
+        onData: (data) => chunks.push(data),
+      });
+      expect(Buffer.concat(chunks).toString()).toBe("sandbox-started");
+      expect(result.exitCode).toBe(0);
+
+      // Under a home-directory install, removing just the exemption reproduces
+      // the original failure before the requested command can execute.
+      if (helper.startsWith(os.homedir() + path.sep)) {
+        cfg.filesystem.allowRead = cfg.filesystem.allowRead!.filter((root) => root !== helper);
+        const brokenChunks: Buffer[] = [];
+        const broken = await createSandboxedBashOperations(cfg).exec("printf unreachable", worktree, {
+          onData: (data) => brokenChunks.push(data),
+        });
+        expect(broken.exitCode).not.toBe(0);
+        expect(Buffer.concat(brokenChunks).toString()).toContain("apply-seccomp");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("wrapBashCommand allows a write inside the worktree and denies one outside it", async () => {
     const ok = await wrapBashCommand(`echo hi > ${worktree}/ok.txt`, config());

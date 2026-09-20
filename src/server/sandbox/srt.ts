@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 
 import {
   SandboxManager,
@@ -9,6 +10,7 @@ import {
   type FilesystemConfig,
   type NetworkConfig,
 } from "@anthropic-ai/sandbox-runtime";
+import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR, WORKTREES_DIR } from "@/db";
@@ -27,6 +29,16 @@ import { DATA_DIR, WORKTREES_DIR } from "@/db";
  */
 
 const HOME = os.homedir();
+const execFileAsync = promisify(execFile);
+
+/** Use srt's own resolver so the executable allowed here is the one it invokes. */
+function sandboxHelperReadRoots(): string[] {
+  if (process.platform !== "linux") return [];
+  const helper = getApplySeccompBinaryPath();
+  if (!helper) throw new Error("sandbox apply-seccomp helper is missing; reinstall dependencies");
+  // Only this executable, never the surrounding application or node_modules.
+  return [helper];
+}
 
 /**
  * Backstop credential denylist (spec §L1). `$HOME` is already denied in
@@ -186,6 +198,7 @@ export function buildFilesystemConfig(opts: {
     ...systemReadRoots(),
     ...toolchainReadRootsFromPath(),
     ...toolchainHomeReAllows(),
+    ...sandboxHelperReadRoots(),
   ];
   return {
     denyRead,
@@ -322,18 +335,33 @@ export function initializeSandboxRuntimeOnce(): Promise<SandboxPreflightResult> 
     readyPromise = (async () => {
       const preflight = sandboxPreflight();
       if (!preflight.ok) return preflight;
+      let probeDir: string | undefined;
       try {
         await SandboxManager.initialize({
           filesystem: { denyRead: [HOME], allowWrite: [], denyWrite: [] },
           network: { allowedDomains: [], deniedDomains: [] },
         });
+        // Dependency presence on the host does not prove that the sandbox can
+        // start: denyRead can hide srt's own executable under $HOME.
+        probeDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-preflight-"));
+        const wrapped = await SandboxManager.wrapWithSandbox("true", "/bin/bash", {
+          filesystem: buildFilesystemConfig({
+            worktree: probeDir,
+            gitCommonDir: probeDir,
+            tmpdir: probeDir,
+            cacheRoot: probeDir,
+          }),
+        });
+        await execFileAsync("/bin/bash", ["-c", wrapped], { cwd: probeDir, timeout: 10_000 });
         return preflight;
       } catch (e) {
         return {
           ok: false,
-          errors: [...preflight.errors, e instanceof Error ? e.message : String(e)],
+          errors: [...preflight.errors, `sandbox startup failed: ${e instanceof Error ? e.message : String(e)}`],
           warnings: preflight.warnings,
         };
+      } finally {
+        if (probeDir) fs.rmSync(probeDir, { recursive: true, force: true });
       }
     })();
   }

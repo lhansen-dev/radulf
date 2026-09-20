@@ -120,6 +120,11 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 excluded re-allows (`~/.pyenv`, `~/.cargo/credentials`, `~/Library/Caches`) are
 deliberate; adding one back requires a rationale in the spec.
 
+On Linux, the exact `apply-seccomp` executable resolved by srt is also
+read-allowed. It runs inside bubblewrap, so denying `$HOME` otherwise hides
+the sandbox's own helper when Radulf is installed there. This exemption opens
+only the executable, not its parent directory or Radulf's application data.
+
 **`dropRootsThatWouldReopen` — the total-bypass guard.** `PATH`-derived read
 roots are untrusted input: a shallow entry like `/bin` has `dirname` `/`, which
 under srt's *recursive* read-allow would re-open the entire filesystem and
@@ -339,6 +344,10 @@ There is **no** automatic "sandbox unavailable, run unsandboxed" fallback.
   dependency check, and (Linux) the Ubuntu 24.04+ AppArmor
   `kernel.apparmor_restrict_unprivileged_userns` gate — each with a specific
   remediation message. Cached via `initializeSandboxRuntimeOnce`.
+- After initialization, a timed sandboxed `true` command verifies that the
+  runtime can actually start under the run filesystem policy. A missing or
+  hidden helper therefore fails startup before an agent spends tokens retrying
+  commands that cannot execute.
 - Before its first iteration, a run with `sandboxEnabled` awaits that cached
   result; if not `ok`, the run fails and the card moves to Needs Attention with
   the verbatim error — never proceeds unsandboxed.
