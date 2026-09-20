@@ -46,12 +46,13 @@ history inline.
 | [08 — Hosting and auth](../specs/08-hosting-auth.md) | Internet exposure and single-password auth | Current — see also the [Authentication guide](AUTHENTICATION.md) |
 | [09 — Multi-harness runners](../specs/09-multi-harness.md) | A loop harness per provider | **Superseded by 13** |
 | [10 — Mobile-first workspace](../specs/10-mobile-first-ui.md) | The attention-ordered Work feed and responsive layout | Current; amends 05 |
-| [11 — Loop performance](../specs/11-loop-performance.md) | Loop latency, token and turn telemetry, lean harnesses, benchmarks | Current; amends 09 |
+| [11 — Loop performance](../specs/11-loop-performance.md) | Loop latency, token and turn telemetry, lean harnesses, benchmarks | Current; amends 09, amended by 18 |
 | [12 — Pi harness](../specs/12-pi-harness.md) | pi as a fourth harness, and the proxied-provider default | **Superseded by 13** |
 | [13 — One harness: pi in SDK mode](../specs/13-single-pi-sdk-harness.md) | Consolidating every provider onto pi in SDK mode | Current — this is what ships |
 | [13 — Implementation checklist](../specs/13-implementation-checklist.md) | The checklist that tracked the migration to 13 | Completed |
 | [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current — see also the [Sandboxing guide](SANDBOXING.md) |
 | [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | Current; amends decision 6 |
+| [18 — Loop failure modes](../specs/18-loop-failure-modes.md) | What the loop knows when an iteration ends badly, and what it does with it | Current; amends 11 |
 
 ## Implementation plans
 
