@@ -88,6 +88,14 @@ export default function CardDetail() {
   // step is the one thing that cannot help. Say so, and say what would.
   const unretryableRun =
     card.status === "needs_attention" && runs[0]?.failureKind === "config" ? runs[0] : null;
+  // Spec 18 §4: the newest reading of "this role keeps failing on this model".
+  let misconfiguredStage = "";
+  if (card.status === "needs_attention") {
+    const latest = detail.events.filter((e) => e.type === "stage.misconfigured").at(-1);
+    if (latest) {
+      try { misconfiguredStage = JSON.parse(latest.payload).message ?? ""; } catch {}
+    }
+  }
   const latestPlanRun = runs.find((r) => r.kind === "plan");
   // Phase 15 (weaker network isolation surfacing): which runs actually built
   // their sandbox with `sandboxWeakerIsolationForGoTls` on, per the
@@ -227,6 +235,15 @@ export default function CardDetail() {
             Retrying sends the same request, so it will fail the same way. Change the
             model for this card under Edit model overrides, or fix the provider
             configuration, then restart the task.
+          </p>
+        </div>
+      )}
+      {misconfiguredStage && (
+        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-amber-300 mb-1">This stage keeps failing the same way</h3>
+          <p className="text-sm text-amber-100/80">{misconfiguredStage}</p>
+          <p className="text-xs text-amber-400/70 mt-2">
+            Retrying is still available — this is a reading of the pattern, not a block.
           </p>
         </div>
       )}

@@ -30,6 +30,7 @@ import { SLOW_ITERATION_MS } from "./analytics";
 import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
 import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
 import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
+import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { limitCooldownMs } from "./providerRateLimit";
 import { removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
@@ -316,6 +317,20 @@ export class Orchestrator {
       .where(eq(runs.id, runId))
       .run();
     emitEvent("run.finished", { cardId: run.cardId, runId, payload: { status, exitReason } });
+    // Spec 18 §4: judge the sequence, not just this attempt. Emitted from
+    // here because every stage ends through finishRun, so there is one place
+    // that sees the streak rather than one per failure path.
+    const diagnosis = misconfiguredStage(
+      db.select().from(runs).where(eq(runs.cardId, run.cardId)).all(),
+      run.kind,
+    );
+    if (diagnosis) {
+      emitEvent("stage.misconfigured", {
+        cardId: run.cardId,
+        runId,
+        payload: { ...diagnosis, message: diagnosisMessage(diagnosis) },
+      });
+    }
     return true;
   }
 
