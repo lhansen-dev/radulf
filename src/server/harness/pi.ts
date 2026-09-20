@@ -21,6 +21,7 @@ import { getSettings, type Settings } from "../settings";
 import { createGuardedFsTools } from "./guardedTools";
 import { DEFAULT_MOCK_SCENARIO, mockProviderConfig } from "./mock";
 import { agentEnv, type TranscriptEvent } from "./types";
+import { rateLimitExtension } from "./rateLimitExtension";
 import { createWebSearchTool } from "./webSearch";
 
 /**
@@ -620,6 +621,8 @@ export async function createRalphSession(
     noThemes: true,
     noContextFiles: true,
     systemPromptOverride: () => RALPH_SYSTEM_PROMPT,
+    // Rate-limit telemetry — a passive header reader, see rateLimitExtension.
+    extensionFactories: [rateLimitExtension(opts.provider)],
   });
   await resourceLoader.reload();
 
