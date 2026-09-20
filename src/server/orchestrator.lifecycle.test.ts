@@ -705,6 +705,38 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
+  describe("pausing a loop", () => {
+    it("records the run as paused rather than completed", async () => {
+      // Spec 18 §6: a pause used to write status "completed", which put a run
+      // that achieved nothing into the numerator of the success rate. The
+      // run that prompted this spent 51.6 minutes on one unfinished task.
+      card("pause-status");
+      plan("pause-status");
+      db.update(plans)
+        .set({ planMd: "## Tasks\n- [ ] first task\n- [ ] second task\n" })
+        .where(eq(plans.cardId, "pause-status"))
+        .run();
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      const orchestrator = new Orchestrator({ autoStart: false });
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        fs.writeFileSync(path.join(cwd, "feature.txt"), "first task");
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), "first task complete");
+        orchestrator.pauseCard("pause-status");
+        return successfulHarnessResult;
+      });
+
+      orchestrator.startCard("pause-status");
+      await vi.waitFor(() => expect(getCard("pause-status").status).toBe("paused"));
+
+      const run = getRun("pause-status");
+      expect(run.status).toBe("paused");
+      expect(run.exitReason).toBe("paused by user");
+    });
+  });
+
   describe("iteration hard timeout", () => {
     /** What the harness returns when the hard timer fires: code 1 and
      * timedOut, with no error string — the agent's last words survive as the

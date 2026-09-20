@@ -77,6 +77,8 @@ const TASK_STATE_CLASS: Record<IterationTask["state"], string> = {
 function statusClass(status: string): string {
   if (status === "completed") return "bg-green-900/60 text-green-300";
   if (status === "running") return "bg-amber-900/60 text-amber-300";
+  // A pause is the operator's doing, not a failure — never red.
+  if (status === "paused") return "bg-sky-900/60 text-sky-300";
   return "bg-red-900/60 text-red-300";
 }
 

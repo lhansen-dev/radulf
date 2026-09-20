@@ -217,6 +217,9 @@ export function computeAnalytics(input: {
     .map(durationMs)
     .sort((a, b) => a - b);
 
+  // "paused" is deliberately absent (spec 18 §6): the operator stopped that
+  // run, so it is neither a success nor a failure and belongs on neither side
+  // of the rate.
   const terminalStatuses = ["completed", "failed", "timeout", "cancelled", "interrupted"];
   const terminal = runs.filter((r) => terminalStatuses.includes(r.status));
   const completed = terminal.filter((r) => r.status === "completed").length;

@@ -154,6 +154,9 @@ describe("computeAnalytics", () => {
     [["completed", "completed", "failed", "timeout", "cancelled"], 0.4],
     [["completed", "running"], 1],
     [["running", "queued"], 0],
+    // A user pause leaves the rate entirely rather than counting either way.
+    [["completed", "paused"], 1],
+    [["failed", "paused"], 0],
   ])("computes successRate over terminal runs: %j → %d", (statuses, expected) => {
     const runs = statuses.map((status, i) => run(`r${i}`, { status }));
     expect(analyze({ runs }).successRate).toBe(expected);

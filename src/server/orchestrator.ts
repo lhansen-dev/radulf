@@ -1005,7 +1005,11 @@ export class Orchestrator {
         }
 
         if (this.pausedCards.has(cardId)) {
-          this.finishRun(runId, "completed", "paused by user", n);
+          // Not "completed" (spec 18 §6): the operator stopped this run, it
+          // did not achieve anything. Scoring it as a success put a run that
+          // spent 51.6 minutes on one unfinished task in the numerator of the
+          // success rate.
+          this.finishRun(runId, "paused", "paused by user", n);
           this.moveCard(cardId, "looping", "paused", "paused by user");
           return;
         }
