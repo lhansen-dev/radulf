@@ -99,7 +99,7 @@ flowchart LR
         C["ChatGPT / Codex<br/>subscription"]
         G["GitHub Copilot<br/>subscription"]
         O["OpenRouter<br/>API key · remote"]
-        M["oMLX<br/>local · Apple Silicon"]
+        M["Local / self-hosted<br/>OpenAI-compatible"]
     end
     P --> H
     L --> H
@@ -166,8 +166,8 @@ reports success (`Ctrl+C`). Use the `make login` target rather than running `pi`
 yourself — [`PROVIDERS.md`](docs/PROVIDERS.md#the-five-providers) explains where the
 credential lands and what goes wrong otherwise.
 
-OpenRouter and oMLX need **no login** — set them in the app's **Settings** page (an
-OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for the full matrix.
+OpenRouter and a local server need **no login** — set them in the app's **Settings**
+page (an OpenRouter API key, or the local server's base URL). See [Requirements](#requirements) for the full matrix.
 
 ---
 
@@ -189,7 +189,7 @@ OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for
 | 🟢 **ChatGPT (Codex)** | `make login` → `/login` | ChatGPT Plus/Pro subscription | — |
 | ⚫ **GitHub Copilot** | `make login` → `/login` | GitHub Copilot subscription | — |
 | 🔵 **OpenRouter** | API key | remote | Bring your own model. Set in Settings — no login |
-| 🟠 **oMLX** | base URL | local, Apple Silicon | Optional. Set base URL in Settings — no login |
+| 🟠 **Local / self-hosted** | base URL | wherever you run it | Any OpenAI-compatible server: oMLX, vLLM, LM Studio. Optional. Set base URL in Settings — no login |
 
 > `make login` is a one-time interactive step for the subscription providers; `/login`
 > is typed inside pi. Full detail in [`PROVIDERS.md`](docs/PROVIDERS.md).
@@ -369,17 +369,19 @@ Each role has a **provider** picker (anthropic, chatgpt, copilot, omlx, or openr
 **model** picker, and a **reasoning-level** picker (pi's thinking level — default **Medium**
 — applied across every provider).
 
-- The **oMLX base URL** defaults to `http://127.0.0.1:8000`.
+- The **local server base URL** defaults to `http://127.0.0.1:8000`. A URL that already
+  ends in `/v1` works too.
 - Set an **OpenRouter API key** in Settings to use OpenRouter models.
 - Every provider runs through the one [pi coding agent](https://github.com/earendil-works/pi)
   harness (SDK mode); the provider only determines auth — anthropic, chatgpt, and copilot
   use the subscription credentials from `make login`, openrouter your API key, and omlx
-  your local server.
+  your own OpenAI-compatible server.
 
 > [!IMPORTANT]
-> If you pick the **oMLX** provider, ensure oMLX is running with at least one
-> tool-capable model and reachable at the configured base URL (default
-> `http://127.0.0.1:8000`) **before** starting a loop.
+> If you pick the **local** provider, ensure your server is running with at least
+> one tool-capable model and reachable at the configured base URL (default
+> `http://127.0.0.1:8000`) **before** starting a loop. On vLLM that means serving
+> with `--enable-auto-tool-choice` and the `--tool-call-parser` for your model.
 
 ---
 

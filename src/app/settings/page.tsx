@@ -110,7 +110,7 @@ function formatPricePerMillion(usd: number): string {
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude subscription)" },
-  { id: "omlx", label: "oMLX (local)" },
+  { id: "omlx", label: "Local / self-hosted (OpenAI-compatible)" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "chatgpt", label: "ChatGPT (Codex subscription)" },
   { id: "copilot", label: "GitHub Copilot (subscription)" },
@@ -144,7 +144,7 @@ const MODEL_HINTS: Record<string, string> = {
   anthropic: "Claude model id; blank = subscription default (make login)",
   chatgpt: "ChatGPT/Codex model id; blank = subscription default (make login)",
   copilot: "GitHub Copilot model id; blank = subscription default (make login)",
-  omlx: "model id served by oMLX — must support tool use",
+  omlx: "model id the local server reports at /v1/models; must support tool use",
   openrouter: "OpenRouter model id, e.g. anthropic/claude-opus-4.5",
 };
 
@@ -242,8 +242,9 @@ export default function SettingsPage() {
         <h2 className="font-medium">Provider credentials</h2>
         <p className="text-xs text-foreground/40">
           Anthropic uses your normal <code>claude</code> CLI login — nothing to configure here.
-          oMLX and OpenRouter are optional: configure them only if you want the loop
-          to run locally via oMLX or remotely via OpenRouter.
+          The local and OpenRouter providers are optional: configure them only if
+          you want the loop to run against your own OpenAI-compatible server
+          (oMLX, vLLM, LM Studio) or remotely via OpenRouter.
         </p>
         <p className="text-xs text-foreground/40">
           A saved key is never sent back to the browser — it shows as{" "}
@@ -252,7 +253,7 @@ export default function SettingsPage() {
         </p>
         <div className="flex flex-col gap-4 sm:flex-row">
           <label className="text-sm text-foreground/70 grow">
-            oMLX base URL
+            Local server base URL
             <input
               value={settings.omlxBaseUrl}
               onChange={(e) => setSettings({ ...settings, omlxBaseUrl: e.target.value })}
@@ -260,12 +261,12 @@ export default function SettingsPage() {
             />
           </label>
           <label className="text-sm text-foreground/70 grow">
-            oMLX API key
+            Local server API key
             <input
               type="password"
               value={settings.omlxApiKey}
               onChange={(e) => setSettings({ ...settings, omlxApiKey: e.target.value })}
-              placeholder="from oMLX settings (optional)"
+              placeholder="optional; many local servers need none"
               className={inputCls}
             />
           </label>
@@ -291,7 +292,7 @@ export default function SettingsPage() {
           />
         </label>
         <p className="text-xs text-foreground/40">
-          The oMLX and OpenRouter providers run the loop under the{" "}
+          The local and OpenRouter providers run the loop under the{" "}
           <a
             href="https://github.com/earendil-works/pi"
             target="_blank"

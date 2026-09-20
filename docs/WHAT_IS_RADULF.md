@@ -76,7 +76,7 @@ you can mix providers per role.
               │                                    ├─ ChatGPT / Codex     (subscription)
     Loop     ─┼──────▶   pi SDK (in-process)  ─────┼─ GitHub Copilot      (subscription)
               │                                    ├─ OpenRouter          (API key)
-    Evaluator─┘                                    └─ oMLX                (local)
+    Evaluator─┘                                    └─ Local / self-hosted (OpenAI API)
 ```
 
 **It can work on itself.** Radulf's own repo is a valid target, so you can point
