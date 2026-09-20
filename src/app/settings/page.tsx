@@ -4,6 +4,7 @@ import { api, type Repo } from "../ui/api";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
+import type { ProviderUsageRow } from "@/server/providerUsage";
 import {
   SETTINGS_SECTIONS, SettingsNav, SettingsPanel, ThemePicker, ToggleRow,
   inputCls, secondaryButtonCls, sectionCls, useSettingsSection,
@@ -168,11 +169,66 @@ const MODEL_HINTS: Record<string, string> = {
 type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
 type StringKey = { [K in keyof Settings]: Settings[K] extends string ? K : never }[keyof Settings];
 
+/**
+ * What kind of capability each provider stands for, used by the role-fit
+ * advisories below. A subscription login is flat-rate, so a strong model on a
+ * role that runs once per card adds no marginal cost; a self-hosted endpoint is
+ * the cheap seat for the role that runs every iteration.
+ */
+const PROVIDER_CLASS: Record<string, "subscription" | "local" | "api" | "mock"> = {
+  anthropic: "subscription",
+  chatgpt: "subscription",
+  copilot: "subscription",
+  omlx: "local",
+  openrouter: "api",
+  mock: "mock",
+};
+
 const AGENTS = [
-  { role: "planner", title: "Planner agent", subtitle: "Turns a task into a plan and acceptance criteria." },
-  { role: "loop", title: "Looper agent", subtitle: "Works through the plan, one iteration at a time." },
-  { role: "evaluator", title: "Evaluator agent", subtitle: "Reviews completed work before it reaches you." },
+  {
+    role: "planner",
+    title: "Planner agent",
+    subtitle: "Turns a task into a plan and acceptance criteria.",
+    demand:
+      "Runs once per card. It reads an unfamiliar repository and produces items the looper executes blind, with no memory between iterations. That is the hardest reasoning in the pipeline, and the cheapest place to spend a strong model.",
+  },
+  {
+    role: "loop",
+    title: "Looper agent",
+    subtitle: "Works through the plan, one iteration at a time.",
+    demand:
+      "Runs every iteration up to the max-iterations budget, so it dominates token spend and rate-limit pressure. This is the seat a self-hosted or low-cost model pays for itself in.",
+  },
+  {
+    role: "evaluator",
+    title: "Evaluator agent",
+    subtitle: "Reviews completed work before it reaches you.",
+    demand:
+      "Runs once per loop and is the only stage that executes the whole-card acceptance criteria, which the looper never sees. A reviewer that rubber-stamps sends broken work straight to you.",
+  },
 ] as const;
+
+type AgentRole = (typeof AGENTS)[number]["role"];
+
+/**
+ * Advisory when a role's provider does not match what the role demands.
+ * Advisory only: it never blocks saving, and a deliberate choice (benchmarking
+ * a local planner, say) stays one dropdown away.
+ */
+function roleFitWarning(role: AgentRole, provider: string): string | undefined {
+  const providerClass = PROVIDER_CLASS[provider];
+  if (providerClass === "mock" || providerClass === undefined) return undefined;
+  if (role === "planner" && providerClass === "local") {
+    return "Planning is the pipeline's hardest reasoning and runs only once per card. A self-hosted model has to decompose an unfamiliar repository into ordered, self-contained items, and a weak plan degrades every iteration after it. A subscription model costs you one run per card here.";
+  }
+  if (role === "evaluator" && providerClass === "local") {
+    return "The evaluator is the only gate that runs the whole-card acceptance criteria. A self-hosted model that approves work it did not really verify sends it straight to you. A subscription model costs you one run per loop here.";
+  }
+  if (role === "loop" && providerClass === "subscription") {
+    return "The looper runs every iteration up to the max-iterations budget, so it drives most of your token spend and rate-limit pressure. A self-hosted or low-cost model is usually the right seat for this role.";
+  }
+  return undefined;
+}
 
 const TEMPLATES = [
   { key: "plannerPromptTemplate", title: "Planning artifacts", description: "Instructions for generating PLAN.md, CRITERIA.md, and the loop's PROMPT.md.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{FEEDBACK_SECTION}}"] },
@@ -246,6 +302,11 @@ export default function SettingsPage() {
   // did the work, sharing its blind spots — advisory only, never blocks saving.
   const evaluatorMatchesLoop =
     settings.evaluatorProvider === settings.loopProvider && settings.evaluatorModel === settings.loopModel;
+  // Roles whose provider does not match what the role demands, for the summary
+  // callout at the top of the agents panel.
+  const misfitRoles = AGENTS
+    .filter(({ role }) => roleFitWarning(role, settings[`${role}Provider`]))
+    .map(({ title }) => title);
 
   return (
     <AppShell>
@@ -316,6 +377,7 @@ export default function SettingsPage() {
 
             <SettingsPanel active={activeSection} section="agents">
               <div id="agents" className="flex scroll-mt-32 flex-col gap-5">
+                <ProviderHealthPanel />
                 <section className={sectionCls}>
                   <SectionHeading title="Subscriptions">Use your Anthropic, ChatGPT, or GitHub Copilot subscription.</SectionHeading>
                   <p className="rounded-lg border border-foreground/10 bg-background px-4 py-3 text-sm leading-relaxed text-foreground/70">
@@ -343,11 +405,20 @@ export default function SettingsPage() {
 
             <SettingsPanel active={activeSection} section="models">
               <div id="models" className="flex scroll-mt-32 flex-col gap-5">
-                {AGENTS.map(({ role, title, subtitle }) => (
+                <RoleFitSummary
+                  misfitRoles={misfitRoles}
+                  onApply={() => set({
+                    plannerProvider: "anthropic", plannerModel: "",
+                    evaluatorProvider: "anthropic", evaluatorModel: "",
+                    loopProvider: "omlx", loopModel: "",
+                  })}
+                />
+                {AGENTS.map(({ role, title, subtitle, demand }) => (
                   <AgentSection
                     key={role}
                     title={title}
                     subtitle={subtitle}
+                    demand={demand}
                     provider={settings[`${role}Provider`]}
                     model={settings[`${role}Model`]}
                     onProvider={(p) => set({ [`${role}Provider`]: p, [`${role}Model`]: "" })}
@@ -356,11 +427,12 @@ export default function SettingsPage() {
                     onReasoningLevel={(r) => set({ [`${role}ReasoningLevel`]: r })}
                     saveFirst={save}
                     datalistId={`${role}-models`}
-                    warning={
+                    warnings={[
+                      roleFitWarning(role, settings[`${role}Provider`]),
                       role === "evaluator" && evaluatorMatchesLoop
                         ? "The evaluator uses the same model as the looper and may share its blind spots. Choose a different model for a more independent review."
-                        : undefined
-                    }
+                        : undefined,
+                    ].filter((warning): warning is string => Boolean(warning))}
                   />
                 ))}
               </div>
@@ -529,9 +601,159 @@ function PromptTemplateEditor({
 }
 
 /** Provider dropdown + model input with a datalist/chips loaded from the provider. */
+/**
+ * Summary callout above the three agent sections. Silent when every role's
+ * provider already suits it, so a deliberate setup is not nagged at; when it
+ * does appear it names the roles and offers the split Radulf's pipeline is
+ * designed around: strong models on the once-per-card stages, the cheap seat
+ * on the stage that runs every iteration.
+ */
+/** How often the health panel re-reads usage while the settings page is open. */
+const PROVIDER_HEALTH_POLL_MS = 60_000;
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+  return String(n);
+}
+
+/** "in 42m" / "in 3h 10m": how long a provider stays blocked. */
+function formatUntil(iso: string, nowMs: number): string {
+  const ms = Date.parse(iso) - nowMs;
+  if (!Number.isFinite(ms) || ms <= 0) return "shortly";
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `in ${minutes}m`;
+  return `in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * Per-provider usage and breaker state over a trailing window.
+ *
+ * This is deliberately framed as what Radulf observed, not as a quota reading:
+ * the subscriptions publish no remaining-allowance endpoint through pi, so the
+ * token counts come from Radulf's own runs and "limit reached" comes from what
+ * the provider said when a run failed.
+ */
+function ProviderHealthPanel() {
+  const [rows, setRows] = useState<ProviderUsageRow[]>([]);
+  const [windowHours, setWindowHours] = useState(24);
+  const [error, setError] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      api<{ windowHours: number; providers: ProviderUsageRow[] }>("/api/providers/usage")
+        .then((r) => {
+          if (cancelled) return;
+          // Defensive: a settings page that blanks out because a usage payload
+          // arrived in an unexpected shape would be a bad trade for a panel
+          // that is only ever advisory.
+          setRows(Array.isArray(r.providers) ? r.providers : []);
+          setWindowHours(typeof r.windowHours === "number" ? r.windowHours : 24);
+          setNowMs(Date.now());
+          setError("");
+        })
+        .catch((e) => { if (!cancelled) setError(errorMessage(e)); });
+    void load();
+    const timer = setInterval(() => void load(), PROVIDER_HEALTH_POLL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  // Providers with no runs in the window and a healthy breaker say nothing
+  // worth a row; keeping them would bury the two or three that are in use.
+  const interesting = rows.filter((row) => row.runs > 0 || row.breaker.state === "open");
+
+  return (
+    <section aria-labelledby="provider-health-title" className={sectionCls}>
+      <div>
+        <h3 id="provider-health-title" className="font-medium">Provider usage and health</h3>
+        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-foreground/55">
+          What Radulf has spent through each provider in the last {windowHours} hours, and whether
+          any of them is currently refusing work. Subscriptions publish no remaining-allowance
+          figure, so these are Radulf&rsquo;s own totals, not a quota reading.
+        </p>
+      </div>
+      {error && <p role="status" className="text-sm text-red-400">{error}</p>}
+      {!error && interesting.length === 0 && (
+        <p className="text-sm text-foreground/45">No runs in the last {windowHours} hours.</p>
+      )}
+      {interesting.map((row) => (
+        <div key={row.provider} className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-t border-foreground/10 pt-3 first-of-type:border-t-0 first-of-type:pt-0">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">
+              {PROVIDERS.find((p) => p.id === row.provider)?.label ?? row.provider}
+            </p>
+            {row.rateLimit && (
+              <p className="mt-1 text-xs leading-relaxed text-foreground/55">
+                {row.rateLimit.windows
+                  .filter((w) => w.utilization !== null)
+                  .map((w) => `${w.label} ${Math.round((w.utilization ?? 0) * 100)}% used`)
+                  .join(" · ") || "reported, no window detail"}
+                {row.rateLimit.resetAt && ` · resets ${formatUntil(row.rateLimit.resetAt, nowMs)}`}
+                {row.rateLimit.bindingWindow && ` · ${row.rateLimit.bindingWindow} is binding`}
+                {row.rateLimit.overageAvailable === false && " · no overage"}
+              </p>
+            )}
+            {row.rateLimit?.status === "warning" && (
+              <p className="mt-1 text-xs leading-relaxed text-amber-400/90">
+                Approaching the allowance. Runs still go through, but the window is close to spent.
+              </p>
+            )}
+            {row.breaker.state === "open" && (
+              <p className="mt-1 text-xs leading-relaxed text-amber-400/90">
+                {row.breaker.reason === "limit"
+                  ? `Usage limit reached. Runs are paused, retrying ${row.breaker.openUntil ? formatUntil(row.breaker.openUntil, nowMs) : "after cooldown"}.`
+                  : `Connection failures. Runs are paused, retrying ${row.breaker.openUntil ? formatUntil(row.breaker.openUntil, nowMs) : "after cooldown"}.`}
+              </p>
+            )}
+          </div>
+          <p className="text-xs tabular-nums text-foreground/50">
+            {row.runs} run{row.runs === 1 ? "" : "s"}
+            {row.failedRuns > 0 && `, ${row.failedRuns} failed`}
+            {" · "}
+            {formatTokens(row.promptTokens)} in / {formatTokens(row.completionTokens)} out
+            {row.costReported && ` · ${formatPricePerMillion(row.costUsd)}`}
+          </p>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string[]; onApply: () => void }) {
+  if (misfitRoles.length === 0) return null;
+  return (
+    <section aria-labelledby="role-fit-title" className={`${sectionCls} border-accent/25 bg-accent/[0.04]`}>
+      <div>
+        <h3 id="role-fit-title" className="font-medium">Suggested model split</h3>
+        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-foreground/60">
+          The planner and evaluator run once per card; the looper runs every iteration. Spending a
+          strong model on the two that run once, and a local or low-cost model on the one that
+          repeats, is the split this pipeline is built around. The planner even writes its plan for
+          &ldquo;a much smaller local model&rdquo; to execute.
+        </p>
+        <p className="mt-2 text-xs text-foreground/45">
+          Currently off that split: {misfitRoles.join(", ")}.
+        </p>
+      </div>
+      <div>
+        <button type="button" onClick={onApply} className={secondaryButtonCls}>
+          Use Claude for planning and review, local for the loop
+        </button>
+        <p className="mt-2 text-xs text-foreground/40">
+          Sets the planner and evaluator to your Anthropic subscription and the looper to your
+          self-hosted endpoint, each on its default model. Adjust any of them afterwards.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function AgentSection({
   title,
   subtitle,
+  demand,
   provider,
   model,
   onProvider,
@@ -540,10 +762,13 @@ function AgentSection({
   onReasoningLevel,
   saveFirst,
   datalistId,
-  warning,
+  warnings,
 }: {
   title: string;
   subtitle: string;
+  /** What this stage of the pipeline demands of a model, and why, shown
+   * above the pickers so the trade-off is visible at the point of choosing. */
+  demand: string;
   provider: string;
   model: string;
   onProvider: (p: string) => void;
@@ -552,9 +777,10 @@ function AgentSection({
   onReasoningLevel: (r: string) => void;
   saveFirst: () => Promise<void>;
   datalistId: string;
-  /** Advisory-only warning rendered under the provider/model pickers, e.g.
-   * the evaluator matching the loop's provider+model. Never blocks saving. */
-  warning?: string;
+  /** Advisory-only warnings rendered under the provider/model pickers, e.g. a
+   * provider that does not suit the role, or the evaluator matching the loop's
+   * provider+model. Never blocks saving. */
+  warnings: string[];
 }) {
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [status, setStatus] = useState("");
@@ -595,6 +821,7 @@ function AgentSection({
       <div>
         <h3 id={`${datalistId}-title`} className="font-medium">{title}</h3>
         <p className="mt-1 text-sm text-foreground/55">{subtitle}</p>
+        <p className="mt-2 max-w-3xl text-xs leading-relaxed text-foreground/45">{demand}</p>
       </div>
       <div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
         <label className="min-w-0 text-sm text-foreground/70">
@@ -665,7 +892,9 @@ function AgentSection({
           )}
         </label>
       </div>
-      {warning && <p className="rounded-lg border border-accent/15 bg-accent/5 px-3 py-2.5 text-xs leading-relaxed text-accent/85">{warning}</p>}
+      {warnings.map((warning) => (
+        <p key={warning} className="rounded-lg border border-accent/15 bg-accent/5 px-3 py-2.5 text-xs leading-relaxed text-accent/85">{warning}</p>
+      ))}
       {selectedModel && priceLabel(selectedModel) && (
         <p className="text-xs text-foreground/40">{priceLabel(selectedModel)}</p>
       )}

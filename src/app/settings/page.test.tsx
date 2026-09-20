@@ -56,6 +56,15 @@ describe("SettingsPage", () => {
       if (url.startsWith("/api/repos/") && init?.method === "DELETE") {
         return json({ error: "cannot remove a repository while one of its tasks is running or merging" }, 409);
       }
+      if (url.startsWith("/api/providers/usage")) {
+        return json({
+          windowHours: 24,
+          providers: [
+            { provider: "anthropic", runs: 4, failedRuns: 0, promptTokens: 120_000, completionTokens: 3_000, costUsd: 0, costReported: false, lastRunAt: "2026-09-20T11:00:00.000Z", breaker: { provider: "anthropic", state: "open", reason: "limit", consecutiveFailures: 1, openedAt: "2026-09-20T11:30:00.000Z", openUntil: "2026-09-20T12:30:00.000Z" }, rateLimit: { provider: "anthropic", observedAt: "2026-09-20T11:30:00.000Z", status: "warning", windows: [{ label: "5h", utilization: 0.05, remaining: null, status: "ok", resetAt: null }, { label: "7d", utilization: 0.8, remaining: null, status: "warning", resetAt: null }], bindingWindow: "7d", resetAt: "2026-09-24T08:00:00.000Z", overageAvailable: false } },
+            { provider: "omlx", runs: 2, failedRuns: 1, promptTokens: 2_000_000, completionTokens: 40_000, costUsd: 0, costReported: false, lastRunAt: "2026-09-20T11:50:00.000Z", breaker: { provider: "omlx", state: "closed", reason: null, consecutiveFailures: 0, openedAt: null, openUntil: null }, rateLimit: null },
+          ],
+        });
+      }
       if (url.startsWith("/api/providers/")) return json({
         models: [
           { value: "planner", displayName: "Planning model", description: "A planning model" },
@@ -177,5 +186,64 @@ describe("SettingsPage", () => {
     expect((screen.getByRole("checkbox", { name: "Desktop notifications" }) as HTMLInputElement).checked).toBe(true);
     section("Providers & keys");
     expect((screen.getByLabelText("OpenRouter API key") as HTMLInputElement).value).toBe("••••••••");
+  });
+
+  it("flags a role whose provider does not suit it, and applies the suggested split", async () => {
+    savedSettings = { ...initialSettings, plannerProvider: "omlx", plannerModel: "llm", evaluatorProvider: "omlx", evaluatorModel: "llm" };
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Agents & models");
+
+    // The planner and evaluator are on the self-hosted endpoint, the looper on
+    // a subscription, so every role is off the split and all three are named.
+    const summary = screen.getByRole("region", { name: "Suggested model split" });
+    expect(summary.textContent).toContain("Planner agent");
+    expect(summary.textContent).toContain("Looper agent");
+    expect(summary.textContent).toContain("Evaluator agent");
+    expect(screen.getByText(/Planning is the pipeline's hardest reasoning/)).toBeTruthy();
+    expect(screen.getByText(/only gate that runs the whole-card acceptance criteria/)).toBeTruthy();
+    expect(screen.getByText(/drives most of your token spend/)).toBeTruthy();
+
+    fireEvent.click(within(summary).getByRole("button", { name: /Use Claude for planning and review/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => expect(savedSettings.plannerProvider).toBe("anthropic"));
+    expect(savedSettings.evaluatorProvider).toBe("anthropic");
+    expect(savedSettings.loopProvider).toBe("omlx");
+    // The callout goes quiet once every role suits its stage.
+    expect(screen.queryByRole("region", { name: "Suggested model split" })).toBeNull();
+  });
+
+  it("names a provider that is out of allowance, and what it has spent", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Providers & keys");
+    const panel = await screen.findByRole("region", { name: "Provider usage and health" });
+    await waitFor(() => expect(panel.textContent).toContain("Usage limit reached"));
+    // The self-hosted endpoint is healthy, so it reports usage without a warning.
+    expect(panel.textContent).toContain("2.0M in");
+    expect(panel.textContent).toContain("1 failed");
+    // Flat-rate providers report no cost, so no misleading $0.00 is shown.
+    expect(panel.textContent).not.toContain("$0.00");
+  });
+
+  it("shows live allowance from the provider's own headers", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Providers & keys");
+    const panel = await screen.findByRole("region", { name: "Provider usage and health" });
+    await waitFor(() => expect(panel.textContent).toContain("7d 80% used"));
+    expect(panel.textContent).toContain("5h 5% used");
+    expect(panel.textContent).toContain("7d is binding");
+    // No paid overflow past the limit is worth saying out loud.
+    expect(panel.textContent).toContain("no overage");
+    expect(panel.textContent).toContain("Approaching the allowance");
+  });
+
+  it("does not nag when every role already suits its stage", async () => {
+    savedSettings = { ...initialSettings, loopProvider: "omlx", loopModel: "llm" };
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Agents & models");
+    expect(screen.queryByRole("region", { name: "Suggested model split" })).toBeNull();
   });
 });
