@@ -72,6 +72,40 @@ export function doneFilePath(ralphDir: string): string | null {
   return null;
 }
 
+/** How many productive iterations a run must have before its own pace, rather
+ * than the configured ceiling, bounds a single iteration. */
+const BUDGET_MIN_SAMPLES = 3;
+/** Never cap an iteration below this, however fast the run has been. */
+const BUDGET_FLOOR_MS = 10 * 60 * 1000;
+/** How much slower than its run's median a productive iteration may be. */
+const BUDGET_MULTIPLIER = 3;
+
+/**
+ * The time budget for one iteration.
+ *
+ * Until a run has shown what a productive iteration costs it, the configured
+ * ceiling stands. After that, an iteration is capped at a multiple of the
+ * median of the iterations that actually advanced the checklist. A small model
+ * that thrashes otherwise spends the entire ceiling on one task: measured on a
+ * real run, a loop burned 51 of its 60 allotted minutes on a task whose
+ * siblings averaged under two, and produced nothing. Never below the floor,
+ * never above the ceiling.
+ */
+export function iterationBudgetMs(ceilingMs: number, productiveMs: number[]): number {
+  if (productiveMs.length < BUDGET_MIN_SAMPLES) return ceilingMs;
+  const sorted = [...productiveMs].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  return Math.min(ceilingMs, Math.max(BUDGET_FLOOR_MS, BUDGET_MULTIPLIER * median));
+}
+
+/** Appended to the next prompt for an agent that did the work and never wrote
+ * the signal file. Without the file the orchestrator cannot tick or commit, so
+ * the same task comes back around; saying nothing invites the same ending. */
+const SIGNAL_REMINDER = `
+
+IMPORTANT: your previous attempt at this task ended without writing \`.ralph/ITERATION_DONE\`. Nothing it did was recorded or committed, and that is why you are being handed the same task again. Whatever else you do this iteration, finish by writing a one or two line summary of your work into \`.ralph/ITERATION_DONE\`.
+`;
+
 /** Record on the iteration row whether its injected task is now ticked off —
  * read from the checklist itself, so every bookkeeping path agrees. */
 function recordTaskCompleted(iterationId: number, planPath: string, taskNumber: number) {
@@ -725,6 +759,11 @@ export class Orchestrator {
       let consecutiveFailures = 0;
       let consecutiveStalls = 0;
       let consecutiveIterationTimeouts = 0;
+      let consecutiveUnsignalled = 0;
+      let remindSignal = false;
+      /** Wall-clock of the iterations that advanced the checklist, feeding
+       * iterationBudgetMs() so the run paces itself. */
+      const productiveMs: number[] = [];
       let n = 0;
 
       while (n < maxIterations) {
@@ -764,6 +803,8 @@ export class Orchestrator {
         const slowTimer = setTimeout(() => {
           emitEvent("iteration.slow", { cardId, runId, payload: { n, thresholdMs: SLOW_ITERATION_MS } });
         }, SLOW_ITERATION_MS);
+        const budgetMs = iterationBudgetMs(hardTimeoutMs, productiveMs);
+        const iterationStartedMs = Date.now();
         let result;
         try {
           result = await runWithTranscript({
@@ -773,9 +814,9 @@ export class Orchestrator {
             provider,
             model,
             reasoningLevel: settings.loopReasoningLevel,
-            prompt: buildLoopPrompt(promptMd, planMd),
+            prompt: buildLoopPrompt(promptMd, planMd) + (remindSignal ? SIGNAL_REMINDER : ""),
             cwd: worktreePath,
-            timeoutMs: Math.min(remaining, hardTimeoutMs),
+            timeoutMs: Math.min(remaining, budgetMs),
             signal: controller.signal,
             role: "loop",
             runContext: ctx,
@@ -839,14 +880,14 @@ export class Orchestrator {
         if (result.timedOut) {
           // When the iteration budget WAS the remaining run budget, this is
           // the run-level wall-clock cap — final.
-          if (remaining <= hardTimeoutMs) return fail("timeout", n, "timeout");
+          if (remaining <= budgetMs) return fail("timeout", n, "timeout");
           // Per-iteration hard timeout: one retry with the worktree
           // preserved; two consecutive timeouts end the run (spec 11).
           consecutiveIterationTimeouts += 1;
           emitEvent("iteration.timeout", {
             cardId,
             runId,
-            payload: { n, hardTimeoutMs, consecutive: consecutiveIterationTimeouts },
+            payload: { n, hardTimeoutMs, budgetMs, consecutive: consecutiveIterationTimeouts },
           });
           if (consecutiveIterationTimeouts >= 2) return fail("iteration-timeout", n, "timeout");
           continue;
@@ -881,7 +922,12 @@ export class Orchestrator {
         const bkResult = await performIterationBookkeeping({ ralphDir, worktreePath, planPath, pre: preIteration });
         if (bkResult?.advanced) {
           consecutiveStalls = 0;
+          consecutiveUnsignalled = 0;
+          remindSignal = false;
+          productiveMs.push(Date.now() - iterationStartedMs);
         } else if (bkResult) {
+          consecutiveUnsignalled = 0;
+          remindSignal = false;
           // Phantom completion: ITERATION_DONE without any work product. The
           // checklist was NOT advanced, so the stall counter below catches it.
           emitEvent("iteration.phantom", {
@@ -889,6 +935,22 @@ export class Orchestrator {
             runId,
             payload: { n, taskNumber: bkResult.taskNumber, summary: bkResult.summary.slice(0, 200) },
           });
+        } else {
+          // The agent settled without writing ITERATION_DONE at all. Any work
+          // it did is uncommitted and the checklist did not move, but the
+          // files it touched make the stall check below see progress, so
+          // nothing else bounds this. Remind it once, then give up: repeating
+          // the task a third time has never yet produced the signal.
+          consecutiveUnsignalled += 1;
+          emitEvent("iteration.unsignalled", {
+            cardId,
+            runId,
+            payload: { n, taskNumber: task.taskNumber, attempt: consecutiveUnsignalled },
+          });
+          if (consecutiveUnsignalled >= 2) {
+            return fail("loop ended two iterations without writing .ralph/ITERATION_DONE", n);
+          }
+          remindSignal = true;
         }
         recordTaskCompleted(iter.id, planPath, task.taskNumber);
 

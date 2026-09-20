@@ -91,7 +91,7 @@ const {
   settings,
   worktrees,
 } = await import("@/db");
-const { Orchestrator } = await import("./orchestrator");
+const { Orchestrator, iterationBudgetMs } = await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
@@ -641,6 +641,67 @@ describe("Orchestrator cancellation lifecycle", () => {
       // The repo's single pipeline slot is held by the first card — the
       // second must not also enter the loop.
       expect(getCard("same-repo-second").status).toBe("ready");
+    });
+  });
+
+  describe("iteration budget", () => {
+    const MIN = 60_000;
+
+    it("holds the configured ceiling until the run has shown its pace", () => {
+      expect(iterationBudgetMs(60 * MIN, [])).toBe(60 * MIN);
+      expect(iterationBudgetMs(60 * MIN, [MIN, MIN])).toBe(60 * MIN);
+    });
+
+    it("caps a slow iteration at a multiple of the run's own median", () => {
+      // A run whose productive iterations take ~2 minutes has no business
+      // spending an hour on one task; the floor still applies.
+      expect(iterationBudgetMs(60 * MIN, [2 * MIN, 2 * MIN, 2 * MIN])).toBe(10 * MIN);
+      expect(iterationBudgetMs(60 * MIN, [10 * MIN, 20 * MIN, 30 * MIN])).toBe(60 * MIN);
+      expect(iterationBudgetMs(60 * MIN, [5 * MIN, 6 * MIN, 7 * MIN])).toBe(18 * MIN);
+    });
+
+    it("never exceeds the ceiling", () => {
+      expect(iterationBudgetMs(5 * MIN, [20 * MIN, 20 * MIN, 20 * MIN])).toBe(5 * MIN);
+    });
+  });
+
+  describe("missing iteration signal", () => {
+    /** An agent that edits files and never writes .ralph/ITERATION_DONE. The
+     * edits make the stall check see progress, so nothing else stops it. */
+    function silentWorker() {
+      let call = 0;
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        call += 1;
+        fs.writeFileSync(path.join(cwd, `touched-${call}.txt`), "real work, no signal");
+        return successfulHarnessResult;
+      });
+    }
+
+    it("reminds the agent once, then ends the run rather than looping forever", async () => {
+      card("no-signal");
+      plan("no-signal");
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M touched-1.txt" : "",
+      }));
+      silentWorker();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("no-signal");
+
+      await vi.waitFor(() => expect(getCard("no-signal").status).toBe("needs_attention"));
+      expect(mocks.runHarness).toHaveBeenCalledTimes(2);
+      // The second attempt was told why it was handed the same task again.
+      expect(mocks.runHarness.mock.calls[0][0].prompt).not.toContain("ITERATION_DONE`. Nothing it did");
+      expect(mocks.runHarness.mock.calls[1][0].prompt).toContain(".ralph/ITERATION_DONE");
+      const unsignalled = db
+        .select()
+        .from(events)
+        .all()
+        .filter((event) => event.type === "iteration.unsignalled" && event.cardId === "no-signal");
+      expect(unsignalled).toHaveLength(2);
+      const run = db.select().from(runs).all().find((row) => row.cardId === "no-signal")!;
+      expect(run.exitReason).toBe("loop ended two iterations without writing .ralph/ITERATION_DONE");
     });
   });
 
