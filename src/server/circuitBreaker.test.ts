@@ -13,6 +13,7 @@ const {
   CONN_ERROR_PATTERN,
   LIMIT_ERROR_PATTERN,
   classifyProviderError,
+  isRetryableFailure,
   parseLimitRetryAfterMs,
   providerBreakerStatus,
 } = await import("./circuitBreaker");
@@ -68,6 +69,28 @@ describe("classifyProviderError", () => {
 
   it("returns null for failures that say nothing about the provider", () => {
     expect(classifyProviderError("2 tests failed")).toBeNull();
+  });
+
+  it("reads a rejected request as config", () => {
+    // Verbatim from the planner run that failed this way three times.
+    expect(
+      classifyProviderError(
+        '400 {"type":"error","error":{"type":"invalid_request_error","message":' +
+          '"Claude Code 2.1.75 does not support this model; version 2.1.251 or newer is required"}}',
+      ),
+    ).toBe("config");
+  });
+
+  it("keeps the more specific reading when a rejected request also smells of auth or limits", () => {
+    expect(classifyProviderError("400 invalid_request: bad api key")).toBe("conn");
+    expect(classifyProviderError("429 model_not_found while rate limited")).toBe("limit");
+  });
+
+  it("knows a config failure is the one kind no retry can help", () => {
+    expect(isRetryableFailure("config")).toBe(false);
+    expect(isRetryableFailure("conn")).toBe(true);
+    expect(isRetryableFailure("limit")).toBe(true);
+    expect(isRetryableFailure(null)).toBe(true);
   });
 });
 

@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { db, now, settings } from "@/db";
+import { db, now, settings, type FailureKind } from "@/db";
 import type { ProviderId } from "./providers";
 
 // Same connection/auth-shaped failure signal the orchestrator already uses to
@@ -23,8 +23,21 @@ export const CONN_ERROR_PATTERN =
 export const LIMIT_ERROR_PATTERN =
   /\b429\b|rate[ _-]?limit|too many requests|usage limit|quota|limit reached|limit exceeded/i;
 
-/** Why a breaker opened. Limits and outages need different cooldowns. */
-export type FailureKind = "conn" | "limit";
+/**
+ * A request the provider rejected outright, as opposed to one it could not
+ * serve right now. An unsupported model, a client too old for the model, a
+ * malformed request: the provider is healthy and the request is not, so
+ * waiting changes nothing and the breaker must stay shut.
+ *
+ * Checked last, so a 401 or a 429 whose body happens to mention the model
+ * keeps its more specific reading.
+ */
+export const CONFIG_ERROR_PATTERN =
+  /\b400\b|invalid[_ ]request|model[_ ]not[_ ]found|unsupported|(?:does not|doesn't) support|unknown model|no such model|or newer is required/i;
+
+/** Why a run's provider call failed. Re-exported from the schema, which owns
+ * the union because the runs table stores it. */
+export type { FailureKind };
 
 /**
  * Classify a harness error, or null when it is neither. An unparseable plan
@@ -35,7 +48,15 @@ export type FailureKind = "conn" | "limit";
 export function classifyProviderError(error: string): FailureKind | null {
   if (LIMIT_ERROR_PATTERN.test(error)) return "limit";
   if (CONN_ERROR_PATTERN.test(error)) return "conn";
+  if (CONFIG_ERROR_PATTERN.test(error)) return "config";
   return null;
+}
+
+/** Whether a failure of this kind could plausibly succeed if tried again.
+ * A "config" failure cannot: the provider will reject the same request the
+ * same way until the model or the provider changes. */
+export function isRetryableFailure(kind: FailureKind | null | undefined): boolean {
+  return kind !== "config";
 }
 
 /**

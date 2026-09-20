@@ -297,10 +297,18 @@ export class Orchestrator {
     // Plan/evaluate pass their single invocation's telemetry; a loop run's
     // lives per iteration, so roll it up from the iterations just recorded.
     const rollup = telemetry ?? (run.kind === "loop" ? this.loopTelemetryRollup(runId) : undefined);
+    // Spec 18 §3: classify the ending once, here, rather than leaving every
+    // reader to re-parse the message to work out whether a retry could help.
+    // Only a failure can carry a kind — a completed run's reason is a verdict,
+    // not an error.
+    const failureKind = status === "completed" || status === "paused"
+      ? null
+      : classifyProviderError(exitReason);
     db.update(runs)
       .set({
         status,
         exitReason,
+        failureKind,
         endedAt: now(),
         ...(iterationsDone !== undefined ? { iterationsDone } : {}),
         ...(rollup ?? {}),
@@ -961,7 +969,10 @@ export class Orchestrator {
           // iteration was unlucky. Stop the run on the first one rather than
           // spending the remaining failure budget re-hitting the same wall.
           const failureKind = classifyProviderError(result.error);
-          if (failureKind) {
+          // A "config" failure says nothing about the provider's health — it
+          // is serving fine and rejecting this request (spec 18 §3), so it
+          // must not count towards the breaker.
+          if (failureKind && failureKind !== "config") {
             recordProviderOutcome(provider, false, {
               kind: failureKind,
               retryAfterMs: failureKind === "limit" ? limitCooldownMs(provider, result.error) : null,
@@ -969,7 +980,10 @@ export class Orchestrator {
           }
           const isConnErr = failureKind === "conn";
           const isLimitErr = failureKind === "limit";
-          if (consecutiveFailures >= 3 || isLimitErr || (n === 1 && isConnErr)) {
+          // A rejected request is rejected the same way every time. Spending
+          // the remaining failure budget rediscovering that is pure waste.
+          const isConfigErr = failureKind === "config";
+          if (consecutiveFailures >= 3 || isLimitErr || isConfigErr || (n === 1 && isConnErr)) {
             return fail(`loop failed: ${result.error.slice(0, 300)}`, n);
           }
           continue;

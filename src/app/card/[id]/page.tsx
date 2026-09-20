@@ -84,6 +84,10 @@ export default function CardDetail() {
   const canRetryMerge = latestLoopRun?.status === "completed" && evaluatorCleared;
   const failedStep = retryableFailedStep(runs);
   const canRetryFailedStep = Boolean(failedStep && card.status === "needs_attention");
+  // Spec 18 §3: the provider rejected the request itself, so retrying the same
+  // step is the one thing that cannot help. Say so, and say what would.
+  const unretryableRun =
+    card.status === "needs_attention" && runs[0]?.failureKind === "config" ? runs[0] : null;
   const latestPlanRun = runs.find((r) => r.kind === "plan");
   // Phase 15 (weaker network isolation surfacing): which runs actually built
   // their sandbox with `sandboxWeakerIsolationForGoTls` on, per the
@@ -211,6 +215,21 @@ export default function CardDetail() {
         />
       )}
       {error && <p className="text-red-400 text-sm">{error}</p>}
+      {unretryableRun && (
+        <div className="border border-red-800/60 bg-red-950/30 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-red-300 mb-1">
+            {unretryableRun.provider ?? "The provider"} rejected the request itself
+          </h3>
+          <pre className="whitespace-pre-wrap text-sm text-red-100/80 font-sans">
+            {unretryableRun.exitReason}
+          </pre>
+          <p className="text-xs text-red-400/70 mt-2">
+            Retrying sends the same request, so it will fail the same way. Change the
+            model for this card under Edit model overrides, or fix the provider
+            configuration, then restart the task.
+          </p>
+        </div>
+      )}
       {plannerQuestions && (
         <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
           <h3 className="text-sm font-medium text-amber-300 mb-1">

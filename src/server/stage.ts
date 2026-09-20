@@ -138,7 +138,10 @@ export function harnessFailure(
   }
   if (result.error) {
     const kind = classifyProviderError(result.error);
-    if (kind) {
+    // A "config" failure says nothing about the provider's health — it is
+    // serving fine and rejecting this request (spec 18 §3), so it must not
+    // count towards the breaker.
+    if (kind && kind !== "config") {
       recordProviderOutcome(provider, false, {
         kind,
         retryAfterMs: kind === "limit" ? limitCooldownMs(provider, result.error) : null,

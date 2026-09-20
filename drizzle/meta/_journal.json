@@ -78,6 +78,13 @@
       "when": 1789333735074,
       "tag": "0010_polite_enchantress",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1789943415788,
+      "tag": "0011_smooth_midnight",
+      "breakpoints": true
     }
   ]
 }

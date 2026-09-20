@@ -93,7 +93,7 @@ const {
 } = await import("@/db");
 const { Orchestrator, iterationBudgetMs } = await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
-const { recordProviderOutcome } = await import("./circuitBreaker");
+const { recordProviderOutcome, providerBreakerStatus } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
 const { POST: postCardAction } = await import("@/app/api/cards/[id]/[action]/route");
 const { pruneRuntimeHistory } = await import("./retention");
@@ -702,6 +702,33 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(unsignalled).toHaveLength(2);
       const run = db.select().from(runs).all().find((row) => row.cardId === "no-signal")!;
       expect(run.exitReason).toBe("loop ended two iterations without writing .ralph/ITERATION_DONE");
+    });
+  });
+
+  describe("a request the provider rejects", () => {
+    const REJECTED =
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":' +
+      '"Claude Code 2.1.75 does not support this model; version 2.1.251 or newer is required"}}';
+
+    it("stops the loop on the first one instead of spending the failure budget", async () => {
+      // Spec 18 §3: three attempts against a model the client cannot drive
+      // cost three runs and taught nothing. Two of the three were the operator
+      // pressing a retry button the UI should not have offered.
+      card("rejected-request");
+      plan("rejected-request");
+      mocks.runHarness.mockResolvedValue({ timedOut: false, error: REJECTED, code: 1, lastText: "" });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("rejected-request");
+      await vi.waitFor(() => expect(getCard("rejected-request").status).toBe("needs_attention"));
+
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+      const run = getRun("rejected-request");
+      expect(run.status).toBe("failed");
+      expect(run.failureKind).toBe("config");
+      // The provider is serving fine — only this request is wrong — so the
+      // breaker must stay shut for the next card.
+      expect(providerBreakerStatus("anthropic").state).toBe("closed");
     });
   });
 
