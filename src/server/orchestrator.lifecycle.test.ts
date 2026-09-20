@@ -98,7 +98,7 @@ const {
   settings,
   worktrees,
 } = await import("@/db");
-const { Orchestrator, iterationBudgetMs, promptBloatRatio } = await import("./orchestrator");
+const { Orchestrator, iterationBudgetMs, promptBloatRatio, slowIterationMs } = await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome, providerBreakerStatus } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
@@ -729,6 +729,26 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(promptBloatRatio(845_979, earlier)).toBeCloseTo(11.6, 1);
       // Its successor, back in scale, must not inherit the reading.
       expect(promptBloatRatio(29_590, earlier)).toBeCloseTo(0.4, 1);
+    });
+  });
+
+  describe("slowIterationMs", () => {
+    const MINUTE = 60 * 1000;
+
+    it("keeps the flat threshold under the default ceiling", () => {
+      // Half of spec 11's 10-minute default is exactly the old fixed mark, so
+      // an unconfigured install sees no change at all.
+      expect(slowIterationMs(10 * MINUTE)).toBe(5 * MINUTE);
+    });
+
+    it("scales up with a larger budget instead of firing on everything", () => {
+      // The run this came from had a 60-minute budget and fired the flat
+      // signal on all five of its iterations.
+      expect(slowIterationMs(60 * MINUTE)).toBe(30 * MINUTE);
+    });
+
+    it("never drops below the flat threshold", () => {
+      expect(slowIterationMs(2 * MINUTE)).toBe(5 * MINUTE);
     });
   });
 

@@ -144,6 +144,21 @@ export function promptBloatRatio(
   return median > 0 ? promptTokens / median : null;
 }
 
+/**
+ * When an iteration is worth calling slow: half its own budget, floored at the
+ * flat threshold (spec 18 §10).
+ *
+ * A fixed five minutes fired on 11 of one card's 19 iterations and on 5 of 5
+ * in its last run, which is not a signal. Half the budget says "this iteration
+ * has spent half its allowance", which means the same thing whatever the
+ * allowance is. The floor keeps the default ceiling's behaviour exactly as it
+ * was, and SLOW_ITERATION_MS stays the comparison point for the cross-run KPIs
+ * in analytics.ts, which have no single run's budget to scale to.
+ */
+export function slowIterationMs(budgetMs: number): number {
+  return Math.max(SLOW_ITERATION_MS, Math.round(budgetMs / 2));
+}
+
 /** Appended to the next prompt for an agent that did the work and never wrote
  * the signal file. Without the file the orchestrator cannot tick or commit, so
  * the same task comes back around; saying nothing invites the same ending. */
@@ -943,12 +958,13 @@ export class Orchestrator {
         // fingerprint after the iteration means an install happened.
         const lockfilesBefore = lockfileFingerprint(worktreePath);
         const promptMd = fs.readFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), "utf8");
+        const budgetMs = iterationBudgetMs(hardTimeoutMs, productiveMs);
         // Soft signal only — spec 11 forbids terminating an iteration merely
         // for being slow; the hard timeout is the enforcement point.
+        const slowMs = slowIterationMs(budgetMs);
         const slowTimer = setTimeout(() => {
-          emitEvent("iteration.slow", { cardId, runId, payload: { n, thresholdMs: SLOW_ITERATION_MS } });
-        }, SLOW_ITERATION_MS);
-        const budgetMs = iterationBudgetMs(hardTimeoutMs, productiveMs);
+          emitEvent("iteration.slow", { cardId, runId, payload: { n, thresholdMs: slowMs } });
+        }, slowMs);
         const iterationStartedMs = Date.now();
         let result;
         try {

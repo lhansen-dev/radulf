@@ -81,6 +81,10 @@ export type LoopCohort = {
 };
 
 export const MIN_COHORT_SIZE = 10;
+/** The flat "this is taking a while" mark. Still the comparison point for the
+ * cross-run KPIs below, which have no single run's budget to scale to, and
+ * since spec 18 §10 also the floor under the orchestrator's per-iteration
+ * slow signal rather than the whole of it. */
 export const SLOW_ITERATION_MS = 5 * 60 * 1000;
 
 /** Spec 11 rollout acceptance: the performance-policy targets, evaluated
