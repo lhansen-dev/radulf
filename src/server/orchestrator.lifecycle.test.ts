@@ -732,6 +732,102 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
+  describe("the acceptance probe", () => {
+    const loopRun = (cardId: string) =>
+      db.select().from(runs).all().find((r) => r.cardId === cardId && r.kind === "loop");
+    const loopCalls = () => mocks.runHarness.mock.calls.filter(([opts]) => opts.role === "loop");
+
+    /** A loop agent that signals DONE every iteration, plus whatever `extra`
+     * does to the worktree on that iteration. Non-loop roles fall through to
+     * the suite default, so the evaluator's own failure cannot be mistaken
+     * for the loop's. */
+    function doneEveryIteration(extra: (cwd: string, call: number) => void = () => {}) {
+      let call = 0;
+      mocks.runHarness.mockImplementation(async ({ cwd, role }: { cwd: string; role: string }) => {
+        if (role !== "loop") return { timedOut: false, error: "no verdict written in test" };
+        call += 1;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), `work ${call}`);
+        extra(cwd, call);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), `iteration ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "DONE"), "all done");
+        return successfulHarnessResult;
+      });
+    }
+
+    beforeEach(() => {
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+    });
+
+    it("repairs a failing check instead of paying for an evaluation", async () => {
+      // Spec 18 §7: a run exited done-signal at 14:13; four evaluator runs and
+      // about fifty minutes later the verdict was "1, 19 and 20 fail". Nothing
+      // had looked.
+      card("probe");
+      plan("probe");
+      db.update(plans)
+        .set({ acceptanceCriteria: "- [ ] `test -f docs/USAGE.md` succeeds" })
+        .where(eq(plans.cardId, "probe"))
+        .run();
+      // The second attempt writes the file the check is looking for.
+      doneEveryIteration((cwd, call) => {
+        if (call !== 2) return;
+        fs.mkdirSync(path.join(cwd, "docs"), { recursive: true });
+        fs.writeFileSync(path.join(cwd, "docs", "USAGE.md"), "how to use it");
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("probe");
+      await vi.waitFor(() => expect(loopRun("probe")?.exitReason).toBe("done-signal"));
+
+      // The first DONE was not taken at its word; the second was.
+      expect(loopCalls()).toHaveLength(2);
+      expect(loopCalls()[1][0].prompt).toContain("Repair the acceptance checks");
+      expect(loopCalls()[1][0].prompt).toContain("test -f docs/USAGE.md");
+      const probes = db.select().from(events).all()
+        .filter((e) => e.type === "acceptance.probe" && e.cardId === "probe");
+      expect(probes).toHaveLength(1);
+      expect(JSON.parse(probes[0].payload).failed).toEqual([
+        { command: "test -f docs/USAGE.md", output: "" },
+      ]);
+    });
+
+    it("hands over to the evaluator anyway when a check cannot be satisfied", async () => {
+      // A criterion can be permanently unsatisfiable — one on the card this
+      // came from greps .ralph/PLAN.md, which the loop is forbidden to have.
+      // One repair pass per run, then the evaluator gets it regardless.
+      card("probe-stuck");
+      plan("probe-stuck");
+      db.update(plans)
+        .set({ acceptanceCriteria: "- [ ] `test -f never-written.md` succeeds" })
+        .where(eq(plans.cardId, "probe-stuck"))
+        .run();
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("probe-stuck");
+      await vi.waitFor(() => expect(loopRun("probe-stuck")?.exitReason).toBe("done-signal"));
+
+      // Two loop iterations, not a spin: the repair pass and then the handover.
+      expect(loopCalls()).toHaveLength(2);
+    });
+
+    it("leaves a plan whose criteria carry no commands exactly as it was", async () => {
+      card("probe-none");
+      plan("probe-none"); // acceptanceCriteria: "The task is complete."
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("probe-none");
+      await vi.waitFor(() => expect(loopRun("probe-none")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      expect(db.select().from(events).all().filter((e) => e.type === "acceptance.probe")).toHaveLength(0);
+    });
+  });
+
   describe("slowIterationMs", () => {
     const MINUTE = 60 * 1000;
 

@@ -25,13 +25,14 @@ import {
   performDoneBookkeeping,
   planStatePath,
 } from "./bookkeeping";
-import { firstUnchecked, parseChecklist } from "./checklist";
+import { appendTask, firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
 import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
 import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
 import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { postAlert } from "./alerts";
+import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { limitCooldownMs } from "./providerRateLimit";
 import { removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
@@ -913,6 +914,12 @@ export class Orchestrator {
       let consecutiveUnsignalled = 0;
       let remindSignal = false;
       let consecutiveBloat = 0;
+      /** Spec 18 §7: the acceptance probe hands the loop one repair pass per
+       * run and no more. A criterion can be permanently unsatisfiable — one on
+       * the card this came from greps `.ralph/PLAN.md`, a file the loop is
+       * deliberately forbidden to have — so an unbounded repair loop would
+       * spin on it forever. */
+      let acceptanceRepairUsed = false;
       /** Prompt size of every iteration that reported one, for the comparison
        * in promptBloatRatio(). Per run: a resumed run starts from a fresh
        * context, so the previous run's sizes are not its baseline. */
@@ -1074,6 +1081,46 @@ export class Orchestrator {
           const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
           if (violation) return fail(violation, n);
           if (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n })) return;
+
+          // Spec 18 §7: DONE is the model's own word, and an evaluation is the
+          // most expensive thing the pipeline does. Run the acceptance
+          // criteria's own check commands first. Only their failures are
+          // trusted — a zero exit proves nothing, since a criterion can carry
+          // a judgment a shell cannot make.
+          if (!acceptanceRepairUsed) {
+            const probe = await runAcceptanceProbe({
+              acceptanceCriteria: plan.acceptanceCriteria,
+              worktreePath,
+              ctx,
+            });
+            const failures = probe.filter((p) => !p.ok);
+            if (probe.length > 0) {
+              emitEvent("acceptance.probe", {
+                cardId,
+                runId,
+                payload: {
+                  n,
+                  checked: probe.length,
+                  failed: failures.map((f) => ({ command: f.command, output: f.output })),
+                },
+              });
+            }
+            if (failures.length > 0) {
+              acceptanceRepairUsed = true;
+              // Clear the signal, or the next iteration re-enters this branch
+              // before doing the repair.
+              for (const name of ["DONE", "DONE.md"]) {
+                fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
+              }
+              // Every iteration runs on an injected checklist task, so the
+              // repair has to be one — a prompt preamble alone never runs.
+              fs.writeFileSync(
+                /* turbopackIgnore: true */ planPath,
+                appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), repairTaskText(failures)),
+              );
+              continue;
+            }
+          }
           this.finishRun(runId, "completed", "done-signal", n);
           // Phase 3: every DONE goes through the evaluator before a human
           // sees it. An evaluator crash is a loud failure, not a pass-through.
