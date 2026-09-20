@@ -13,7 +13,7 @@ const initialSettings: Settings = {
   evaluatorProvider: "anthropic", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
   plannerTimeoutMinutes: 30, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
   iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
-  omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
+  folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
   minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",
   sandboxWeakerIsolationForGoTls: false, notificationsEnabled: false, soundEnabled: false,
   theme: "default", plannerPromptTemplate: "Plan {{TITLE}}", evaluatorPromptTemplate: "Review {{CRITERIA}}",
@@ -62,6 +62,15 @@ describe("SettingsPage", () => {
           providers: [
             { provider: "anthropic", runs: 4, failedRuns: 0, promptTokens: 120_000, completionTokens: 3_000, costUsd: 0, costReported: false, lastRunAt: "2026-09-20T11:00:00.000Z", breaker: { provider: "anthropic", state: "open", reason: "limit", consecutiveFailures: 1, openedAt: "2026-09-20T11:30:00.000Z", openUntil: "2026-09-20T12:30:00.000Z" }, rateLimit: { provider: "anthropic", observedAt: "2026-09-20T11:30:00.000Z", status: "warning", windows: [{ label: "5h", utilization: 0.05, remaining: null, status: "ok", resetAt: null }, { label: "7d", utilization: 0.8, remaining: null, status: "warning", resetAt: null }], bindingWindow: "7d", resetAt: "2026-09-24T08:00:00.000Z", overageAvailable: false } },
             { provider: "omlx", runs: 2, failedRuns: 1, promptTokens: 2_000_000, completionTokens: 40_000, costUsd: 0, costReported: false, lastRunAt: "2026-09-20T11:50:00.000Z", breaker: { provider: "omlx", state: "closed", reason: null, consecutiveFailures: 0, openedAt: null, openUntil: null }, rateLimit: null },
+          ],
+        });
+      }
+      if (url.startsWith("/api/folder-browser")) {
+        return json({
+          root: "/home/dev", path: "/home/dev", parent: null, truncated: false,
+          entries: [
+            { name: "my-project", path: "/home/dev/my-project", isGitRepo: true },
+            { name: "downloads", path: "/home/dev/downloads", isGitRepo: false },
           ],
         });
       }
@@ -167,6 +176,26 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByLabelText("OpenRouter API key") as HTMLInputElement).value).toBe("••••••••");
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("browses for a repository folder in the browser, not a host dialog", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Repositories");
+    fireEvent.click(screen.getByRole("button", { name: "Choose repository folder" }));
+
+    const folders = await screen.findByRole("list", { name: "Folders" });
+    await waitFor(() => expect(folders.textContent).toContain("my-project"));
+    // Only the git repository is directly selectable; a plain folder navigates.
+    expect(screen.getAllByRole("button", { name: "Select" })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Choose repository folder" }).textContent)
+        .toContain("/home/dev/my-project"),
+    );
+    // The name is derived from the folder when the field is still blank.
+    expect((screen.getByLabelText("Repository name") as HTMLInputElement).value).toBe("my-project");
   });
 
   it("keeps edits made while a save is in flight", async () => {

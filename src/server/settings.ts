@@ -26,6 +26,11 @@ export const SETTING_DEFAULTS = {
   loopModel: "",
   evaluatorProvider: "anthropic",
   evaluatorModel: "",
+  // The one directory the repository picker may browse. Blank means the server
+  // user's home directory. Everything the picker lists is confined beneath
+  // this, resolved through symlinks, because unlike the old native dialog this
+  // is an HTTP surface and Radulf binds 0.0.0.0 once auth is configured.
+  folderBrowserRoot: "",
   omlxBaseUrl: "http://127.0.0.1:8000",
   omlxApiKey: "",
   openrouterApiKey: "",
@@ -241,6 +246,14 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
     } else if (REASONING_LEVEL_SETTINGS.has(key)) {
       if (typeof settingValue !== "string" || !REASONING_LEVEL_SET.has(settingValue)) {
         invalid(`${key} must be one of: ${REASONING_LEVELS.join(", ")}`);
+      }
+    } else if (key === "folderBrowserRoot") {
+      if (typeof settingValue !== "string") invalid("folderBrowserRoot must be a path");
+      // Blank is meaningful (fall back to $HOME); anything else must be
+      // absolute, since a relative root would resolve against whatever the
+      // server's cwd happens to be.
+      if (settingValue.trim() && !settingValue.trim().startsWith("/") && !settingValue.trim().startsWith("~")) {
+        invalid("folderBrowserRoot must be an absolute path");
       }
     } else if (key === "omlxBaseUrl") {
       if (typeof settingValue !== "string") invalid("omlxBaseUrl must be a URL");

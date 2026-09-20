@@ -55,10 +55,16 @@ OpenRouter and a local server need no login at all — set an API key or a base 
 
 ## Your first card
 
-1. **Register a repo.** Open **Settings → Repositories → Add repository**.
-   Give it a name, choose its folder (or type an absolute path), and set its
-   default branch or leave it blank to auto-detect. Radulf never writes to this
-   checkout except when merging an approved card.
+1. **Register a repo.** Open **Settings → Repositories → Add repository**, or
+   pick **Add a repository…** in the repository dropdown when creating a task.
+   Browse to the folder (entries carrying a `.git` are marked, and offer
+   **Select** directly), or type an absolute path. Set the default branch, or
+   leave it blank to auto-detect. Radulf never writes to this checkout except
+   when merging an approved card.
+
+   Browsing is confined to one directory, your home directory unless
+   **Settings → Repositories → Browsable root** says otherwise. A repo kept
+   outside that root is still reachable by typing its path.
 2. **Write a card.** A title, and a description that states the definition of
    done. Be concrete about what "finished" means — the evaluator will hold the
    loop to exactly that. The card lands in **Backlog**, where nothing will start

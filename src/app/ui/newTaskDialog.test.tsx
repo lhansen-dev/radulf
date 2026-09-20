@@ -12,16 +12,64 @@ vi.mock("next/link", () => ({
 
 beforeEach(() => {
   vi.stubGlobal("confirm", () => false);
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => ({
     ok: true,
-    json: async () =>
-      String(url).includes("/providers/")
-        ? { models: [] }
-        : { plannerProvider: "p", loopProvider: "l", evaluatorProvider: "e" },
+    json: async () => {
+      const target = String(url);
+      if (target.includes("/providers/")) return { models: [] };
+      if (target.includes("/api/folder-browser")) {
+        return {
+          root: "/home/dev", path: "/home/dev", parent: null, truncated: false,
+          entries: [
+            { name: "a-repo", path: "/home/dev/a-repo", isGitRepo: true },
+            { name: "notes", path: "/home/dev/notes", isGitRepo: false },
+          ],
+        };
+      }
+      if (target.includes("/api/repos") && init?.method !== "GET") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { name: string; path: string };
+        return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", createdAt: "" };
+      }
+      return { plannerProvider: "p", loopProvider: "l", evaluatorProvider: "e" };
+    },
   }))) as unknown as typeof fetch;
 });
 
 describe("NewTaskDialog", () => {
+  it("registers a repository browsed from inside the dialog and selects it", async () => {
+    const user = userEvent.setup();
+    render(<NewTaskDialog repos={[]} onClose={() => {}} onCreated={() => {}} />);
+
+    // With no repositories the browser opens straight away, rather than
+    // sending the user to Settings and back.
+    const folders = await screen.findByRole("list", { name: "Folders" });
+    expect(folders.textContent).toContain("a-repo");
+    // Only a git repository offers Select; a plain folder is navigation only.
+    expect(screen.getAllByRole("button", { name: "Select" })).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Select" }));
+
+    const repoSelect = await screen.findByLabelText("Repository");
+    await waitFor(() => expect((repoSelect as HTMLSelectElement).value).toBe("new-repo"));
+    expect(repoSelect.textContent).toContain("a-repo");
+    cleanup();
+  });
+
+  it("offers browsing from the repository select when repositories exist", async () => {
+    const user = userEvent.setup();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={() => {}}
+      />
+    );
+    expect(screen.queryByRole("list", { name: "Folders" })).toBeNull();
+    await user.selectOptions(screen.getByLabelText("Repository"), "__add__");
+    expect(await screen.findByRole("list", { name: "Folders" })).toBeTruthy();
+    cleanup();
+  });
+
   it("keeps focus in the Title input while typing", async () => {
     const user = userEvent.setup();
     render(
