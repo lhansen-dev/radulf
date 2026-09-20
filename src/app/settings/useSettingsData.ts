@@ -29,6 +29,8 @@ export type Settings = {
   sandboxNetworkAllowlist: string;
   sandboxWeakerIsolationForGoTls: boolean;
   notificationsEnabled: boolean;
+  attentionStaleMinutes: number;
+  alertWebhookUrl: string;
   soundEnabled: boolean;
   theme: string;
   plannerPromptTemplate: string;

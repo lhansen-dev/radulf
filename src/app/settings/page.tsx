@@ -353,6 +353,10 @@ export default function SettingsPage() {
                     <div className="pt-4">
                       <ToggleRow title="Alert sounds" description="Play a sound alongside task notifications." {...toggle("soundEnabled")} />
                     </div>
+                    <div className="grid grid-cols-1 gap-5 pt-4 sm:grid-cols-2">
+                      {numberInput("attentionStaleMinutes", "Waiting-too-long alert (minutes)", "How long a card may sit in Needs Attention before Radulf says so. Desktop notifications only reach you with a tab open; this fires either way.")}
+                      {textInput("alertWebhookUrl", { label: "Alert webhook URL", type: "url", placeholder: "https://ntfy.sh/your-topic" })}
+                    </div>
                   </div>
                   <button
                     onClick={() => {

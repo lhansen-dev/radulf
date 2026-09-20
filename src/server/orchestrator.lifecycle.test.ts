@@ -57,6 +57,8 @@ vi.mock("./settings", () => ({
     sandboxNetworkAllowlist: "",
     sandboxWeakerIsolationForGoTls: false,
     notificationsEnabled: false,
+    attentionStaleMinutes: 15,
+    alertWebhookUrl: "",
     soundEnabled: false,
     theme: "default",
     plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
@@ -702,6 +704,72 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(unsignalled).toHaveLength(2);
       const run = db.select().from(runs).all().find((row) => row.cardId === "no-signal")!;
       expect(run.exitReason).toBe("loop ended two iterations without writing .ralph/ITERATION_DONE");
+    });
+  });
+
+  describe("a card waiting on a human", () => {
+    /** Put `cardId` into Needs Attention as the orchestrator does, with the
+     * card.moved event the sweep anchors on, `minutesAgo` in the past. */
+    function waiting(cardId: string, minutesAgo: number, reason = "evaluator failed") {
+      card(cardId, "needs_attention");
+      db.insert(events)
+        .values({
+          cardId,
+          runId: null,
+          type: "card.moved",
+          payload: JSON.stringify({ from: "evaluating", to: "needs_attention", reason }),
+          createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+        })
+        .run();
+    }
+
+    const staleEvents = (cardId: string) =>
+      db.select().from(events).all()
+        .filter((e) => e.type === "card.attention_stale" && e.cardId === cardId);
+
+    it("says nothing while the card is still fresh", () => {
+      waiting("fresh", 2);
+      routeOrchestrator().sweepStaleAttention();
+      expect(staleEvents("fresh")).toHaveLength(0);
+    });
+
+    it("announces a card nobody has come back to", () => {
+      // Spec 18 §5: the card this was measured against sat here for 86
+      // minutes with nothing watching but a browser tab that was not open.
+      waiting("stale", 86);
+      routeOrchestrator().sweepStaleAttention();
+
+      const [event] = staleEvents("stale");
+      expect(event).toBeDefined();
+      expect(JSON.parse(event.payload)).toMatchObject({ waitingMinutes: 86, reason: "evaluator failed" });
+    });
+
+    it("says it once per entry, not once per sweep", () => {
+      waiting("once", 30);
+      const orchestrator = routeOrchestrator();
+      orchestrator.sweepStaleAttention();
+      orchestrator.sweepStaleAttention();
+      orchestrator.sweepStaleAttention();
+      expect(staleEvents("once")).toHaveLength(1);
+    });
+
+    it("speaks again when the card comes back after being dealt with", () => {
+      waiting("again", 30);
+      const orchestrator = routeOrchestrator();
+      orchestrator.sweepStaleAttention();
+      // Retried, failed again, and nobody came back a second time.
+      db.insert(events)
+        .values({
+          cardId: "again",
+          runId: null,
+          type: "card.moved",
+          payload: JSON.stringify({ from: "planning", to: "needs_attention", reason: "planner failed" }),
+          createdAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+        })
+        .run();
+      orchestrator.sweepStaleAttention();
+
+      expect(staleEvents("again")).toHaveLength(2);
     });
   });
 

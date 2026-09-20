@@ -31,6 +31,7 @@ import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
 import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
 import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
+import { postAlert } from "./alerts";
 import { limitCooldownMs } from "./providerRateLimit";
 import { removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
@@ -63,6 +64,21 @@ type Card = typeof cards.$inferSelect;
 type Run = typeof runs.$inferSelect;
 
 const HARNESS_STATUSES: CardStatus[] = ["planning", "looping", "evaluating"];
+
+/** How often to look for a card that has been waiting on a human (spec 18 §5).
+ * Well under the smallest useful staleness setting — the setting decides when
+ * to speak, this only decides how often to look. */
+const ATTENTION_SWEEP_MS = 60_000;
+
+/** An event payload, or an empty object when the row is unreadable. Corrupt
+ * JSON in one event must never stop a sweep. */
+function parsePayload(payload: string): Record<string, unknown> {
+  try {
+    return JSON.parse(payload) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
 
 /** Small models write DONE.md as often as DONE — accept both. */
 export function doneFilePath(ralphDir: string): string | null {
@@ -176,10 +192,70 @@ export class Orchestrator {
   });
   private reviewService = new ReviewService({ ...this.stageDeps, pump: () => this.pump() });
 
+  /** Spec 18 §5 sweep timer, held so startDraining() can stop it. */
+  private attentionTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(options: { autoStart?: boolean } = {}) {
     if (options.autoStart !== false) {
       this.recover();
       this.pump();
+      this.attentionTimer = setInterval(() => this.sweepStaleAttention(), ATTENTION_SWEEP_MS);
+      // Never hold the process open for a sweep (same reasoning as the disk
+      // watchdog): this is a reminder, not work.
+      this.attentionTimer.unref?.();
+    }
+  }
+
+  /**
+   * Announce a card that has been waiting on a human too long (spec 18 §5).
+   *
+   * Once per entry into Needs Attention, never a repeat: the check is whether
+   * a `card.attention_stale` event exists newer than the `card.moved` that put
+   * it there. That anchor is used rather than `cards.updatedAt` because
+   * editing the card's description or its model overrides — the two things an
+   * operator is most likely to do while it waits — would otherwise restart the
+   * clock on the very card being waited on.
+   */
+  sweepStaleAttention() {
+    const staleBefore = new Date(Date.now() - getSettings().attentionStaleMinutes * 60_000)
+      .toISOString();
+    const waiting = db
+      .select()
+      .from(cards)
+      .where(eq(cards.status, "needs_attention"))
+      .all();
+    for (const card of waiting) {
+      const cardEvents = db
+        .select()
+        .from(events)
+        .where(eq(events.cardId, card.id))
+        .orderBy(desc(events.id))
+        .all();
+      // Walking back by event id rather than by timestamp: the newest of
+      // these two decides. An announcement first means this entry has already
+      // been announced; the move first means it has not.
+      const marker = cardEvents.find(
+        (e) =>
+          e.type === "card.attention_stale" ||
+          (e.type === "card.moved" && parsePayload(e.payload).to === "needs_attention"),
+      );
+      if (!marker || marker.type !== "card.moved") continue;
+      const enteredAt = marker.createdAt;
+      if (enteredAt > staleBefore) continue;
+
+      const reason = String(parsePayload(marker.payload).reason ?? "");
+      const waitingMinutes = Math.round((Date.now() - Date.parse(enteredAt)) / 60_000);
+      emitEvent("card.attention_stale", {
+        cardId: card.id,
+        payload: { waitingMinutes, enteredAt, reason },
+      });
+      void postAlert({
+        type: "card.attention_stale",
+        cardId: card.id,
+        title: `${card.title} has been waiting ${waitingMinutes} minutes`,
+        message: reason || "The card needs a decision before the pipeline can continue.",
+        url: `/card/${card.id}`,
+      });
     }
   }
 
@@ -530,6 +606,8 @@ export class Orchestrator {
    * its current iteration is committed. Called once, on shutdown signal. */
   startDraining() {
     this.draining = true;
+    if (this.attentionTimer) clearInterval(this.attentionTimer);
+    this.attentionTimer = null;
   }
 
   /** True while any repo has a run in flight — used by graceful shutdown.

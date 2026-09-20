@@ -108,6 +108,14 @@ export const SETTING_DEFAULTS = {
   // model-reachable. macOS-only in effect (no-op on Linux).
   sandboxWeakerIsolationForGoTls: false,
   notificationsEnabled: false,
+  // Spec 18 §5: how long a card may sit in Needs Attention before the
+  // orchestrator says so. Browser notifications only reach an operator with a
+  // tab open, which is how one card went unnoticed for 86 minutes.
+  attentionStaleMinutes: 15,
+  // Spec 18 §5: where card.attention_stale goes to leave this machine. Empty
+  // means nowhere, which is the default. A bare webhook on purpose — ntfy,
+  // Slack, Discord and a handler of your own all take the same POST.
+  alertWebhookUrl: "",
   soundEnabled: false,
   theme: "default",
   ...PROMPT_TEMPLATE_DEFAULTS,
@@ -166,6 +174,7 @@ const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   iterationHardTimeoutMinutes: [1, 1_440],
   evaluatorTimeoutMinutes: [1, 10_080],
   stallTimeoutSeconds: [30, 86_400],
+  attentionStaleMinutes: [1, 10_080],
 };
 /** Renamed keys, old → new. `getSettings` replays a stored legacy row onto its
  * successor so a customized value survives the rename; the orphan row is left

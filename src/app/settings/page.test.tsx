@@ -16,6 +16,7 @@ const initialSettings: Settings = {
   folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
   minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",
   sandboxWeakerIsolationForGoTls: false, notificationsEnabled: false, soundEnabled: false,
+  attentionStaleMinutes: 15, alertWebhookUrl: "",
   theme: "default", plannerPromptTemplate: "Plan {{TITLE}}", evaluatorPromptTemplate: "Review {{CRITERIA}}",
   improvePromptTemplate: "Improve {{FOCUS}}",
 };
