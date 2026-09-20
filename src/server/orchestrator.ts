@@ -846,6 +846,49 @@ export class Orchestrator {
           payload: { n, failed, stuck: result.stuck, summary: (result.error || result.lastText).slice(0, 200) },
         });
 
+        /**
+         * Bank whatever the iteration left behind: tick and commit a signalled
+         * task, surface a phantom, or record that nothing was signalled at all.
+         *
+         * Shared by the clean ending and the hard-timeout ending (spec 18 §1).
+         * A killed iteration's `.ralph/ITERATION_DONE` is as real as any
+         * other — the worktree survives a timeout either way, so reading a
+         * signal file that is already there can only bank work the run would
+         * otherwise discard and hand back to the next iteration as a task it
+         * has already done.
+         */
+        const bankIteration = async () => {
+          const bk = await performIterationBookkeeping({ ralphDir, worktreePath, planPath, pre: preIteration });
+          if (bk?.advanced) {
+            consecutiveUnsignalled = 0;
+            remindSignal = false;
+          } else if (bk) {
+            // Phantom completion: ITERATION_DONE without any work product. The
+            // checklist was NOT advanced, so the stall counter catches it.
+            consecutiveUnsignalled = 0;
+            remindSignal = false;
+            emitEvent("iteration.phantom", {
+              cardId,
+              runId,
+              payload: { n, taskNumber: bk.taskNumber, summary: bk.summary.slice(0, 200) },
+            });
+          } else {
+            // The agent settled without writing ITERATION_DONE at all. Any work
+            // it did is uncommitted and the checklist did not move, but the
+            // files it touched make the stall check see progress, so nothing
+            // else bounds this. Remind it once, then give up: repeating the
+            // task a third time has never yet produced the signal.
+            consecutiveUnsignalled += 1;
+            emitEvent("iteration.unsignalled", {
+              cardId,
+              runId,
+              payload: { n, taskNumber: task.taskNumber, attempt: consecutiveUnsignalled },
+            });
+            remindSignal = true;
+          }
+          return bk;
+        };
+
         // A premature DONE must not skip the remaining tasks or let done
         // bookkeeping credit the NEXT task after ITERATION_DONE credits this one.
         // Remove both spellings before normal bookkeeping so neither is committed
@@ -878,6 +921,17 @@ export class Orchestrator {
           return;
         }
         if (result.timedOut) {
+          // Spec 18 §1: bank before deciding anything. An agent that finished
+          // its task seconds before the kill has its tick and its commit, and
+          // one that was killed mid-thought is counted as unsignalled here —
+          // the missing-signal path below never runs on this branch, so
+          // without this the retry gets the identical prompt that just ran
+          // out of time. The elapsed time is deliberately NOT fed to
+          // productiveMs: a killed iteration demonstrates nothing about the
+          // pace a productive one keeps.
+          const banked = await bankIteration();
+          recordTaskCompleted(iter.id, planPath, task.taskNumber);
+          if (banked?.advanced) consecutiveStalls = 0;
           // When the iteration budget WAS the remaining run budget, this is
           // the run-level wall-clock cap — final.
           if (remaining <= budgetMs) return fail("timeout", n, "timeout");
@@ -919,38 +973,12 @@ export class Orchestrator {
 
         // Handle the ITERATION_DONE signal: the orchestrator performs the
         // checklist tick and commit — the agent never does.
-        const bkResult = await performIterationBookkeeping({ ralphDir, worktreePath, planPath, pre: preIteration });
+        const bkResult = await bankIteration();
         if (bkResult?.advanced) {
           consecutiveStalls = 0;
-          consecutiveUnsignalled = 0;
-          remindSignal = false;
           productiveMs.push(Date.now() - iterationStartedMs);
-        } else if (bkResult) {
-          consecutiveUnsignalled = 0;
-          remindSignal = false;
-          // Phantom completion: ITERATION_DONE without any work product. The
-          // checklist was NOT advanced, so the stall counter below catches it.
-          emitEvent("iteration.phantom", {
-            cardId,
-            runId,
-            payload: { n, taskNumber: bkResult.taskNumber, summary: bkResult.summary.slice(0, 200) },
-          });
-        } else {
-          // The agent settled without writing ITERATION_DONE at all. Any work
-          // it did is uncommitted and the checklist did not move, but the
-          // files it touched make the stall check below see progress, so
-          // nothing else bounds this. Remind it once, then give up: repeating
-          // the task a third time has never yet produced the signal.
-          consecutiveUnsignalled += 1;
-          emitEvent("iteration.unsignalled", {
-            cardId,
-            runId,
-            payload: { n, taskNumber: task.taskNumber, attempt: consecutiveUnsignalled },
-          });
-          if (consecutiveUnsignalled >= 2) {
-            return fail("loop ended two iterations without writing .ralph/ITERATION_DONE", n);
-          }
-          remindSignal = true;
+        } else if (!bkResult && consecutiveUnsignalled >= 2) {
+          return fail("loop ended two iterations without writing .ralph/ITERATION_DONE", n);
         }
         recordTaskCompleted(iter.id, planPath, task.taskNumber);
 

@@ -705,6 +705,99 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
+  describe("iteration hard timeout", () => {
+    /** What the harness returns when the hard timer fires: code 1 and
+     * timedOut, with no error string — the agent's last words survive as the
+     * summary, which is why a killed iteration can look like a finished one. */
+    const timedOutHarnessResult = {
+      timedOut: true,
+      error: "",
+      code: 1,
+      lastText: "The task is complete and ready for orchestrator review.",
+    };
+
+    function threeTasks(cardId: string) {
+      db.update(plans)
+        .set({ planMd: "## Tasks\n- [ ] first task\n- [ ] second task\n- [ ] final task\n" })
+        .where(eq(plans.cardId, cardId))
+        .run();
+    }
+
+    it("banks the work a killed iteration signalled instead of redoing the task", async () => {
+      // Spec 18 §1: measured on a real run, iteration 8 spent 10 minutes and
+      // 62 tool calls on a task, was killed, and iteration 9 was handed the
+      // same task and finished it in 30 seconds against the files already on
+      // disk. The tick and the commit were the only things missing.
+      card("timeout-banks");
+      plan("timeout-banks");
+      threeTasks("timeout-banks");
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      const nextIteration = deferred<never>();
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          fs.writeFileSync(path.join(cwd, "feature.txt"), "implemented first task");
+          fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), "first task complete");
+          return timedOutHarnessResult;
+        })
+        .mockReturnValueOnce(nextIteration.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("timeout-banks");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(2));
+      try {
+        expect(fs.readFileSync(planStatePath("timeout-banks"), "utf8"))
+          .toBe("## Tasks\n- [x] first task\n- [ ] second task\n- [ ] final task\n");
+        expect(mocks.runHarness.mock.calls[1][0].prompt).toContain("second task");
+        expect(getCard("timeout-banks").status).toBe("looping");
+      } finally {
+        orchestrator.cancelCard("timeout-banks");
+        nextIteration.reject(new Error("child exited after abort"));
+        await settle();
+      }
+    });
+
+    it("counts a killed iteration that signalled nothing as unsignalled", async () => {
+      // The missing-signal path never ran on the timeout branch, so the retry
+      // got the identical prompt that had just run out of time.
+      card("timeout-unsignalled");
+      plan("timeout-unsignalled");
+      threeTasks("timeout-unsignalled");
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      const nextIteration = deferred<never>();
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          fs.writeFileSync(path.join(cwd, "feature.txt"), "work with no signal");
+          return timedOutHarnessResult;
+        })
+        .mockReturnValueOnce(nextIteration.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("timeout-unsignalled");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(2));
+      try {
+        const unsignalled = db
+          .select()
+          .from(events)
+          .all()
+          .filter((event) => event.type === "iteration.unsignalled" && event.cardId === "timeout-unsignalled");
+        expect(unsignalled).toHaveLength(1);
+        // Same task, but the retry is told why it has it again.
+        expect(mocks.runHarness.mock.calls[1][0].prompt).toContain("first task");
+        expect(mocks.runHarness.mock.calls[1][0].prompt).toContain(".ralph/ITERATION_DONE");
+      } finally {
+        orchestrator.cancelCard("timeout-unsignalled");
+        nextIteration.reject(new Error("child exited after abort"));
+        await settle();
+      }
+    });
+  });
+
   describe("boot recovery", () => {
     /** A loop that died with the process: its run row is still "running", its
      * worktree holds the committed iterations, and the orchestrator-private
