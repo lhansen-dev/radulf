@@ -33,6 +33,7 @@ target, so the user can point the app at itself to improve it.
 | [14-sandboxing.md](14-sandboxing.md) | Kernel-enforced containment (srt sandbox + tool path guards + layout hygiene) for the skip-permissions loop (re-amends decision 7, hardens 13's Security) |
 | [15-github-pr-delivery.md](15-github-pr-delivery.md) | Push + open a GitHub PR as a second delivery target for an approved diff, replacing the local merge (amends decision 6) |
 | [16-local-provider-wire-format.md](16-local-provider-wire-format.md) | The local provider is any OpenAI-compatible server, registered over `openai-completions` (amends 12) |
+| [17-task-scoping.md](17-task-scoping.md) | A repo-aware scoping session that sharpens a card before planning, closes the planner's questions loop, and can propose a split (extends 04, adds a fourth role to decision 3) |
 
 ## Locked decisions
 
