@@ -6,15 +6,24 @@ and keep the existing checks green.
 
 ## Getting set up
 
-Requirements: macOS (Apple Silicon or Intel) and Node 22+.
+Requirements: macOS (Apple Silicon or Intel) and Node 22, as pinned in
+[`.nvmrc`](.nvmrc) and used by CI.
 
 ```bash
 git clone https://github.com/lhansen-dev/radulf.git
 cd radulf
+nvm use            # or otherwise match .nvmrc, see the note below
 make install
 make login         # opens pi — type /login to authenticate a provider
 make dev           # http://localhost:3000
 ```
+
+Match the pinned version rather than merely satisfying it. Node 24 ships npm
+11, which writes a lockfile npm 10 cannot install: `npm ci` fails with
+`Missing: @esbuild/... from lock file` even though the entries are present,
+because the two record nested and optional dependencies differently. CI runs
+the pinned version, so a lockfile generated on a newer Node will pass locally
+and fail there.
 
 All common tasks are driven through the [`Makefile`](Makefile) — run `make` to
 see the full list. It is the source of truth; CI and the release workflow call
