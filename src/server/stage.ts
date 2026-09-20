@@ -19,7 +19,10 @@ type Run = typeof runs.$inferSelect;
 type Repo = typeof repos.$inferSelect;
 type Plan = typeof plans.$inferSelect;
 
-export type FinishStatus = "completed" | "failed" | "timeout" | "cancelled";
+/** The terminal run statuses a stage may set. "interrupted" is the restart
+ * pair: recover() writes it for a run the process died under, and a drained
+ * loop writes it when it stops itself on an iteration boundary. */
+export type FinishStatus = "completed" | "failed" | "timeout" | "cancelled" | "interrupted";
 
 /** Reuse the card's existing worktree (retry, reject, restart) or make a fresh
  * one. `created` tells the caller to record it once its run row exists —
