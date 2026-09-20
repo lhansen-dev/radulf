@@ -52,7 +52,8 @@ export const SETTING_DEFAULTS = {
   defaultMaxIterations: 50,
   defaultTimeoutMinutes: 60,
   // Spec 11: per-iteration hard cap, always bounded by the run's remaining
-  // timeout. A single timeout retries once; two consecutive ones end the run.
+  // timeout. A single timeout retries once; a second one anywhere in the same
+  // run ends it (spec 18 §2).
   iterationHardTimeoutMinutes: 10,
   // Like planning, evaluation is one harness invocation after a completed
   // loop, rather than part of the loop's card-wide budget.

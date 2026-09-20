@@ -759,6 +759,46 @@ describe("Orchestrator cancellation lifecycle", () => {
       }
     });
 
+    it("ends the run on a second timeout even with a good iteration between", async () => {
+      // Spec 18 §2: the old streak reset on any iteration that did not time
+      // out, and the timeout path always retries the same task — a retry that
+      // usually succeeds in seconds against work already on disk. Both
+      // timeouts on the card this was measured against logged `consecutive: 1`.
+      card("timeout-budget");
+      plan("timeout-budget");
+      threeTasks("timeout-budget");
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      const signalled = (cwd: string, summary: string) => {
+        fs.writeFileSync(path.join(cwd, "feature.txt"), summary);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), summary);
+      };
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          signalled(cwd, "first task, killed at the wire");
+          return timedOutHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          signalled(cwd, "second task, clean");
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          fs.writeFileSync(path.join(cwd, "feature.txt"), "third task, killed");
+          return timedOutHarnessResult;
+        });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("timeout-budget");
+      await vi.waitFor(() => expect(getCard("timeout-budget").status).toBe("needs_attention"));
+
+      expect(mocks.runHarness).toHaveBeenCalledTimes(3);
+      const run = getRun("timeout-budget");
+      expect(run.status).toBe("timeout");
+      expect(run.exitReason).toBe("iteration-timeout");
+    });
+
     it("counts a killed iteration that signalled nothing as unsignalled", async () => {
       // The missing-signal path never ran on the timeout branch, so the retry
       // got the identical prompt that had just run out of time.

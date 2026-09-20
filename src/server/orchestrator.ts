@@ -758,7 +758,13 @@ export class Orchestrator {
       const hardTimeoutMs = Math.max(60_000, settings.iterationHardTimeoutMinutes * 60_000);
       let consecutiveFailures = 0;
       let consecutiveStalls = 0;
-      let consecutiveIterationTimeouts = 0;
+      /** Spec 18 §2: timeouts are counted for the whole run, not as a streak.
+       * The streak reset on any iteration that did not time out, and the
+       * timeout path always retries the same task — a retry that usually
+       * succeeds in seconds against work already on disk. The counter was
+       * measuring the retry's success rather than the run's health, and both
+       * timeouts on the card this was measured against logged `consecutive: 1`. */
+      let iterationTimeouts = 0;
       let consecutiveUnsignalled = 0;
       let remindSignal = false;
       /** Wall-clock of the iterations that advanced the checklist, feeding
@@ -936,17 +942,17 @@ export class Orchestrator {
           // the run-level wall-clock cap — final.
           if (remaining <= budgetMs) return fail("timeout", n, "timeout");
           // Per-iteration hard timeout: one retry with the worktree
-          // preserved; two consecutive timeouts end the run (spec 11).
-          consecutiveIterationTimeouts += 1;
+          // preserved; a second timeout anywhere in the run ends it (spec 11,
+          // amended by spec 18 §2).
+          iterationTimeouts += 1;
           emitEvent("iteration.timeout", {
             cardId,
             runId,
-            payload: { n, hardTimeoutMs, budgetMs, consecutive: consecutiveIterationTimeouts },
+            payload: { n, hardTimeoutMs, budgetMs, timeoutsThisRun: iterationTimeouts },
           });
-          if (consecutiveIterationTimeouts >= 2) return fail("iteration-timeout", n, "timeout");
+          if (iterationTimeouts >= 2) return fail("iteration-timeout", n, "timeout");
           continue;
         }
-        consecutiveIterationTimeouts = 0;
         if (failed) {
           consecutiveFailures += 1;
           // A first-iteration connection/auth failure means the provider is
