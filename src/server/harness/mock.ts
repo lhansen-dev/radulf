@@ -39,6 +39,7 @@ type EventStream = ReturnType<StreamSimple>;
 type AssistantMessage = Awaited<ReturnType<EventStream["result"]>>;
 type AssistantEvent = EventStream extends AsyncIterable<infer E> ? E : never;
 type Block = AssistantMessage["content"][number];
+type ToolArgs = Extract<Block, { type: "toolCall" }>["arguments"];
 
 type MockRole = "planner" | "loop" | "evaluator" | "readOnly";
 
@@ -60,7 +61,7 @@ type Script = (turn: Turn) => Reply;
 let toolCallSeq = 0;
 const say = (text: string): Block => ({ type: "text", text });
 const think = (thinking: string): Block => ({ type: "thinking", thinking });
-const call = (name: string, args: Record<string, unknown>): Block => ({
+const call = (name: string, args: ToolArgs): Block => ({
   type: "toolCall",
   id: `mock-call-${++toolCallSeq}`,
   name,
@@ -232,10 +233,23 @@ function messageText(content: unknown): string {
     .join("\n");
 }
 
+/** The tool set the transcript declares. pi folds `Context.tools` into the
+ * leading system message before a provider sees it, so the names arrive as
+ * `toolsAdded`/`toolsRemoved` deltas rather than a field on the context. */
+function declaredTools(ctx: Context): Set<string> {
+  const names = new Set<string>();
+  for (const message of ctx.messages) {
+    if (message.role !== "system") continue;
+    for (const tool of message.toolsRemoved ?? []) names.delete(tool.name);
+    for (const tool of message.toolsAdded ?? []) names.add(tool.name);
+  }
+  return names;
+}
+
 /** Role from the tool set toolsForRole() bound (pi.ts): only loop and
  * evaluator hold bash, only the planner writes without it. */
 function roleOf(ctx: Context, prompt: string): MockRole {
-  const tools = new Set((ctx.tools ?? []).map((t) => t.name));
+  const tools = declaredTools(ctx);
   if (tools.has("bash")) return /^LAST_TASK=/m.test(prompt) ? "loop" : "evaluator";
   if (tools.has("write")) return "planner";
   return "readOnly";
