@@ -14,6 +14,7 @@ export type Settings = {
   evaluatorModel: string;
   evaluatorReasoningLevel: string;
   plannerTimeoutMinutes: number;
+  folderBrowserRoot: string;
   omlxBaseUrl: string;
   omlxApiKey: string;
   openrouterApiKey: string;

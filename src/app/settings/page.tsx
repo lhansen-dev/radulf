@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Repo } from "../ui/api";
+import { FolderBrowser } from "../ui/folderBrowser";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
@@ -310,6 +311,15 @@ export default function SettingsPage() {
             <SettingsPanel active={activeSection} section="repos">
               <div className="flex flex-col gap-5">
                 <ReposSection repos={repos} onChange={refetch} />
+                <section className={sectionCls}>
+                  <SectionHeading title="Browsable root">
+                    The one directory the repository picker may browse. Blank means your home
+                    directory. Unlike the old native chooser this is an HTTP surface, so it is
+                    confined to this root; a repository kept outside it is still reachable by
+                    typing its absolute path.
+                  </SectionHeading>
+                  {textInput("folderBrowserRoot", { label: "Browsable root", placeholder: "$HOME" })}
+                </section>
                 <GithubSection />
               </div>
             </SettingsPanel>
@@ -712,34 +722,21 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   // Shown on the row it belongs to — e.g. the conflict when a repo still has
   // running work — rather than below the add form.
   const [removeError, setRemoveError] = useState<{ repoId: string; message: string } | null>(null);
-  const [picking, setPicking] = useState(false);
   const [notARepo, setNotARepo] = useState(false);
   const [emptyRepo, setEmptyRepo] = useState(false);
-  // The picker opens on the machine running the server, so it is useless from a
-  // phone or a remote browser — typing stays available as a fallback.
+  const [browsing, setBrowsing] = useState(false);
+  // Typing an absolute path stays available: the browser is confined to one
+  // root, and a repo kept outside it has to be reachable some other way.
   const [typePath, setTypePath] = useState(false);
 
-  async function chooseFolder() {
-    setError("");
-    setPicking(true);
-    try {
-      const picked = await api<{
-        path?: string;
-        isGitRepo?: boolean;
-        hasCommits?: boolean;
-        cancelled?: boolean;
-      }>("/api/folder-picker", { method: "POST" });
-      if (!picked.path) return; // cancelled
-      setPath(picked.path);
-      setNotARepo(picked.isGitRepo === false);
-      setEmptyRepo(picked.isGitRepo === true && picked.hasCommits === false);
-      if (!name.trim()) setName(picked.path.split("/").pop() ?? "");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setTypePath(true);
-    } finally {
-      setPicking(false);
-    }
+  function pickFolder(picked: string) {
+    setPath(picked);
+    setBrowsing(false);
+    setNotARepo(false);
+    setEmptyRepo(false);
+    // POST /api/repos validates with git; these flags only pre-empt the
+    // round trip for the two cases worth warning about early.
+    if (!name.trim()) setName(picked.split("/").pop() ?? "");
   }
 
   async function add() {
@@ -824,20 +821,27 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 className={`${inputCls} font-mono`}
               />
             ) : (
-              <button
-                id="repo-folder"
-                type="button"
-                onClick={() => void chooseFolder()}
-                disabled={picking}
-                aria-label="Choose repository folder"
-                title={path || undefined}
-                className={`${inputCls} flex items-center gap-2 text-left hover:bg-foreground/10 disabled:opacity-60`}
-              >
-                <span aria-hidden className="text-foreground/50">↳</span>
-                <span className={`min-w-0 truncate ${path ? "font-mono" : "text-foreground/40"}`}>
-                  {picking ? "Waiting for the folder picker…" : path || "Choose folder…"}
-                </span>
-              </button>
+              <>
+                <button
+                  id="repo-folder"
+                  type="button"
+                  onClick={() => setBrowsing((open) => !open)}
+                  aria-label="Choose repository folder"
+                  aria-expanded={browsing}
+                  title={path || undefined}
+                  className={`${inputCls} flex items-center gap-2 text-left hover:bg-foreground/10`}
+                >
+                  <span aria-hidden className="text-foreground/50">↳</span>
+                  <span className={`min-w-0 truncate ${path ? "font-mono" : "text-foreground/40"}`}>
+                    {path || "Browse folders…"}
+                  </span>
+                </button>
+                {browsing && (
+                  <div className="mt-2">
+                    <FolderBrowser onPick={pickFolder} onError={setError} />
+                  </div>
+                )}
+              </>
             )}
           </div>
           <button

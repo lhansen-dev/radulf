@@ -13,7 +13,7 @@ const initialSettings: Settings = {
   evaluatorProvider: "anthropic", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
   plannerTimeoutMinutes: 30, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
   iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
-  omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
+  folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
   minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",
   sandboxWeakerIsolationForGoTls: false, notificationsEnabled: false, soundEnabled: false,
   theme: "default", plannerPromptTemplate: "Plan {{TITLE}}", evaluatorPromptTemplate: "Review {{CRITERIA}}",
@@ -55,6 +55,15 @@ describe("SettingsPage", () => {
       }
       if (url.startsWith("/api/repos/") && init?.method === "DELETE") {
         return json({ error: "cannot remove a repository while one of its tasks is running or merging" }, 409);
+      }
+      if (url.startsWith("/api/folder-browser")) {
+        return json({
+          root: "/home/dev", path: "/home/dev", parent: null, truncated: false,
+          entries: [
+            { name: "my-project", path: "/home/dev/my-project", isGitRepo: true },
+            { name: "downloads", path: "/home/dev/downloads", isGitRepo: false },
+          ],
+        });
       }
       if (url.startsWith("/api/providers/")) return json({
         models: [
@@ -158,6 +167,26 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByLabelText("OpenRouter API key") as HTMLInputElement).value).toBe("••••••••");
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("browses for a repository folder in the browser, not a host dialog", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Repositories");
+    fireEvent.click(screen.getByRole("button", { name: "Choose repository folder" }));
+
+    const folders = await screen.findByRole("list", { name: "Folders" });
+    await waitFor(() => expect(folders.textContent).toContain("my-project"));
+    // Only the git repository is directly selectable; a plain folder navigates.
+    expect(screen.getAllByRole("button", { name: "Select" })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Choose repository folder" }).textContent)
+        .toContain("/home/dev/my-project"),
+    );
+    // The name is derived from the folder when the field is still blank.
+    expect((screen.getByLabelText("Repository name") as HTMLInputElement).value).toBe("my-project");
   });
 
   it("keeps edits made while a save is in flight", async () => {
