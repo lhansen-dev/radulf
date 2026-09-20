@@ -15,8 +15,8 @@ type ProviderModel = {
   description: string;
   reasoningEfforts?: string[];
   reasoningMandatory?: boolean;
-  /** USD per 1M tokens, when the provider reports pricing. Undefined for
-   * oMLX — a local model has no market rate. */
+  /** USD per 1M tokens, when the provider reports pricing. Undefined for a
+   * self-hosted model, which has no market rate. */
   costPerMillionInput?: number;
   costPerMillionOutput?: number;
 };
@@ -123,7 +123,7 @@ function priceLabel(m: ProviderModel, input = " / 1M input", output = " / 1M out
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude subscription)" },
-  { id: "omlx", label: "oMLX (local)" },
+  { id: "omlx", label: "Local / self-hosted (OpenAI-compatible)" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "chatgpt", label: "ChatGPT (Codex subscription)" },
   { id: "copilot", label: "GitHub Copilot (subscription)" },
@@ -140,7 +140,7 @@ const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "m
  * Levels to offer for the picked model, ordered by the canonical ladder. When
  * the provider advertises the model's supported efforts (OpenRouter), narrow to
  * those — plus "off" unless reasoning is mandatory. Otherwise (the subscription
- * providers, oMLX, an unlisted/custom id, or the list not yet loaded) offer the
+ * providers, a self-hosted model, an unlisted/custom id, or the list not yet loaded) offer the
  * full ladder; pi clamps anything the model can't honor. `current` is always kept so the
  * <select> never renders blank against a stored value the model dropped.
  */
@@ -160,7 +160,7 @@ const MODEL_HINTS: Record<string, string> = {
   anthropic: "Leave blank to use your subscription's default model.",
   chatgpt: "Leave blank to use your subscription's default model.",
   copilot: "Leave blank to use your subscription's default model.",
-  omlx: "Use the id of a model on your oMLX server that supports tool use.",
+  omlx: "Use the id of a model your server reports at /v1/models; it must support tool use.",
   openrouter: "Type a model id to search the available models.",
   mock: "The model id picks a scripted scenario. Leave blank for happy-path.",
 };
@@ -324,10 +324,10 @@ export default function SettingsPage() {
                   <p className="text-xs leading-relaxed text-foreground/50">Sign in through Radulf so your agents can use the connection. Logins in your personal pi or Claude directory are separate.</p>
                 </section>
                 <section className={sectionCls}>
-                  <SectionHeading title="Local models · oMLX">Connect a local server with models that support tool use.</SectionHeading>
+                  <SectionHeading title="Local models">Connect your own OpenAI-compatible server (oMLX, vLLM, LM Studio) running a model that supports tool use.</SectionHeading>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    {textInput("omlxBaseUrl", { label: "oMLX base URL" })}
-                    {textInput("omlxApiKey", { label: "oMLX API key", type: "password", placeholder: "from oMLX settings (optional)" })}
+                    {textInput("omlxBaseUrl", { label: "Local server base URL" })}
+                    {textInput("omlxApiKey", { label: "Local server API key", type: "password", placeholder: "optional; many local servers need none" })}
                   </div>
                 </section>
                 <section className={sectionCls}>

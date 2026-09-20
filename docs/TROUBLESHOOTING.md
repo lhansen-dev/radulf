@@ -44,14 +44,14 @@ The loop's provider did not answer. The suffix is the underlying error —
 OpenRouter has no default model; unlike the subscription providers it needs an
 explicit model id. See [Providers and models](PROVIDERS.md#configuring-a-role).
 
-**`failed to resolve oMLX model: …` / `no models available from oMLX`**
-No model was configured and oMLX offered none to fall back on. The oMLX server
+**`no model selected for the local provider: …` / `no models available from oMLX`**
+No model was configured and the local server offered none to fall back on. It
 must already be running and reachable at the configured base URL (default
 `http://127.0.0.1:8000`), and the model must be tool-capable.
 
-**`OpenRouter does not serve model "…"` / `oMLX does not serve model "…"`**
+**`OpenRouter does not serve model "…"` / `the local endpoint does not serve model "…"`**
 The model id is not one that provider offers. Check it against the provider's
-own model list.
+own model list; the local endpoint's error names everything it is serving.
 
 **`set your OpenRouter API key in Settings first`**
 Exactly that — the key is stored in Settings, not in the environment.

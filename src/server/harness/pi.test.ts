@@ -69,15 +69,28 @@ describe("shouldSandboxBash — L1 routing (spec 14 Phase 6)", () => {
 });
 
 describe("omlxProviderConfig", () => {
-  it("builds the omlx provider with baseUrl, anthropic-messages api, and the model, falling back on the api key", () => {
+  it("builds the local provider with a /v1 baseUrl, the OpenAI wire format, and the model, falling back on the api key", () => {
     const config = omlxProviderConfig("some-model", testSettings({ omlxBaseUrl: "http://localhost:8000", omlxApiKey: "" }));
 
-    expect(config.baseUrl).toBe("http://localhost:8000");
-    expect(config.api).toBe("anthropic-messages");
+    expect(config.baseUrl).toBe("http://localhost:8000/v1");
+    expect(config.api).toBe("openai-completions");
     expect(config.apiKey).toBe("omlx");
     expect(config.models[0].id).toBe("some-model");
     expect(config.models[0].name).toBe("some-model");
     expect(omlxProviderConfig("m", testSettings({ omlxApiKey: "secret" })).apiKey).toBe("secret");
+  });
+
+  it("takes the served context window and keeps the output cap under it", () => {
+    const s = testSettings({ omlxBaseUrl: "http://localhost:8000" });
+    expect(omlxProviderConfig("m", s, 65_536).models[0].contextWindow).toBe(65_536);
+    expect(omlxProviderConfig("m", s, 65_536).models[0].maxTokens).toBe(8_192);
+    // A small window must not carry an output cap it cannot satisfy.
+    expect(omlxProviderConfig("m", s, 8_192).models[0].maxTokens).toBe(2_048);
+  });
+
+  it("falls back to a window no larger than any plausible server", () => {
+    const s = testSettings({ omlxBaseUrl: "http://localhost:8000" });
+    expect(omlxProviderConfig("m", s).models[0].contextWindow).toBe(32_768);
   });
 });
 

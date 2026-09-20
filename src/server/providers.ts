@@ -1,21 +1,23 @@
 import { getSettings, type Settings } from "./settings";
 import { listAuthedModels } from "./harness";
+import { fetchJson } from "./fetchJson";
+import { listLocalModels } from "./localEndpoint";
 import { mockProviderModels } from "./harness/mock";
 
 /**
  * A provider is anything the loop runner can use. Every provider runs through
  * the one pi SDK harness (spec 13); they differ only in auth. "anthropic" uses
  * the pi Claude Pro/Max login, "chatgpt" the pi ChatGPT/OpenAI (Codex) login,
- * "copilot" the pi GitHub Copilot login, "omlx" a local models.json endpoint,
- * and "openrouter" a runtime API key. "mock" is a scripted stand-in for testing
- * (harness/mock.ts) — no model is called, and it works only on a server
- * started with RADULF_MOCK_LLM=1.
+ * "copilot" the pi GitHub Copilot login, "omlx" a self-hosted OpenAI-compatible
+ * endpoint, and "openrouter" a runtime API key. "mock" is a scripted stand-in
+ * for testing (harness/mock.ts) — no model is called, and it works only on a
+ * server started with RADULF_MOCK_LLM=1.
  */
 export const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude subscription)" },
   { id: "chatgpt", label: "ChatGPT (Codex subscription)" },
   { id: "copilot", label: "GitHub Copilot (subscription)" },
-  { id: "omlx", label: "oMLX (local)" },
+  { id: "omlx", label: "Local / self-hosted (OpenAI-compatible)" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "mock", label: "Mock (scripted, no model)" },
 ] as const;
@@ -44,9 +46,11 @@ export type ProviderModel = {
   reasoningMandatory?: boolean;
   /** USD per 1M tokens, when pricing is available: from pi's model catalog for
    * anthropic/chatgpt/copilot, from OpenRouter's own `/v1/models` pricing for
-   * openrouter. Undefined for oMLX — a local model has no market rate. */
+   * openrouter. Undefined for a self-hosted model, which has no market rate. */
   costPerMillionInput?: number;
   costPerMillionOutput?: number;
+  /** Served context window, when the provider reports one (self-hosted only). */
+  contextWindow?: number;
 };
 
 type ModelListCacheEntry = { models: ProviderModel[]; fetchedAt: number };
@@ -113,13 +117,13 @@ async function fetchProviderModels(
     case "mock":
       return mockProviderModels();
     case "omlx": {
-      const data = await fetchJson(
-        `${s.omlxBaseUrl.replace(/\/$/, "")}/v1/models`,
-        s.omlxApiKey || "omlx",
-        `oMLX at ${s.omlxBaseUrl}`
-      );
-      const models = (data as { data?: { id: string }[] }).data ?? [];
-      return models.map((m) => ({ value: m.id, displayName: m.id, description: "" }));
+      const models = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey);
+      return models.map((m) => ({
+        value: m.id,
+        displayName: m.id,
+        description: m.contextWindow ? `${m.contextWindow.toLocaleString()} ctx` : "",
+        ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+      }));
     }
     case "openrouter": {
       if (!s.openrouterApiKey) throw new Error("set your OpenRouter API key in Settings first");
@@ -186,43 +190,5 @@ export async function preflightProvider(
     throw new Error(
       `${provider} does not serve model "${model}" (${models.length} models available)`
     );
-  }
-}
-
-// Transient network hiccups and provider-side overload (5xx/429) are worth a
-// short retry; a bad API key or other 4xx would just fail the same way three
-// times slower, so those are not retried.
-const FETCH_RETRY_DELAYS_MS = [250, 750];
-
-function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
-async function fetchJson(url: string, bearer: string, who: string): Promise<unknown> {
-  let lastError: Error | undefined;
-  for (let attempt = 0; ; attempt++) {
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        headers: { Authorization: `Bearer ${bearer}` },
-        signal: AbortSignal.timeout(10_000),
-        cache: "no-store",
-      });
-    } catch (e) {
-      lastError = new Error(`cannot reach ${who}: ${e instanceof Error ? e.message : e}`);
-      if (attempt >= FETCH_RETRY_DELAYS_MS.length) throw lastError;
-      await new Promise((r) => setTimeout(r, FETCH_RETRY_DELAYS_MS[attempt]));
-      continue;
-    }
-    if (!res.ok) {
-      const body = (await res.text()).slice(0, 300);
-      if (isRetryableStatus(res.status) && attempt < FETCH_RETRY_DELAYS_MS.length) {
-        lastError = new Error(`${who} responded ${res.status}: ${body}`);
-        await new Promise((r) => setTimeout(r, FETCH_RETRY_DELAYS_MS[attempt]));
-        continue;
-      }
-      throw new Error(`${who} responded ${res.status}: ${body}`);
-    }
-    return res.json();
   }
 }

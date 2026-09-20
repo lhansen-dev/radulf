@@ -49,7 +49,7 @@ Use the `make login` target rather than running `pi` yourself; if you want to
 know why, [Providers and models](PROVIDERS.md#the-five-providers) explains where
 the credential lands and what goes wrong otherwise.
 
-OpenRouter and oMLX need no login at all — set an API key or a base URL on the
+OpenRouter and a local server need no login at all — set an API key or a base URL on the
 **Settings → Providers & keys** page instead. The full matrix is in
 [Providers and models](PROVIDERS.md).
 

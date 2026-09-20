@@ -13,6 +13,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import { listLocalModels, v1Root } from "../localEndpoint";
 import type { ProviderId } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
@@ -56,9 +57,9 @@ function toThinkingLevel(level: string): ThinkingLevel {
 
 /**
  * Radulf provider id → pi provider id. pi calls the ChatGPT subscription
- * `openai-codex` and the Copilot subscription `github-copilot`; oMLX and the
- * scripted mock are custom providers we register at runtime; the rest match by
- * name.
+ * `openai-codex` and the Copilot subscription `github-copilot`; the self-hosted
+ * endpoint and the scripted mock are custom providers we register at runtime;
+ * the rest match by name.
  */
 const PI_PROVIDER: Record<ProviderId, string> = {
   anthropic: "anthropic",
@@ -179,18 +180,25 @@ export function resetModelRuntime(): void {
 }
 
 /**
- * The oMLX custom-provider block. Shape from spec 12 (`anthropic-messages`
- * matches spec 09's @ai-sdk/anthropic choice; `openai-completions` is the
- * documented fallback if /v1/messages doesn't slot cleanly). Registered on the
- * runtime per run rather than written to disk, so a per-card model id resolves
- * without rewriting models.json.
+ * The custom-provider block for the self-hosted endpoint behind the `omlx`
+ * provider id. Registered on the runtime per run rather than written to disk,
+ * so a per-card model id resolves without rewriting models.json.
+ *
+ * `openai-completions`, not spec 12's `anthropic-messages` (spec 16). Spec 12
+ * picked the Anthropic wire format to match spec 09's @ai-sdk/anthropic choice
+ * and named this one as the fallback "if /v1/messages doesn't slot cleanly";
+ * for any server other than oMLX itself there is no /v1/messages to slot into.
+ * vLLM serves /v1/chat/completions only.
  */
-export function omlxProviderConfig(model: string, s: Settings) {
+export function omlxProviderConfig(model: string, s: Settings, contextWindow?: number) {
+  // Conservative when the server reports nothing: the number only has to be no
+  // larger than the truth for compaction to fire in time.
+  const window = contextWindow ?? 32_768;
   return {
-    name: "oMLX",
-    baseUrl: s.omlxBaseUrl,
+    name: "Local",
+    baseUrl: v1Root(s.omlxBaseUrl),
     apiKey: s.omlxApiKey || "omlx",
-    api: "anthropic-messages" as const,
+    api: "openai-completions" as const,
     models: [
       {
         id: model,
@@ -198,8 +206,11 @@ export function omlxProviderConfig(model: string, s: Settings) {
         reasoning: false,
         input: ["text" as const],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200_000,
-        maxTokens: 8_192,
+        contextWindow: window,
+        // A server's context budget covers prompt *and* completion, so an
+        // output cap near the window is unsatisfiable once a loop's context
+        // has grown. Quarter of the window, capped where it used to sit.
+        maxTokens: Math.min(8_192, Math.max(1_024, Math.floor(window / 4))),
       },
     ],
   };
@@ -273,12 +284,22 @@ export async function resolveModel(
   if (provider === "omlx") {
     if (!model) {
       throw new Error(
-        "no model selected for the oMLX provider — the pi harness needs an explicit model id; pick one in Settings before running",
+        "no model selected for the local provider: the pi harness needs an explicit model id, so pick one in Settings before running",
       );
     }
-    runtime.registerProvider("omlx", omlxProviderConfig(model, s));
+    // Ask the server what it is actually serving. The context window is a
+    // per-deployment number (vLLM's --max-model-len), so it cannot be a
+    // constant here, and a wrong one surfaces as a 400 deep into a loop.
+    const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey);
+    const meta = served.find((x) => x.id === model);
+    if (!meta) {
+      throw new Error(
+        `the local endpoint does not serve model "${model}" (serving: ${served.map((x) => x.id).join(", ") || "nothing"})`,
+      );
+    }
+    runtime.registerProvider("omlx", omlxProviderConfig(model, s, meta.contextWindow));
     const m = runtime.getModel(pid, model);
-    if (!m) throw new Error(`oMLX does not serve model "${model}"`);
+    if (!m) throw new Error(`the local endpoint does not serve model "${model}"`);
     return m;
   }
 

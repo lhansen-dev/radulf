@@ -6,7 +6,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic (Claude subscription)",
   chatgpt: "ChatGPT (Codex subscription)",
   copilot: "GitHub Copilot (subscription)",
-  omlx: "oMLX (local)",
+  omlx: "Local / self-hosted",
   openrouter: "OpenRouter",
   mock: "Mock (scripted, no model)",
 };

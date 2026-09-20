@@ -14,7 +14,7 @@ roles.
 | **ChatGPT (Codex)** | `make login` | Remote | Uses your ChatGPT Plus/Pro subscription. |
 | **GitHub Copilot** | `make login` | Remote | Uses your GitHub Copilot subscription. |
 | **OpenRouter** | API key | Remote | Bring your own model. Set the key in Settings — no login. |
-| **oMLX** | Base URL | Local, Apple Silicon | Optional and unmetered. Set the base URL in Settings — no login. |
+| **Local / self-hosted** | Base URL | Wherever you run it | Any OpenAI-compatible server: oMLX, vLLM, LM Studio. Optional and unmetered. Set the base URL in Settings, no login. |
 
 The three subscription providers share one interactive setup step, run once and
 pointed at Radulf's own agent directory (`data/pi-agent/`):
@@ -79,9 +79,17 @@ before treating this as settled.
 cost reasons but for independence. Its whole value is looking at the diff
 without having decided in advance that the diff is correct.
 
-If you are running oMLX locally, note that the model must be tool-capable and
-the server must already be running and reachable at the configured base URL
-before you start a loop. The default is `http://127.0.0.1:8000`.
+The local provider speaks the OpenAI wire format: Radulf lists what you are
+serving from `/v1/models` and runs the loop against `/v1/chat/completions`. The
+base URL is the server root (`http://127.0.0.1:8000`, the default), though a URL
+that already ends in `/v1` is accepted too.
+
+Two things must hold before you start a loop: the server has to be running and
+reachable at that base URL, and the model has to be tool-capable. On vLLM that
+means starting it with `--enable-auto-tool-choice` and the `--tool-call-parser`
+its model family needs. Radulf reads the served context window from
+`max_model_len` when the server reports one, so pi compacts against the real
+budget rather than an assumed one.
 
 ## What a card costs
 
@@ -181,8 +189,8 @@ still need an occasional real run.
 
 ## Where credentials live
 
-Provider credentials — the oMLX base URL and key, the OpenRouter key, the Brave
-key — are stored in Radulf's SQLite database and flow into the agent session at
+Provider credentials — the local server's base URL and key, the OpenRouter key,
+the Brave key — are stored in Radulf's SQLite database and flow into the agent session at
 runtime. They never touch disk inside the worktree, and the agent's shell runs
 with a scrubbed environment so it cannot read Radulf's own secrets.
 
