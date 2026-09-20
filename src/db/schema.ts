@@ -134,6 +134,9 @@ export const runs = sqliteTable("runs", {
   baseBranch: text("base_branch"),
   iterationsDone: integer("iterations_done").notNull().default(0),
   exitReason: text("exit_reason"),
+  // An evaluate run's feedback on a `revise` verdict — what the planner
+  // re-plans from (see planningService's `pendingReplanFeedback`).
+  feedback: text("feedback"),
   startedAt: text("started_at").notNull(),
   endedAt: text("ended_at"),
   provider: text("provider"),
@@ -174,6 +177,16 @@ export const iterations = sqliteTable("iterations", {
     .default("running"),
   transcriptPath: text("transcript_path").notNull(),
   summary: text("summary"),
+  // The checklist task injected into this iteration: its 1-based number, the
+  // checklist's total item count at the time, and the item text. Null on
+  // iterations recorded before tasks were tracked per iteration.
+  taskNumber: integer("task_number"),
+  taskCount: integer("task_count"),
+  taskText: text("task_text"),
+  // 1 when the orchestrator ticked that task off after this iteration, 0 when
+  // bookkeeping ran and it did not; null while running, when the iteration
+  // failed or timed out before bookkeeping, or on pre-tracking rows.
+  taskCompleted: integer("task_completed"),
   // UNCACHED cumulative input across every model turn of the iteration —
   // historical name kept for migration compatibility. Not a context size;
   // cache reads live in cachedInputTokens.

@@ -19,6 +19,7 @@ import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
 import { createGuardedFsTools } from "./guardedTools";
+import { DEFAULT_MOCK_SCENARIO, mockProviderConfig } from "./mock";
 import { agentEnv, type TranscriptEvent } from "./types";
 import { createWebSearchTool } from "./webSearch";
 
@@ -57,7 +58,8 @@ function toThinkingLevel(level: string): ThinkingLevel {
 /**
  * Radulf provider id → pi provider id. pi calls the ChatGPT subscription
  * `openai-codex` and the Copilot subscription `github-copilot`; the self-hosted
- * endpoint is a custom provider we register at runtime; the rest match by name.
+ * endpoint and the scripted mock are custom providers we register at runtime;
+ * the rest match by name.
  */
 const PI_PROVIDER: Record<ProviderId, string> = {
   anthropic: "anthropic",
@@ -65,6 +67,7 @@ const PI_PROVIDER: Record<ProviderId, string> = {
   copilot: "github-copilot",
   omlx: "omlx",
   openrouter: "openrouter",
+  mock: "mock",
 };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +92,19 @@ export function piAgentDir(): string {
 }
 
 /**
+ * The one message for "this subscription has no credential in Radulf's own pi
+ * agent dir". Radulf deliberately ignores the user's personal `~/.pi/agent`
+ * (see piAgentDir), so a `pi` that logs in fine from a terminal still leaves
+ * this dir empty — the message has to name the dir, or the mismatch is
+ * invisible from the settings page.
+ */
+function notLoggedInError(provider: ProviderId): Error {
+  return new Error(
+    `not logged in to ${provider} — run \`make login\` and type /login in pi to establish the subscription (agent dir: ${piAgentDir()})`,
+  );
+}
+
+/**
  * The shared, long-lived ModelRuntime. Constructed once so subscription OAuth
  * in `auth.json` persists across runs and `getAvailable()` sees every logged-in
  * provider. Auth and the oMLX/OpenRouter runtime overrides all flow through it.
@@ -101,9 +117,61 @@ export function getModelRuntime(): Promise<ModelRuntime> {
     runtimePromise = ModelRuntime.create({
       authPath: path.join(dir, "auth.json"),
       modelsPath: path.join(dir, "models.json"),
+      // Without this the SDK refreshes catalogs from disk only, so Radulf's
+      // model list is frozen at whatever static catalog the installed pi
+      // package was built with, plus whatever a `pi` CLI run happened to
+      // leave in models-store.json. New provider models would then never
+      // appear without a `make login`. The fetch is etag-conditional and the
+      // SDK rate-limits it to once per REMOTE_CATALOG_REFRESH_INTERVAL_MS
+      // (4h), so this costs one 304 a few times a day.
+      allowModelNetwork: true,
+      // A slow or unreachable pi.dev must not hold up the first model call —
+      // on timeout the SDK keeps the on-disk catalog.
+      modelRefreshTimeoutMs: CATALOG_REFRESH_TIMEOUT_MS,
     });
   }
   return runtimePromise;
+}
+
+/** Cap on the pi.dev catalog fetch, at startup and per refresh. */
+const CATALOG_REFRESH_TIMEOUT_MS = 5_000;
+
+/**
+ * Re-sync one provider's catalog before listing it. The runtime is a
+ * process-wide singleton (auth has to persist across runs), so without this it
+ * reads models-store.json exactly once, at construction: a `make login` that
+ * pulls a newer catalog mid-session stays invisible until Radulf restarts.
+ * `refresh` re-reads the store when its file revision changed and only hits
+ * the network past the SDK's own 4h window, so the common case is local.
+ *
+ * Best-effort by design — a refresh failure leaves the previously loaded
+ * catalog in place, which is strictly better than failing the picker.
+ */
+async function refreshProviderCatalog(
+  runtime: ModelRuntime,
+  piProviderId: string,
+  force = false,
+): Promise<void> {
+  try {
+    await runtime.refresh({
+      providers: [piProviderId],
+      allowNetwork: true,
+      // `force` skips the SDK's 4h freshness window and re-fetches now. Only
+      // the operator's explicit "Load models" sets it — a model that shipped
+      // an hour ago is otherwise invisible until the window rolls over, and
+      // clicking a button that silently does nothing is worse than waiting.
+      force,
+      signal: AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS),
+    });
+  } catch {
+    // Stale catalog beats no catalog.
+  }
+}
+
+/** Resync `piProviderId`'s catalog, then look the model up again. */
+async function refreshCatalogAndGetModel(runtime: ModelRuntime, piProviderId: string, model: string) {
+  await refreshProviderCatalog(runtime, piProviderId);
+  return runtime.getModel(piProviderId, model);
 }
 
 /** Reset the runtime singleton — test seam only. */
@@ -116,9 +184,9 @@ export function resetModelRuntime(): void {
  * provider id. Registered on the runtime per run rather than written to disk,
  * so a per-card model id resolves without rewriting models.json.
  *
- * `openai-completions`, not spec 12's `anthropic-messages`. Spec 12 picked the
- * Anthropic wire format to match spec 09's @ai-sdk/anthropic choice and named
- * this one as the documented fallback "if /v1/messages doesn't slot cleanly";
+ * `openai-completions`, not spec 12's `anthropic-messages` (spec 16). Spec 12
+ * picked the Anthropic wire format to match spec 09's @ai-sdk/anthropic choice
+ * and named this one as the fallback "if /v1/messages doesn't slot cleanly";
  * for any server other than oMLX itself there is no /v1/messages to slot into.
  * vLLM serves /v1/chat/completions only.
  */
@@ -148,6 +216,33 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
   };
 }
 
+/** The OpenRouter endpoint pi's installed `openai-completions` API expects. */
+const OPENROUTER_COMPLETIONS_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * Keep a refreshed OpenRouter catalog entry on the one API the installed pi
+ * can send to OpenRouter.
+ *
+ * pi.dev's remote catalog now lists OpenRouter's Anthropic models as
+ * `anthropic-messages` at `https://openrouter.ai/api`, which pi ≥ 0.85 can
+ * dispatch. The pinned 0.84 OpenRouter provider implements only
+ * `openai-completions` and ignores `model.api`, so it sent OpenAI-shaped
+ * requests to `https://openrouter.ai/api/chat/completions` and every run failed
+ * with OpenRouter's HTML 404 page. Re-shape those entries to match pi 0.84's
+ * bundled catalog for the same models. Remove this once pi is upgraded.
+ */
+export function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
+  m: M,
+): M {
+  if (m.api !== "anthropic-messages") return m;
+  return {
+    ...m,
+    api: "openai-completions",
+    baseUrl: OPENROUTER_COMPLETIONS_BASE_URL,
+    compat: { thinkingFormat: "openrouter", cacheControlFormat: "anthropic" },
+  };
+}
+
 /**
  * Resolve a concrete pi `Model` for a run, applying the blank-model rules and
  * the per-provider auth setup:
@@ -156,8 +251,11 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
  *   default, wrong for both).
  * - `anthropic`/`chatgpt`/`copilot` treat a blank model as "the subscription
  *   default" — the same latitude `claude -p` / `codex exec` had.
+ * - `mock` treats a blank model as its happy-path scenario.
+ *
+ * Exported as a test seam; runs reach it through `createRalphSession`.
  */
-async function resolveModel(
+export async function resolveModel(
   runtime: ModelRuntime,
   provider: ProviderId,
   model: string,
@@ -172,9 +270,15 @@ async function resolveModel(
       );
     }
     await runtime.setRuntimeApiKey("openrouter", s.openrouterApiKey);
-    const m = runtime.getModel(pid, model);
+    // The settings picker lists OpenRouter's live API, but runs resolve against
+    // pi's catalog. pi only fetches a provider's catalog when it holds a
+    // credential, and the key above is registered per run rather than at
+    // startup, so the startup refresh never updates OpenRouter's — a model
+    // added since is selectable yet missing here. Resync once (key now set)
+    // before calling it unserved, as for the subscription providers below.
+    const m = runtime.getModel(pid, model) ?? (await refreshCatalogAndGetModel(runtime, pid, model));
     if (!m) throw new Error(`OpenRouter does not serve model "${model}"`);
-    return m;
+    return openRouterServableModel(m);
   }
 
   if (provider === "omlx") {
@@ -199,9 +303,21 @@ async function resolveModel(
     return m;
   }
 
+  // The scripted mock (./mock.ts): the model id names a scenario; blank runs
+  // the happy path.
+  if (provider === "mock") {
+    runtime.registerProvider("mock", mockProviderConfig());
+    const m = runtime.getModel(pid, model || DEFAULT_MOCK_SCENARIO);
+    if (!m) throw new Error(`the mock provider has no scenario "${model}"`);
+    return m;
+  }
+
   // anthropic / chatgpt / copilot: subscription auth lives in the Radulf agent dir.
   if (model) {
-    const m = runtime.getModel(pid, model);
+    // A miss is usually a stale catalog — the settings picker can offer a
+    // model this long-lived runtime loaded before it existed. Resync once
+    // (throttled, usually a local read) before calling it unserved.
+    const m = runtime.getModel(pid, model) ?? (await refreshCatalogAndGetModel(runtime, pid, model));
     if (!m) throw new Error(`${provider} does not serve model "${model}"`);
     return m;
   }
@@ -209,9 +325,8 @@ async function resolveModel(
   // authenticated models for the provider; the first is pi's default.
   const available = await runtime.getAvailable(pid);
   if (available.length === 0) {
-    throw new Error(
-      `no ${provider} models available — run \`make login\` and type /login in pi to establish the subscription (agent dir: ${piAgentDir()})`,
-    );
+    if (!(await runtime.checkAuth(pid))) throw notLoggedInError(provider);
+    throw new Error(`no ${provider} models available for the authenticated subscription`);
   }
   return available[0];
 }
@@ -224,11 +339,12 @@ async function resolveModel(
  * Normalize one pi SDK event object into transcript events.
  *
  * Field mapping is pinned against the SDK's emitted types (packages/ai):
- * `message_end` carries `message: AssistantMessage` (content parts, usage,
- * stopReason); `auto_retry_end` carries `success`/`finalError`. Streaming
- * deltas and lifecycle framing are dropped deliberately — their content is
- * fully duplicated by `message_end`. Everything unrecognized is preserved as
- * `t:"raw"` with a stringified event so nothing is lost.
+ * `message_end` carries `message: AssistantMessage` (content parts — `text`,
+ * `thinking`, and `toolCall` — plus usage and stopReason); `auto_retry_end`
+ * carries `success`/`finalError`. Streaming deltas and lifecycle framing are
+ * dropped deliberately — their content is fully duplicated by `message_end`.
+ * Everything unrecognized is preserved as `t:"raw"` with a stringified event
+ * so nothing is lost.
  */
 export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
   const raw = (): TranscriptEvent[] => [{ t: "raw", line: JSON.stringify(evt) }];
@@ -244,6 +360,14 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
       if (p.type === "text") {
         const text = String(p.text ?? "");
         if (text) events.push({ t: "text", role: "assistant", content: text });
+      } else if (p.type === "thinking") {
+        // A redacted block carries no text — keep it anyway, so the transcript
+        // still shows that the turn reasoned rather than silently skipping it.
+        const thinking = String(p.thinking ?? "");
+        const redacted = p.redacted === true;
+        if (thinking || redacted) {
+          events.push({ t: "reasoning", content: thinking, ...(redacted ? { redacted: true } : {}) });
+        }
       } else if (p.type === "toolCall") {
         events.push({ t: "tool", name: String(p.name ?? ""), input: p.arguments });
       }
@@ -292,6 +416,12 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
       });
     }
     return events;
+  }
+
+  // pi retried a failed request and it went through: the error its message_end
+  // already reported is resolved, so the run must not end failed because of it.
+  if (evt.type === "auto_retry_end" && evt.success === true) {
+    return [...raw(), { t: "result", exit: "completed" }];
   }
 
   if (evt.type === "auto_retry_end" && evt.success === false) {
@@ -537,6 +667,7 @@ export function harnessPackageVersion(): string {
  */
 export async function listAuthedModels(
   provider: ProviderId,
+  opts: { force?: boolean } = {},
 ): Promise<
   {
     value: string;
@@ -547,7 +678,14 @@ export async function listAuthedModels(
   }[]
 > {
   const runtime = await getModelRuntime();
-  const models = await runtime.getAvailable(PI_PROVIDER[provider]);
+  const pid = PI_PROVIDER[provider];
+  await refreshProviderCatalog(runtime, pid, opts.force);
+  // getAvailable() returns [] for BOTH "no credential" and "authenticated but
+  // the plan serves nothing", which left the picker reporting a cheerful
+  // "0 models" for a provider that was simply never logged in. checkAuth()
+  // separates them: undefined means no usable credential for this provider.
+  if (!(await runtime.checkAuth(pid))) throw notLoggedInError(provider);
+  const models = await runtime.getAvailable(pid);
   // pi's model catalog already prices in USD per 1M tokens (its cost rates
   // are applied directly against raw token counts elsewhere), so these pass
   // straight through with no unit conversion.

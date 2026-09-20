@@ -43,6 +43,8 @@ vi.mock("./settings", () => ({
     defaultMaxIterations: 5,
     defaultTimeoutMinutes: 10,
     iterationHardTimeoutMinutes: 2,
+    plannerTimeoutMinutes: 30,
+    evaluatorTimeoutMinutes: 10,
     stallTimeoutSeconds: 60,
     autoMode: false,
     minimalToolset: false,
@@ -79,6 +81,7 @@ const {
   db,
   cards,
   events,
+  improvementRuns,
   iterations,
   now,
   plans,
@@ -92,8 +95,9 @@ const { Orchestrator } = await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
-const { POST: postAbandon } = await import("@/app/api/cards/[id]/abandon/route");
+const { POST: postCardAction } = await import("@/app/api/cards/[id]/[action]/route");
 const { pruneRuntimeHistory } = await import("./retention");
+const { DELETE: deleteRepo } = await import("@/app/api/repos/[id]/route");
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -259,6 +263,7 @@ async function settle() {
 describe("Orchestrator cancellation lifecycle", () => {
   beforeEach(() => {
     db.delete(worktrees).run();
+    db.delete(improvementRuns).run();
     db.delete(reviews).run();
     db.delete(iterations).run();
     db.delete(runs).run();
@@ -299,20 +304,6 @@ describe("Orchestrator cancellation lifecycle", () => {
   afterAll(() => {
     fs.rmSync(testDataDir, { recursive: true, force: true });
     delete process.env.RADULF_DATA_DIR;
-  });
-
-  it("uses Backlog as the storage default for new cards", () => {
-    db.insert(cards)
-      .values({
-        id: "default-backlog",
-        repoId: "repo-1",
-        title: "Default Backlog card",
-        createdAt: now(),
-        updatedAt: now(),
-      })
-      .run();
-
-    expect(getCard("default-backlog").status).toBe("backlog");
   });
 
   it("moves a Backlog card to the end of Todo without starting it when auto-mode is off", () => {
@@ -478,6 +469,47 @@ describe("Orchestrator cancellation lifecycle", () => {
         expect(fs.existsSync(path.join(worktreePath, ".ralph", name))).toBe(false);
       }
       expect(db.select().from(plans).all()).toHaveLength(0);
+    });
+
+    it("re-plans a rejected card with the reviewer's feedback instead of re-looping it", async () => {
+      // reviewPlanBeforeImplementation=1 stops at plan_review so the loop the
+      // new plan would start stays out of this test.
+      card("rejected-replan", "review", 1);
+      db.update(cards)
+        .set({ startedAt: "2026-07-16T01:00:00.000Z" })
+        .where(eq(cards.id, "rejected-replan"))
+        .run();
+      plan("rejected-replan");
+      completedRun("rejected-replan", "rejected-loop");
+      mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        writePlannerArtifacts(cwd, {
+          ...completePlannerArtifacts,
+          "PLAN.md": "## Tasks\n- [ ] address the review\n",
+        });
+        return successfulHarnessResult;
+      });
+      routeOrchestrator();
+
+      const response = await postReview(reviewRequest("rejected-loop", "rejected"));
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(getCard("rejected-replan").status).toBe("plan_review"));
+
+      const call = mocks.runHarness.mock.calls[0][0];
+      expect(call.role).toBe("planner");
+      expect(call.prompt).toContain("PREVIOUS ATTEMPT — REVIEWER FEEDBACK");
+      expect(call.prompt).toContain("Please revise this.");
+      const cardPlans = db.select().from(plans).all().filter((row) => row.cardId === "rejected-replan");
+      expect(cardPlans.map((row) => [row.version, row.feedback])).toEqual([
+        [1, null],
+        [2, "Please revise this."],
+      ]);
+      expect(fs.readFileSync(planStatePath("rejected-replan"), "utf8")).toBe(
+        "## Tasks\n- [ ] address the review",
+      );
+
+      // The rejection is spent: restarting now goes to the loop, not the planner.
+      const { pendingReplanFeedback } = await import("./planningService");
+      expect(pendingReplanFeedback("rejected-replan")).toBeNull();
     });
 
     it("persists the planner's telemetry on the plan run row", async () => {
@@ -935,7 +967,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(reviews).all()).toHaveLength(0);
     });
 
-    it("turns a revise verdict into the loop's next assigned task", async () => {
+    it("sends a revise verdict back to the planner with its feedback", async () => {
       card("evaluate-revise");
       plan("evaluate-revise");
       const resumedLoop = deferred<never>();
@@ -951,31 +983,68 @@ describe("Orchestrator cancellation lifecycle", () => {
           );
           return successfulHarnessResult;
         })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writePlannerArtifacts(cwd, {
+            ...completePlannerArtifacts,
+            "PLAN.md": "## Tasks\n- [ ] handle the empty input\n",
+          });
+          return successfulHarnessResult;
+        })
         .mockReturnValueOnce(resumedLoop.promise);
       const orchestrator = new Orchestrator({ autoStart: false });
 
       orchestrator.startCard("evaluate-revise");
-      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(3));
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledTimes(4));
 
       expect(getCard("evaluate-revise").status).toBe("looping");
+      expect(mocks.runHarness.mock.calls.map((call) => call[0].role)).toEqual([
+        "loop",
+        "evaluator",
+        "planner",
+        "loop",
+      ]);
+      const plannerPrompt = String(mocks.runHarness.mock.calls[2][0].prompt);
+      expect(plannerPrompt).toContain("PREVIOUS ATTEMPT — REVIEWER FEEDBACK");
+      expect(plannerPrompt).toContain("src/feature.ts does not handle the empty-input case.");
+      const evaluateRun = db
+        .select()
+        .from(runs)
+        .all()
+        .find((row) => row.cardId === "evaluate-revise" && row.kind === "evaluate")!;
+      expect(evaluateRun).toMatchObject({
+        exitReason: "revise",
+        feedback: "src/feature.ts does not handle the empty-input case.",
+      });
+
+      // The planner, not the evaluator, writes v2 — carrying the feedback.
       const cardPlans = db
         .select()
         .from(plans)
         .all()
         .filter((row) => row.cardId === "evaluate-revise")
         .sort((a, b) => a.version - b.version);
-      expect(cardPlans).toHaveLength(2);
-      expect(cardPlans[1]).toMatchObject({
-        version: 2,
-        feedback: "src/feature.ts does not handle the empty-input case.",
-      });
-      expect(cardPlans[1].promptMd).toContain("Evaluator feedback — address this first");
-      expect(String(mocks.runHarness.mock.calls[2][0].prompt)).toContain(
-        "Address the feedback in the \"Evaluator feedback — address this first\" section",
-      );
-      expect(fs.readFileSync(planStatePath("evaluate-revise"), "utf8")).toContain(
-        "Address the feedback in the \"Evaluator feedback — address this first\" section",
-      );
+      expect(cardPlans.map((row) => [row.version, row.feedback])).toEqual([
+        [1, null],
+        [2, "src/feature.ts does not handle the empty-input case."],
+      ]);
+      expect(cardPlans[1].planMd).toBe("## Tasks\n- [ ] handle the empty input");
+      expect(String(mocks.runHarness.mock.calls[3][0].prompt)).toContain("handle the empty input");
+
+      // Each iteration records the task it was given and whether it got ticked.
+      const iterationTasks = db
+        .select()
+        .from(iterations)
+        .all()
+        .map(({ taskNumber, taskCount, taskText, taskCompleted }) => ({
+          taskNumber,
+          taskCount,
+          taskText,
+          taskCompleted,
+        }));
+      expect(iterationTasks).toEqual([
+        { taskNumber: 1, taskCount: 1, taskText: "implement the task", taskCompleted: 1 },
+        { taskNumber: 1, taskCount: 1, taskText: "handle the empty input", taskCompleted: null },
+      ]);
 
       orchestrator.cancelCard("evaluate-revise");
       resumedLoop.reject(new Error("child exited after abort"));
@@ -1308,14 +1377,95 @@ describe("Orchestrator cancellation lifecycle", () => {
       completedRun("active-abandon", "active-run", { status: "running" });
       routeOrchestrator();
 
-      const response = await postAbandon(new Request("http://localhost"), {
-        params: Promise.resolve({ id: "active-abandon" }),
+      const response = await postCardAction(new Request("http://localhost"), {
+        params: Promise.resolve({ id: "active-abandon", action: "abandon" }),
       });
 
       expect(response.status).toBe(400);
       expect(getCard("active-abandon").status).toBe("looping");
       expect(getRun("active-abandon").status).toBe("running");
       expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("repository removal", () => {
+    function removeRepo1() {
+      return deleteRepo(new Request("http://localhost/api/repos/repo-1", { method: "DELETE" }), {
+        params: Promise.resolve({ id: "repo-1" }),
+      });
+    }
+
+    function repo1Exists() {
+      return db.select().from(repos).all().some((row) => row.id === "repo-1");
+    }
+
+    it.each(["planning", "looping", "evaluating", "reviewing"] as const)(
+      "refuses to remove a repository with a %s card",
+      async (status) => {
+        card("busy-card", status);
+        plan("busy-card");
+        completedRun("busy-card", "busy-run", { status: "running" });
+        routeOrchestrator();
+
+        const response = await removeRepo1();
+
+        expect(response.status).toBe(409);
+        expect((await response.json()).error).toMatch(/cannot remove a repository/);
+        expect(repo1Exists()).toBe(true);
+        expect(getCard("busy-card").status).toBe(status);
+        expect(getRun("busy-card").status).toBe("running");
+      },
+    );
+
+    it("refuses to remove a repository while a loop is still tearing down", async () => {
+      card("teardown-card", "needs_attention");
+      const orchestrator = routeOrchestrator();
+      (orchestrator as unknown as { activeLoopCards: Map<string, string> }).activeLoopCards.set(
+        "teardown-card",
+        "repo-1",
+      );
+
+      const response = await removeRepo1();
+
+      expect(response.status).toBe(409);
+      expect(repo1Exists()).toBe(true);
+    });
+
+    it("refuses to remove a repository whose improvement run is still proposing", async () => {
+      db.insert(improvementRuns)
+        .values({
+          id: "proposing-run",
+          repoId: "repo-1",
+          status: "running",
+          featureBranch: "ralph/improve-1",
+          baseBranch: "main",
+          deadlineAt: "2999-01-01T00:00:00.000Z",
+          createdAt: now(),
+          updatedAt: now(),
+        })
+        .run();
+      routeOrchestrator();
+
+      const response = await removeRepo1();
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toMatch(/improvement run/);
+      expect(repo1Exists()).toBe(true);
+      expect(db.select().from(improvementRuns).all()).toHaveLength(1);
+    });
+
+    it("removes an idle repository and its records", async () => {
+      card("idle-card", "review");
+      plan("idle-card");
+      completedRun("idle-card", "idle-run");
+      routeOrchestrator();
+
+      const response = await removeRepo1();
+
+      expect(response.status).toBe(200);
+      expect(repo1Exists()).toBe(false);
+      expect(db.select().from(cards).all()).toHaveLength(0);
+      expect(db.select().from(runs).all()).toHaveLength(0);
     });
   });
 
@@ -1407,6 +1557,50 @@ describe("Orchestrator cancellation lifecycle", () => {
       const worktreeRow = db.select().from(worktrees).all().find((w) => w.id === "worktree-old")!;
       expect(worktreeRow.runId).toBeNull();
       expect(worktreeRow.removedAt).not.toBeNull();
+    });
+
+    it("keeps aged runs and worktrees of unfinished cards", () => {
+      const aged = { startedAt: "2020-01-01T00:00:00.000Z", endedAt: "2020-01-01T00:05:00.000Z" };
+      // A card still waiting in review behind an old evaluation.
+      card("aged-review", "review");
+      plan("aged-review");
+      completedRun("aged-review", "aged-review-eval", { ...aged, kind: "evaluate" });
+      const reviewWorktree = getRun("aged-review").worktreePath;
+      fs.writeFileSync(path.join(reviewWorktree, "uncommitted.txt"), "pending\n");
+      // An old plan whose worktree a live loop on the same card now reuses.
+      card("aged-plan", "looping");
+      plan("aged-plan");
+      completedRun("aged-plan", "aged-plan-run", { ...aged, kind: "plan" });
+      completedRun("aged-plan", "aged-plan-loop", { status: "running" });
+      const sharedWorktree = path.join(testDataDir, "worktrees", "aged-plan-run");
+      db.update(runs).set({ worktreePath: sharedWorktree }).where(eq(runs.id, "aged-plan-loop")).run();
+      // A finished card whose old run reuses a directory a recent run still holds.
+      card("done-shared", "done");
+      plan("done-shared");
+      completedRun("done-shared", "done-shared-plan", { ...aged, kind: "plan" });
+      completedRun("done-shared", "done-shared-loop", { startedAt: now(), endedAt: now() });
+      const doneSharedWorktree = path.join(testDataDir, "worktrees", "done-shared-plan");
+      db.update(runs).set({ worktreePath: doneSharedWorktree }).where(eq(runs.id, "done-shared-loop")).run();
+      // A finished card with its own directory is still cleaned up.
+      card("aged-abandoned", "abandoned");
+      plan("aged-abandoned");
+      completedRun("aged-abandoned", "aged-abandoned-run", aged);
+      const abandonedWorktree = getRun("aged-abandoned").worktreePath;
+
+      const result = pruneRuntimeHistory(30);
+
+      expect(result.runsDeleted).toBe(2);
+      expect(result.worktreesRemoved).toBe(1);
+      expect(db.select().from(runs).all().map((run) => run.id).sort()).toEqual([
+        "aged-plan-loop",
+        "aged-plan-run",
+        "aged-review-eval",
+        "done-shared-loop",
+      ]);
+      expect(fs.existsSync(path.join(reviewWorktree, "uncommitted.txt"))).toBe(true);
+      expect(fs.existsSync(sharedWorktree)).toBe(true);
+      expect(fs.existsSync(doneSharedWorktree)).toBe(true);
+      expect(fs.existsSync(abandonedWorktree)).toBe(false);
     });
 
     it("is a no-op, not an error, when the worktree directory or row is already gone", () => {

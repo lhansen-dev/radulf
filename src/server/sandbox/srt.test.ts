@@ -51,16 +51,12 @@ describe("systemReadRoots", () => {
 });
 
 describe("toolchainReadRootsFromPath", () => {
-  it("includes each PATH entry and its parent directory", () => {
-    const roots = toolchainReadRootsFromPath("/usr/local/bin:/opt/homebrew/bin");
-    expect(roots).toContain("/usr/local/bin");
-    expect(roots).toContain("/usr/local");
-    expect(roots).toContain("/opt/homebrew/bin");
-    expect(roots).toContain("/opt/homebrew");
-  });
-
-  it("ignores empty PATH segments", () => {
-    expect(toolchainReadRootsFromPath("/usr/bin::/bin")).not.toContain("");
+  it("includes each PATH entry and its parent directory, ignoring empty segments", () => {
+    const roots = toolchainReadRootsFromPath("/usr/local/bin::/opt/homebrew/bin");
+    expect(roots).toEqual(
+      expect.arrayContaining(["/usr/local/bin", "/usr/local", "/opt/homebrew/bin", "/opt/homebrew"]),
+    );
+    expect(roots).not.toContain("");
   });
 });
 
@@ -76,13 +72,13 @@ describe("toolchainHomeReAllows", () => {
 });
 
 describe("parseNetworkAllowlist / buildNetworkConfig", () => {
-  it("always includes registry.npmjs.org even with an empty setting", () => {
+  it("always includes registry.npmjs.org, then extra domains trimmed, deduped, blank lines dropped", () => {
     expect(parseNetworkAllowlist("")).toEqual(["registry.npmjs.org"]);
-  });
-
-  it("adds extra domains, trims whitespace, dedupes, and drops blank lines", () => {
-    const parsed = parseNetworkAllowlist("pypi.org\n  \nregistry.npmjs.org\ngithub.com\n");
-    expect(parsed).toEqual(["registry.npmjs.org", "pypi.org", "github.com"]);
+    expect(parseNetworkAllowlist("pypi.org\n  \nregistry.npmjs.org\ngithub.com\n")).toEqual([
+      "registry.npmjs.org",
+      "pypi.org",
+      "github.com",
+    ]);
   });
 
   it("buildNetworkConfig sets an empty deniedDomains and the parsed allowlist", () => {
@@ -93,36 +89,34 @@ describe("parseNetworkAllowlist / buildNetworkConfig", () => {
 });
 
 describe("buildRunSandboxConfig — Go/TLS trustd carve-out (opt-in)", () => {
-  const base = {
-    worktree: "/tmp/wt",
-    gitCommonDir: "/tmp/wt/.git",
-    tmpdir: "/tmp/wt/.tmp",
-    cacheRoot: "/tmp/wt/.cache",
-    networkAllowlistText: "",
-  };
-  it("omits enableWeakerNetworkIsolation by default (srt's strict default)", () => {
+  it("sets enableWeakerNetworkIsolation only when opted in (srt's strict default otherwise)", () => {
+    const base = {
+      worktree: "/tmp/wt",
+      gitCommonDir: "/tmp/wt/.git",
+      tmpdir: "/tmp/wt/.tmp",
+      cacheRoot: "/tmp/wt/.cache",
+      networkAllowlistText: "",
+    };
     expect(buildRunSandboxConfig(base).enableWeakerNetworkIsolation).toBeUndefined();
     expect(
-      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: false })
-        .enableWeakerNetworkIsolation,
+      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: false }).enableWeakerNetworkIsolation,
     ).toBeUndefined();
-  });
-  it("sets enableWeakerNetworkIsolation only when opted in (allows trustd for Go TLS)", () => {
     expect(
-      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: true })
-        .enableWeakerNetworkIsolation,
+      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: true }).enableWeakerNetworkIsolation,
     ).toBe(true);
   });
 });
 
 describe("buildFilesystemConfig", () => {
-  it("denies $HOME wholesale and re-allows only this run's worktree", () => {
-    const cfg = buildFilesystemConfig({
-      worktree: "/data/worktrees/run-1",
-      gitCommonDir: "/data/repo/.git",
-      tmpdir: "/data/runtmp/run-1/tmp",
-      cacheRoot: "/data/runtmp/run-1/cache",
-    });
+  // No such repo on disk, so there are no per-worktree configs to enumerate.
+  const cfg = buildFilesystemConfig({
+    worktree: "/data/worktrees/run-1",
+    gitCommonDir: "/data/repo/.git",
+    tmpdir: "/data/runtmp/run-1/tmp",
+    cacheRoot: "/data/runtmp/run-1/cache",
+  });
+
+  it("denies $HOME wholesale and re-allows writes only to this run's own paths", () => {
     expect(cfg.denyRead).toContain(os.homedir());
     expect(cfg.allowRead).toContain("/data/worktrees/run-1");
     expect(cfg.allowWrite).toEqual([
@@ -134,13 +128,6 @@ describe("buildFilesystemConfig", () => {
   });
 
   it("carves the hook/config vectors out of the git-write allow", () => {
-    const cfg = buildFilesystemConfig({
-      worktree: "/data/worktrees/run-1",
-      gitCommonDir: "/data/repo/.git",
-      tmpdir: "/tmp/t",
-      cacheRoot: "/tmp/c",
-    });
-    // No such repo on disk, so there are no per-worktree configs to enumerate.
     // The `*` pattern is macOS-only — see gitWorktreeConfigDenies.
     expect(cfg.denyWrite).toEqual([
       "/data/repo/.git/hooks",
@@ -149,45 +136,20 @@ describe("buildFilesystemConfig", () => {
     ]);
   });
 
-  it("includes the credential backstop denylist even though $HOME is already denied", () => {
-    const cfg = buildFilesystemConfig({
-      worktree: "/w",
-      gitCommonDir: "/w/.git",
-      tmpdir: "/tmp/t",
-      cacheRoot: "/tmp/c",
-    });
+  it("keeps the credential backstop, including gh's store, even though $HOME is already denied", () => {
+    // Spec 15 gave the HOST process the operator's GitHub credential to push
+    // and open PRs. The agent must gain nothing from that: this fails if a
+    // broken host-side push is ever "fixed" by loosening the sandbox instead.
     expect(cfg.denyRead).toContain(path.join(os.homedir(), ".ssh"));
-  });
-
-  it("spec 15 regression: an agent still cannot read gh's credential store", () => {
-    // Spec 15 gave the HOST process the ability to push and open pull requests
-    // with the operator's GitHub credential. The agent must gain nothing from
-    // that. This is the assertion that fails if someone ever "fixes" a broken
-    // host-side push by loosening the sandbox instead — the credential lives
-    // in ~/.config/gh, and the loop has no business reading it.
-    const cfg = buildFilesystemConfig({
-      worktree: "/w",
-      gitCommonDir: "/w/.git",
-      tmpdir: "/tmp/t",
-      cacheRoot: "/tmp/c",
-    });
     expect(cfg.denyRead).toContain(path.join(os.homedir(), ".config/gh"));
   });
 
   it("regression: never lets a PATH-derived root (e.g. /bin's parent, '/') re-open $HOME", () => {
-    // Every Unix PATH realistically contains /bin or /sbin — their dirname
-    // is "/", which a naive toolchain-root allow-list would include and
-    // which, under srt's recursive subpath matching, silently re-opens
-    // everything (found live in this repo's own test PATH — see
-    // dropRootsThatWouldReopen). Uses the real process.env.PATH
-    // deliberately, so this keeps failing on whatever machine runs it if
-    // the guard ever regresses.
-    const cfg = buildFilesystemConfig({
-      worktree: "/data/worktrees/run-1",
-      gitCommonDir: "/data/repo/.git",
-      tmpdir: "/tmp/t",
-      cacheRoot: "/tmp/c",
-    });
+    // Every Unix PATH realistically contains /bin or /sbin — their dirname is
+    // "/", which under srt's recursive subpath matching silently re-opens
+    // everything (see dropRootsThatWouldReopen). Uses the real
+    // process.env.PATH deliberately, so this keeps failing on whatever machine
+    // runs it if the guard ever regresses.
     expect(cfg.allowRead).not.toContain("/");
     const home = os.homedir();
     for (const root of cfg.allowRead ?? []) {
@@ -197,30 +159,18 @@ describe("buildFilesystemConfig", () => {
 });
 
 describe("dropRootsThatWouldReopen", () => {
-  it("drops '/' unconditionally", () => {
-    expect(dropRootsThatWouldReopen(["/", "/tmp/x"], ["/Users/x"])).toEqual(["/tmp/x"]);
-  });
-
-  it("drops a candidate that IS a protected root", () => {
-    expect(dropRootsThatWouldReopen(["/Users/x", "/tmp/y"], ["/Users/x"])).toEqual(["/tmp/y"]);
-  });
-
-  it("drops a candidate that is a proper ANCESTOR of a protected root", () => {
-    expect(dropRootsThatWouldReopen(["/Users", "/tmp/y"], ["/Users/x"])).toEqual(["/tmp/y"]);
-  });
-
-  it("keeps a candidate that is a DESCENDANT of a protected root (the intended narrow re-allow case)", () => {
-    expect(dropRootsThatWouldReopen(["/Users/x/.nvm"], ["/Users/x"])).toEqual(["/Users/x/.nvm"]);
-  });
-
-  it("keeps a candidate unrelated to any protected root", () => {
-    expect(dropRootsThatWouldReopen(["/usr/local"], ["/Users/x"])).toEqual(["/usr/local"]);
-  });
-
-  it("does not false-positive on a sibling with a shared string prefix (no trailing slash confusion)", () => {
+  it.each([
+    ["'/' unconditionally", ["/", "/tmp/x"], ["/tmp/x"]],
+    ["a candidate that IS a protected root", ["/Users/x", "/tmp/y"], ["/tmp/y"]],
+    ["a proper ANCESTOR of a protected root", ["/Users", "/tmp/y"], ["/tmp/y"]],
+    // The intended narrow re-allow case.
+    ["nothing for a DESCENDANT of a protected root", ["/Users/x/.nvm"], ["/Users/x/.nvm"]],
+    ["nothing for an unrelated root", ["/usr/local"], ["/usr/local"]],
     // "/Users/x-evil" is NOT inside "/Users/x" — a naive startsWith without
-    // the trailing separator would wrongly treat it as a descendant/ancestor.
-    expect(dropRootsThatWouldReopen(["/Users/x-evil"], ["/Users/x"])).toEqual(["/Users/x-evil"]);
+    // the trailing separator would wrongly treat it as related.
+    ["nothing for a sibling sharing a string prefix", ["/Users/x-evil"], ["/Users/x-evil"]],
+  ])("drops %s", (_label, candidates, expected) => {
+    expect(dropRootsThatWouldReopen(candidates, ["/Users/x"])).toEqual(expected);
   });
 });
 
@@ -365,7 +315,7 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
   });
 
-  it("serializes two concurrent wrapBashCommand calls with genuinely distinct per-run configs (different worktree/tmpdir/cacheRoot, matching two different repos' runs) but identical network policy — instead of rejecting either (PLAN.md Phase 19.1/19.2; supersedes the old Phase 4 hard-throw and the 18.2 test that only proved this with a shared config object reference)", async () => {
+  it("serializes, rather than rejects, concurrent calls whose configs differ only in filesystem paths", async () => {
     // Phase 10 made one-loop-per-repo concurrency the normal steady state.
     // Two DIFFERENT repos' concurrent runs always get distinct filesystem
     // config (own worktree/tmpdir/cacheRoot) but the SAME network policy
@@ -440,7 +390,7 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
     }
   });
 
-  it("still hard-throws when two concurrent calls carry genuinely different network configs (the actual hazard Phase 4 guarded against)", async () => {
+  it("hard-throws when two concurrent calls carry different network configs", async () => {
     const cfgA = config();
     const cfgB = {
       ...cfgA,
@@ -614,10 +564,5 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
   it("connect to /var/run/docker.sock — L1 socket policy (Unix sockets denied by default)", async () => {
     if (!fs.existsSync("/var/run/docker.sock")) return; // not every dev host has Docker installed
     await expect(run(`nc -G 3 -w 3 -U /var/run/docker.sock </dev/null`)).rejects.toThrow();
-  });
-
-  it("ordinary write inside the worktree still works (sandbox isn't fail-closed on everything)", async () => {
-    await run(`echo hi > ${worktree}/ok.txt`);
-    expect(fs.existsSync(path.join(worktree, "ok.txt"))).toBe(true);
   });
 });

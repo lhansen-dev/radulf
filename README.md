@@ -266,7 +266,7 @@ stateDiagram-v2
         Eval: 🔎 Evaluate
         Plan --> Loop
         Loop --> Eval
-        Eval --> Loop: revise (feedback = next task)
+        Eval --> Plan: revise (re-plan with feedback)
     }
 
     InProgress --> InReview: evaluator approves
@@ -284,10 +284,10 @@ stateDiagram-v2
    running its targeted check each iteration. The repo _is_ the memory between fresh-context runs.
 3. **🔎 Evaluate** — the **sole whole-card verifier**. It independently inspects the loop's
    diff and runs every acceptance criterion, then either sends concrete feedback back to
-   the loop (`revise` → becomes the loop's next task) or clears the change (`approve`).
+   the planner (`revise` → re-plans on top of the branch) or clears the change (`approve`).
    A bounded revision limit escalates to you if it stalls.
 4. **📋 Review** — the evaluator-cleared diff waits in **In Review** with diff + transcript.
-   Approve to merge into **Done**; reject with feedback to send it back.
+   Approve to merge into **Done**; reject with feedback to send it back to the planner.
 
 **States at a glance:**
 

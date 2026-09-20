@@ -42,7 +42,13 @@ export async function PATCH(req: Request, { params }: Ctx) {
 }
 
 export async function DELETE(_req: Request, { params }: Ctx) {
-  const { id } = await params;
-  db.delete(repos).where(eq(repos.id, id)).run();
-  return json({ ok: true });
+  return handle(async () => {
+    const { id } = await params;
+    const { getOrchestrator } = await import("@/server/orchestrator");
+    // Guard and delete stay together with no await between them, so no run
+    // can start after the check passes and before the rows cascade away.
+    getOrchestrator().assertRepoRemovable(id);
+    db.delete(repos).where(eq(repos.id, id)).run();
+    return json({ ok: true });
+  });
 }

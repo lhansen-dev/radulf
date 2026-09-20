@@ -60,18 +60,8 @@ function optionalInteger(value: unknown, field: string, max: number): number | n
 }
 
 const CREATE_FIELDS = new Set([
-  "repoId",
-  "title",
-  "description",
-  "maxIterations",
-  "timeoutMinutes",
-  "plannerModel",
-  "loopModel",
-  "evaluatorModel",
-  "reviewPlanBeforeImplementation",
-  "autoApprove",
-  "openPr",
-  "baseBranch",
+  "repoId", "title", "description", "maxIterations", "timeoutMinutes", "plannerModel",
+  "loopModel", "evaluatorModel", "reviewPlanBeforeImplementation", "autoApprove", "openPr", "baseBranch",
 ]);
 
 export function parseCreateCard(value: unknown): CreateCardInput {
@@ -80,17 +70,8 @@ export function parseCreateCard(value: unknown): CreateCardInput {
   if (body.description !== undefined && typeof body.description !== "string") {
     invalid("description must be a string");
   }
-  if (
-    body.reviewPlanBeforeImplementation !== undefined &&
-    typeof body.reviewPlanBeforeImplementation !== "boolean"
-  ) {
-    invalid("reviewPlanBeforeImplementation must be a boolean");
-  }
-  if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") {
-    invalid("autoApprove must be a boolean");
-  }
-  if (body.openPr !== undefined && typeof body.openPr !== "boolean") {
-    invalid("openPr must be a boolean");
+  for (const field of ["reviewPlanBeforeImplementation", "autoApprove", "openPr"]) {
+    if (body[field] !== undefined && typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
   }
   return {
     repoId: requiredString(body.repoId, "repoId"),
@@ -109,14 +90,7 @@ export function parseCreateCard(value: unknown): CreateCardInput {
 }
 
 const UPDATE_FIELDS = new Set([
-  "title",
-  "description",
-  "maxIterations",
-  "timeoutMinutes",
-  "position",
-  "plannerModel",
-  "loopModel",
-  "evaluatorModel",
+  "title", "description", "maxIterations", "timeoutMinutes", "position", "plannerModel", "loopModel", "evaluatorModel",
 ]);
 
 export function parseUpdateCard(value: unknown): UpdateCardInput {

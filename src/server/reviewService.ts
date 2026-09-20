@@ -1,18 +1,7 @@
 import fs from "node:fs";
-import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import {
-  db,
-  now,
-  cards,
-  improvementRuns,
-  plans,
-  runs,
-  reviews,
-  repos,
-  type CardStatus,
-} from "@/db";
+import { db, now, cards, improvementRuns, plans, runs, reviews, repos, type CardStatus } from "@/db";
 import { emitEvent } from "./events";
 import {
   hasRemote,
@@ -28,16 +17,17 @@ import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { checkRepoIntegrity, loadBaseline, removeBaseline } from "./integrity";
+import type { StageDependencies } from "./stage";
 
-/** Every iteration runs on an injected checklist task, so feedback re-entry
- * must append one to the private plan — a prompt preamble alone never runs. */
-function appendFeedbackTask(cardId: string, text: string) {
+/** Every iteration runs on an injected checklist task, so a merge-conflict
+ * re-entry must append one to the private plan — a prompt preamble alone
+ * never runs. */
+function appendFeedbackTask(cardId: string, text: string): string | null {
   const planPath = planStatePath(cardId);
-  if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return;
-  fs.writeFileSync(
-    /* turbopackIgnore: true */ planPath,
-    appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), text),
-  );
+  if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return null;
+  const updated = appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), text);
+  fs.writeFileSync(/* turbopackIgnore: true */ planPath, updated);
+  return updated;
 }
 
 /** Who released this particular diff. Spec 15 uses it to decide draft-ness of
@@ -45,7 +35,6 @@ function appendFeedbackTask(cardId: string, text: string) {
 export type ApprovedBy = "human" | "auto";
 
 type Card = typeof cards.$inferSelect;
-type Plan = typeof plans.$inferSelect;
 type Run = typeof runs.$inferSelect;
 type Repo = typeof repos.$inferSelect;
 
@@ -67,12 +56,7 @@ function belongsToImprovementRun(repoId: string, baseBranch: string | null): boo
     db
       .select({ id: improvementRuns.id })
       .from(improvementRuns)
-      .where(
-        and(
-          eq(improvementRuns.repoId, repoId),
-          eq(improvementRuns.featureBranch, baseBranch),
-        ),
-      )
+      .where(and(eq(improvementRuns.repoId, repoId), eq(improvementRuns.featureBranch, baseBranch)))
       .get(),
   );
 }
@@ -91,18 +75,16 @@ function pullRequestBody(card: Card, draft: boolean): string {
   return parts.filter(Boolean).join("\n\n");
 }
 
-export type ReviewServiceDependencies = {
-  getCard(cardId: string): Card | undefined;
-  latestPlan(cardId: string): Plan | undefined;
-  latestWorktreeRun(cardId: string): Run | undefined;
-  moveCard(
-    cardId: string,
-    from: CardStatus,
-    to: CardStatus,
-    reason?: string,
-  ): boolean;
-  pump(): void;
-};
+export type ReviewServiceDependencies = Pick<
+  StageDependencies,
+  "getCard" | "latestPlan" | "latestWorktreeRun" | "moveCard"
+> & { pump(): void };
+
+type ReviewResult = { ok: boolean; error?: string };
+
+function decided(cardId: string, runId: string, payload: Record<string, unknown>) {
+  emitEvent("review.decided", { cardId, runId, payload: { decision: "approved", ...payload } });
+}
 
 /**
  * Owns human review state transitions and their Git/filesystem side effects.
@@ -110,17 +92,17 @@ export type ReviewServiceDependencies = {
  * which keeps the review state machine independently testable.
  */
 export class ReviewService {
-  constructor(private readonly dependencies: ReviewServiceDependencies) {}
+  constructor(private readonly deps: ReviewServiceDependencies) {}
 
   /** Approve a plan_review card and hand it back to the loop queue. */
-  approvePlan(cardId: string): { ok: boolean; error?: string } {
-    const card = this.dependencies.getCard(cardId);
+  approvePlan(cardId: string): ReviewResult {
+    const card = this.deps.getCard(cardId);
     if (!card) throw new ClientError("card not found");
     if (card.status !== "plan_review") {
       throw new ClientError(`cannot approve plan for card in status ${card.status}`);
     }
-    this.dependencies.moveCard(cardId, "plan_review", "ready");
-    this.dependencies.pump();
+    this.deps.moveCard(cardId, "plan_review", "ready");
+    this.deps.pump();
     return { ok: true };
   }
 
@@ -133,7 +115,7 @@ export class ReviewService {
   async approve(
     runId: string,
     approvedBy: ApprovedBy = "human",
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<ReviewResult> {
     const existing = this.reviewForRun(runId);
     if (existing) {
       if (existing.decision === "approved") return { ok: true };
@@ -148,8 +130,8 @@ export class ReviewService {
    * second delivery target; the path is the same one either way, which is why
    * a failed push needs no separate retry of its own.
    */
-  async retryMerge(cardId: string): Promise<{ ok: boolean; error?: string }> {
-    const card = this.dependencies.getCard(cardId);
+  async retryMerge(cardId: string): Promise<ReviewResult> {
+    const card = this.deps.getCard(cardId);
     if (!card) throw new ClientError("card not found");
     if (card.status !== "needs_attention") {
       throw new ClientError(`cannot retry merge for card in status ${card.status}`);
@@ -187,6 +169,12 @@ export class ReviewService {
     return this.approveClaimedRun(run.id, "needs_attention", "human");
   }
 
+  /**
+   * A rejected diff goes back to the planner, not straight to the loop: the
+   * planner re-plans on top of the branch with the feedback in its prompt
+   * (see `pendingReplanFeedback`). The card waits in Todo as a manual
+   * start, so `pump` plans it as soon as the repo's pipeline slot is free.
+   */
   reject(runId: string, feedback: string) {
     if (!feedback.trim()) throw new ClientError("feedback is required to reject");
     const existing = this.reviewForRun(runId);
@@ -194,78 +182,36 @@ export class ReviewService {
       if (existing.decision === "rejected") return;
       throw new ClientError("run was already approved");
     }
-    const { run, card } = this.claimReviewRun(runId, "review");
-    const plan = this.dependencies.latestPlan(card.id);
-    if (!plan) {
-      this.dependencies.moveCard(card.id, "reviewing", "review", "review operation failed");
+    const { card } = this.claimReviewRun(runId, "review");
+    if (!this.deps.latestPlan(card.id)) {
+      this.deps.moveCard(card.id, "reviewing", "review", "review operation failed");
       throw new ClientError("card has no plan");
     }
 
     const reviewId = nanoid();
-    const planId = nanoid();
-    const promptMd = `## Reviewer feedback — address this first\n\n${feedback.trim()}\n\n---\n\n${plan.promptMd}`;
     try {
       db.insert(reviews)
         .values({ id: reviewId, runId, decision: "rejected", feedback, createdAt: now() })
         .run();
-      db.insert(plans)
-        .values({
-          id: planId,
-          cardId: card.id,
-          version: plan.version + 1,
-          planMd: plan.planMd,
-          promptMd,
-          acceptanceCriteria: plan.acceptanceCriteria,
-          feedback,
-          createdAt: now(),
-        })
-        .run();
-
-      if (fs.existsSync(/* turbopackIgnore: true */ run.worktreePath)) {
-        const ralphDir = path.join(/* turbopackIgnore: true */ run.worktreePath, ".ralph");
-        fs.mkdirSync(/* turbopackIgnore: true */ ralphDir, { recursive: true });
-        fs.writeFileSync(
-          path.join(/* turbopackIgnore: true */ ralphDir, "PROMPT.md"),
-          promptMd,
-        );
-        fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "DONE"), { force: true });
-        fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "DONE.md"), { force: true });
-      }
-      appendFeedbackTask(
-        card.id,
-        'Address the feedback in the "Reviewer feedback — address this first" section at the top of your prompt: fix every point it raises, then re-run the checks it names.',
-      );
-      if (!this.dependencies.moveCard(card.id, "reviewing", "ready", "rejected with feedback")) {
+      if (!this.deps.moveCard(card.id, "reviewing", "todo", "rejected with feedback — re-planning")) {
         throw new ClientError("review claim was lost before rejection completed");
       }
     } catch (error) {
-      db.delete(plans).where(eq(plans.id, planId)).run();
       db.delete(reviews).where(eq(reviews.id, reviewId)).run();
-      this.dependencies.moveCard(card.id, "reviewing", "review", "review operation failed");
+      this.deps.moveCard(card.id, "reviewing", "review", "review operation failed");
       throw error;
     }
 
-    emitEvent("plan.created", { cardId: card.id, payload: { version: plan.version + 1 } });
-    emitEvent("review.decided", {
-      cardId: card.id,
-      runId,
-      payload: { decision: "rejected" },
-    });
-    this.dependencies.pump();
+    emitEvent("review.decided", { cardId: card.id, runId, payload: { decision: "rejected" } });
+    this.deps.pump();
   }
 
   async abandon(cardId: string): Promise<void> {
-    const card = this.dependencies.getCard(cardId);
+    const card = this.deps.getCard(cardId);
     if (!card) throw new ClientError("card not found");
     if (card.status === "abandoned") return;
     const safeStatuses: CardStatus[] = [
-      "backlog",
-      "todo",
-      "ready",
-      "paused",
-      "review",
-      "plan_review",
-      "needs_attention",
+      "backlog", "todo", "ready", "paused", "review", "plan_review", "needs_attention",
     ];
     if (!safeStatuses.includes(card.status)) {
       throw new ClientError(`cannot abandon a card in status ${card.status}`);
@@ -279,10 +225,10 @@ export class ReviewService {
     if (active) throw new ClientError("cannot abandon a card with an active run; cancel it first");
     const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
     if (!repo) throw new ClientError("repo not found");
-    if (!this.dependencies.moveCard(cardId, card.status, "abandoned")) {
+    if (!this.deps.moveCard(cardId, card.status, "abandoned")) {
       throw new ClientError("card status changed while it was being abandoned");
     }
-    const run = this.dependencies.latestWorktreeRun(cardId);
+    const run = this.deps.latestWorktreeRun(cardId);
     if (run) await removeWorktree(repo.path, run.worktreePath, run.branch);
     fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
   }
@@ -296,15 +242,44 @@ export class ReviewService {
     return db
       .select()
       .from(runs)
-      .where(
-        and(
-          eq(runs.cardId, cardId),
-          eq(runs.kind, "loop"),
-        ),
-      )
+      .where(and(eq(runs.cardId, cardId), eq(runs.kind, "loop")))
       .orderBy(desc(runs.startedAt))
       .limit(1)
       .get();
+  }
+
+  /** Restore the pre-claim status when a side effect throws. */
+  private async restoreOnThrow<T>(
+    cardId: string,
+    expectedStatus: "review" | "needs_attention",
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      this.deps.moveCard(cardId, "reviewing", expectedStatus, "review operation failed");
+      throw error;
+    }
+  }
+
+  /** The approval landed (merged or pushed): record it, finish the card, and
+   * reclaim the local worktree and branch. */
+  private async completeApproval(
+    card: Card,
+    run: Run,
+    repo: Repo,
+    payload: Record<string, unknown>,
+    mergeCommit?: string,
+  ) {
+    db.insert(reviews)
+      .values({ id: nanoid(), runId: run.id, decision: "approved", mergeCommit, createdAt: now() })
+      .run();
+    if (!this.deps.moveCard(card.id, "reviewing", "done")) {
+      throw new ClientError("review claim was lost before completion");
+    }
+    removeBaseline(run.id);
+    await removeWorktree(repo.path, run.worktreePath, run.branch);
+    decided(card.id, run.id, payload);
   }
 
   /** Claim the current completed loop before any Git/filesystem side effect. */
@@ -314,7 +289,7 @@ export class ReviewService {
     if (run.kind !== "loop" || run.status !== "completed") {
       throw new ClientError("reviews require a completed loop run");
     }
-    const card = this.dependencies.getCard(run.cardId);
+    const card = this.deps.getCard(run.cardId);
     if (!card) throw new ClientError("card not found");
     if (card.status !== expectedStatus) {
       throw new ClientError(`cannot review a card in status ${card.status}`);
@@ -323,7 +298,7 @@ export class ReviewService {
     if (latest?.id !== run.id) throw new ClientError("run is stale; review the card's current run");
     const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
     if (!repo) throw new ClientError("repo not found");
-    if (!this.dependencies.moveCard(card.id, expectedStatus, "reviewing")) {
+    if (!this.deps.moveCard(card.id, expectedStatus, "reviewing")) {
       throw new ClientError("review decision is already in progress");
     }
     return { run, card: { ...card, status: "reviewing" as const }, repo };
@@ -333,7 +308,7 @@ export class ReviewService {
     runId: string,
     expectedStatus: "review" | "needs_attention",
     approvedBy: ApprovedBy,
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<ReviewResult> {
     const { run, card, repo } = this.claimReviewRun(runId, expectedStatus);
 
     // Spec 14: THE load-bearing integrity check — re-verify the parent repo's
@@ -342,24 +317,13 @@ export class ReviewService {
     // branches may have moved legitimately since the run-end check.)
     const baseline = loadBaseline(run.id);
     if (baseline) {
-      let violations: string[];
-      try {
-        violations = await checkRepoIntegrity(repo.path, baseline, {
-          runBranch: run.branch,
-          checkRefs: false,
-        });
-      } catch (error) {
-        this.dependencies.moveCard(card.id, "reviewing", expectedStatus, "review operation failed");
-        throw error;
-      }
+      const violations = await this.restoreOnThrow(card.id, expectedStatus, () =>
+        checkRepoIntegrity(repo.path, baseline, { runBranch: run.branch, checkRefs: false }),
+      );
       if (violations.length > 0) {
         const reason = `pre-merge repo integrity violation: ${violations.join("; ")}`;
-        this.dependencies.moveCard(card.id, "reviewing", "needs_attention", reason);
-        emitEvent("review.decided", {
-          cardId: card.id,
-          runId,
-          payload: { decision: "approved", integrityViolation: reason },
-        });
+        this.deps.moveCard(card.id, "reviewing", "needs_attention", reason);
+        decided(card.id, runId, { integrityViolation: reason });
         return { ok: false, error: reason };
       }
     }
@@ -374,58 +338,25 @@ export class ReviewService {
       return this.deliverPullRequest(card, run, repo, expectedStatus, approvedBy);
     }
 
-    let result: Awaited<ReturnType<typeof mergeBranch>>;
-    try {
-      result = await mergeBranch(
+    const result = await this.restoreOnThrow(card.id, expectedStatus, () =>
+      mergeBranch(
         repo.path,
         run.baseBranch ?? repo.defaultBranch,
         run.branch,
         `ralph: merge "${card.title}" (card ${card.id})`,
-      );
-    } catch (error) {
-      this.dependencies.moveCard(card.id, "reviewing", expectedStatus, "review operation failed");
-      throw error;
-    }
+      ),
+    );
     if (!result.ok) {
       if (result.conflict && (await this.reloopForConflict(card, run, repo, result.error!))) {
-        emitEvent("review.decided", {
-          cardId: card.id,
-          runId,
-          payload: { decision: "approved", mergeConflict: result.error, reloop: true },
-        });
-        return {
-          ok: false,
-          error: `merge conflict — handed back to the loop to resolve: ${result.error}`,
-        };
+        decided(card.id, runId, { mergeConflict: result.error, reloop: true });
+        return { ok: false, error: `merge conflict — handed back to the loop to resolve: ${result.error}` };
       }
-      this.dependencies.moveCard(card.id, "reviewing", "needs_attention", result.error);
-      emitEvent("review.decided", {
-        cardId: card.id,
-        runId,
-        payload: { decision: "approved", mergeFailed: result.error },
-      });
+      this.deps.moveCard(card.id, "reviewing", "needs_attention", result.error);
+      decided(card.id, runId, { mergeFailed: result.error });
       return { ok: false, error: result.error };
     }
 
-    db.insert(reviews)
-      .values({
-        id: nanoid(),
-        runId,
-        decision: "approved",
-        mergeCommit: result.mergeCommit,
-        createdAt: now(),
-      })
-      .run();
-    if (!this.dependencies.moveCard(card.id, "reviewing", "done")) {
-      throw new ClientError("review claim was lost before completion");
-    }
-    removeBaseline(run.id);
-    await removeWorktree(repo.path, run.worktreePath, run.branch);
-    emitEvent("review.decided", {
-      cardId: card.id,
-      runId,
-      payload: { decision: "approved", mergeCommit: result.mergeCommit },
-    });
+    await this.completeApproval(card, run, repo, { mergeCommit: result.mergeCommit }, result.mergeCommit);
     return { ok: true };
   }
 
@@ -456,19 +387,15 @@ export class ReviewService {
     repo: Repo,
     expectedStatus: "review" | "needs_attention",
     approvedBy: ApprovedBy,
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<ReviewResult> {
     const baseBranch = run.baseBranch ?? repo.defaultBranch;
 
     /** A precondition the operator fixes outside Radulf and then retries.
      * The card goes back where it was rather than to needs_attention, so the
      * Approve button they just used is still there. */
     const unmet = (reason: string) => {
-      this.dependencies.moveCard(card.id, "reviewing", expectedStatus, reason);
-      emitEvent("review.decided", {
-        cardId: card.id,
-        runId: run.id,
-        payload: { decision: "approved", delivery: "pr", prBlocked: reason },
-      });
+      this.deps.moveCard(card.id, "reviewing", expectedStatus, reason);
+      decided(card.id, run.id, { delivery: "pr", prBlocked: reason });
       return { ok: false, error: reason };
     };
     /** Delivery itself failed. Same destination a failed merge gets, and
@@ -476,12 +403,8 @@ export class ReviewService {
      * request, and quietly merging instead is the worst outcome available. */
     const failed = (reason: string) => {
       invalidateGithubStatus();
-      this.dependencies.moveCard(card.id, "reviewing", "needs_attention", reason);
-      emitEvent("review.decided", {
-        cardId: card.id,
-        runId: run.id,
-        payload: { decision: "approved", delivery: "pr", prFailed: reason },
-      });
+      this.deps.moveCard(card.id, "reviewing", "needs_attention", reason);
+      decided(card.id, run.id, { delivery: "pr", prFailed: reason });
       return { ok: false, error: reason };
     };
 
@@ -496,15 +419,8 @@ export class ReviewService {
     if (merged.conflicted) {
       const error = `merge conflict with ${baseBranch}: ${merged.out}`;
       if (await this.reloopForConflict(card, run, repo, error, merged)) {
-        emitEvent("review.decided", {
-          cardId: card.id,
-          runId: run.id,
-          payload: { decision: "approved", delivery: "pr", mergeConflict: error, reloop: true },
-        });
-        return {
-          ok: false,
-          error: `merge conflict — handed back to the loop to resolve: ${merged.out}`,
-        };
+        decided(card.id, run.id, { delivery: "pr", mergeConflict: error, reloop: true });
+        return { ok: false, error: `merge conflict — handed back to the loop to resolve: ${merged.out}` };
       }
       return failed(error);
     }
@@ -532,26 +448,13 @@ export class ReviewService {
     });
     if (!pr.ok) return failed(`gh pr create failed: ${pr.error}`);
 
-    db.insert(reviews)
-      .values({ id: nanoid(), runId: run.id, decision: "approved", createdAt: now() })
-      .run();
-    if (!this.dependencies.moveCard(card.id, "reviewing", "done")) {
-      throw new ClientError("review claim was lost before completion");
-    }
-    removeBaseline(run.id);
     // The remote holds the branch now, so the local worktree and branch are
     // reclaimed exactly as they are after a merge (spec 15 open question 2).
-    await removeWorktree(repo.path, run.worktreePath, run.branch);
-    emitEvent("review.decided", {
-      cardId: card.id,
-      runId: run.id,
-      payload: {
-        decision: "approved",
-        delivery: "pr",
-        grantedBy: card.openPr ? "card" : "global",
-        draft,
-        ...(pr.url ? { prUrl: pr.url } : {}),
-      },
+    await this.completeApproval(card, run, repo, {
+      delivery: "pr",
+      grantedBy: card.openPr ? "card" : "global",
+      draft,
+      ...(pr.url ? { prUrl: pr.url } : {}),
     });
     return { ok: true };
   }
@@ -578,17 +481,22 @@ export class ReviewService {
       alreadyMerged ?? (await mergeBaseIntoWorktree(run.worktreePath, baseBranch));
     if (!merged.ok && !merged.conflicted) return false;
 
-    const plan = this.dependencies.latestPlan(card.id)!;
+    const plan = this.deps.latestPlan(card.id)!;
     const preamble = merged.conflicted
       ? `## Merge conflict — resolve this first\n\nYour branch conflicts with \`${baseBranch}\`, which changed while you worked. \`${baseBranch}\` has been merged into your branch and the conflicted files now contain \`<<<<<<<\` / \`=======\` / \`>>>>>>>\` markers. Resolve every marker (keep both your work and the base's intent), remove the markers, and write the normal completion signals so the orchestrator can record the merge. Only once the working tree is clean, finish the task and write DONE as usual.`
       : `## Rebased onto \`${baseBranch}\`\n\nThe base branch moved on and has been merged into your branch cleanly. Re-check that your work still applies on top of it, then finish and write DONE as usual.`;
     const promptMd = `${preamble}\n\n---\n\n${plan.promptMd}`;
+    const mergeTask = merged.conflicted
+      ? "Follow the base-branch merge section at the top of your prompt: resolve every conflict marker while keeping both intents, then run `git diff --check` as this task's targeted verification."
+      : "Follow the base-branch merge section at the top of your prompt: confirm the implementation still applies after the clean base-branch merge, then run `git diff --check` as this task's targeted verification.";
+    const planState = appendFeedbackTask(card.id, mergeTask);
     db.insert(plans)
       .values({
         id: nanoid(),
         cardId: card.id,
         version: plan.version + 1,
-        planMd: plan.planMd,
+        // The checklist this re-entry runs, so the version history shows it.
+        planMd: planState ?? plan.planMd,
         promptMd,
         acceptanceCriteria: plan.acceptanceCriteria,
         feedback: `merge conflict with ${baseBranch}: ${error}`,
@@ -596,12 +504,8 @@ export class ReviewService {
       })
       .run();
     emitEvent("plan.created", { cardId: card.id, payload: { version: plan.version + 1 } });
-    const mergeTask = merged.conflicted
-      ? "Follow the base-branch merge section at the top of your prompt: resolve every conflict marker while keeping both intents, then run `git diff --check` as this task's targeted verification."
-      : "Follow the base-branch merge section at the top of your prompt: confirm the implementation still applies after the clean base-branch merge, then run `git diff --check` as this task's targeted verification.";
-    appendFeedbackTask(card.id, mergeTask);
-    this.dependencies.moveCard(card.id, card.status, "ready", "merge conflict — resolving in loop");
-    this.dependencies.pump();
+    this.deps.moveCard(card.id, card.status, "ready", "merge conflict — resolving in loop");
+    this.deps.pump();
     return true;
   }
 }

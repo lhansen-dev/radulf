@@ -20,14 +20,12 @@ describe("parseProposals", () => {
   const one = (title: string) =>
     `[{"title": ${JSON.stringify(title)}, "description": "d", "rationale": "r"}]`;
 
-  it("parses a bare JSON array", () => {
-    expect(parseProposals(one("A"))).toEqual([
-      { title: "A", description: "d", rationale: "r" },
-    ]);
-  });
-
-  it("parses a fenced array", () => {
-    expect(parseProposals("```json\n" + one("A") + "\n```")).toHaveLength(1);
+  it.each([
+    ["a bare JSON array", one("A")],
+    ["a fenced array", "```json\n" + one("A") + "\n```"],
+    ["an array with prose on both sides and no fence", `Here you go: ${one("A")} — hope that helps.`],
+  ])("parses %s", (_label, text) => {
+    expect(parseProposals(text)).toEqual([{ title: "A", description: "d", rationale: "r" }]);
   });
 
   // Regression: an observed live Improvement Run lost this exact shape — a
@@ -46,10 +44,6 @@ describe("parseProposals", () => {
         rationale: "r",
       },
     ]);
-  });
-
-  it("parses an array with prose on both sides and no fence", () => {
-    expect(parseProposals(`Here you go: ${one("A")} — hope that helps.`)).toHaveLength(1);
   });
 
   // Regression: the same live pass wrote ```json *inside* a description

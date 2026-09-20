@@ -2,13 +2,16 @@ import { getSettings, type Settings } from "./settings";
 import { listAuthedModels } from "./harness";
 import { fetchJson } from "./fetchJson";
 import { listLocalModels } from "./localEndpoint";
+import { mockProviderModels } from "./harness/mock";
 
 /**
  * A provider is anything the loop runner can use. Every provider runs through
  * the one pi SDK harness (spec 13); they differ only in auth. "anthropic" uses
  * the pi Claude Pro/Max login, "chatgpt" the pi ChatGPT/OpenAI (Codex) login,
- * "copilot" the pi GitHub Copilot login, "omlx" a self-hosted OpenAI-compatible endpoint,
- * and "openrouter" a runtime API key.
+ * "copilot" the pi GitHub Copilot login, "omlx" a self-hosted OpenAI-compatible
+ * endpoint, and "openrouter" a runtime API key. "mock" is a scripted stand-in
+ * for testing (harness/mock.ts) — no model is called, and it works only on a
+ * server started with RADULF_MOCK_LLM=1.
  */
 export const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude subscription)" },
@@ -16,6 +19,7 @@ export const PROVIDERS = [
   { id: "copilot", label: "GitHub Copilot (subscription)" },
   { id: "omlx", label: "Local / self-hosted (OpenAI-compatible)" },
   { id: "openrouter", label: "OpenRouter" },
+  { id: "mock", label: "Mock (scripted, no model)" },
 ] as const;
 
 export type ProviderId = (typeof PROVIDERS)[number]["id"];
@@ -74,14 +78,24 @@ export function resetProviderModelsCacheForTests(): void {
   modelListCache.clear();
 }
 
-/** List models a provider can serve, for the settings/card pickers. */
-export async function listProviderModels(provider: ProviderId, s: Settings = getSettings()): Promise<ProviderModel[]> {
+/**
+ * List models a provider can serve, for the settings/card pickers.
+ *
+ * `force` is the operator pressing "Load models": it skips this cache and, for
+ * the pi-authenticated providers, the SDK's own catalog freshness window too.
+ * Everything automatic (picker mount, preflight before a run) leaves it off.
+ */
+export async function listProviderModels(
+  provider: ProviderId,
+  s: Settings = getSettings(),
+  opts: { force?: boolean } = {}
+): Promise<ProviderModel[]> {
   const cacheKey = modelListCacheKey(provider, s);
   const cached = modelListCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < MODEL_LIST_TTL_MS) {
+  if (!opts.force && cached && Date.now() - cached.fetchedAt < MODEL_LIST_TTL_MS) {
     return cached.models;
   }
-  const models = await fetchProviderModels(provider, s);
+  const models = await fetchProviderModels(provider, s, opts.force ?? false);
   // Only successful fetches are cached — a transient outage shouldn't poison
   // the cache for the full TTL; fetchJson's own retry logic already handles
   // transient failures before we'd ever get here.
@@ -89,13 +103,19 @@ export async function listProviderModels(provider: ProviderId, s: Settings = get
   return models;
 }
 
-async function fetchProviderModels(provider: ProviderId, s: Settings): Promise<ProviderModel[]> {
+async function fetchProviderModels(
+  provider: ProviderId,
+  s: Settings,
+  force: boolean
+): Promise<ProviderModel[]> {
   switch (provider) {
     case "anthropic":
     case "chatgpt":
     case "copilot":
       // pi-authenticated subscriptions — one source (ModelRuntime.getAvailable).
-      return listAuthedModels(provider);
+      return listAuthedModels(provider, { force });
+    case "mock":
+      return mockProviderModels();
     case "omlx": {
       const models = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey);
       return models.map((m) => ({

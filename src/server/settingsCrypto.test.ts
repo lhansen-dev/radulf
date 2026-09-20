@@ -7,28 +7,19 @@ beforeAll(() => {
 });
 
 describe("encryptSecret / decryptSecret", () => {
-  it("round-trips a plaintext value", () => {
-    const ciphertext = encryptSecret("sk-real-value");
-    expect(ciphertext).not.toBe("sk-real-value");
-    expect(ciphertext.startsWith("enc:v1:")).toBe(true);
-    expect(decryptSecret(ciphertext)).toBe("sk-real-value");
-  });
-
-  it("passes a legacy plaintext value through decryptSecret unchanged", () => {
-    expect(decryptSecret("sk-legacy-plaintext")).toBe("sk-legacy-plaintext");
-  });
-
-  it("round-trips an empty string without encrypting it", () => {
-    const ciphertext = encryptSecret("");
-    expect(ciphertext).toBe("");
-    expect(decryptSecret("")).toBe("");
-  });
-
-  it("uses a random IV per call, so two encryptions of the same plaintext differ", () => {
-    const first = encryptSecret("sk-same-value");
-    const second = encryptSecret("sk-same-value");
+  it("round-trips with a random IV, so equal plaintexts encrypt differently", () => {
+    const first = encryptSecret("sk-real-value");
+    const second = encryptSecret("sk-real-value");
+    expect(first.startsWith("enc:v1:")).toBe(true);
+    expect(first).not.toContain("sk-real-value");
     expect(first).not.toBe(second);
-    expect(decryptSecret(first)).toBe("sk-same-value");
-    expect(decryptSecret(second)).toBe("sk-same-value");
+    expect(decryptSecret(first)).toBe("sk-real-value");
+    expect(decryptSecret(second)).toBe("sk-real-value");
+  });
+
+  it("leaves an empty string unencrypted and passes legacy plaintext through", () => {
+    expect(encryptSecret("")).toBe("");
+    expect(decryptSecret("")).toBe("");
+    expect(decryptSecret("sk-legacy-plaintext")).toBe("sk-legacy-plaintext");
   });
 });

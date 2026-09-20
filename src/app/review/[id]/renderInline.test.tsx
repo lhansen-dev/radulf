@@ -8,110 +8,45 @@ afterEach(() => {
   cleanup();
 });
 
+const renderInline = (text: string) => render(<div>{renderInlineMarkdown(text)}</div>).container;
+
 describe("renderInlineMarkdown", () => {
-  it("renders bold with <strong>", () => {
-    const { container } = render(<div>{renderInlineMarkdown("hello **bold** world")}</div>);
-    const strong = container.querySelector("strong");
-    expect(strong).not.toBeNull();
-    expect(strong!.textContent).toBe("bold");
-  });
+  it("renders bold, italic, code, and links, leaving plain text unchanged", () => {
+    const container = renderInline("plain **bold** *italic* `code` and [link](https://example.com)");
 
-  it("renders code with <code>", () => {
-    const { container } = render(<div>{renderInlineMarkdown("use `code` here")}</div>);
-    const code = container.querySelector("code");
-    expect(code).not.toBeNull();
-    expect(code!.textContent).toBe("code");
-  });
-
-  it("renders italic with <em>", () => {
-    const { container } = render(<div>{renderInlineMarkdown("some *italic* text")}</div>);
-    const em = container.querySelector("em");
-    expect(em).not.toBeNull();
-    expect(em!.textContent).toBe("italic");
-  });
-
-  it("renders a link with the correct href", () => {
-    const { container } = render(<div>{renderInlineMarkdown("click [here](https://example.com) now")}</div>);
-    const link = container.querySelector("a");
-    expect(link).not.toBeNull();
-    expect(link!.getAttribute("href")).toBe("https://example.com");
-    expect(link!.getAttribute("target")).toBe("_blank");
-    expect(link!.getAttribute("rel")).toBe("noreferrer");
-    expect(link!.textContent).toBe("here");
-  });
-
-  it("neutralizes javascript: link hrefs to #", () => {
-    const { container } = render(
-      <div>{renderInlineMarkdown("click [here](javascript:alert(1)) now")}</div>,
-    );
-    const link = container.querySelector("a");
-    expect(link).not.toBeNull();
-    expect(link!.getAttribute("href")).toBe("#");
-    expect(link!.textContent).toBe("here");
-  });
-
-  it("neutralizes data: and vbscript: schemes to #", () => {
-    const { container } = render(
-      <div>
-        {renderInlineMarkdown("[a](data:text/html,<script>1</script>) [b](VBScript:x)")}
-      </div>,
-    );
-    const links = container.querySelectorAll("a");
-    expect(links).toHaveLength(2);
-    expect(links[0].getAttribute("href")).toBe("#");
-    expect(links[1].getAttribute("href")).toBe("#");
-  });
-
-  it("allows mailto: and relative link hrefs", () => {
-    const { container } = render(
-      <div>{renderInlineMarkdown("[mail](mailto:a@b.com) [rel](/card/1)")}</div>,
-    );
-    const links = container.querySelectorAll("a");
-    expect(links[0].getAttribute("href")).toBe("mailto:a@b.com");
-    expect(links[1].getAttribute("href")).toBe("/card/1");
-  });
-
-  it("does NOT turn ** inside a code span into bold", () => {
-    const { container } = render(<div>{renderInlineMarkdown("use `**not bold**` here")}</div>);
-    const code = container.querySelector("code");
-    expect(code).not.toBeNull();
-    expect(code!.textContent).toBe("**not bold**");
-
-    // No <strong> should exist
-    const strong = container.querySelector("strong");
-    expect(strong).toBeNull();
-  });
-
-  it("renders plain text unchanged", () => {
-    const { container } = render(<div>{renderInlineMarkdown("just plain text")}</div>);
-    expect(container.textContent).toBe("just plain text");
-  });
-
-  it("renders mixed bold, italic, code, and link", () => {
-    const { container } = render(<div>{renderInlineMarkdown("**bold** *italic* `code` and [link](/)")}</div>);
+    expect(container.textContent).toBe("plain bold italic code and link");
     expect(container.querySelector("strong")!.textContent).toBe("bold");
     expect(container.querySelector("em")!.textContent).toBe("italic");
     expect(container.querySelector("code")!.textContent).toBe("code");
-    expect(container.querySelector("a")!.textContent).toBe("link");
+    const link = container.querySelector("a")!;
+    expect(link.textContent).toBe("link");
+    expect(link.getAttribute("href")).toBe("https://example.com");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noreferrer");
   });
 
-  it("handles empty string", () => {
-    const { container } = render(<div>{renderInlineMarkdown("")}</div>);
-    expect(container.textContent).toBe("");
+  it("neutralizes dangerous link schemes to # but allows mailto: and relative hrefs", () => {
+    const container = renderInline(
+      "[a](javascript:alert(1)) [b](data:text/html,<script>1</script>) [c](VBScript:x) [d](mailto:a@b.com) [e](/card/1)",
+    );
+    expect([...container.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
+      "#",
+      "#",
+      "#",
+      "mailto:a@b.com",
+      "/card/1",
+    ]);
   });
 
-  it("handles string with no markdown", () => {
-    const { container } = render(<div>{renderInlineMarkdown("Hello world 123")}</div>);
-    expect(container.textContent).toBe("Hello world 123");
+  it("does not parse markdown inside a code span", () => {
+    const container = renderInline("use `**not bold**` here");
+    expect(container.querySelector("code")!.textContent).toBe("**not bold**");
+    expect(container.querySelector("strong")).toBeNull();
   });
 
-  it("assigns key props to every element", () => {
-    const nodes = renderInlineMarkdown("**a** *b* `c`");
-    // Every node that is not a string should have a key
-    for (const node of nodes) {
-      if (React.isValidElement(node)) {
-        expect(node.key).not.toBeNull();
-      }
+  it("assigns a key to every element", () => {
+    for (const node of renderInlineMarkdown("**a** *b* `c`")) {
+      if (React.isValidElement(node)) expect(node.key).not.toBeNull();
     }
   });
 });

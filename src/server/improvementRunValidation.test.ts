@@ -35,37 +35,14 @@ describe("parseCreateImprovementRun", () => {
     expect(parsed.timeoutMinutes).toBe(60);
   });
 
-  it("rejects a missing repoId", () => {
-    expect(() => parseCreateImprovementRun({ baseBranch: "main", budgetMinutes: 30 })).toThrow(
-      "repoId is required",
-    );
-  });
-
-  it("rejects a missing baseBranch", () => {
-    expect(() => parseCreateImprovementRun({ repoId: "repo-1", budgetMinutes: 30 })).toThrow(
-      "baseBranch is required",
-    );
-  });
-
-  it("rejects a non-positive budgetMinutes", () => {
-    expect(() => parseCreateImprovementRun({ ...valid, budgetMinutes: 0 })).toThrow(
-      "budgetMinutes must be a positive integer",
-    );
-  });
-
-  it("rejects a non-integer budgetMinutes", () => {
-    expect(() => parseCreateImprovementRun({ ...valid, budgetMinutes: 1.5 })).toThrow(
-      "budgetMinutes must be a positive integer",
-    );
-  });
-
-  it("rejects unknown fields", () => {
-    expect(() => parseCreateImprovementRun({ ...valid, bogus: "nope" })).toThrow(
-      "unknown field: bogus",
-    );
-  });
-
-  it("rejects a non-object body", () => {
-    expect(() => parseCreateImprovementRun("nope")).toThrow("improvement run body must be an object");
+  it.each([
+    [{ baseBranch: "main", budgetMinutes: 30 }, "repoId is required"],
+    [{ repoId: "repo-1", budgetMinutes: 30 }, "baseBranch is required"],
+    [{ ...valid, budgetMinutes: 0 }, "budgetMinutes must be a positive integer"],
+    [{ ...valid, budgetMinutes: 1.5 }, "budgetMinutes must be a positive integer"],
+    [{ ...valid, bogus: "nope" }, "unknown field: bogus"],
+    ["nope", "improvement run body must be an object"],
+  ])("rejects %j", (body, message) => {
+    expect(() => parseCreateImprovementRun(body)).toThrow(message);
   });
 });

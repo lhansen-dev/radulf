@@ -333,10 +333,7 @@ export default function BenchmarksPage() {
 
 function fmtTargetValue(t: RolloutTarget, value: number | null): string {
   if (value == null) return "—";
-  if (t.unit === "ms") {
-    const s = value / 1000;
-    return s < 60 ? `${s.toFixed(0)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
-  }
+  if (t.unit === "ms") return fmtMs(value);
   if (t.unit === "ratio") return `${(value * 100).toFixed(1)}%`;
   return value.toLocaleString();
 }

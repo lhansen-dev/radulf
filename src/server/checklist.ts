@@ -231,8 +231,8 @@ export function markChecked(planMd: string, taskNumber: number): string {
  * Return `planMd` with a new unchecked item appended to the end of the
  * `## Tasks` section (before the next `##` heading, else at EOF).
  *
- * Every iteration runs on an injected checklist task, so feedback re-entry
- * (evaluator revise, reviewer reject, merge-conflict reloop) must add one —
+ * Every iteration runs on an injected checklist task, so a loop re-entry
+ * without re-planning (a merge-conflict reloop) must add one —
  * otherwise the resumed loop dies with an exhausted checklist. Multiline
  * text becomes indented continuation lines; blank lines are dropped so the
  * item stays a single checklist entry. Throws when the plan has no

@@ -106,32 +106,24 @@ describe("MetricsPanel", () => {
     expect(threeCells.length).toBe(2);
   });
 
-  it("shows per-iteration cost and the summed total", () => {
+  it("shows per-iteration cost, totaling only what was priced", () => {
     const run = makeRun();
     run.iterations[0].costUsd = 0.0123;
     run.iterations[1].costUsd = 0.0004;
-    render(<MetricsPanel run={run} />);
-
+    const { rerender } = render(<MetricsPanel run={run} />);
     expect(screen.getByText("$0.0123")).toBeTruthy();
     expect(screen.getByText("$0.0004")).toBeTruthy();
     expect(screen.getByText("$0.0127")).toBeTruthy();
-  });
 
-  it("renders an unpriced iteration as em dash and only totals what was priced", () => {
-    const run = makeRun();
-    run.iterations[0].costUsd = 0.05;
-    // iterations[1] leaves costUsd unset — a pre-telemetry row.
-    render(<MetricsPanel run={run} />);
+    // A pre-telemetry row is an em dash, and the total covers only the priced one.
+    const partlyPriced = makeRun();
+    partlyPriced.iterations[0].costUsd = 0.05;
+    rerender(<MetricsPanel run={partlyPriced} />);
+    expect(screen.getAllByText("—")).toHaveLength(1);
+    expect(screen.getAllByText("$0.0500")).toHaveLength(2);
 
-    // One em dash for the unpriced row; the total reflects only the priced one,
-    // so "$0.0500" appears twice — once in the row, once in the total.
-    expect(screen.getAllByText("—").length).toBe(1);
-    expect(screen.getAllByText("$0.0500").length).toBe(2);
-  });
-
-  it("renders the cost total as em dash when nothing reported a cost", () => {
-    render(<MetricsPanel run={makeRun()} />);
-    // Two iteration cells plus the total row.
-    expect(screen.getAllByText("—").length).toBe(3);
+    // Nothing priced: both rows and the total are em dashes, never $0.
+    rerender(<MetricsPanel run={makeRun()} />);
+    expect(screen.getAllByText("—")).toHaveLength(3);
   });
 });

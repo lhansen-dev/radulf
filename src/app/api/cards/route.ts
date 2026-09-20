@@ -51,16 +51,14 @@ export async function GET() {
           }
         : null,
       maxIterationsResolved: card.maxIterations ?? settings.defaultMaxIterations,
-      // Effective planner model: per-card override, else the global setting.
+      // Effective model per role: per-card override, else the global setting.
       // Empty means "provider default" (e.g. the Claude subscription default).
-      plannerModelResolved: modelTag(settings.plannerProvider, card.plannerModel || settings.plannerModel || null),
-      // Effective loop (Ralpher) model: per-card override, else the global setting.
-      // Empty means "provider default" (e.g. the Claude subscription default).
-      loopModelResolved: modelTag(settings.loopProvider, card.loopModel || settings.loopModel || null),
-      // Effective evaluator model: per-card override, else the global setting.
-      // Empty means "provider default" (e.g. the Claude subscription default).
-      evaluatorModelResolved: modelTag(settings.evaluatorProvider, card.evaluatorModel || settings.evaluatorModel || null),
-      summary: card.summary,
+      ...Object.fromEntries(
+        (["planner", "loop", "evaluator"] as const).map((role) => [
+          `${role}ModelResolved`,
+          modelTag(settings[`${role}Provider`], card[`${role}Model`] || settings[`${role}Model`] || null),
+        ]),
+      ),
     };
   });
   return json(out);

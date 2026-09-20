@@ -90,7 +90,10 @@ criteria failed. There is no fallback prompt; an empty checklist ends the run.
 **`loop failed: …`**
 The harness itself errored. Three consecutive failures end the run, and a
 first-iteration connection or auth failure ends it immediately, because
-retrying a misconfigured provider only spends tokens.
+retrying a misconfigured provider only spends tokens. `assistant reply exceeded
+1 MiB in a single turn` means the provider's stream was corrupt (for example,
+every delta re-sent the whole reply so far); the session is aborted before the
+reply can overflow the context window, and the next iteration starts fresh.
 
 **`repo integrity violation: …`**
 The parent repo changed underneath the run in a way the sandbox is supposed to

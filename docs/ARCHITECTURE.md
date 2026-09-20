@@ -63,9 +63,9 @@ session. The role is what decides the tool set — see the capability split belo
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
-| Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `PLAN_TIMEOUT_MS`, 30 min |
+| Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
-| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `EVALUATE_TIMEOUT_MS`, 10 min |
+| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
 
 The loop is not a separate service — it is the orchestrator's own method,
 because it is the thing the single pipeline slot exists to serialize.
@@ -83,8 +83,14 @@ one harness invocation → consume the iteration's signal files.
 
 Progress is measured, not claimed. `buildProgressState` before and after the
 iteration is compared; three consecutive iterations that change nothing exit as
-`stalled`. An `ITERATION_DONE` without a work product is a *phantom completion*
-— the checklist is not advanced and the stall counter still sees it.
+`stalled`. The progress state hashes uncommitted content, not just the list of
+dirty paths, so repeated edits to an already-modified file still count. An
+`ITERATION_DONE` without a work product is a *phantom completion* — the
+checklist is not advanced and the stall counter still sees it. Uncommitted
+changes already in the worktree when the iteration started count as work
+product: only loop agents leave a worktree dirty (planner, evaluator and
+bookkeeping all commit), so that is work from a failed iteration or an earlier
+run that the still-unchecked task gets credit for.
 
 On a DONE signal the run-end ordering matters and is deliberate: reap the
 process group first (a surviving process could plant hooks after a check that
@@ -96,11 +102,14 @@ gate, and only then hand to the evaluator.
 `src/server/harness/` is the only place that knows about pi.
 
 - `index.ts` — `runHarness(opts)` drives one session and normalizes its events
-  into a JSONL transcript. Three watchdogs race the prompt: the iteration
-  timeout, the stall watchdog (`stallTimeoutSeconds`, universal by default so a
-  new call site gets it without opting in), and an external `AbortSignal`. All
-  three call `session.abort()`; `dispose()` in the `finally` releases the
-  session regardless.
+  into a JSONL transcript. Watchdogs race the prompt: the iteration timeout,
+  the stall watchdog (`stallTimeoutSeconds`, universal by default so a new call
+  site gets it without opting in), the stuck detector (the same tool call four
+  times in a row), the reply-size guard (`MAX_REPLY_CHARS`, 1 MiB of streamed
+  text, thinking, and tool-call arguments in one assistant reply — a corrupt
+  stream, aborted before it can overflow the context window), and an external
+  `AbortSignal`. All of them call `session.abort()`; `dispose()` in the
+  `finally` releases the session regardless.
 - `pi.ts` — session construction, provider mapping, and event normalization
   (`piNormalize`). `toolsForRole` and `pathRootsForRole` are the capability
   split: the planner gets `web_search` and no `bash`; the loop and evaluator get
@@ -108,6 +117,9 @@ gate, and only then hand to the evaluator.
   chain — see [Sandboxing](SANDBOXING.md#role-capability-split).
 - `guardedTools.ts` — filesystem tools with path enforcement.
 - `webSearch.ts` — the planner's search tool, rate- and length-limited.
+- `mock.ts` — the scripted `mock` provider (`RADULF_MOCK_LLM=1`): canned model
+  decisions, real tool execution. See
+  [Providers](PROVIDERS.md#testing-without-a-model-the-mock-provider).
 
 Token and cost accounting is `foldTranscriptEvent` folding into
 `TranscriptTotals`, which is what the analytics page and the benchmark runner
@@ -196,9 +208,10 @@ moves `deadlineAt` in the database. See
 ## API surface
 
 `src/app/api/**/route.ts`, thin by design — a route handler validates, calls a
-service, and returns. Card actions are one route each under
-`api/cards/[id]/`: `move`, `pause`, `resume`, `restart`, `reset`, `abandon`,
-`approve-plan`, `approve-install`, `retry-merge`, `retry-failed-step`, `diff`.
+service, and returns. Card actions live under `api/cards/[id]/`: `move` and
+`diff` have their own routes; the single-verb transitions (`pause`, `resume`,
+`restart`, `reset`, `abandon`, `approve-plan`, `approve-install`,
+`retry-merge`, `retry-failed-step`) share the `[action]` route's table.
 
 ## Where to start reading
 

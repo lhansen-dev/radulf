@@ -52,13 +52,8 @@ describe("POST /api/improvement-runs", () => {
     );
   });
 
-  it("rejects a missing repoId with a clean 4xx before reaching the service", async () => {
-    const response = await POST(postRequest({ baseBranch: "main", budgetMinutes: 30 }));
-    expect(response.status).toBe(400);
-    expect(mocks.createImprovementRun).not.toHaveBeenCalled();
-  });
-
-  it("rejects an invalid budgetMinutes with a clean 4xx", async () => {
+  it("rejects an invalid body with a 400 before reaching the service", async () => {
+    // Field-level rules are covered in improvementRunValidation.test.ts.
     const response = await POST(postRequest({ ...validBody, budgetMinutes: 0 }));
     expect(response.status).toBe(400);
     expect(mocks.createImprovementRun).not.toHaveBeenCalled();

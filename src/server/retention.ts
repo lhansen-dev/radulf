@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, inArray, isNotNull, lt } from "drizzle-orm";
-import { db, events, runs, TRANSCRIPTS_DIR } from "@/db";
+import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
+import { cards, db, events, runs, TRANSCRIPTS_DIR } from "@/db";
 import { ClientError } from "./clientError";
 import { markWorktreeRemoved } from "./git";
 
@@ -30,7 +30,10 @@ export function removeRunTranscripts(runIds: string[]): number {
 }
 
 /** Delete terminal run history/events older than the requested window and
- * clean aged orphan/standalone transcript entries. Cards and plans remain. */
+ * clean aged orphan/standalone transcript entries. Cards and plans remain.
+ * Only runs of finished (done/abandoned) cards are pruned: an unfinished card
+ * — waiting in review or needs_attention, or mid-cycle — reuses its runs'
+ * worktree and finds it again through those rows (latestWorktreeRun). */
 export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
   if (!Number.isInteger(olderThanDays) || olderThanDays < 1 || olderThanDays > 3_650) {
     throw new ClientError("olderThanDays must be an integer between 1 and 3650");
@@ -40,7 +43,14 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
   const oldRuns = db
     .select({ id: runs.id, worktreePath: runs.worktreePath })
     .from(runs)
-    .where(and(isNotNull(runs.endedAt), lt(runs.endedAt, cutoff)))
+    .innerJoin(cards, eq(runs.cardId, cards.id))
+    .where(
+      and(
+        isNotNull(runs.endedAt),
+        lt(runs.endedAt, cutoff),
+        inArray(cards.status, ["done", "abandoned"]),
+      ),
+    )
     .all();
   const runIds = oldRuns.map((run) => run.id);
   let transcriptEntriesDeleted = removeRunTranscripts(runIds);
@@ -48,16 +58,22 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
   // Close the worktree-directory leak: a crashed run gets endedAt stamped by
   // recover() same as any normal finish, ages past the cutoff, and its row
   // is deleted below — reclaim the directory here before that happens, since
-  // nothing else ever revisits a dead run's worktreePath.
+  // nothing else ever revisits a dead run's worktreePath. Runs share a
+  // worktree across a card's cycle, so a directory a retained run still
+  // references stays.
+  if (runIds.length > 0) db.delete(runs).where(inArray(runs.id, runIds)).run();
+  const retainedPaths = new Set(
+    db.select({ worktreePath: runs.worktreePath }).from(runs).all().map((run) => run.worktreePath),
+  );
   let worktreesRemoved = 0;
   for (const worktreePath of new Set(oldRuns.map((run) => run.worktreePath))) {
+    if (retainedPaths.has(worktreePath)) continue;
     if (!fs.existsSync(/* turbopackIgnore: true */ worktreePath)) continue;
     fs.rmSync(/* turbopackIgnore: true */ worktreePath, { recursive: true, force: true });
     markWorktreeRemoved(worktreePath);
     worktreesRemoved += 1;
   }
 
-  if (runIds.length > 0) db.delete(runs).where(inArray(runs.id, runIds)).run();
   const eventsDeleted = db.delete(events).where(lt(events.createdAt, cutoff)).run().changes;
 
   const liveRunIds = new Set(db.select({ id: runs.id }).from(runs).all().map((run) => run.id));

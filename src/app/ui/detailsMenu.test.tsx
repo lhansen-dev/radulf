@@ -34,63 +34,23 @@ function renderFixture() {
 }
 
 describe("DetailsMenu", () => {
-  it("opens on summary click then closes on a click outside", async () => {
+  it("opens on summary click, stays open for clicks inside, and closes on Escape or an outside click", async () => {
     const user = userEvent.setup();
     renderFixture();
-
-    // Find the summary (the "•••" button)
     const summary = screen.getByLabelText("Test menu");
-
-    // Details should start closed
     const details = summary.closest("details")!;
     expect(details.open).toBe(false);
 
-    // Click the summary to open
     await user.click(summary);
     expect(details.open).toBe(true);
-
-    // Click the outside button
-    const outsideBtn = screen.getByText("Outside button");
-    await user.click(outsideBtn);
-
-    // Details should now be closed
-    expect(details.open).toBe(false);
-  });
-
-  it("closes on Escape", async () => {
-    const user = userEvent.setup();
-    renderFixture();
-
-    const summary = screen.getByLabelText("Test menu");
-    const details = summary.closest("details")!;
-
-    // Open the menu
-    await user.click(summary);
+    await user.click(screen.getByText("Inside button"));
     expect(details.open).toBe(true);
-
-    // Press Escape
     await user.keyboard("{Escape}");
-
-    // Details should close
     expect(details.open).toBe(false);
-  });
 
-  it("stays open when clicking a button inside the menu", async () => {
-    const user = userEvent.setup();
-    renderFixture();
-
-    const summary = screen.getByLabelText("Test menu");
-    const details = summary.closest("details")!;
-
-    // Open the menu
     await user.click(summary);
     expect(details.open).toBe(true);
-
-    // Click the button inside the menu
-    const insideBtn = screen.getByText("Inside button");
-    await user.click(insideBtn);
-
-    // Details should remain open
-    expect(details.open).toBe(true);
+    await user.click(screen.getByText("Outside button"));
+    expect(details.open).toBe(false);
   });
 });

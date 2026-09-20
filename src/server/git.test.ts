@@ -18,101 +18,64 @@ function git(dir: string, ...args: string[]) {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
 }
 
-describe("listBranches", () => {
-  let tmpDir: string;
-
-  beforeAll(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-git-test-"));
-    // Init a git repo
-    git(tmpDir, "init");
-    // Set user config so commits work
-    git(tmpDir, "config", "user.email", "test@test.com");
-    git(tmpDir, "config", "user.name", "Test");
-    // Create initial commit (creates default branch, typically "master" or "main")
-    fs.writeFileSync(path.join(tmpDir, "README.md"), "# test");
-    git(tmpDir, "add", ".");
-    git(tmpDir, "commit", "-m", "initial");
-    // Create a second branch
-    git(tmpDir, "branch", "feature-x");
-  });
-
-  afterAll(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("returns the default branch and the extra branch", async () => {
-    const branches = await listBranches(tmpDir);
-    expect(branches).toContain("feature-x");
-    // Should contain either "main" or "master" depending on git config
-    const hasDefault = branches.includes("main") || branches.includes("master");
-    expect(hasDefault).toBe(true);
-    expect(branches.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("returns [] for a non-git directory", async () => {
-    const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
-    try {
-      const branches = await listBranches(nonGitDir);
-      expect(branches).toEqual([]);
-    } finally {
-      fs.rmSync(nonGitDir, { recursive: true, force: true });
-    }
-  });
-
-  it("returns [] for a non-existent path", async () => {
-    const branches = await listBranches("/tmp/nonexistent-ralph-test-path-12345");
-    expect(branches).toEqual([]);
-  });
-});
-
-describe("repos with no commits", () => {
+describe("repository inspection", () => {
+  let repo: string;
   let emptyRepo: string;
-  let committedRepo: string;
+  let nonGitDir: string;
+  const missingPath = "/tmp/nonexistent-ralph-test-path-12345";
 
   beforeAll(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-git-test-"));
+    git(repo, "init");
+    git(repo, "config", "user.email", "test@test.com");
+    git(repo, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(repo, "README.md"), "# test");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "initial");
+    git(repo, "branch", "feature-x");
     emptyRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-empty-repo-"));
     git(emptyRepo, "init");
-    committedRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-committed-repo-"));
-    git(committedRepo, "init");
-    git(committedRepo, "config", "user.email", "test@test.com");
-    git(committedRepo, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(committedRepo, "README.md"), "# test");
-    git(committedRepo, "add", ".");
-    git(committedRepo, "commit", "-m", "initial");
+    nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
   });
 
   afterAll(() => {
-    fs.rmSync(emptyRepo, { recursive: true, force: true });
-    fs.rmSync(committedRepo, { recursive: true, force: true });
+    for (const d of [repo, emptyRepo, nonGitDir]) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it("hasCommits is false for a freshly init-ed repo", async () => {
+  it("listBranches returns every branch, or [] outside a git repo", async () => {
+    const branches = await listBranches(repo);
+    expect(branches).toContain("feature-x");
+    expect(branches.includes("main") || branches.includes("master")).toBe(true);
+    expect(await listBranches(nonGitDir)).toEqual([]);
+    expect(await listBranches(missingPath)).toEqual([]);
+  });
+
+  it("hasCommits is true only for a repo with at least one commit", async () => {
+    expect(await hasCommits(repo)).toBe(true);
     expect(await hasCommits(emptyRepo)).toBe(false);
+    expect(await hasCommits(nonGitDir)).toBe(false);
   });
 
-  it("hasCommits is true once a commit exists", async () => {
-    expect(await hasCommits(committedRepo)).toBe(true);
-  });
-
-  it("hasCommits is false for a non-git directory", async () => {
-    const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
-    try {
-      expect(await hasCommits(nonGitDir)).toBe(false);
-    } finally {
-      fs.rmSync(nonGitDir, { recursive: true, force: true });
-    }
-  });
-
-  it("createWorktree names the empty repo instead of failing on an invalid reference", async () => {
+  it("createWorktree names an empty repo or missing base branch instead of a raw git error", async () => {
     await expect(createWorktree(emptyRepo, "main", "My task", "run1")).rejects.toThrow(
-      /has no commits yet/
+      /has no commits yet/,
+    );
+    await expect(createWorktree(repo, "nope", "My task", "run2")).rejects.toThrow(
+      /base branch "nope" does not exist/,
     );
   });
 
-  it("createWorktree reports a missing base branch on a repo that does have commits", async () => {
-    await expect(
-      createWorktree(committedRepo, "nope", "My task", "run2")
-    ).rejects.toThrow(/base branch "nope" does not exist/);
+  it("worktreeIsDirty sees untracked and modified files, and is false for a missing path", async () => {
+    expect(await worktreeIsDirty(repo)).toBe(false);
+    expect(await worktreeIsDirty(missingPath)).toBe(false);
+
+    fs.writeFileSync(path.join(repo, "newfile.txt"), "hello");
+    expect(await worktreeIsDirty(repo)).toBe(true);
+    fs.rmSync(path.join(repo, "newfile.txt"));
+
+    fs.writeFileSync(path.join(repo, "README.md"), "modified");
+    expect(await worktreeIsDirty(repo)).toBe(true);
+    git(repo, "checkout", "--", "README.md");
   });
 });
 
@@ -123,44 +86,6 @@ describe("isValidBranchName", () => {
 
   it.each(["-dangerous-option", "bad..name", "bad name", "main~1", ""])('rejects "%s"', async (name) => {
     expect(await isValidBranchName(name)).toBe(false);
-  });
-});
-
-describe("worktreeIsDirty", () => {
-  let tmpDir: string;
-
-  beforeAll(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-dirty-test-"));
-    git(tmpDir, "init");
-    git(tmpDir, "config", "user.email", "test@test.com");
-    git(tmpDir, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(tmpDir, "README.md"), "# test");
-    git(tmpDir, "add", ".");
-    git(tmpDir, "commit", "-m", "initial");
-  });
-
-  afterAll(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("returns false for a clean worktree", async () => {
-    expect(await worktreeIsDirty(tmpDir)).toBe(false);
-  });
-
-  it("returns true when an untracked file exists", async () => {
-    fs.writeFileSync(path.join(tmpDir, "newfile.txt"), "hello");
-    expect(await worktreeIsDirty(tmpDir)).toBe(true);
-    fs.rmSync(path.join(tmpDir, "newfile.txt"));
-  });
-
-  it("returns true when a tracked file is modified", async () => {
-    fs.writeFileSync(path.join(tmpDir, "README.md"), "modified");
-    expect(await worktreeIsDirty(tmpDir)).toBe(true);
-    git(tmpDir, "checkout", "--", "README.md");
-  });
-
-  it("returns false for a non-existent path", async () => {
-    expect(await worktreeIsDirty("/tmp/nonexistent-ralph-test-path-12345")).toBe(false);
   });
 });
 

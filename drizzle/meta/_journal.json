@@ -64,6 +64,20 @@
       "when": 1788389751894,
       "tag": "0008_bored_mac_gargan",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1789332574226,
+      "tag": "0009_low_omega_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1789333735074,
+      "tag": "0010_polite_enchantress",
+      "breakpoints": true
     }
   ]
 }

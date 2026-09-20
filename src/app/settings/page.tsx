@@ -3,7 +3,11 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Repo } from "../ui/api";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
-import { useSettingsData, type PromptTemplateSettings } from "./useSettingsData";
+import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
+import {
+  SETTINGS_SECTIONS, SettingsNav, SettingsPanel, ThemePicker, ToggleRow,
+  inputCls, secondaryButtonCls, sectionCls, useSettingsSection,
+} from "./settingsUI";
 
 type ProviderModel = {
   value: string;
@@ -11,8 +15,8 @@ type ProviderModel = {
   description: string;
   reasoningEfforts?: string[];
   reasoningMandatory?: boolean;
-  /** USD per 1M tokens, when the provider reports pricing. Undefined for
-   * oMLX — a local model has no market rate. */
+  /** USD per 1M tokens, when the provider reports pricing. Undefined for a
+   * self-hosted model, which has no market rate. */
   costPerMillionInput?: number;
   costPerMillionOutput?: number;
 };
@@ -64,12 +68,13 @@ function GithubSection() {
 
   const dot = status === null ? "bg-slate-500" : status.ok ? "bg-green-400" : "bg-amber-400";
   return (
-    <section id="github" className="scroll-mt-4 flex flex-col gap-3">
-      <h2 className="font-medium">GitHub</h2>
-      <p className="text-sm text-foreground/55">
-        Needed only to deliver an approved diff as a pull request instead of merging it
-        locally. Radulf uses the GitHub CLI and never logs in for you.
-      </p>
+    <section id="github" className={sectionCls}>
+      <div>
+        <h3 className="font-medium">GitHub connection</h3>
+        <p className="mt-1 text-sm leading-relaxed text-foreground/55">
+          Deliver approved work as a pull request using your GitHub CLI account.
+        </p>
+      </div>
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-sm">
         <span className={`size-2 shrink-0 rounded-full ${dot}`} aria-hidden="true" />
         <span className="text-foreground/70">
@@ -108,12 +113,23 @@ function formatPricePerMillion(usd: number): string {
   return usd < 1 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
 }
 
+/** "$3.00 / 1M input · $15.00 / 1M output", or "" when the provider reports no pricing. */
+function priceLabel(m: ProviderModel, input = " / 1M input", output = " / 1M output", sep = " · "): string {
+  return [
+    m.costPerMillionInput != null && `${formatPricePerMillion(m.costPerMillionInput)}${input}`,
+    m.costPerMillionOutput != null && `${formatPricePerMillion(m.costPerMillionOutput)}${output}`,
+  ].filter(Boolean).join(sep);
+}
+
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude subscription)" },
   { id: "omlx", label: "Local / self-hosted (OpenAI-compatible)" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "chatgpt", label: "ChatGPT (Codex subscription)" },
   { id: "copilot", label: "GitHub Copilot (subscription)" },
+  // Testing-only (RADULF_MOCK_LLM=1) — listed only while a role already uses
+  // it, so a stored "mock" renders as itself; select it via PATCH /api/settings.
+  { id: "mock", label: "Mock (scripted, no model)" },
 ] as const;
 
 // Mirror of REASONING_LEVELS in src/server/settings.ts (pi's --thinking ladder);
@@ -123,9 +139,9 @@ const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "m
 /**
  * Levels to offer for the picked model, ordered by the canonical ladder. When
  * the provider advertises the model's supported efforts (OpenRouter), narrow to
- * those — plus "off" unless reasoning is mandatory. Otherwise (oMLX, an
- * unlisted/custom id, or the list not yet loaded) offer the full ladder; pi
- * clamps anything the model can't honor. `current` is always kept so the
+ * those — plus "off" unless reasoning is mandatory. Otherwise (the subscription
+ * providers, a self-hosted model, an unlisted/custom id, or the list not yet loaded) offer the
+ * full ladder; pi clamps anything the model can't honor. `current` is always kept so the
  * <select> never renders blank against a stored value the model dropped.
  */
 function availableReasoningLevels(
@@ -141,26 +157,44 @@ function availableReasoningLevels(
 }
 
 const MODEL_HINTS: Record<string, string> = {
-  anthropic: "Claude model id; blank = subscription default (make login)",
-  chatgpt: "ChatGPT/Codex model id; blank = subscription default (make login)",
-  copilot: "GitHub Copilot model id; blank = subscription default (make login)",
-  omlx: "model id the local server reports at /v1/models; must support tool use",
-  openrouter: "OpenRouter model id, e.g. anthropic/claude-opus-4.5",
+  anthropic: "Leave blank to use your subscription's default model.",
+  chatgpt: "Leave blank to use your subscription's default model.",
+  copilot: "Leave blank to use your subscription's default model.",
+  omlx: "Use the id of a model your server reports at /v1/models; it must support tool use.",
+  openrouter: "Type a model id to search the available models.",
+  mock: "The model id picks a scripted scenario. Leave blank for happy-path.",
 };
 
-const inputCls = "bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm w-full";
+type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
+type StringKey = { [K in keyof Settings]: Settings[K] extends string ? K : never }[keyof Settings];
+
+const AGENTS = [
+  { role: "planner", title: "Planner agent", subtitle: "Turns a task into a plan and acceptance criteria." },
+  { role: "loop", title: "Looper agent", subtitle: "Works through the plan, one iteration at a time." },
+  { role: "evaluator", title: "Evaluator agent", subtitle: "Reviews completed work before it reaches you." },
+] as const;
+
+const TEMPLATES = [
+  { key: "plannerPromptTemplate", title: "Planning artifacts", description: "Instructions for generating PLAN.md, CRITERIA.md, and the loop's PROMPT.md.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{FEEDBACK_SECTION}}"] },
+  { key: "evaluatorPromptTemplate", title: "Evaluation", description: "Instructions used when the evaluator reviews a completed loop.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{BASE_BRANCH}}", "{{CRITERIA}}"] },
+  { key: "improvePromptTemplate", title: "Self-improvement", description: "Instructions used by an improvement run to propose the next change from a repository review.", placeholders: ["{{EXISTING_CARDS}}", "{{FOCUS}}"] },
+] as const;
+
+function SectionHeading({ title, children }: { title: string; children?: React.ReactNode }) {
+  return (
+    <div>
+      <h3 className="font-medium">{title}</h3>
+      {children && <p className="mt-1 text-sm leading-relaxed text-foreground/55">{children}</p>}
+    </div>
+  );
+}
+
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function SettingsPage() {
-  const {
-    settings,
-    setSettings,
-    repos,
-    saved,
-    error,
-    setError,
-    refetch,
-    save,
-  } = useSettingsData();
+  const { settings, setSettings, repos, saved, saving, dirty, error, setError, refetch, save } = useSettingsData();
+  const activeSection = useSettingsSection();
+  const currentSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection)!;
   const [cleanupDays, setCleanupDays] = useState(90);
   const [cleanupResult, setCleanupResult] = useState("");
 
@@ -168,434 +202,283 @@ export default function SettingsPage() {
     setError("");
     setCleanupResult("");
     try {
-      const result = await api<{
-        runsDeleted: number;
-        eventsDeleted: number;
-        transcriptEntriesDeleted: number;
-      }>("/api/maintenance/cleanup", { json: { olderThanDays: cleanupDays } });
+      const result = await api<{ runsDeleted: number; eventsDeleted: number; transcriptEntriesDeleted: number }>(
+        "/api/maintenance/cleanup", { json: { olderThanDays: cleanupDays } },
+      );
       setCleanupResult(
         `Deleted ${result.runsDeleted} runs, ${result.eventsDeleted} events, and ${result.transcriptEntriesDeleted} transcript entries.`,
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
   async function restoreBuiltInPromptTemplates() {
     setError("");
     try {
-      const defaults = await api<PromptTemplateSettings>(
-        "/api/settings/prompt-template-defaults",
-      );
-      setSettings({ ...settings!, ...defaults });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const defaults = await api<PromptTemplateSettings>("/api/settings/prompt-template-defaults");
+      setSettings((current) => current ? { ...current, ...defaults } : current);
+    } catch (e) {
+      setError(errorMessage(e));
     }
   }
 
   if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
 
+  const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
+  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls") =>
+    ({ checked: settings[key], onChange: (value: boolean) => set({ [key]: value }) });
+  const textInput = (key: StringKey, props: { label: string; type?: string; placeholder?: string }) => (
+    <label className="text-sm text-foreground/70">
+      {props.label}
+      <input type={props.type} value={settings[key]} onChange={(e) => set({ [key]: e.target.value })} placeholder={props.placeholder} className={inputCls} />
+    </label>
+  );
+  const numberInput = (key: NumberKey, label: string, hint?: string, min = 1, className = "text-sm text-foreground/70") => (
+    <label className={className}>
+      {label}
+      <input type="number" min={min} value={settings[key]} onChange={(e) => set({ [key]: Number(e.target.value) || min })} className={inputCls} />
+      {hint && <span className="mt-1 block text-xs text-foreground/40">{hint}</span>}
+    </label>
+  );
+
   // Same provider+model as the loop means the evaluator grades the model that
-  // did the work, sharing its blind spots when grading its own output —
-  // advisory only, never a save-blocking validation error.
+  // did the work, sharing its blind spots — advisory only, never blocks saving.
   const evaluatorMatchesLoop =
-    settings.evaluatorProvider === settings.loopProvider &&
-    settings.evaluatorModel === settings.loopModel;
+    settings.evaluatorProvider === settings.loopProvider && settings.evaluatorModel === settings.loopModel;
 
   return (
     <AppShell>
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-5 pb-16 sm:px-6 lg:py-8">
-      <header>
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground/35">Workspace configuration</p>
-        <h1 tabIndex={-1} className="mt-0.5 text-2xl font-semibold">Settings</h1>
-      </header>
-      <nav aria-label="Settings sections" className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6">
-        <div className="flex w-max gap-2">
-          {[["repos", "Repos"], ["agents", "Agents"], ["templates", "Templates"], ["appearance", "Appearance"], ["notifications", "Notifications"], ["defaults", "Run defaults"], ["github", "GitHub"], ["maintenance", "Maintenance"]].map(([id, label]) => <a key={id} href={`#${id}`} className="touch-target flex items-center rounded-full border border-foreground/10 bg-foreground/[0.03] px-3 text-sm text-foreground/65">{label}</a>)}
-        </div>
-      </nav>
-      {error && <p className="text-red-400 text-sm">{error}</p>}
-
-      <section id="appearance" className="scroll-mt-4 flex flex-col gap-3">
-        <h2 className="font-medium">Theme</h2>
-        <select
-          value={settings.theme}
-          onChange={(e) => setSettings({ ...settings, theme: e.target.value })}
-          className={inputCls}
-        >
-          <option value="default">Default</option>
-          <option value="default-light">Default Light</option>
-          <option value="solarized-dark">Solarized Dark</option>
-          <option value="solarized-light">Solarized Light</option>
-          <option value="tokyo-night">Tokyo Night</option>
-          <option value="tokyo-day">Tokyo Day</option>
-          <option value="nord">Nord</option>
-          <option value="nord-light">Nord Light</option>
-          <option value="gruvbox-dark">Gruvbox Dark</option>
-          <option value="gruvbox-light">Gruvbox Light</option>
-        </select>
-      </section>
-
-      <ReposSection repos={repos} onChange={refetch} />
-
-      <section id="agents" className="scroll-mt-4 flex flex-col gap-3">
-        <h2 className="font-medium">Provider credentials</h2>
-        <p className="text-xs text-foreground/40">
-          Anthropic uses your normal <code>claude</code> CLI login — nothing to configure here.
-          The local and OpenRouter providers are optional: configure them only if
-          you want the loop to run against your own OpenAI-compatible server
-          (oMLX, vLLM, LM Studio) or remotely via OpenRouter.
-        </p>
-        <p className="text-xs text-foreground/40">
-          A saved key is never sent back to the browser — it shows as{" "}
-          <code>••••••••</code> and stays as it is unless you overwrite it. Clear the
-          field and save to remove it.
-        </p>
-        <div className="flex flex-col gap-4 sm:flex-row">
-          <label className="text-sm text-foreground/70 grow">
-            Local server base URL
-            <input
-              value={settings.omlxBaseUrl}
-              onChange={(e) => setSettings({ ...settings, omlxBaseUrl: e.target.value })}
-              className={inputCls}
-            />
-          </label>
-          <label className="text-sm text-foreground/70 grow">
-            Local server API key
-            <input
-              type="password"
-              value={settings.omlxApiKey}
-              onChange={(e) => setSettings({ ...settings, omlxApiKey: e.target.value })}
-              placeholder="optional; many local servers need none"
-              className={inputCls}
-            />
-          </label>
-        </div>
-        <label className="text-sm text-foreground/70">
-          OpenRouter API key
-          <input
-            type="password"
-            value={settings.openrouterApiKey}
-            onChange={(e) => setSettings({ ...settings, openrouterApiKey: e.target.value })}
-            placeholder="sk-or-…"
-            className={inputCls}
-          />
-        </label>
-        <label className="text-sm text-foreground/70">
-          Brave Search API key
-          <input
-            type="password"
-            value={settings.braveApiKey}
-            onChange={(e) => setSettings({ ...settings, braveApiKey: e.target.value })}
-            placeholder="from search.brave.com/api (enables web_search for every agent)"
-            className={inputCls}
-          />
-        </label>
-        <p className="text-xs text-foreground/40">
-          The local and OpenRouter providers run the loop under the{" "}
-          <a
-            href="https://github.com/earendil-works/pi"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline"
-          >
-            pi coding agent
-          </a>
-          . The Anthropic and ChatGPT subscription paths run under their own
-          CLIs.
-        </p>
-      </section>
-
-      <AgentSection
-        title="Planner agent"
-        subtitle="writes the plan — pick something smart"
-        provider={settings.plannerProvider}
-        model={settings.plannerModel}
-        onProvider={(p) => setSettings({ ...settings, plannerProvider: p, plannerModel: "" })}
-        onModel={(m) => setSettings({ ...settings, plannerModel: m })}
-        reasoningLevel={settings.plannerReasoningLevel}
-        onReasoningLevel={(r) => setSettings({ ...settings, plannerReasoningLevel: r })}
-        saveFirst={save}
-        datalistId="planner-models"
-      />
-
-      <AgentSection
-        title="Loop agent"
-        subtitle="runs the ralph iterations"
-        provider={settings.loopProvider}
-        model={settings.loopModel}
-        onProvider={(p) => setSettings({ ...settings, loopProvider: p, loopModel: "" })}
-        onModel={(m) => setSettings({ ...settings, loopModel: m })}
-        reasoningLevel={settings.loopReasoningLevel}
-        onReasoningLevel={(r) => setSettings({ ...settings, loopReasoningLevel: r })}
-        saveFirst={save}
-        datalistId="loop-models"
-      />
-
-      <AgentSection
-        title="Evaluator agent"
-        subtitle="reviews the loop's work after DONE — revise loops it back, approve goes to you"
-        provider={settings.evaluatorProvider}
-        model={settings.evaluatorModel}
-        onProvider={(p) => setSettings({ ...settings, evaluatorProvider: p, evaluatorModel: "" })}
-        onModel={(m) => setSettings({ ...settings, evaluatorModel: m })}
-        reasoningLevel={settings.evaluatorReasoningLevel}
-        onReasoningLevel={(r) => setSettings({ ...settings, evaluatorReasoningLevel: r })}
-        saveFirst={save}
-        datalistId="evaluator-models"
-        warning={
-          evaluatorMatchesLoop
-            ? "The evaluator is currently the same provider and model as the loop agent, so it may share the loop's blind spots when grading its own work. Consider picking a different provider/model for the evaluator."
-            : undefined
-        }
-      />
-
-      <section id="templates" className="scroll-mt-4 flex flex-col gap-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <main className="mx-auto w-full max-w-7xl px-4 pb-16 sm:px-8 lg:px-10">
+        <header className="sticky top-0 z-20 -mx-4 flex items-center justify-between gap-4 border-b border-foreground/10 bg-background/95 px-4 py-5 backdrop-blur-xl sm:-mx-8 sm:px-8 lg:-mx-10 lg:px-10 lg:py-7">
           <div>
-            <h2 className="font-medium">Prompt templates</h2>
-            <p className="mt-1 max-w-3xl text-xs text-foreground/45">
-              These templates are used for future agent runs. The planning template controls
-              how <code>PLAN.md</code>, <code>CRITERIA.md</code>, and <code>PROMPT.md</code> are produced;
-              existing card artifacts are not rewritten.
-            </p>
+            <h1 tabIndex={-1} className="text-2xl font-semibold tracking-tight">Settings</h1>
+            <p className="mt-1 hidden text-sm text-foreground/50 sm:block">Workspace preferences and agent configuration.</p>
           </div>
-          <button
-            type="button"
-            onClick={() => void restoreBuiltInPromptTemplates()}
-            className="rounded bg-foreground/10 px-3 py-1.5 text-sm hover:bg-foreground/15"
-          >
-            Restore built-in templates
-          </button>
-        </div>
-        <PromptTemplateEditor
-          title="Planning artifacts"
-          description="Instructions for generating PLAN.md, CRITERIA.md, and the loop's PROMPT.md."
-          placeholders={["{{TITLE}}", "{{DESCRIPTION}}", "{{FEEDBACK_SECTION}}"]}
-          value={settings.plannerPromptTemplate}
-          onChange={(plannerPromptTemplate) => setSettings({ ...settings, plannerPromptTemplate })}
-        />
-        <PromptTemplateEditor
-          title="Evaluation"
-          description="Instructions used when the evaluator reviews a completed loop."
-          placeholders={["{{TITLE}}", "{{DESCRIPTION}}", "{{BASE_BRANCH}}", "{{CRITERIA}}"]}
-          value={settings.evaluatorPromptTemplate}
-          onChange={(evaluatorPromptTemplate) => setSettings({ ...settings, evaluatorPromptTemplate })}
-        />
-        <PromptTemplateEditor
-          title="Self-improvement"
-          description="Instructions used by an improvement run to propose the next change from a repository review."
-          placeholders={["{{EXISTING_CARDS}}", "{{FOCUS}}"]}
-          value={settings.improvePromptTemplate}
-          onChange={(improvePromptTemplate) => setSettings({ ...settings, improvePromptTemplate })}
-        />
-      </section>
-
-      <section id="notifications" className="scroll-mt-4 flex flex-col gap-3">
-        <h2 className="font-medium">Notifications & sounds</h2>
-        <label className="text-sm text-foreground/70 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={settings.notificationsEnabled}
-            onChange={(e) =>
-              setSettings({ ...settings, notificationsEnabled: e.target.checked })
-            }
-          />
-          Notify me when a task needs my attention (In Review / Needs Attention)
-        </label>
-        <label className="text-sm text-foreground/70 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={settings.soundEnabled}
-            onChange={(e) =>
-              setSettings({ ...settings, soundEnabled: e.target.checked })
-            }
-          />
-          Play an alert sound too
-        </label>
-        <button
-          onClick={() => {
-            requestNotificationPermission().then((granted) => {
-              if (granted) {
-                showCardNotification("Radulf", "Notifications are enabled.");
-              }
-              playAlertSound();
-            });
-          }}
-          className="bg-foreground/10 hover:bg-foreground/15 rounded px-3 py-1.5 text-sm self-start"
-        >
-          Test notification & sound
-        </button>
-      </section>
-
-      <section id="defaults" className="scroll-mt-4 flex flex-col gap-3">
-        <h2 className="font-medium">Loop defaults</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <label className="text-sm text-foreground/70">
-            Max iterations
-            <input
-              type="number"
-              min={1}
-              value={settings.defaultMaxIterations}
-              onChange={(e) =>
-                setSettings({ ...settings, defaultMaxIterations: Number(e.target.value) || 1 })
-              }
-              className={inputCls}
-            />
-          </label>
-          <label className="text-sm text-foreground/70">
-            Timeout (minutes)
-            <input
-              type="number"
-              min={1}
-              value={settings.defaultTimeoutMinutes}
-              onChange={(e) =>
-                setSettings({ ...settings, defaultTimeoutMinutes: Number(e.target.value) || 1 })
-              }
-              className={inputCls}
-            />
-          </label>
-          <label className="text-sm text-foreground/70">
-            Iteration hard timeout (minutes)
-            <input
-              type="number"
-              min={1}
-              value={settings.iterationHardTimeoutMinutes}
-              onChange={(e) =>
-                setSettings({ ...settings, iterationHardTimeoutMinutes: Number(e.target.value) || 1 })
-              }
-              className={inputCls}
-            />
-            <span className="mt-1 block text-xs text-foreground/40">
-              Caps one iteration; a single timeout retries, two in a row end the run.
+          <div className="flex flex-col-reverse items-end gap-1 sm:flex-row sm:items-center sm:gap-4">
+            <span role="status" aria-live="polite" className="text-[11px] text-foreground/55 sm:text-xs">
+              {saving ? "Saving changes…" : dirty ? "Unsaved changes" : saved ? "Settings saved ✓" : "All changes saved"}
             </span>
-          </label>
-          <label className="text-sm text-foreground/70">
-            Stall timeout (seconds)
-            <input
-              type="number"
-              min={30}
-              value={settings.stallTimeoutSeconds}
-              onChange={(e) =>
-                setSettings({ ...settings, stallTimeoutSeconds: Number(e.target.value) || 30 })
-              }
-              className={inputCls}
-            />
-            <span className="mt-1 block text-xs text-foreground/40">
-              Kills any model call — planner, loop, evaluator, proposer, chat — that emits
-              nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts
-              as output, so this never cuts off a merely slow model.
-            </span>
-          </label>
+            <button
+              type="button"
+              onClick={() => save().catch(() => { })}
+              disabled={saving || !dirty}
+              className="rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent transition-colors hover:bg-accent/85 disabled:opacity-45"
+            >
+              {saving ? "Saving…" : "Save settings"}
+            </button>
+          </div>
+        </header>
+        <div className="grid items-start gap-6 pt-5 lg:grid-cols-[200px_minmax(0,1fr)] lg:gap-10 lg:pt-8">
+          <SettingsNav active={activeSection} />
+          <div className="flex min-w-0 flex-col gap-5">
+            <div className="mb-1">
+              <h2 className="text-xl font-semibold tracking-tight">{currentSection.label}</h2>
+              <p className="mt-1.5 text-sm leading-relaxed text-foreground/55">{currentSection.description}</p>
+            </div>
+            {error && <p role="alert" className="rounded-lg border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-400">{error}</p>}
+
+            <SettingsPanel active={activeSection} section="general">
+              <div className="flex flex-col gap-5">
+                <section id="appearance" className={sectionCls}>
+                  <SectionHeading title="Appearance">Pick a color theme. Save your changes to apply it across Radulf.</SectionHeading>
+                  <ThemePicker value={settings.theme} onChange={(theme) => set({ theme })} />
+                </section>
+                <section id="notifications" className={sectionCls}>
+                  <SectionHeading title="Notifications & sounds" />
+                  <div className="flex flex-col gap-4 divide-y divide-foreground/10">
+                    <ToggleRow title="Desktop notifications" description="Get notified when a task is ready for review or needs your attention." {...toggle("notificationsEnabled")} />
+                    <div className="pt-4">
+                      <ToggleRow title="Alert sounds" description="Play a sound alongside task notifications." {...toggle("soundEnabled")} />
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      requestNotificationPermission().then((granted) => {
+                        if (granted) showCardNotification("Radulf", "Notifications are enabled.");
+                        playAlertSound();
+                      });
+                    }}
+                    className={`${secondaryButtonCls} self-start`}
+                  >
+                    Test notification & sound
+                  </button>
+                </section>
+              </div>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="repos">
+              <div className="flex flex-col gap-5">
+                <ReposSection repos={repos} onChange={refetch} />
+                <GithubSection />
+              </div>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="agents">
+              <div id="agents" className="flex scroll-mt-32 flex-col gap-5">
+                <section className={sectionCls}>
+                  <SectionHeading title="Subscriptions">Use your Anthropic, ChatGPT, or GitHub Copilot subscription.</SectionHeading>
+                  <p className="rounded-lg border border-foreground/10 bg-background px-4 py-3 text-sm leading-relaxed text-foreground/70">
+                    Run <code className="text-foreground">make login</code> in a terminal, then type <code className="text-foreground">/login</code> to connect a provider.
+                  </p>
+                  <p className="text-xs leading-relaxed text-foreground/50">Sign in through Radulf so your agents can use the connection. Logins in your personal pi or Claude directory are separate.</p>
+                </section>
+                <section className={sectionCls}>
+                  <SectionHeading title="Local models">Connect your own OpenAI-compatible server (oMLX, vLLM, LM Studio) running a model that supports tool use.</SectionHeading>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {textInput("omlxBaseUrl", { label: "Local server base URL" })}
+                    {textInput("omlxApiKey", { label: "Local server API key", type: "password", placeholder: "optional; many local servers need none" })}
+                  </div>
+                </section>
+                <section className={sectionCls}>
+                  <SectionHeading title="API keys">Optional services for hosted models and planner web search.</SectionHeading>
+                  {textInput("openrouterApiKey", { label: "OpenRouter API key", type: "password", placeholder: "sk-or-…" })}
+                  {textInput("braveApiKey", { label: "Brave Search API key", type: "password", placeholder: "Brave Search API key" })}
+                </section>
+                <p className="px-1 text-xs leading-relaxed text-foreground/50">
+                  Saved keys are hidden as <code>••••••••</code>. Leave them as shown to keep them, replace to update, or clear and save to remove.
+                </p>
+              </div>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="models">
+              <div id="models" className="flex scroll-mt-32 flex-col gap-5">
+                {AGENTS.map(({ role, title, subtitle }) => (
+                  <AgentSection
+                    key={role}
+                    title={title}
+                    subtitle={subtitle}
+                    provider={settings[`${role}Provider`]}
+                    model={settings[`${role}Model`]}
+                    onProvider={(p) => set({ [`${role}Provider`]: p, [`${role}Model`]: "" })}
+                    onModel={(m) => set({ [`${role}Model`]: m })}
+                    reasoningLevel={settings[`${role}ReasoningLevel`]}
+                    onReasoningLevel={(r) => set({ [`${role}ReasoningLevel`]: r })}
+                    saveFirst={save}
+                    datalistId={`${role}-models`}
+                    warning={
+                      role === "evaluator" && evaluatorMatchesLoop
+                        ? "The evaluator uses the same model as the looper and may share its blind spots. Choose a different model for a more independent review."
+                        : undefined
+                    }
+                  />
+                ))}
+              </div>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="templates">
+              <section id="templates" className={sectionCls}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-medium">Agent instructions</h3>
+                    <p className="mt-1 max-w-3xl text-xs text-foreground/45">
+                      These templates are used for future agent runs. The planning template controls
+                      how <code>PLAN.md</code>, <code>CRITERIA.md</code>, and <code>PROMPT.md</code> are produced;
+                      existing card artifacts are not rewritten.
+                    </p>
+                  </div>
+                  <button type="button" onClick={() => void restoreBuiltInPromptTemplates()} className={secondaryButtonCls}>
+                    Restore built-in templates
+                  </button>
+                </div>
+                {TEMPLATES.map(({ key, ...template }) => (
+                  <PromptTemplateEditor key={key} {...template} value={settings[key]} onChange={(value) => set({ [key]: value })} />
+                ))}
+              </section>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="defaults">
+              <div className="flex flex-col gap-5">
+                <section id="planner-defaults" className={sectionCls}>
+                  <SectionHeading title="Planning" />
+                  {numberInput("plannerTimeoutMinutes", "Timeout (minutes)", "Caps each card's planning pass.", 1, "max-w-xs text-sm text-foreground/70")}
+                </section>
+                <section id="defaults" className={sectionCls}>
+                  <SectionHeading title="Loop execution" />
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    {numberInput("defaultMaxIterations", "Max iterations")}
+                    {numberInput("defaultTimeoutMinutes", "Timeout (minutes)")}
+                    {numberInput("iterationHardTimeoutMinutes", "Iteration hard timeout (minutes)", "Caps one iteration; a single timeout retries, two in a row end the run.")}
+                    {numberInput("stallTimeoutSeconds", "Stall timeout (seconds)", "Kills any model call — planner, looper, evaluator, proposer, chat — that emits nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts as output, so this never cuts off a merely slow model.", 30)}
+                  </div>
+                  <div className="border-t border-foreground/10 pt-4">
+                    <ToggleRow title="Minimal tool set" description="Deny tool permissions by default for the looper agent." {...toggle("minimalToolset")} />
+                  </div>
+                </section>
+                <section id="evaluator-defaults" className={sectionCls}>
+                  <SectionHeading title="Evaluation" />
+                  {numberInput("evaluatorTimeoutMinutes", "Timeout (minutes)", "Caps each evaluation pass after the looper finishes.", 1, "max-w-xs text-sm text-foreground/70")}
+                </section>
+              </div>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="sandbox">
+              <section id="sandbox" className={sectionCls}>
+                <SectionHeading title="Agent isolation">Restrict agent commands to their worktree and allowed network destinations.</SectionHeading>
+                <ToggleRow title="Sandbox enabled" {...toggle("sandboxEnabled")} />
+                <p className="text-xs text-foreground/40">
+                  Turning this off runs agent bash unsandboxed on this host — a persistent warning
+                  banner appears everywhere, and every affected run is stamped{" "}
+                  <code>sandboxed: false</code> in its run detail and in analytics.
+                </p>
+                <label className="text-sm text-foreground/70">
+                  Extra network allowlist (one domain per line)
+                  <textarea
+                    rows={3}
+                    value={settings.sandboxNetworkAllowlist}
+                    onChange={(e) => set({ sandboxNetworkAllowlist: e.target.value })}
+                    placeholder="pypi.org"
+                    className={`${inputCls} font-mono`}
+                  />
+                </label>
+                <p className="text-xs text-foreground/40">
+                  Package registries (registry.npmjs.org) are always reachable. Every domain added here
+                  widens egress: the proxy allows by requested hostname and does not terminate TLS, so a
+                  permitted domain is a potential domain-fronting path — add only what a run genuinely
+                  needs.
+                </p>
+                <div className="border-t border-foreground/10 pt-5">
+                  <ToggleRow title="Allow Go/TLS toolchains" description="Weaker isolation · macOS only" {...toggle("sandboxWeakerIsolationForGoTls")} />
+                </div>
+                <p className="text-xs text-foreground/40">
+                  Off by default. Go-based tools (go, gh, gcloud, terraform, kubectl) verify TLS via the
+                  macOS <code>trustd</code> daemon, which the sandbox blocks — so their HTTPS fetches fail
+                  even for an allowlisted domain. Enabling this permits <code>trustd</code>. Residual:{" "}
+                  <code>trustd</code> runs outside the sandbox and its OCSP/CRL requests bypass the egress
+                  proxy — a low-bandwidth exfil channel. Turn on only for repos whose toolchain needs it.
+                </p>
+              </section>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="maintenance">
+              <section id="maintenance" className={sectionCls}>
+                <SectionHeading title="History retention">
+                  Delete terminal run history, events, and transcript files older than the selected age. Cards and plans are kept.
+                </SectionHeading>
+                <label className="max-w-xs text-sm text-foreground/70">
+                  Keep history for (days)
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={cleanupDays}
+                    onChange={(event) => setCleanupDays(Number(event.target.value) || 1)}
+                    className={inputCls}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void cleanupHistory()}
+                  className="self-start rounded-lg border border-red-400/25 bg-red-400/5 px-3.5 py-2 text-sm font-medium text-red-400 hover:bg-red-400/10"
+                >
+                  Clean up old history
+                </button>
+                {cleanupResult && <p role="status" className="text-sm text-green-400">{cleanupResult}</p>}
+              </section>
+            </SettingsPanel>
+          </div>
         </div>
-        <label className="text-sm text-foreground/70 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={settings.minimalToolset}
-            onChange={(e) =>
-              setSettings({ ...settings, minimalToolset: e.target.checked })
-            }
-          />
-          Minimal tool set (deny-by-default tool permissions for the loop agent)
-        </label>
-      </section>
-
-      <GithubSection />
-
-      <section id="sandbox" className="scroll-mt-4 flex flex-col gap-3">
-        <h2 className="font-medium">Sandbox</h2>
-        <p className="text-sm text-foreground/55">
-          Kernel-enforced containment (spec 14) on every loop/evaluator bash command —
-          filesystem, network, and socket restrictions. This is the one escape hatch; it is
-          never reachable by the agent itself.
-        </p>
-        <label className="text-sm text-foreground/70 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={settings.sandboxEnabled}
-            onChange={(e) => setSettings({ ...settings, sandboxEnabled: e.target.checked })}
-          />
-          Sandbox enabled
-        </label>
-        <p className="text-xs text-foreground/40">
-          Turning this off runs agent bash unsandboxed on this host — a persistent warning
-          banner appears everywhere, and every affected run is stamped{" "}
-          <code>sandboxed: false</code> in its run detail and in analytics.
-        </p>
-        <label className="text-sm text-foreground/70">
-          Extra network allowlist (one domain per line)
-          <textarea
-            rows={3}
-            value={settings.sandboxNetworkAllowlist}
-            onChange={(e) =>
-              setSettings({ ...settings, sandboxNetworkAllowlist: e.target.value })
-            }
-            placeholder="pypi.org"
-            className={`${inputCls} font-mono`}
-          />
-        </label>
-        <p className="text-xs text-foreground/40">
-          Package registries (registry.npmjs.org) are always reachable. Every domain added here
-          widens egress: the proxy allows by requested hostname and does not terminate TLS, so a
-          permitted domain is a potential domain-fronting path — add only what a run genuinely
-          needs.
-        </p>
-        <label className="text-sm text-foreground/70 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={settings.sandboxWeakerIsolationForGoTls}
-            onChange={(e) =>
-              setSettings({ ...settings, sandboxWeakerIsolationForGoTls: e.target.checked })
-            }
-          />
-          Allow Go/TLS toolchains (weaker isolation, macOS)
-        </label>
-        <p className="text-xs text-foreground/40">
-          Off by default. Go-based tools (go, gh, gcloud, terraform, kubectl) verify TLS via the
-          macOS <code>trustd</code> daemon, which the sandbox blocks — so their HTTPS fetches fail
-          even for an allowlisted domain. Enabling this permits <code>trustd</code>. Residual:{" "}
-          <code>trustd</code> runs outside the sandbox and its OCSP/CRL requests bypass the egress
-          proxy — a low-bandwidth exfil channel. Turn on only for repos whose toolchain needs it.
-        </p>
-      </section>
-
-      <section id="maintenance" className="scroll-mt-4 flex flex-col gap-3">
-        <h2 className="font-medium">History retention</h2>
-        <p className="text-sm text-foreground/55">
-          Delete terminal run history, events, and transcript files older than the selected age.
-          Cards and plans are kept.
-        </p>
-        <label className="max-w-xs text-sm text-foreground/70">
-          Keep history for (days)
-          <input
-            type="number"
-            min={1}
-            max={3650}
-            value={cleanupDays}
-            onChange={(event) => setCleanupDays(Number(event.target.value) || 1)}
-            className={inputCls}
-          />
-        </label>
-        <button
-          type="button"
-          onClick={() => void cleanupHistory()}
-          className="self-start rounded bg-foreground/10 px-3 py-1.5 text-sm hover:bg-foreground/15"
-        >
-          Clean up old history
-        </button>
-        {cleanupResult && <p role="status" className="text-sm text-green-400">{cleanupResult}</p>}
-      </section>
-
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => save().catch(() => {})}
-          className="bg-amber-600 hover:bg-amber-500 text-on-accent font-medium rounded px-4 py-2 text-sm"
-        >
-          Save settings
-        </button>
-        <span role="status" aria-live="polite" className="text-green-400 text-sm">{saved ? "Settings saved ✓" : ""}</span>
-      </div>
-    </div>
+      </main>
     </AppShell>
   );
 }
@@ -609,16 +492,21 @@ function PromptTemplateEditor({
 }: {
   title: string;
   description: string;
-  placeholders: string[];
+  placeholders: readonly string[];
   value: string;
   onChange: (value: string) => void;
 }) {
   return (
-    <details className="rounded-lg border border-foreground/10 bg-foreground/[0.02]">
-      <summary className="cursor-pointer px-3 py-2 text-sm font-medium">{title}</summary>
-      <div className="flex flex-col gap-2 border-t border-foreground/10 p-3">
-        <p className="text-xs text-foreground/45">{description}</p>
-        <p className="text-xs text-foreground/45">
+    <details className="group rounded-lg border border-foreground/10 bg-background">
+      <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4">
+        <span>
+          <span className="block text-sm font-medium">{title}</span>
+          <span className="mt-1 block text-xs leading-relaxed text-foreground/50">{description}</span>
+        </span>
+        <span aria-hidden="true" className="text-foreground/40 transition-transform group-open:rotate-180">⌄</span>
+      </summary>
+      <div className="flex flex-col gap-3 border-t border-foreground/10 p-4">
+        <p className="text-xs leading-relaxed text-foreground/55">
           Available placeholders:{" "}
           {placeholders.map((placeholder, index) => (
             <span key={placeholder}>
@@ -673,11 +561,14 @@ function AgentSection({
 
   // setState only happens in the promise callbacks, never synchronously,
   // so this is safe to call from the effect below.
-  const load = useCallback((p: string) => {
-    return api<{ models: ProviderModel[] }>(`/api/providers/${p}/models`)
+  // `force` is only ever set by the "Load models" button — see the route.
+  const load = useCallback((p: string, force = false) => {
+    return api<{ models: ProviderModel[] }>(`/api/providers/${p}/models${force ? "?refresh=1" : ""}`)
       .then((r) => {
         setModels(r.models);
-        setStatus(`✓ ${r.models.length} model${r.models.length === 1 ? "" : "s"}`);
+        setStatus(r.models.length > 0
+          ? `✓ ${r.models.length} model${r.models.length === 1 ? "" : "s"}`
+          : "No models found. Check your provider connection or enter a model id.");
       })
       .catch((e) => {
         setModels([]);
@@ -700,29 +591,32 @@ function AgentSection({
     !selectedModel.reasoningEfforts.includes(reasoningLevel);
 
   return (
-    <section className="flex flex-col gap-3">
-      <h2 className="font-medium">
-        {title} <span className="text-foreground/40 text-sm font-normal">— {subtitle}</span>
-      </h2>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <label className="text-sm text-foreground/70 sm:w-56 sm:shrink-0">
+    <section aria-labelledby={`${datalistId}-title`} className={sectionCls}>
+      <div>
+        <h3 id={`${datalistId}-title`} className="font-medium">{title}</h3>
+        <p className="mt-1 text-sm text-foreground/55">{subtitle}</p>
+      </div>
+      <div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
+        <label className="min-w-0 text-sm text-foreground/70">
           Provider
           <select
             value={provider}
             onChange={(e) => onProvider(e.target.value)}
             className={inputCls}
           >
-            {PROVIDERS.map((p) => (
+            {PROVIDERS.filter((p) => p.id !== "mock" || provider === "mock").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
               </option>
             ))}
           </select>
         </label>
-        <label className="text-sm text-foreground/70 grow">
-          Model <span className="text-foreground/40">({MODEL_HINTS[provider] ?? ""})</span>
-          <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="min-w-0 text-sm text-foreground/70 sm:col-span-2 sm:row-start-2">
+          <label htmlFor={`${datalistId}-input`}>Model</label>
+          <div className="flex gap-2">
             <input
+              id={`${datalistId}-input`}
+              aria-describedby={`${datalistId}-hint`}
               value={model}
               onChange={(e) => onModel(e.target.value)}
               placeholder={provider === "anthropic" ? "e.g. opus" : "model id"}
@@ -738,81 +632,70 @@ function AgentSection({
             </datalist>
             <button
               onClick={() => {
-                setStatus("…");
-                saveFirst().then(() => load(provider)).catch(() => setStatus(""));
+                setStatus("Loading models…");
+                saveFirst().then(() => load(provider, true)).catch(() => setStatus(""));
               }}
-              title="Save settings, then fetch this provider's model list"
-              className="rounded bg-foreground/10 px-3 text-sm whitespace-nowrap hover:bg-foreground/15"
+              title="Save settings and refresh available models"
+              className={`${secondaryButtonCls} mt-2 shrink-0 whitespace-nowrap`}
             >
               Load models
             </button>
           </div>
+          <p id={`${datalistId}-hint`} className="mt-2 text-xs leading-relaxed text-foreground/45">{MODEL_HINTS[provider] ?? "Enter a model id."}</p>
+        </div>
+        <label className="min-w-0 text-sm text-foreground/70 sm:col-start-2 sm:row-start-1">
+          Reasoning
+          <select
+            value={reasoningLevel}
+            onChange={(e) => onReasoningLevel(e.target.value)}
+            title="Thinking effort passed to pi (--thinking). pi clamps it to the model's supported range."
+            className={inputCls}
+          >
+            {reasoningOptions.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+          {reasoningClamped && (
+            <span className="mt-1 block text-xs text-amber-400/80">
+              {selectedModel!.displayName} supports {selectedModel!.reasoningEfforts!.join(", ")} —
+              {" "}pi will clamp &ldquo;{reasoningLevel}&rdquo; to the nearest.
+            </span>
+          )}
         </label>
-        {(provider === "omlx" || provider === "openrouter") && (
-          <label className="text-sm text-foreground/70 sm:w-40 sm:shrink-0">
-            Reasoning
-            <select
-              value={reasoningLevel}
-              onChange={(e) => onReasoningLevel(e.target.value)}
-              title="Thinking effort passed to pi (--thinking). pi clamps it to the model's supported range."
-              className={inputCls}
-            >
-              {reasoningOptions.map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
-            {reasoningClamped && (
-              <span className="mt-1 block text-xs text-amber-400/80">
-                {selectedModel!.displayName} supports {selectedModel!.reasoningEfforts!.join(", ")} —
-                {" "}pi will clamp &ldquo;{reasoningLevel}&rdquo; to the nearest.
-              </span>
-            )}
-          </label>
-        )}
       </div>
-      {warning && <p className="text-xs text-amber-400/80">{warning}</p>}
-      {selectedModel &&
-        (selectedModel.costPerMillionInput != null || selectedModel.costPerMillionOutput != null) && (
-          <p className="text-xs text-foreground/40">
-            {selectedModel.costPerMillionInput != null &&
-              `${formatPricePerMillion(selectedModel.costPerMillionInput)} / 1M input`}
-            {selectedModel.costPerMillionInput != null && selectedModel.costPerMillionOutput != null && " · "}
-            {selectedModel.costPerMillionOutput != null &&
-              `${formatPricePerMillion(selectedModel.costPerMillionOutput)} / 1M output`}
-          </p>
-        )}
-      {status && (
-        <p className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-foreground/40"}`}>
+      {warning && <p className="rounded-lg border border-accent/15 bg-accent/5 px-3 py-2.5 text-xs leading-relaxed text-accent/85">{warning}</p>}
+      {selectedModel && priceLabel(selectedModel) && (
+        <p className="text-xs text-foreground/40">{priceLabel(selectedModel)}</p>
+      )}
+      {status && !status.startsWith("✓") && (
+        <p role="status" className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-foreground/40"}`}>
           {status}
         </p>
       )}
       {models.length > 0 && models.length <= 30 && (
-        <div className="flex flex-wrap gap-1">
-          {models.map((m) => (
-            <button
-              key={m.value}
-              onClick={() => onModel(m.value)}
-              title={
-                m.costPerMillionInput != null || m.costPerMillionOutput != null
-                  ? `${m.description || m.value} — ${
-                      m.costPerMillionInput != null ? `${formatPricePerMillion(m.costPerMillionInput)}/1M in` : ""
-                    }${m.costPerMillionInput != null && m.costPerMillionOutput != null ? ", " : ""}${
-                      m.costPerMillionOutput != null ? `${formatPricePerMillion(m.costPerMillionOutput)}/1M out` : ""
-                    }`
-                  : m.description || m.value
-              }
-              className={`text-xs rounded px-2 py-1 border ${
-                model === m.value
-                  ? "border-amber-500 text-amber-400"
-                  : "border-foreground/10 text-foreground/60 hover:text-foreground"
-              }`}
-            >
-              {m.displayName}
-            </button>
-          ))}
-        </div>
+        <details className="group border-t border-foreground/10 pt-3">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
+            Browse {models.length} available model{models.length === 1 ? "" : "s"}
+            <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
+          </summary>
+          <div className="flex flex-wrap gap-2 pt-2">
+            {models.map((m) => (
+              <button
+                key={m.value}
+                onClick={() => onModel(m.value)}
+                title={priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
+                className={`max-w-full rounded-lg border px-3 py-2 text-left text-xs break-words ${model === m.value
+                    ? "border-amber-500 text-amber-400"
+                    : "border-foreground/10 text-foreground/60 hover:text-foreground"
+                  }`}
+              >
+                {m.displayName}
+              </button>
+            ))}
+          </div>
+        </details>
       )}
       {models.length > 30 && (
         <p className="text-xs text-foreground/40">Type in the model field to search the list.</p>
@@ -826,6 +709,9 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   const [path, setPath] = useState("");
   const [branch, setBranch] = useState("");
   const [error, setError] = useState("");
+  // Shown on the row it belongs to — e.g. the conflict when a repo still has
+  // running work — rather than below the add form.
+  const [removeError, setRemoveError] = useState<{ repoId: string; message: string } | null>(null);
   const [picking, setPicking] = useState(false);
   const [notARepo, setNotARepo] = useState(false);
   const [emptyRepo, setEmptyRepo] = useState(false);
@@ -872,93 +758,119 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   }
 
   return (
-    <section id="repos" className="scroll-mt-4 flex flex-col gap-3">
-      <h2 className="font-medium">Repositories</h2>
-      {repos.map((r) => (
-        <div key={r.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded bg-foreground/[0.04] p-2 text-sm">
-          <span className="font-medium">{r.name}</span>
-          <span className="min-w-0 grow truncate font-mono text-xs text-foreground/40">
-            {r.path} → {r.defaultBranch}
-          </span>
+    <section id="repos" className={sectionCls}>
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-medium">Connected repositories</h3>
+        <span className="rounded-full bg-foreground/5 px-2.5 py-1 text-xs text-foreground/55">{repos.length}</span>
+      </div>
+      {repos.length === 0 && <p className="text-sm text-foreground/55">Add your first repository to give your agents a place to work.</p>}
+      <div className="divide-y divide-foreground/10">
+        {repos.map((r) => (
+          <div key={r.id} className="flex min-w-0 items-center gap-4 py-4 first:pt-0 last:pb-0">
+            <div className="min-w-0 grow">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium">{r.name}</span>
+                <span className="rounded border border-foreground/10 px-1.5 py-0.5 font-mono text-[11px] text-foreground/50">{r.defaultBranch}</span>
+              </div>
+              <p title={r.path} className="mt-1.5 truncate font-mono text-xs text-foreground/45">{r.path}</p>
+              {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
+            </div>
+            <button
+              onClick={() => {
+                if (!confirm(`Remove "${r.name}"? Its tasks and history will be deleted.`)) return;
+                setRemoveError(null);
+                api(`/api/repos/${r.id}`, { method: "DELETE" })
+                  .then(onChange)
+                  .catch((cause) => setRemoveError({ repoId: r.id, message: cause instanceof Error ? cause.message : String(cause) }));
+              }}
+              className="min-h-11 px-2 text-xs text-red-400/70 hover:text-red-400"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+      <details open={repos.length === 0 ? true : undefined} className="group border-t border-foreground/10 pt-3">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-sm font-medium text-foreground/75 hover:text-foreground">
+          Add repository
+          <span aria-hidden="true" className="text-lg transition-transform group-open:rotate-45">+</span>
+        </summary>
+        <div className="grid grid-cols-1 gap-4 pt-4 sm:grid-cols-2">
+          <label className="text-sm text-foreground/70">
+            Repository name
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="My project"
+              className={inputCls}
+            />
+          </label>
+          <label className="text-sm text-foreground/70">
+            Default branch
+            <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="Auto-detect" className={inputCls} />
+          </label>
+          <div className="min-w-0 text-sm text-foreground/70 sm:col-span-2">
+            <label htmlFor={typePath ? "repo-path" : "repo-folder"}>Repository folder</label>
+            {typePath ? (
+              <input
+                id="repo-path"
+                value={path}
+                onChange={(e) => {
+                  setPath(e.target.value);
+                  setNotARepo(false);
+                  setEmptyRepo(false);
+                }}
+                placeholder="/absolute/path/to/repo"
+                className={`${inputCls} font-mono`}
+              />
+            ) : (
+              <button
+                id="repo-folder"
+                type="button"
+                onClick={() => void chooseFolder()}
+                disabled={picking}
+                aria-label="Choose repository folder"
+                title={path || undefined}
+                className={`${inputCls} flex items-center gap-2 text-left hover:bg-foreground/10 disabled:opacity-60`}
+              >
+                <span aria-hidden className="text-foreground/50">↳</span>
+                <span className={`min-w-0 truncate ${path ? "font-mono" : "text-foreground/40"}`}>
+                  {picking ? "Waiting for the folder picker…" : path || "Choose folder…"}
+                </span>
+              </button>
+            )}
+          </div>
           <button
-            onClick={() =>
-              confirm(`Remove "${r.name}"? Its tasks and history will be deleted.`) &&
-              api(`/api/repos/${r.id}`, { method: "DELETE" }).then(onChange)
-            }
-            className="min-h-11 px-2 text-xs text-red-400/70 hover:text-red-400"
+            onClick={add}
+            disabled={!name.trim() || !path.trim()}
+            className={`${secondaryButtonCls} justify-self-start`}
           >
-            remove
+            Add repository
           </button>
         </div>
-      ))}
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[9rem_minmax(0,1fr)_9rem_auto]">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Name"
-          className={inputCls}
-        />
-        {typePath ? (
-          <input
-            value={path}
-            onChange={(e) => {
-              setPath(e.target.value);
-              setNotARepo(false);
-              setEmptyRepo(false);
-            }}
-            placeholder="/absolute/path/to/repo"
-            className={`${inputCls} font-mono`}
-          />
-        ) : (
+        {notARepo && (
+          <p className="text-xs text-amber-400/80">
+            That folder is not a git repository — pick the folder containing <code>.git</code>.
+          </p>
+        )}
+        {emptyRepo && (
+          <p className="text-xs text-amber-400/80">
+            That repository has no commits yet — Radulf branches each task off an existing commit, so
+            make an initial commit first.
+          </p>
+        )}
+        {!typePath && (
           <button
             type="button"
-            onClick={() => void chooseFolder()}
-            disabled={picking}
-            aria-label="Choose repository folder"
-            title={path || undefined}
-            className={`${inputCls} flex items-center gap-2 text-left hover:bg-foreground/10 disabled:opacity-60`}
+            onClick={() => setTypePath(true)}
+            className="mt-3 text-xs text-foreground/50 underline underline-offset-4 hover:text-foreground/80"
           >
-            <span aria-hidden>📁</span>
-            <span className={`min-w-0 truncate ${path ? "font-mono" : "text-foreground/40"}`}>
-              {picking ? "Waiting for the folder picker…" : path || "Choose folder…"}
-            </span>
+            Type the path instead
           </button>
         )}
-        <input
-          value={branch}
-          onChange={(e) => setBranch(e.target.value)}
-          placeholder="branch (auto)"
-          className={inputCls}
-        />
-        <button
-          onClick={add}
-          disabled={!name.trim() || !path.trim()}
-          className="bg-foreground/10 hover:bg-foreground/15 disabled:opacity-40 rounded px-3 text-sm whitespace-nowrap"
-        >
-          Add
-        </button>
-      </div>
-      {notARepo && (
-        <p className="text-xs text-amber-400/80">
-          That folder is not a git repository — pick the folder containing <code>.git</code>.
-        </p>
-      )}
-      {emptyRepo && (
-        <p className="text-xs text-amber-400/80">
-          That repository has no commits yet — Radulf branches each task off an existing commit, so
-          make an initial commit first.
-        </p>
-      )}
-      {!typePath && (
-        <button
-          type="button"
-          onClick={() => setTypePath(true)}
-          className="self-start text-xs text-foreground/40 underline hover:text-foreground/60"
-        >
-          The picker opens on the machine running Radulf — type the path instead
-        </button>
-      )}
-      {error && <p className="text-red-400 text-sm">{error}</p>}
+        <p className="mt-2 text-xs text-foreground/45">The folder picker opens on the machine running Radulf.</p>
+      </details>
+      {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
     </section>
   );
 }

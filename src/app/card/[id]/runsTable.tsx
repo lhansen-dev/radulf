@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MetricsPanel, type Iteration, type Run } from "./metricsPanel";
 import { formatDurationMs } from "./formatDuration";
 import { reasoningLevelForKind } from "./reasoningLevel";
+import { iterationTask, type IterationTask } from "./iterationTask";
 import type { CardDetailData, Plan } from "./useCardDetail";
 import { timeAgo } from "../../ui/api";
 import { formatCostUsd, sumCostUsd } from "../../ui/formatCost";
@@ -23,13 +24,9 @@ const KIND_LABEL = {
   evaluate: "🔎 Evaluator",
 } as const;
 
-/** Sum only the values that were actually reported, returning null when none
- * were — the same "don't invent a zero" rule `sumCostUsd` applies to money,
- * so an unmeasured run never reads as a free one. */
-function sumReported(values: (number | null | undefined)[]): number | null {
-  const reported = values.filter((v): v is number => v != null && Number.isFinite(v));
-  return reported.length > 0 ? reported.reduce((sum, v) => sum + v, 0) : null;
-}
+/** Same "don't invent a zero" sum `sumCostUsd` applies to money, so an
+ * unmeasured run never reads as a free one. */
+const sumReported = sumCostUsd;
 
 /**
  * Prompt/completion/cost for one run row.
@@ -70,6 +67,12 @@ function runDurationMs(run: Run, nowMs: number): number | null {
 function formatTokens(value: number | null): string {
   return value == null ? "—" : value.toLocaleString();
 }
+
+const TASK_STATE_CLASS: Record<IterationTask["state"], string> = {
+  done: "bg-green-900/60 text-green-300",
+  working: "bg-amber-900/60 text-amber-300",
+  "not done": "bg-foreground/10 text-foreground/60",
+};
 
 function statusClass(status: string): string {
   if (status === "completed") return "bg-green-900/60 text-green-300";
@@ -146,15 +149,9 @@ export function RunsTable({
         </caption>
         <thead>
           <tr className="border-b border-foreground/10 text-left text-xs uppercase tracking-wider text-foreground/40">
-            <th scope="col" className="py-2 pr-3 font-medium">Run</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Status</th>
-            <th scope="col" className="py-2 pr-3 font-medium">Model</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Iters</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Duration</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Prompt</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Completion</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">Cost</th>
-            <th scope="col" className="py-2 text-right font-medium">Started</th>
+            {["Run", "Status", "Model", "Iters", "Duration", "Prompt", "Completion", "Cost", "Started"].map((label, i) => (
+              <th key={label} scope="col" className={`py-2 font-medium ${i < 8 ? "pr-3" : ""} ${i >= 3 ? "text-right" : ""}`}>{label}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -289,19 +286,34 @@ function RunDetail({
           <p className="text-xs text-foreground/50">No iterations recorded for this run.</p>
         )}
         <div className="flex flex-col gap-0.5">
-          {run.iterations.map((it: Iteration) => (
-            <button
-              key={it.id}
-              type="button"
-              onClick={() => open(it.n)}
-              className="flex gap-2 text-left text-xs text-foreground/60 hover:text-foreground"
-            >
-              <span className="shrink-0 text-amber-400/80">iter {it.n}</span>
-              <span className={it.status === "failed" ? "text-red-400" : ""}>
-                {(it.summary ?? it.status).slice(0, 140)}
-              </span>
-            </button>
-          ))}
+          {run.iterations.map((it: Iteration) => {
+            const task = iterationTask(it);
+            return (
+              <button
+                key={it.id}
+                type="button"
+                onClick={() => open(it.n)}
+                className="flex gap-2 text-left text-xs text-foreground/60 hover:text-foreground"
+              >
+                <span className="shrink-0 text-amber-400/80">iter {it.n}</span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  {task && (
+                    <span className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-medium text-foreground/80">{task.label}</span>
+                      <span className={`rounded px-1 ${TASK_STATE_CLASS[task.state]}`}>{task.state}</span>
+                      <span className="text-foreground/40">
+                        {task.left === 0 ? "none left" : `${task.left} left`}
+                      </span>
+                      <span className="basis-full whitespace-pre-wrap text-foreground/70">{task.text}</span>
+                    </span>
+                  )}
+                  <span className={it.status === "failed" ? "text-red-400" : ""}>
+                    {(it.summary ?? it.status).slice(0, 140)}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
         </div>
         <ReviewBlock run={run} />
         <TranscriptButton run={run} onClick={() => open(run.iterations.at(-1)?.n ?? 1)} />

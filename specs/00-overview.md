@@ -32,6 +32,7 @@ target, so the user can point the app at itself to improve it.
 | [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md) | One harness — pi in SDK mode — for every provider, subscriptions included (supersedes 09's premise, re-amends decisions 4/7) |
 | [14-sandboxing.md](14-sandboxing.md) | Kernel-enforced containment (srt sandbox + tool path guards + layout hygiene) for the skip-permissions loop (re-amends decision 7, hardens 13's Security) |
 | [15-github-pr-delivery.md](15-github-pr-delivery.md) | Push + open a GitHub PR as a second delivery target for an approved diff, replacing the local merge (amends decision 6) |
+| [16-local-provider-wire-format.md](16-local-provider-wire-format.md) | The local provider is any OpenAI-compatible server, registered over `openai-completions` (amends 12) |
 
 ## Locked decisions
 
@@ -54,7 +55,10 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
    use through pi (billed per token), and ChatGPT was never restricted. All four
    providers (anthropic/chatgpt subscriptions, OpenRouter, local oMLX) run
    in-process through the pi SDK; the CLI harnesses are retired. oMLX remains
-   optional, not required (amended 2026-07-11).
+   optional, not required (amended 2026-07-11). Amended 2026-09-19 by
+   [16-local-provider-wire-format.md](16-local-provider-wire-format.md): the
+   local slot is any OpenAI-compatible server (oMLX, vLLM, LM Studio), spoken to
+   over `openai-completions`. The harness is untouched.
 5. **Concurrency** — one ticket in the pipeline at a time. A single card runs
    the planner, loop, or evaluator at any moment; the next card starts only once
    that slot frees. Local models own the machine's unified memory, so the queue

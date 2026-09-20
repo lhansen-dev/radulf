@@ -131,32 +131,20 @@ function renderTable(runs: Run[], cardSummary: string | null = null) {
 afterEach(cleanup);
 
 describe("runTotals", () => {
-  it("sums a loop run from its iterations, not the run-level roll-up", () => {
+  it("sums a loop run from its iterations, falling back to the run row when it has none", () => {
     // The roll-up is only written at finishRun, so a live loop must read its
     // iterations or it would show as unmeasured while its numbers climb.
-    const run = loopRun({ promptTokens: null, completionTokens: null, costUsd: null });
-    expect(runTotals(run)).toEqual({
+    expect(runTotals(loopRun({ promptTokens: null, completionTokens: null, costUsd: null }))).toEqual({
       promptTokens: 500,
       completionTokens: 50,
       costUsd: 0.5,
     });
-  });
-
-  it("reads plan and evaluate runs off the run-level roll-up", () => {
-    expect(runTotals(planRun())).toEqual({
-      promptTokens: 1000,
-      completionTokens: 100,
-      costUsd: 0.25,
-    });
-  });
-
-  it("falls back to the run row for a loop with no iteration rows", () => {
     expect(runTotals(loopRun({ iterations: [] })).promptTokens).toBe(500);
   });
 
-  it("reports nothing rather than zero when a run went unmeasured", () => {
-    const run = planRun({ promptTokens: null, completionTokens: null, costUsd: null });
-    expect(runTotals(run)).toEqual({
+  it("reads plan and evaluate runs off the run row, reporting null rather than zero when unmeasured", () => {
+    expect(runTotals(planRun())).toEqual({ promptTokens: 1000, completionTokens: 100, costUsd: 0.25 });
+    expect(runTotals(planRun({ promptTokens: null, completionTokens: null, costUsd: null }))).toEqual({
       promptTokens: null,
       completionTokens: null,
       costUsd: null,
@@ -165,7 +153,7 @@ describe("runTotals", () => {
 });
 
 describe("RunsTable", () => {
-  it("puts planning, loop, and evaluator runs in one table, oldest first", () => {
+  it("lists every run kind oldest first with its own tokens and cost, and totals them", () => {
     renderTable([evaluateRun(), loopRun(), planRun()]);
 
     const kinds = screen
@@ -176,18 +164,11 @@ describe("RunsTable", () => {
     expect(kinds[0]).toContain("Planning");
     expect(kinds[1]).toContain("Loop");
     expect(kinds[2]).toContain("Evaluator");
-  });
 
-  it("shows tokens and cost for planning and evaluator runs, not just the loop", () => {
-    renderTable([evaluateRun(), planRun()]);
-
+    // Planning and evaluator rows carry their own numbers, not just the loop.
     expect(screen.getByText("1,000")).toBeTruthy();
     expect(screen.getByText("2,000")).toBeTruthy();
     expect(screen.getAllByText("$0.2500")).toHaveLength(2);
-  });
-
-  it("totals tokens, cost, iterations, and active duration across every kind", () => {
-    renderTable([evaluateRun(), loopRun(), planRun()]);
 
     // 1000 + 500 + 2000 prompt, 100 + 50 + 200 completion, $0.25 + $0.50 + $0.25.
     expect(screen.getByText("3,500")).toBeTruthy();
@@ -215,6 +196,27 @@ describe("RunsTable", () => {
 
     expect(screen.getByText("wired the table")).toBeTruthy();
     expect(screen.getByText("added the totals row")).toBeTruthy();
+  });
+
+  it("shows which checklist task each iteration worked on and how many are left", () => {
+    const [first, second] = loopRun().iterations;
+    renderTable([
+      loopRun({
+        status: "running",
+        iterations: [
+          { ...first, taskNumber: 1, taskCount: 2, taskText: "Wire the table", taskCompleted: 1 },
+          { ...second, status: "running", taskNumber: 2, taskCount: 2, taskText: "Add totals", taskCompleted: null },
+        ],
+      }),
+    ]);
+
+    expect(screen.getByText("Task 1/2")).toBeTruthy();
+    expect(screen.getByText("done")).toBeTruthy();
+    expect(screen.getByText("Wire the table")).toBeTruthy();
+    expect(screen.getByText("Task 2/2")).toBeTruthy();
+    expect(screen.getByText("working")).toBeTruthy();
+    expect(screen.getByText("Add totals")).toBeTruthy();
+    expect(screen.getAllByText("1 left")).toHaveLength(2);
   });
 
   it("expands a planning run onto the plan it wrote", () => {

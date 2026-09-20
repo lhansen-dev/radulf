@@ -83,47 +83,29 @@ export type RunnerResult = {
   harnessVersion: string | null;
 };
 
+/** Telemetry persisted per iteration and per `runs` row, in column order. */
+export const TELEMETRY_KEYS = [
+  "promptTokens", "completionTokens", "cachedInputTokens", "cacheWriteTokens",
+  "reasoningTokens", "modelTurns", "toolCalls", "toolDurationMs", "firstTokenMs",
+  "costUsd", "harness", "harnessVersion",
+] as const;
+
 /**
  * The telemetry persisted on a `runs` row: a plan or evaluate run writes its
- * single invocation's numbers directly (via runTelemetry() below); a loop
- * run writes the sum of its iterations. Mirrors the iterations column set —
- * every field nullable (a loop run with zero iterations, or a field no
- * iteration reported, sums to null — never coerced to zero), which is why
- * this isn't just `Pick<RunnerResult, ...>`: RunnerResult's promptTokens/
- * completionTokens/toolCalls/harness are non-null for one real invocation,
- * but a roll-up over zero or partial iterations needs the nullable form.
+ * single invocation's numbers (via runTelemetry() below); a loop run writes
+ * the sum of its iterations. Every field is nullable — unlike RunnerResult,
+ * a roll-up over zero or partial iterations can lack any fact, and an
+ * unreported fact is never coerced to zero.
  */
 export type RunTelemetry = {
-  promptTokens: number | null;
-  completionTokens: number | null;
-  cachedInputTokens: number | null;
-  cacheWriteTokens: number | null;
-  reasoningTokens: number | null;
-  modelTurns: number | null;
-  toolCalls: number | null;
-  toolDurationMs: number | null;
-  firstTokenMs: number | null;
-  costUsd: number | null;
-  harness: string | null;
-  harnessVersion: string | null;
+  [K in (typeof TELEMETRY_KEYS)[number]]: K extends "harness" | "harnessVersion"
+    ? string | null
+    : number | null;
 };
 
 /** Project a RunnerResult down to the RunTelemetry persisted on a `runs` row. */
 export function runTelemetry(result: RunnerResult): RunTelemetry {
-  return {
-    promptTokens: result.promptTokens,
-    completionTokens: result.completionTokens,
-    cachedInputTokens: result.cachedInputTokens,
-    cacheWriteTokens: result.cacheWriteTokens,
-    reasoningTokens: result.reasoningTokens,
-    modelTurns: result.modelTurns,
-    toolCalls: result.toolCalls,
-    toolDurationMs: result.toolDurationMs,
-    firstTokenMs: result.firstTokenMs,
-    costUsd: result.costUsd,
-    harness: result.harness,
-    harnessVersion: result.harnessVersion,
-  };
+  return Object.fromEntries(TELEMETRY_KEYS.map((key) => [key, result[key]])) as RunTelemetry;
 }
 
 /**
@@ -190,12 +172,26 @@ export function foldTranscriptEvent(totals: TranscriptTotals, event: TranscriptE
   } else if (event.t === "result") {
     if (event.exit === "failed") {
       totals.error = event.detail ?? "unknown error";
+    } else {
+      // A completed result after a failed one (pi's successful auto-retry)
+      // supersedes it.
+      totals.error = "";
     }
     if (event.numTurns !== undefined) {
       totals.modelTurns = event.numTurns;
     }
   }
 }
+
+/**
+ * Most characters (text, thinking, and tool-call arguments combined) a single
+ * assistant reply may stream before the invocation is aborted. Normal turns
+ * are a few KB; a large file write is tens of KB. Past this the stream is
+ * corrupt, not verbose — e.g. a provider re-sending the whole reply-so-far as
+ * every delta, which once turned a 4k-token turn into 8.4 MB of text and
+ * overflowed a 1M-token context on the next request.
+ */
+export const MAX_REPLY_CHARS = 1024 * 1024;
 
 type RunHarnessOpts = {
   provider: ProviderId;
@@ -243,12 +239,17 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   let timedOut = false;
   let stalled = false;
   let stuck = false;
+  let oversized = false;
+  let replyChars = 0;
   const stuckDetector = new StuckDetector();
   const startedAtMs = Date.now();
   const version = harnessPackageVersion();
 
   fs.mkdirSync(path.dirname(opts.transcriptPath), { recursive: true });
   const out = fs.createWriteStream(opts.transcriptPath, { flags: "a" });
+  // Resolve only once the transcript is flushed (or failed): a caller reads it
+  // back as soon as this returns. end()'s callback also fires on error.
+  const closeTranscript = () => new Promise<void>((resolve) => out.end(() => resolve()));
 
   const result = (code: number | null): RunnerResult => ({
     code,
@@ -284,7 +285,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
           s: s(),
         });
   } catch (err) {
-    out.end();
+    await closeTranscript();
     totals.error = String(err instanceof Error ? err.message : err);
     return result(1);
   }
@@ -328,6 +329,23 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   const unsubscribe = session.subscribe((evt) => {
     resetStallTimer();
+    // Reply-size guard: counted from the streaming deltas so the session is
+    // aborted before an oversized reply lands in the context window.
+    if (evt.type === "message_start" || evt.type === "message_end") {
+      replyChars = 0;
+    } else if (evt.type === "message_update") {
+      const update = evt.assistantMessageEvent;
+      if (
+        update.type === "text_delta" ||
+        update.type === "thinking_delta" ||
+        update.type === "toolcall_delta"
+      ) {
+        replyChars += update.delta.length;
+        if (replyChars > MAX_REPLY_CHARS && !oversized) {
+          trip(() => (oversized = true));
+        }
+      }
+    }
     for (const e of piNormalize(evt)) {
       out.write(JSON.stringify(e) + "\n");
       if (firstTokenMs === null && e.t !== "raw") {
@@ -358,17 +376,19 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     } catch {
       // Best-effort — the run is over regardless.
     }
-    out.end();
+    await closeTranscript();
   }
 
   if (stalled) {
     totals.error = `harness emitted no output for ${Math.round(stallTimeoutMs / 1000)}s — stream hung (network drop or machine sleep?)`;
   } else if (stuck) {
     totals.error = "harness repeated the same tool call 4 times in a row — likely stuck";
+  } else if (oversized) {
+    totals.error = `assistant reply exceeded ${MAX_REPLY_CHARS / (1024 * 1024)} MiB in a single turn — likely a corrupted stream (duplicated deltas or leaked tool-call markup)`;
   } else if (!totals.error && promptError) {
     totals.error = promptError;
   }
 
-  const failed = Boolean(totals.error) || timedOut || stalled || stuck;
+  const failed = Boolean(totals.error) || timedOut || stalled || stuck || oversized;
   return result(failed ? 1 : 0);
 }

@@ -3,29 +3,29 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { planningDestination, clearPlannerArtifacts } from "./planningService";
-
-// Direct unit tests for planningService.ts. `planningDestination` is already
-// exercised for the literal DB values 1/0 in orchestrator.test.ts; the
-// dedicated cases below are narrower — non-canonical truthy integers, to
-// confirm the branch is a genuine truthiness check rather than a `=== 1`
-// comparison that would silently misroute anything else DB drift might
-// produce. `runPlanning` itself is covered end to end below, tying each
-// `planningDestination` branch to the real card-status transition it drives.
-// See PLAN.md Phase 11.
+import { planningDestination, clearPlannerArtifacts, renderPlanPrompt } from "./planningService";
 
 describe("planningDestination", () => {
-  it("routes to plan_review for the canonical truthy value (1)", () => {
-    expect(planningDestination({ reviewPlanBeforeImplementation: 1 })).toBe("plan_review");
-  });
-
-  it("routes to ready for the canonical falsy value (0)", () => {
+  it("routes on truthiness, not `=== 1`, so DB drift cannot misroute a card", () => {
     expect(planningDestination({ reviewPlanBeforeImplementation: 0 })).toBe("ready");
+    for (const v of [1, 2, -1]) {
+      expect(planningDestination({ reviewPlanBeforeImplementation: v })).toBe("plan_review");
+    }
   });
+});
 
-  it("treats any non-zero integer as truthy, not just 1", () => {
-    expect(planningDestination({ reviewPlanBeforeImplementation: 2 })).toBe("plan_review");
-    expect(planningDestination({ reviewPlanBeforeImplementation: -1 })).toBe("plan_review");
+describe("renderPlanPrompt", () => {
+  it("fills the placeholders and adds a reviewer-feedback section", () => {
+    const rendered = renderPlanPrompt(
+      "{{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
+      "Add templates",
+      "Make prompts configurable",
+      "Keep the existing defaults",
+    );
+
+    expect(rendered).toContain("Add templates\nMake prompts configurable");
+    expect(rendered).toContain("PREVIOUS ATTEMPT — REVIEWER FEEDBACK");
+    expect(rendered).toContain("Keep the existing defaults");
   });
 });
 
@@ -80,6 +80,7 @@ vi.mock("./settings", () => ({
     plannerProvider: "anthropic",
     plannerModel: "planner-model",
     plannerReasoningLevel: "medium",
+    plannerTimeoutMinutes: 42,
     plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
     sandboxEnabled: false,
     sandboxNetworkAllowlist: "",
@@ -189,6 +190,9 @@ describe("PlanningService.runPlanning", () => {
       expect.any(Object),
     );
     expect(deps.moveCard).toHaveBeenCalledWith("card-ready", "planning", "ready");
+    expect(mocks.runHarness).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 42 * 60 * 1000 }),
+    );
     const planRow = db.select().from(plans).where(eq(plans.cardId, "card-ready")).get();
     // Artifact contents are trimmed on read before being persisted.
     expect(planRow).toMatchObject({ version: 1, planMd: completeArtifacts["PLAN.md"].trim() });

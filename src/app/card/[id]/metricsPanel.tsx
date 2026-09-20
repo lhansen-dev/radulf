@@ -9,6 +9,12 @@ export type Iteration = {
   n: number;
   status: string;
   summary: string | null;
+  /** The checklist task this iteration was given — see `iterationTask`.
+   * Absent on rows recorded before tasks were tracked per iteration. */
+  taskNumber?: number | null;
+  taskCount?: number | null;
+  taskText?: string | null;
+  taskCompleted?: number | null;
   promptTokens: number | null;
   completionTokens: number | null;
   /** Harness-reported USD for the iteration; absent on pre-telemetry rows. */

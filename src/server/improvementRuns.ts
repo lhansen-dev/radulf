@@ -139,11 +139,6 @@ export function awaitCardTerminal(cardId: string, pollMs = 2_000): Promise<CardS
   });
 }
 
-/** Currently running improvement runs, across every repo. */
-export function activeImprovementRuns(): ImprovementRun[] {
-  return db.select().from(improvementRuns).where(eq(improvementRuns.status, "running")).all();
-}
-
 /** Active + recent runs for the board (most recent first, capped). */
 export function listImprovementRuns(limit = 20): ImprovementRun[] {
   return db

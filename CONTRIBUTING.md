@@ -81,6 +81,29 @@ git switch beta && git merge main   # carry the version bump back
 `main`, which is what keeps the branch honest. `make release` refuses to tag a
 stable version from anywhere but `main`, or a prerelease from anywhere but `beta`.
 
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
+
+```
+<type>(<optional scope>): <subject>
+```
+
+`feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore` — see
+the table in [`AGENTS.md`](AGENTS.md#commit-messages) for which is which, plus
+the footer conventions agents use. The subject is imperative and lowercase
+(`fix: reject repos with no commits`), the first line stays under 72
+characters, and the reasoning goes in the body.
+
+Two things worth knowing before your first PR:
+
+- A breaking change takes a `!` before the colon (`feat(db)!: …`) and a
+  `BREAKING CHANGE:` footer. That footer is what surfaces it in the release
+  notes when `beta` is promoted to `main`.
+- When a commit implements a spec, name it — `feat: deliver an approved diff as
+  a GitHub pull request (spec 15)`. The spec itself lands first, as its own
+  `docs:` commit.
+
 ## Before you open a PR
 
 Run the full gate locally — this is exactly what CI runs on every push and PR:
@@ -97,6 +120,12 @@ Individual pieces, if you want faster feedback:
 | `make lint` | ESLint |
 | `make typecheck` | `tsc --noEmit` |
 | `make build` | Production build |
+
+To watch a change work end to end without spending tokens, run the app with
+the scripted **mock provider** (`RADULF_MOCK_LLM=1`): the full pipeline runs in
+seconds, with every tool call executed for real and only the model's decisions
+canned. See
+[Providers](docs/PROVIDERS.md#testing-without-a-model-the-mock-provider).
 
 ## Guidelines
 
@@ -121,3 +150,11 @@ Individual pieces, if you want faster feedback:
 
 Open a [GitHub issue](https://github.com/lhansen-dev/radulf/issues). For security
 issues, follow [SECURITY.md](SECURITY.md) instead of filing a public issue.
+
+To turn an idea into a ticket in your local Radulf backlog, use
+`/create-card <rough idea>` in Claude Code, or `$create-card <rough idea>` in
+Codex. The repo's [create-card skill](.claude/skills/create-card/SKILL.md) asks
+follow-up questions, suggests options, and creates a card with scope and
+acceptance criteria once the work is clear. It leaves the card in Backlog for
+you to queue. The skill lives in `.claude/skills/create-card`, with a symlink in
+`.agents/skills` for Codex discovery.

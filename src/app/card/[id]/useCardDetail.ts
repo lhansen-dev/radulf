@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, useEventStream } from "../../ui/api";
 import type { Run } from "./metricsPanel";
 
@@ -34,6 +34,10 @@ export type CardDetailData = {
   };
   repo: { id: string; name: string; path: string; defaultBranch: string } | null;
   plans: Plan[];
+  /** The latest plan's orchestrator-private checklist as it stands now, with
+   * its tick counts; null before planning or once the card's state is gone.
+   * Absent on older cached responses. */
+  livePlan?: { planMd: string; done: number; total: number } | null;
   runs: Run[];
   events: {
     id: number;
@@ -92,9 +96,24 @@ export function useCardDetail(cardId: string) {
       .catch((cause) => setError(String(cause)));
   }, [cardId]);
   useEffect(refetch, [refetch]);
-  useEventStream((event) => {
-    if (event.cardId === cardId) refetch();
-  });
+  const wasDisconnected = useRef(false);
+  useEventStream(
+    (event) => {
+      if (event.cardId === cardId) refetch();
+    },
+    (connected) => {
+      if (!connected) {
+        wasDisconnected.current = true;
+        return;
+      }
+      // Missed events aren't replayed: refetch on a genuine reconnect, not on
+      // the first open after mount, which the initial load already covers.
+      if (wasDisconnected.current) {
+        wasDisconnected.current = false;
+        refetch();
+      }
+    },
+  );
 
   return {
     detail,

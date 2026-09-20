@@ -2,43 +2,35 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, cards, plans, runs, repos, type CardStatus } from "@/db";
+import { db, cards, runs, repos } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
-import { planStatePath } from "./bookkeeping";
-import { appendTask } from "./checklist";
 import { parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
-import { runHarness, runTelemetry, type RunTelemetry } from "./harness";
+import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { CONN_ERROR_PATTERN, isProviderOpen, recordProviderOutcome } from "./circuitBreaker";
 import { tryGit } from "./git";
-import { runTranscriptDir } from "./retention";
-import { startTranscriptPush } from "./transcript";
 import { createRunSandbox } from "./sandbox/context";
-import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
-import { checkRepoIntegrity, snapshotRepoIntegrity } from "./integrity";
+import { snapshotRepoIntegrity } from "./integrity";
+import {
+  circuitOpenReason,
+  harnessFailure,
+  integrityViolationReason,
+  runWithTranscript,
+  sandboxUnavailableReason,
+  startRunRow,
+  type FinishStatus,
+  type StageDependencies,
+} from "./stage";
 
-type Card = typeof cards.$inferSelect;
-type Plan = typeof plans.$inferSelect;
-type Run = typeof runs.$inferSelect;
-
-const EVALUATE_TIMEOUT_MS = 10 * 60 * 1000;
 /** After this many revise verdicts on one card the evaluator stops
  * re-looping it and escalates to the human, unresolved feedback attached —
  * an evaluator and a struggling loop must not ping-pong forever. */
 const MAX_EVALUATOR_REVISIONS = 2;
-/** Checklist task injected so the resumed loop picks the feedback up —
- * every iteration runs on an injected task, never on prose in PROMPT.md. */
-const EVALUATOR_FEEDBACK_TASK =
-  'Address the feedback in the "Evaluator feedback — address this first" section at the top of your prompt: fix every point it raises, then re-run the checks it names.';
 
 /** Evaluator attempts share a worktree, but never another attempt's verdict. */
 export function clearEvaluationArtifact(ralphDir: string) {
-  fs.rmSync(
-    path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"),
-    { force: true },
-  );
+  fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"), { force: true });
 }
 
 export function renderEvaluatorPrompt(
@@ -55,32 +47,10 @@ export function renderEvaluatorPrompt(
     .replaceAll("{{CRITERIA}}", criteria.trim() || "(no acceptance criteria were recorded)");
 }
 
-/**
- * Pure helper: a plan's PROMPT.md with any previous evaluator-feedback
- * preamble stripped, so only the newest verdict ever claims "address this
- * first". Reviewer (human) feedback sections are left untouched.
- */
-export function basePromptMd(promptMd: string): string {
-  if (!promptMd.startsWith("## Evaluator feedback — address this first\n")) return promptMd;
-  const separator = "\n\n---\n\n";
-  const index = promptMd.indexOf(separator);
-  return index === -1 ? promptMd : promptMd.slice(index + separator.length);
-}
-
-export type EvaluationServiceDependencies = {
-  getCard(cardId: string): Card | undefined;
-  latestPlan(cardId: string): Plan | undefined;
-  latestWorktreeRun(cardId: string): Run | undefined;
-  moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean;
-  finishRun(
-    runId: string,
-    status: "completed" | "failed" | "timeout" | "cancelled",
-    exitReason: string,
-    telemetry?: RunTelemetry,
-  ): boolean;
-  registerController(runId: string, controller: AbortController): void;
-  releaseController(runId: string): void;
-  pump(): void;
+export type EvaluationServiceDependencies = StageDependencies & {
+  /** Run the planner on a card already moved to `planning` — a revise verdict
+   * re-plans rather than re-entering the loop. */
+  replan(cardId: string): void;
   /** Run the human-approval merge path automatically (auto-approve). Reuses the
    * exact review flow — integrity re-check, merge, conflict re-loop — so
    * auto-approve never bypasses the load-bearing pre-merge checks. */
@@ -91,16 +61,16 @@ export type EvaluationServiceDependencies = {
  * Phase 3 — evaluate a DONE-signalled loop before human review. The
  * evaluator is the sole whole-card verifier: it runs CRITERIA.md and reads
  * the diff, then writes a verdict to `.ralph/EVALUATION.md`: `approve`
- * forwards the card to review with the evaluation attached; `revise` writes
- * the feedback into plan v(n+1) and hands the card straight back to the
- * loop. A missing or malformed verdict fails loudly to needs_attention —
- * never a silent pass-through.
+ * forwards the card to review with the evaluation attached; `revise` records
+ * the feedback on the run and sends the card back to the planner. A missing
+ * or malformed verdict fails loudly to needs_attention — never a silent
+ * pass-through.
  */
 export class EvaluationService {
-  constructor(private readonly dependencies: EvaluationServiceDependencies) {}
+  constructor(private readonly deps: EvaluationServiceDependencies) {}
 
   async runEvaluator(cardId: string) {
-    const deps = this.dependencies;
+    const deps = this.deps;
     const card = deps.getCard(cardId)!;
     const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
     if (!repo) throw new Error("repo not found");
@@ -111,204 +81,91 @@ export class EvaluationService {
     const settings = getSettings();
 
     const runId = nanoid();
-    const evaluatorProvider = normalizeProvider(settings.evaluatorProvider, "anthropic");
-    const evaluatorModel = card.evaluatorModel || settings.evaluatorModel;
+    const provider = normalizeProvider(settings.evaluatorProvider, "anthropic");
+    const model = card.evaluatorModel || settings.evaluatorModel;
+    const { worktreePath, branch } = loopRun;
     const baseBranch = loopRun.baseBranch ?? repo.defaultBranch;
-    const ralphDir = path.join(/* turbopackIgnore: true */ loopRun.worktreePath, ".ralph");
-    const evaluationPath = path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md");
-    // A verdict left over from an earlier cycle must never be read as this
-    // run's output.
+    const ralphDir = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+    // A verdict left over from an earlier cycle must never be read as this run's.
     clearEvaluationArtifact(ralphDir);
 
     // Spec 14 L3: the evaluator holds bash, so it gets the same per-run
-    // containment as the loop — private TMPDIR/caches, allowlist env,
-    // reaping, and a parent-repo integrity check at run end.
-    const ctx = createRunSandbox(runId, { cwd: loopRun.worktreePath, s: settings });
+    // containment as the loop, including the parent-repo integrity check.
+    const ctx = createRunSandbox(runId, { cwd: worktreePath, s: settings });
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
-
-    db.insert(runs)
-      .values({
-        id: runId,
-        cardId,
-        planId: plan.id,
-        kind: "evaluate",
-        worktreePath: loopRun.worktreePath,
-        branch: loopRun.branch,
-        baseBranch,
-        provider: evaluatorProvider,
-        model: evaluatorModel,
-        startedAt: now(),
-        diskLimitMechanism: ctx.diskLimitMechanism,
-        sandboxed: settings.sandboxEnabled ? 1 : 0,
-      })
-      .run();
-    // events.run_id is a real FK — emit only now that the run row exists
-    // (PLAN.md Phase 18.1: createRunSandbox used to emit this itself, before
-    // this insert, and crashed run start whenever the flag was on).
-    if (ctx.weakerIsolationEnabled) {
-      emitEvent("sandbox.weaker_isolation_enabled", {
-        cardId,
-        runId,
-        payload: { reason: "sandboxWeakerIsolationForGoTls" },
-      });
-    }
+    startRunRow(
+      { id: runId, cardId, planId: plan.id, kind: "evaluate", worktreePath, branch, baseBranch, provider, model },
+      ctx,
+      settings,
+    );
     emitEvent("run.started", { cardId, runId, payload: { kind: "evaluate" } });
 
     const controller = new AbortController();
     deps.registerController(runId, controller);
+    let telemetry: RunTelemetry | undefined;
+    const fail = (exitReason: string, moveReason = exitReason, status: FinishStatus = "failed") => {
+      deps.finishRun(runId, status, exitReason, telemetry);
+      deps.moveCard(cardId, "evaluating", "needs_attention", moveReason);
+    };
+    const sourceStatus = async () =>
+      (await tryGit(worktreePath, "status", "--porcelain", "--", ".", ":(exclude).ralph")).out;
+    const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
     try {
-      // Circuit breaker: a provider with recent connection/auth failures
-      // fails this run fast instead of repeating the same slow failure.
-      if (isProviderOpen(evaluatorProvider)) {
-        const reason = `provider ${evaluatorProvider} circuit breaker open — recent connection failures, will retry automatically after cooldown`;
-        deps.finishRun(runId, "failed", reason);
-        deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-        return;
-      }
-
-      // Spec 14 Phase 6: fail loudly before the first (only) iteration if
-      // sandboxEnabled but srt isn't actually usable — same posture as the
-      // loop's preflight, never a silent unsandboxed fallback.
-      if (settings.sandboxEnabled) {
-        const preflight = await initializeSandboxRuntimeOnce();
-        if (controller.signal.aborted) return; // cancelCard already finalized
-        if (!preflight.ok) {
-          const reason = `sandbox unavailable: ${preflight.errors.join("; ")}`;
-          deps.finishRun(runId, "failed", reason);
-          deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-          return;
-        }
-      }
-
-      const prompt = renderEvaluatorPrompt(
-        settings.evaluatorPromptTemplate,
-        card.title,
-        card.description,
-        baseBranch,
-        plan.acceptanceCriteria,
-      );
-      const headBefore = (await tryGit(loopRun.worktreePath, "rev-parse", "HEAD")).out;
-      const sourceStatusBefore = (await tryGit(
-        loopRun.worktreePath,
-        "status",
-        "--porcelain",
-        "--",
-        ".",
-        ":(exclude).ralph",
-      )).out;
-      // Live transcript push (Phase 16 chunk A) — single-file transcripts
-      // (plan/evaluate) always use iteration 0, matching the `singleFile`
-      // convention in /api/runs/[id]'s route and the TranscriptTarget the
-      // card page builds for a non-loop run.
-      const evaluateTranscriptPath = path.join(runTranscriptDir(runId), "evaluate.jsonl");
-      const stopTranscriptPush = startTranscriptPush(evaluateTranscriptPath, runId, 0);
-      let result;
-      try {
-        result = await runHarness({
-          provider: evaluatorProvider,
-          model: evaluatorModel,
-          reasoningLevel: settings.evaluatorReasoningLevel,
-          prompt,
-          cwd: loopRun.worktreePath,
-          transcriptPath: evaluateTranscriptPath,
-          timeoutMs: EVALUATE_TIMEOUT_MS,
-          signal: controller.signal,
-          role: "evaluator",
-          runContext: ctx,
-        });
-      } finally {
-        stopTranscriptPush();
-      }
+      const breaker = circuitOpenReason(provider);
+      if (breaker) return fail(breaker);
+      const sandboxError = await sandboxUnavailableReason(settings);
       if (controller.signal.aborted) return; // cancelCard already finalized
+      if (sandboxError) return fail(sandboxError);
 
-      if (result.timedOut) {
-        deps.finishRun(runId, "timeout", "evaluation timed out", runTelemetry(result));
-        deps.moveCard(cardId, "evaluating", "needs_attention", "evaluation timed out");
-        return;
-      }
-      // A dead stream, not a verdict — worth its own reason so it isn't read
-      // as the evaluator rejecting the work.
-      if (result.stalled) {
-        deps.finishRun(
-          runId,
-          "failed",
-          `evaluator stalled: ${result.error.slice(0, 500)}`,
-          runTelemetry(result),
-        );
-        deps.moveCard(cardId, "evaluating", "needs_attention", "evaluator stalled");
-        return;
-      }
-      if (result.error) {
-        if (CONN_ERROR_PATTERN.test(result.error)) recordProviderOutcome(evaluatorProvider, false);
-        deps.finishRun(
-          runId,
-          "failed",
-          `evaluator failed: ${result.error.slice(0, 500)}`,
-          runTelemetry(result),
-        );
-        deps.moveCard(cardId, "evaluating", "needs_attention", "evaluator failed");
-        return;
-      }
-      recordProviderOutcome(evaluatorProvider, true);
+      const headBefore = await head();
+      const sourceStatusBefore = await sourceStatus();
+      const result = await runWithTranscript({
+        runId,
+        file: "evaluate.jsonl",
+        provider,
+        model,
+        reasoningLevel: settings.evaluatorReasoningLevel,
+        prompt: renderEvaluatorPrompt(
+          settings.evaluatorPromptTemplate,
+          card.title,
+          card.description,
+          baseBranch,
+          plan.acceptanceCriteria,
+        ),
+        cwd: worktreePath,
+        timeoutMs: settings.evaluatorTimeoutMinutes * 60 * 1000,
+        signal: controller.signal,
+        role: "evaluator",
+        runContext: ctx,
+      });
+      if (controller.signal.aborted) return; // cancelCard already finalized
+      telemetry = runTelemetry(result);
 
-      // Spec 14 run-end ordering: reap surviving processes BEFORE any
-      // integrity conclusions are drawn, then verify the parent repo.
-      await ctx.reap();
-      if (integrityBaseline) {
-        const violations = await checkRepoIntegrity(repo.path, integrityBaseline, {
-          runBranch: loopRun.branch,
-          checkRefs: true,
-        });
-        if (violations.length > 0) {
-          const reason = `repo integrity violation: ${violations.join("; ")}`;
-          deps.finishRun(runId, "failed", reason, runTelemetry(result));
-          deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-          return;
-        }
-      }
+      const failure = harnessFailure(result, provider, "evaluator");
+      if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+
+      const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
+      if (violation) return fail(violation);
 
       // Spec 14: the judge provably cannot edit the implementation it judged.
-      // Git history stays immutable — the evaluator never commits (the
-      // orchestrator does, below). Uncommitted changes are narrowed to the
-      // doc allowlist: on approve the evaluator may refresh stale docs, but
-      // any code change (or a non-doc path) still rejects to needs_attention.
-      const headAfter = (await tryGit(loopRun.worktreePath, "rev-parse", "HEAD")).out;
-      if (headAfter !== headBefore) {
-        const reason = "evaluator committed to Git history; verdict rejected";
-        deps.finishRun(runId, "failed", reason, runTelemetry(result));
-        deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-        return;
+      // It never commits (the orchestrator does, below), and its uncommitted
+      // changes are narrowed to the doc allowlist.
+      if ((await head()) !== headBefore) {
+        return fail("evaluator committed to Git history; verdict rejected");
       }
-      const sourceStatusAfter = (await tryGit(
-        loopRun.worktreePath,
-        "status",
-        "--porcelain",
-        "--",
-        ".",
-        ":(exclude).ralph",
-      )).out;
       const changedBefore = new Set(changedPaths(sourceStatusBefore));
-      const illegalPaths = changedPaths(sourceStatusAfter).filter(
+      const illegalPaths = changedPaths(await sourceStatus()).filter(
         (p) => !changedBefore.has(p) && !isDocPath(p),
       );
       if (illegalPaths.length > 0) {
-        const reason = `evaluator modified non-doc files (${illegalPaths.join(", ")}); verdict rejected`;
-        deps.finishRun(runId, "failed", reason, runTelemetry(result));
-        deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-        return;
+        return fail(`evaluator modified non-doc files (${illegalPaths.join(", ")}); verdict rejected`);
       }
 
+      const evaluationPath = path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md");
       const evaluation = fs.existsSync(/* turbopackIgnore: true */ evaluationPath)
-        ? parseEvaluation(
-            fs.readFileSync(/* turbopackIgnore: true */ evaluationPath, "utf8"),
-          )
+        ? parseEvaluation(fs.readFileSync(/* turbopackIgnore: true */ evaluationPath, "utf8"))
         : null;
-      if (!evaluation) {
-        const reason = "evaluator wrote no usable VERDICT in .ralph/EVALUATION.md";
-        deps.finishRun(runId, "failed", reason, runTelemetry(result));
-        deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-        return;
-      }
+      if (!evaluation) return fail("evaluator wrote no usable VERDICT in .ralph/EVALUATION.md");
 
       const hasCritical = evaluation.findings.some((f) => f.severity === "critical");
       emitEvent("evaluation.decided", {
@@ -321,47 +178,32 @@ export class EvaluationService {
         },
       });
 
-      // Spec 14: the evaluator (not a separate summarizer) writes the card
-      // summary and, on approve, refreshes stale docs. Read the summary it
-      // left in `.ralph/SUMMARY.md`; a missing summary is non-fatal.
-      const applySummary = () => {
-        const summaryPath = path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md");
-        if (!fs.existsSync(/* turbopackIgnore: true */ summaryPath)) return;
-        const summary = fs
-          .readFileSync(/* turbopackIgnore: true */ summaryPath, "utf8")
-          .trim();
-        if (!summary) return;
-        db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
-        emitEvent("card.summarized", { cardId, runId });
-      };
-
       // Cards that advance straight to human review (approve, or a revise that
-      // hit the limit) carry the summary and the evaluator's doc edits onto the
-      // review branch (`add -A`); `.ralph` is stripped at merge, the docs stay.
+      // hit the limit) carry the evaluator's `.ralph/SUMMARY.md` onto the card
+      // and its doc edits onto the review branch (`add -A`); `.ralph` is
+      // stripped at merge, the docs stay. A missing summary is non-fatal.
       const advanceToReview = async (exitReason: string, moveReason: string) => {
-        applySummary();
-        await tryGit(loopRun.worktreePath, "add", "-A");
-        await tryGit(loopRun.worktreePath, "commit", "-m", `ralph: evaluation — ${evaluation.verdict}`);
-        deps.finishRun(runId, "completed", exitReason, runTelemetry(result));
+        const summaryPath = path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md");
+        const summary = fs.existsSync(/* turbopackIgnore: true */ summaryPath)
+          ? fs.readFileSync(/* turbopackIgnore: true */ summaryPath, "utf8").trim()
+          : "";
+        if (summary) {
+          db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
+          emitEvent("card.summarized", { cardId, runId });
+        }
+        await tryGit(worktreePath, "add", "-A");
+        await tryGit(worktreePath, "commit", "-m", `ralph: evaluation — ${evaluation.verdict}`);
+        deps.finishRun(runId, "completed", exitReason, telemetry);
         deps.moveCard(cardId, "evaluating", "review", moveReason);
       };
 
       if (evaluation.verdict === "approve") {
         await advanceToReview("approve", "evaluator approved");
-        // Auto-approve: skip the human In Review gate and merge straight
-        // through the same review path. Granted by either the card's own
-        // opt-in flag or the global `autoApprove` setting — the global is a
-        // live override read here, at verdict time, so turning it on applies
-        // to work already in flight. `source` records which one granted it;
-        // without that the card row alone can't explain a past auto-merge,
-        // since the global may have been flipped since.
-        //
-        // Only genuine `approve` verdicts qualify — the revision-limit
-        // escalation below always waits for a human. On any merge/claim
-        // failure `approveReview` leaves the card in review (or
-        // needs_attention), so a human still sees it. A `critical` finding
-        // always forces human review, even here — the card stays in `review`
-        // (set by `advanceToReview` above) instead of auto-merging.
+        // Auto-approve: merge straight through the same review path, granted
+        // by the card's own flag or the global setting (a live override read
+        // at verdict time; `source` records which one, since the global may
+        // be flipped later). Only genuine `approve` verdicts qualify, and a
+        // `critical` finding always leaves the card in review for a human.
         if ((card.autoApprove || getSettings().autoApprove) && !hasCritical) {
           emitEvent("card.auto_approved", {
             cardId,
@@ -381,9 +223,7 @@ export class EvaluationService {
       const priorRevisions = db
         .select()
         .from(runs)
-        .where(
-          and(eq(runs.cardId, cardId), eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")),
-        )
+        .where(and(eq(runs.cardId, cardId), eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")))
         .all().length;
       if (priorRevisions >= MAX_EVALUATOR_REVISIONS) {
         await advanceToReview(
@@ -393,43 +233,18 @@ export class EvaluationService {
         return;
       }
 
-      // A revise that re-loops carries only the verdict artifact back (the
-      // prompt forbids doc edits on revise, so `.ralph` is all that changed).
-      await tryGit(loopRun.worktreePath, "add", ".ralph");
-      await tryGit(loopRun.worktreePath, "commit", "-m", "ralph: evaluation — revise");
-
-      const promptMd = `## Evaluator feedback — address this first\n\n${evaluation.feedback}\n\n---\n\n${basePromptMd(plan.promptMd)}`;
-      const revisionPlanId = nanoid();
-      const planPath = planStatePath(cardId);
-      if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) {
-        throw new Error("evaluator cannot requeue feedback: private plan state is missing");
+      // A revise goes back to the planner, not straight to the loop (see
+      // `pendingReplanFeedback`). The prompt forbids doc edits on revise, so
+      // `.ralph` is all that changed.
+      await tryGit(worktreePath, "add", ".ralph");
+      await tryGit(worktreePath, "commit", "-m", "ralph: evaluation — revise");
+      db.update(runs).set({ feedback: evaluation.feedback }).where(eq(runs.id, runId)).run();
+      deps.finishRun(runId, "completed", "revise", telemetry);
+      // The card keeps its repo's pipeline slot: straight into planning,
+      // never back through a queue another card could claim first.
+      if (deps.moveCard(cardId, "evaluating", "planning", "evaluator requested changes — re-planning")) {
+        deps.replan(cardId);
       }
-      const updatedPlanState = appendTask(
-        fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
-        EVALUATOR_FEEDBACK_TASK,
-      );
-      try {
-        db.insert(plans)
-          .values({
-            id: revisionPlanId,
-            cardId,
-            version: plan.version + 1,
-            planMd: plan.planMd,
-            promptMd,
-            acceptanceCriteria: plan.acceptanceCriteria,
-            feedback: evaluation.feedback,
-            createdAt: now(),
-          })
-          .run();
-        fs.writeFileSync(/* turbopackIgnore: true */ planPath, updatedPlanState);
-      } catch (error) {
-        db.delete(plans).where(eq(plans.id, revisionPlanId)).run();
-        throw error;
-      }
-      emitEvent("plan.created", { cardId, runId, payload: { version: plan.version + 1 } });
-      deps.finishRun(runId, "completed", "revise", runTelemetry(result));
-      deps.moveCard(cardId, "evaluating", "ready", "evaluator requested changes");
-      deps.pump();
     } catch (error) {
       if (!controller.signal.aborted) {
         const reason = `evaluator failed: ${error instanceof Error ? error.message : String(error)}`;
