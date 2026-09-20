@@ -79,6 +79,14 @@ before treating this as settled.
 cost reasons but for independence. Its whole value is looking at the diff
 without having decided in advance that the diff is correct.
 
+Settings states each of these demands next to the role it applies to, and flags
+a provider that does not suit its role: a planner or evaluator on a self-hosted
+endpoint, and equally a loop on a subscription, which is the same mistake
+pointed the other way. A summary above the three sections offers the split in
+one click when any role is off it, and stays out of the way when none is. The
+advisories never block saving, so a deliberate choice (benchmarking a local
+planner, say) is one dropdown away.
+
 The local provider speaks the OpenAI wire format: Radulf lists what you are
 serving from `/v1/models` and runs the loop against `/v1/chat/completions`. The
 base URL is the server root (`http://127.0.0.1:8000`, the default), though a URL
@@ -135,6 +143,45 @@ that all passed first time.
 
 Reproduce or extend it with `benchmarks/run-benchmark.mjs` — see
 [`benchmarks/README.md`](../benchmarks/README.md).
+
+## Watching your allowance
+
+**Providers & keys** carries a usage and health panel: what Radulf has spent
+through each provider over the last 24 hours, its current allowance, and
+whether any provider is refusing work right now.
+
+The allowance figures come from the response headers of the agent's own
+requests. There is no quota endpoint to poll, but the providers stamp every
+response with where the account stands, so Radulf reads that off traffic it was
+making anyway. It is scoped to the credential Radulf itself uses, not to
+whatever is logged in elsewhere on the machine.
+
+What you see depends on what the provider sends. A Claude subscription reports
+utilization for both its 5-hour and 7-day windows, which one is currently
+binding, when each resets, and whether the plan has paid overflow past the
+limit. An OpenAI-compatible endpoint reports request and token counts. A
+self-hosted server usually reports nothing, and the panel then shows nothing
+for it rather than implying it is healthy.
+
+Cost is shown only for providers that meter it. A flat-rate subscription reads
+as having no meter rather than as having spent $0.00.
+
+### When a provider runs out
+
+An exhausted allowance is treated as its own kind of failure, separate from a
+provider being unreachable. It opens that provider's circuit breaker on the
+first occurrence rather than after three: the allowance is gone, and spending
+two more runs proving it only burns the card's failure budget.
+
+How long Radulf then holds off depends on what it knows, in order of
+preference: the reset instant from the provider's own headers, then any
+retry-after stated in the error, then a per-provider default. A subscription
+window is measured in hours, so its default is an hour rather than the minute
+that suits a dropped connection.
+
+Transient capacity errors are deliberately not treated this way. Anthropic's
+529 "overloaded" clears in seconds, and holding a provider off for an hour over
+one would be far too pessimistic.
 
 ## Optional: web search
 
