@@ -606,6 +606,119 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
+  describe("boot recovery", () => {
+    /** A loop that died with the process: its run row is still "running", its
+     * worktree holds the committed iterations, and the orchestrator-private
+     * checklist records how far it got. */
+    function interruptedLoop(cardId: string, planMd: string) {
+      card(cardId, "looping");
+      plan(cardId);
+      completedRun(cardId, `${cardId}-run`, { status: "running" });
+      const planPath = planStatePath(cardId);
+      fs.mkdirSync(path.dirname(planPath), { recursive: true });
+      fs.writeFileSync(planPath, planMd);
+    }
+
+    function runById(id: string) {
+      return db.select().from(runs).all().find((row) => row.id === id)!;
+    }
+
+    it("marks the run it lost as interrupted", () => {
+      interruptedLoop("recover-run", "## Tasks\n- [x] first task\n- [ ] second task\n");
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+
+      new Orchestrator();
+
+      expect(runById("recover-run-run").status).toBe("interrupted");
+      expect(runById("recover-run-run").exitReason).toBe("server restarted mid-run");
+    });
+
+    it("resumes a checkpointed loop on its first unchecked task", async () => {
+      interruptedLoop("recover-resume", "## Tasks\n- [x] first task\n- [ ] second task\n");
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+
+      const orchestrator = new Orchestrator();
+
+      // recover() puts it back in Ready and pump() takes it straight back
+      // into the loop, with no human in the path. The tick from the last
+      // committed iteration is what stops it redoing the first task.
+      await vi.waitFor(() => expect(getCard("recover-resume").status).toBe("looping"));
+      expect(mocks.runHarness.mock.calls[0][0].prompt).toContain("second task");
+      orchestrator.cancelCard("recover-resume");
+      await settle();
+    });
+
+    it("parks a loop whose worktree is gone", () => {
+      interruptedLoop("recover-no-worktree", "## Tasks\n- [ ] first task\n");
+      fs.rmSync(path.join(testDataDir, "worktrees", "recover-no-worktree-run"), {
+        recursive: true,
+        force: true,
+      });
+
+      new Orchestrator();
+
+      expect(getCard("recover-no-worktree").status).toBe("needs_attention");
+    });
+
+    it("parks a loop with every task already ticked", () => {
+      interruptedLoop("recover-finished", "## Tasks\n- [x] first task\n");
+
+      new Orchestrator();
+
+      expect(getCard("recover-finished").status).toBe("needs_attention");
+    });
+
+    it("still parks an interrupted evaluation", () => {
+      card("recover-evaluating", "evaluating");
+      plan("recover-evaluating");
+      completedRun("recover-evaluating", "recover-evaluating-run", { status: "running" });
+
+      new Orchestrator();
+
+      expect(getCard("recover-evaluating").status).toBe("needs_attention");
+    });
+  });
+
+  describe("graceful shutdown", () => {
+    it("stops a loop at its iteration boundary and leaves it ready to resume", async () => {
+      card("drain-loop");
+      plan("drain-loop");
+      db.update(plans)
+        .set({ planMd: "## Tasks\n- [ ] first task\n- [ ] second task\n" })
+        .where(eq(plans.cardId, "drain-loop"))
+        .run();
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        fs.writeFileSync(path.join(cwd, "feature.txt"), "implemented first task");
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), "first task complete");
+        // SIGTERM lands while this iteration is still running.
+        orchestrator.startDraining();
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("drain-loop");
+
+      // Wait on the run, not the card: startCard() parks it in Ready before
+      // the loop even opens, so the status alone cannot tell the two apart.
+      const loopRun = () => db.select().from(runs).all().find((row) => row.cardId === "drain-loop");
+      await vi.waitFor(() => expect(loopRun()?.status).toBe("interrupted"));
+      expect(loopRun()!.exitReason).toBe("stopped for restart");
+      expect(getCard("drain-loop").status).toBe("ready");
+      // The finished iteration was committed and ticked before the stop, and
+      // the second task was never handed out.
+      expect(fs.readFileSync(planStatePath("drain-loop"), "utf8")).toBe(
+        "## Tasks\n- [x] first task\n- [ ] second task\n",
+      );
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+      // Shutdown can now finish instead of burning its whole budget.
+      await vi.waitFor(() => expect(orchestrator.hasInFlightWork()).toBe(false));
+    });
+  });
+
   describe("failed-step retries", () => {
     it("retries a failed planner without entering the loop", async () => {
       card("retry-planner", "needs_attention", 1);

@@ -114,8 +114,8 @@ export class Orchestrator {
   private activeLoopCards = new Map<string, string>();
   /** Card IDs that have requested a pause on next iteration boundary. */
   private pausedCards = new Set<string>();
-  /** Set on graceful shutdown — pump() stops starting new runs, but any run
-   * already in flight keeps going until it finishes. */
+  /** Set on graceful shutdown: pump() starts no new runs, and a running loop
+   * stops at its next iteration boundary. */
   private draining = false;
   /** runId → controller for every live harness invocation. */
   private controllers = new Map<string, AbortController>();
@@ -167,15 +167,39 @@ export class Orchestrator {
     // caches, pgid files) is all stale — sweep it before anything new starts.
     fs.rmSync(/* turbopackIgnore: true */ runScratchRoot(), { recursive: true, force: true });
     // Any card still marked planning/looping/evaluating lost its run. A
-    // reviewing card lost the in-process merge claim. All need a human.
+    // reviewing card lost the in-process merge claim.
     const orphans = db
       .select()
       .from(cards)
       .where(inArray(cards.status, [...HARNESS_STATUSES, "reviewing"]))
       .all();
     for (const card of orphans) {
+      // A loop is checkpointed: the orchestrator commits every finished
+      // iteration and ticks the private plan checklist, so a restart costs at
+      // most the one iteration that was in flight. Put a resumable card back
+      // in Ready and let pump() open a fresh loop run on the first unchecked
+      // task, instead of making a human press Retry to lose nothing. Every
+      // other stage re-runs from the top, so those still need a human.
+      if (card.status === "looping" && this.loopIsResumable(card.id)) {
+        this.moveCard(card.id, "looping", "ready", "resuming after restart");
+        continue;
+      }
       this.moveCard(card.id, card.status, "needs_attention", "interrupted");
     }
+  }
+
+  /** Whether a restarted loop can pick up where it left off: the plan it was
+   * executing is still on disk with an unchecked task left in it, and the
+   * worktree holding the committed iterations still exists. A plan with every
+   * task ticked is finishing, not resuming, so it goes to a human too. */
+  private loopIsResumable(cardId: string): boolean {
+    if (!this.latestPlan(cardId)) return false;
+    const planPath = planStatePath(cardId);
+    if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return false;
+    const planMd = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
+    if (!firstUnchecked(planMd)) return false;
+    const worktreePath = this.latestWorktreeRun(cardId)?.worktreePath;
+    return worktreePath !== undefined && fs.existsSync(/* turbopackIgnore: true */ worktreePath);
   }
 
   // ---- helpers -------------------------------------------------------------
@@ -444,7 +468,8 @@ export class Orchestrator {
 
   // ---- pipeline pump -------------------------------------------------------
 
-  /** Stop pump() from starting new runs. Called once, on shutdown signal. */
+  /** Stop pump() from starting new runs, and ask a running loop to stop once
+   * its current iteration is committed. Called once, on shutdown signal. */
   startDraining() {
     this.draining = true;
   }
@@ -865,6 +890,17 @@ export class Orchestrator {
         if (this.pausedCards.has(cardId)) {
           this.finishRun(runId, "completed", "paused by user", n);
           this.moveCard(cardId, "looping", "paused", "paused by user");
+          return;
+        }
+
+        // Shutdown reached us between iterations: everything up to here is
+        // committed and ticked, so stop on the boundary and hand the card
+        // back to Ready. recover() resumes it on the next boot, having lost
+        // nothing. A drain that runs out of time mid-iteration still exits
+        // hard, and that path costs the one iteration.
+        if (this.draining) {
+          this.finishRun(runId, "interrupted", "stopped for restart", n);
+          this.moveCard(cardId, "looping", "ready", "stopped for restart");
           return;
         }
       }
