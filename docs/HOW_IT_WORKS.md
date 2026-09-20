@@ -113,6 +113,26 @@ The orchestrator moves cards on its own as it works them. The transitions that
 need a human are: Backlog → Todo (you schedule it), Needs Attention → In
 Progress (you fix and restart), and the review verdict itself.
 
+Because Needs Attention waits on you, Radulf says so rather than waiting
+quietly. A card that sits there longer than **Waiting-too-long alert** (Settings
+→ Notifications, 15 minutes by default) raises a `card.attention_stale` event,
+once per arrival. Set an **Alert webhook URL** there and the same thing is
+POSTed as JSON, which is the only alerting that reaches you without a browser
+tab open — ntfy, a Slack incoming hook, a Discord webhook and a handler of your
+own all take it unchanged.
+
+Two things Radulf will tell you there rather than let you discover by repeating
+them:
+
+- **A request the provider rejected.** An unsupported model, or a client too
+  old to drive one, fails the same way every time, so the card carries the
+  provider's own message and offers no retry for that step. Change the model
+  under *Edit model overrides* and restart.
+- **A stage that keeps failing the same way.** Three failures in a row for one
+  role on one provider and model says something about the pairing rather than
+  about luck, and the card says which role and which model. Retry stays
+  available — it is a reading, not a block.
+
 ## One card at a time
 
 A single card occupies the planner, loop, or evaluator at any given moment, and
@@ -123,7 +143,24 @@ waiting for the slot show a "queued" sub-state.
 
 While a card is looping you can **pause** it — the current iteration finishes
 and then the card waits — and **continue** it later, optionally after changing
-its per-card model overrides so that resumed iterations run differently.
+its per-card model overrides so that resumed iterations run differently. A
+paused run is recorded as paused, not completed, so stopping work yourself
+never counts for or against the success rate in Activity.
+
+## When the loop says it is done
+
+DONE is the loop agent's own claim, and an evaluation is the most expensive
+thing the pipeline does, so Radulf checks the cheap part first. Any shell
+commands your acceptance criteria wrote in backticks are run in the worktree,
+and a command that exits non-zero buys the loop one more iteration to fix what
+it found before the evaluator is started.
+
+Only failures count. A criterion can carry a judgment a shell cannot make
+("returns at least 3 wrapper scripts"), so passing proves nothing and the
+evaluator still decides. Only check-shaped commands run — `test`, `grep`,
+`find`, `ls` and their kin — and anything else in backticks is left alone. The
+repair pass happens at most once per run, because a criterion can be written so
+that it can never pass.
 
 ## Where the work happens
 

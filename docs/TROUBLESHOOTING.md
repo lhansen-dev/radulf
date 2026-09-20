@@ -72,8 +72,12 @@ plan and restart it, send it back to Backlog, or abandon it.
 The run hit its wall-clock budget (default 60 minutes, overridable per card).
 
 **`iteration-timeout`**
-Two consecutive iterations each exceeded the per-iteration hard timeout. One
-timeout is retried with the worktree preserved; the second ends the run.
+Two iterations in the run exceeded the per-iteration hard timeout. One timeout
+is retried with the worktree preserved; the second ends the run, whatever
+happened in between. A timed-out iteration keeps whatever it finished: if it
+wrote `.ralph/ITERATION_DONE` before it was killed, the task is ticked and
+committed exactly as on a clean ending, and the retry moves on to the next
+task rather than redoing work already on disk.
 
 **`stalled`**
 Three consecutive iterations changed nothing — no checklist progress and no
@@ -94,6 +98,22 @@ retrying a misconfigured provider only spends tokens. `assistant reply exceeded
 1 MiB in a single turn` means the provider's stream was corrupt (for example,
 every delta re-sent the whole reply so far); the session is aborted before the
 reply can overflow the context window, and the next iteration starts fresh.
+
+**`prompt grew to Nx the run's median for two iterations`**
+The context stopped coming back down. Each iteration's prompt size is compared
+against the median of the run's earlier ones; one iteration far above it is
+recorded as `iteration.bloat`, and two in a row end the run. Usually the loop
+is re-reading more of the repo each pass without ever narrowing, which a
+tighter task in the plan fixes better than a bigger budget.
+
+**A failure the provider will repeat**
+When the provider rejects the request itself — an unsupported model, a client
+too old to drive it, a malformed call — the card carries the provider's own
+message and the retry action for that step is withheld, because the same call
+will fail the same way. Change the model under *Edit model overrides* and
+restart. Separately, three failures in a row for one role on one provider and
+model raise a note naming the pairing; retry still works there, since that one
+is a reading rather than a certainty.
 
 **`repo integrity violation: …`**
 The parent repo changed underneath the run in a way the sandbox is supposed to
