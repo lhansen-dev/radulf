@@ -62,6 +62,10 @@ OpenRouter and a local server need no login at all — set an API key or a base 
    leave it blank to auto-detect. Radulf never writes to this checkout except
    when merging an approved card.
 
+   Starting from nothing? Browse to the parent folder, type a name under
+   **New repository name** and choose **Create here**. Radulf runs `git init`
+   on `main`, adds a README with an initial commit, and registers the result.
+
    Browsing is confined to one directory, your home directory unless
    **Settings → Repositories → Browsable root** says otherwise. A repo kept
    outside that root is still reachable by typing its path.

@@ -31,6 +31,10 @@ beforeEach(() => {
         };
       }
       if (target === "/api/cards" && init?.method === "POST") return { id: "card-1" };
+      if (target === "/api/repos/init") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { parentPath: string; name: string };
+        return { id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", createdAt: "" };
+      }
       if (target.includes("/api/repos") && init?.method !== "GET") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { name: string; path: string };
         return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", createdAt: "" };
@@ -57,6 +61,23 @@ describe("NewTaskDialog", () => {
     const repoSelect = await screen.findByLabelText("Repository");
     await waitFor(() => expect((repoSelect as HTMLSelectElement).value).toBe("new-repo"));
     expect(repoSelect.textContent).toContain("a-repo");
+    cleanup();
+  });
+
+  it("creates a fresh repository inside the browsed folder and selects it", async () => {
+    const user = userEvent.setup();
+    render(<NewTaskDialog repos={[]} onClose={() => {}} onCreated={() => {}} />);
+    await screen.findByRole("list", { name: "Folders" });
+
+    await user.type(screen.getByLabelText("New repository name"), "fresh-project");
+    await user.click(screen.getByRole("button", { name: "Create here" }));
+
+    const repoSelect = await screen.findByLabelText("Repository");
+    await waitFor(() => expect((repoSelect as HTMLSelectElement).value).toBe("made-repo"));
+    expect(repoSelect.textContent).toContain("fresh-project");
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
+    const initCall = calls.find(([url]) => url === "/api/repos/init");
+    expect(JSON.parse(String(initCall?.[1].body))).toEqual({ parentPath: "/home/dev", name: "fresh-project" });
     cleanup();
   });
 

@@ -22,15 +22,30 @@ type Listing = {
  */
 export function FolderBrowser({
   onPick,
+  onCreate,
   onError,
 }: {
   onPick: (path: string) => void;
+  /** When given, the browser also offers to create a fresh repository inside
+   * the folder being viewed. A rejection is reported through `onError`. */
+  onCreate?: (parentPath: string, name: string) => Promise<void>;
   /** Surfaced by the caller next to its own form errors. */
   onError?: (message: string) => void;
 }) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const create = () => {
+    if (!onCreate || !listing || creating || !newName.trim()) return;
+    setCreating(true);
+    onCreate(listing.path, newName.trim())
+      .then(() => setNewName(""))
+      .catch((cause) => onError?.(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setCreating(false));
+  };
 
   // Deliberately does not flip `loading` itself: the mount effect calls this
   // synchronously, and a synchronous setState inside an effect cascades
@@ -79,6 +94,26 @@ export function FolderBrowser({
           Use this folder
         </button>
       </div>
+      {onCreate && (
+        <div className="flex items-center gap-2 border-b border-foreground/10 px-2 py-2">
+          <input
+            aria-label="New repository name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); create(); } }}
+            placeholder="New repository name"
+            className="min-h-11 min-w-0 grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm"
+          />
+          <button
+            type="button"
+            onClick={create}
+            disabled={!listing || loading || creating || !newName.trim()}
+            className="min-h-11 shrink-0 rounded-lg bg-foreground/[0.08] px-3 text-xs font-medium hover:bg-foreground/[0.12] disabled:opacity-40"
+          >
+            {creating ? "Creating…" : "Create here"}
+          </button>
+        </div>
+      )}
       <ul aria-label="Folders" className="max-h-64 divide-y divide-foreground/[0.07] overflow-y-auto">
         {loading && <li className="px-3 py-3 text-sm text-foreground/45">Loading…</li>}
         {!loading && error && <li role="alert" className="px-3 py-3 text-sm text-red-400">{error}</li>}

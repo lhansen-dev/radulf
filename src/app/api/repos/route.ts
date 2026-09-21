@@ -1,8 +1,7 @@
-import { asc, eq } from "drizzle-orm";
-import { nanoid } from "nanoid";
-import { db, repos, now } from "@/db";
+import { asc } from "drizzle-orm";
+import { db, repos } from "@/db";
 import { hasCommits, isGitRepo, listBranches, tryGit } from "@/server/git";
-import { emitEvent } from "@/server/events";
+import { registerRepo } from "@/server/repos";
 import { json, err, handle } from "../_lib";
 
 export const dynamic = "force-dynamic";
@@ -32,15 +31,6 @@ export async function POST(req: Request) {
       const head = await tryGit(path, "rev-parse", "--abbrev-ref", "HEAD");
       defaultBranch = head.ok && head.out !== "HEAD" ? head.out : "main";
     }
-    const existing = db.select().from(repos).where(eq(repos.path, path)).get();
-    if (existing) return err("repo path already registered");
-
-    const row = db
-      .insert(repos)
-      .values({ id: nanoid(), name, path, defaultBranch, createdAt: now() })
-      .returning()
-      .get();
-    emitEvent("repo.created", { payload: { repoId: row.id, name } });
-    return json(row, 201);
+    return json(registerRepo(name, path, defaultBranch), 201);
   });
 }
