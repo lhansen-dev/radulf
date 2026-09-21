@@ -7,6 +7,7 @@ import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
 import { groupBy } from "@/server/queryGrouping";
 import { removeRunTranscripts } from "@/server/retention";
+import { listScopingMessages } from "@/server/scoping";
 import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../../_lib";
 
@@ -84,7 +85,10 @@ export async function GET(_req: Request, { params }: Ctx) {
     const items = parseChecklist(planMd)?.items ?? [];
     livePlan = { planMd, done: items.filter((item) => item.checked).length, total: items.length };
   }
-  return json({ card, repo, plans: cardPlans, livePlan, runs: cardRuns, events: cardEvents, models });
+  return json({
+    card, repo, plans: cardPlans, livePlan, runs: cardRuns, events: cardEvents, models,
+    scoping: listScopingMessages(id),
+  });
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
