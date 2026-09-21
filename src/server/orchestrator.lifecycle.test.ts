@@ -2209,6 +2209,7 @@ describe("Orchestrator cancellation lifecycle", () => {
         expect(repo1Exists()).toBe(true);
         expect(getCard("busy-card").status).toBe(status);
         expect(getRun("busy-card").status).toBe("running");
+        expect(mocks.removeWorktree).not.toHaveBeenCalled();
       },
     );
 
@@ -2249,10 +2250,15 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(improvementRuns).all()).toHaveLength(1);
     });
 
-    it("removes an idle repository and its records", async () => {
+    it("removes an idle repository, its records, and its cards' worktrees", async () => {
       card("idle-card", "review");
       plan("idle-card");
       completedRun("idle-card", "idle-run");
+      const transcriptDir = path.join(testDataDir, "transcripts", "idle-run");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      fs.writeFileSync(path.join(transcriptDir, "plan.jsonl"), "{}\n");
+      fs.mkdirSync(path.dirname(planStatePath("idle-card")), { recursive: true });
+      fs.writeFileSync(planStatePath("idle-card"), "- [ ] task\n");
       routeOrchestrator();
 
       const response = await removeRepo1();
@@ -2261,6 +2267,26 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(repo1Exists()).toBe(false);
       expect(db.select().from(cards).all()).toHaveLength(0);
       expect(db.select().from(runs).all()).toHaveLength(0);
+      // The orphan a bare cascade leaves behind: a branch still checked out in
+      // a worktree nothing references, which the picker would offer as a base.
+      expect(mocks.removeWorktree).toHaveBeenCalledWith(
+        path.join(testDataDir, "repo"),
+        path.join(testDataDir, "worktrees", "idle-run"),
+        "ralph/idle-run",
+      );
+      expect(fs.existsSync(transcriptDir)).toBe(false);
+      expect(fs.existsSync(planStatePath("idle-card"))).toBe(false);
+    });
+
+    it("returns 404 for a repository that is not registered", async () => {
+      routeOrchestrator();
+
+      const response = await deleteRepo(new Request("http://localhost/api/repos/nope", { method: "DELETE" }), {
+        params: Promise.resolve({ id: "nope" }),
+      });
+
+      expect(response.status).toBe(404);
+      expect(mocks.removeWorktree).not.toHaveBeenCalled();
     });
   });
 
