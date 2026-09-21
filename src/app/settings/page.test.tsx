@@ -11,7 +11,7 @@ const initialSettings: Settings = {
   plannerProvider: "anthropic", plannerModel: "planner", plannerReasoningLevel: "medium",
   loopProvider: "anthropic", loopModel: "looper", loopReasoningLevel: "medium",
   evaluatorProvider: "anthropic", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
-  plannerTimeoutMinutes: 30, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
+  plannerTimeoutMinutes: 30, maxConcurrentCards: 1, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
   iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
   folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
   minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",

@@ -96,9 +96,17 @@ restrictive floor (`denyRead: [$HOME]`, `allowedDomains: []`). Filesystem policy
 *is* rebuilt per call from `wrapWithSandbox`'s `customConfig`, but **network
 policy is not** — the egress proxy filters against the *session-level* config.
 So `wrapBashCommand` calls `SandboxManager.updateConfig(runConfig)` immediately
-before `wrapWithSandbox`. This is safe **only because Radulf's pipeline is
-strictly serial** (one card at a time, spec 02); it is documented as a hard
-invariant a future concurrency change must not break.
+before `wrapWithSandbox`. The pipeline is **not** strictly serial: cards in
+different repos have always run at the same time, and spec 20 allows more than
+one card per repo. What keeps this safe is narrower than a serial pipeline. The
+wrap-and-`updateConfig` window is serialized by a promise-chain mutex, and a
+runtime check refuses a call whose network-policy slice differs from the one
+already queued, rather than letting it silently clobber the other run's
+allowlist. Today nothing trips that check, because network policy comes from
+global settings with nothing per-card or per-role in it. **Making network
+policy genuinely per-run is what must not be done casually**: it would turn
+that check from dead code into a hard failure, and needs a per-run sandbox
+session instead.
 
 ### Filesystem policy (`buildFilesystemConfig`)
 

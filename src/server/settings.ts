@@ -46,6 +46,11 @@ export const SETTING_DEFAULTS = {
   plannerReasoningLevel: "medium",
   loopReasoningLevel: "medium",
   evaluatorReasoningLevel: "medium",
+  // Spec 20: how many of a repo's cards may hold a harness at once (planning,
+  // looping or evaluating). 1 keeps the serial queue locked decision 5
+  // describes. Forced back to 1 whenever the loop provider is local, since
+  // that decision's reason is the machine's unified memory, not the pipeline.
+  maxConcurrentCards: 1,
   // A planning pass is one harness invocation, separate from the loop's
   // card-wide budget below.
   plannerTimeoutMinutes: 30,
@@ -168,6 +173,9 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "openPr",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
+  // Upper bound is a guard rail, not a capability claim: past a handful of
+  // concurrent worktrees the machine, not Radulf, is the limit (spec 20).
+  maxConcurrentCards: [1, 8],
   plannerTimeoutMinutes: [1, 10_080],
   defaultMaxIterations: [1, 1_000],
   defaultTimeoutMinutes: [1, 10_080],

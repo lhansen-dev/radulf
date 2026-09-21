@@ -19,6 +19,7 @@ export type Settings = {
   omlxApiKey: string;
   openrouterApiKey: string;
   braveApiKey: string;
+  maxConcurrentCards: number;
   defaultMaxIterations: number;
   defaultTimeoutMinutes: number;
   iterationHardTimeoutMinutes: number;

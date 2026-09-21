@@ -133,13 +133,19 @@ them:
   about luck, and the card says which role and which model. Retry stays
   available — it is a reading, not a block.
 
-## One card at a time
+## How many cards run at once
 
-A single card occupies the planner, loop, or evaluator at any given moment, and
-the next card starts only once that slot frees. There is no parallelism setting.
-This is deliberate rather than a limitation waiting to be lifted: local models
-want the whole machine's unified memory, so the queue is always serial. Cards
-waiting for the slot show a "queued" sub-state.
+By default, one. A single card occupies the planner, loop, or evaluator, and
+the next card starts only once that slot frees. Cards waiting for a slot show a
+"queued" sub-state. Different repos have always run at the same time; the cap
+is per repo.
+
+**Concurrent cards per repo** in Settings raises that, up to 8. Raise it when
+the cards are independent, which is the common case: two cards editing the same
+file will merge-conflict, and the loser is handed back to its own loop to
+rebase. The setting is held at 1 while the loop provider is local, because a
+local model wants the whole machine's unified memory, which is the actual
+reason the queue was serial to begin with.
 
 While a card is looping you can **pause** it — the current iteration finishes
 and then the card waits — and **continue** it later, optionally after changing

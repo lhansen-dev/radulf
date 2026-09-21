@@ -482,6 +482,7 @@ export default function SettingsPage() {
                 <section id="defaults" className={sectionCls}>
                   <SectionHeading title="Loop execution" />
                   <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    {numberInput("maxConcurrentCards", "Concurrent cards per repo", "How many of one repo's cards may run the planner, loop or evaluator at once. Held at 1 while the loop provider is local, which owns the machine's memory.")}
                     {numberInput("defaultMaxIterations", "Max iterations")}
                     {numberInput("defaultTimeoutMinutes", "Timeout (minutes)")}
                     {numberInput("iterationHardTimeoutMinutes", "Iteration hard timeout (minutes)", "Caps one iteration; a single timeout retries, two in a row end the run.")}

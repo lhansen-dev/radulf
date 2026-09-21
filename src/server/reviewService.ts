@@ -16,7 +16,7 @@ import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
-import { checkRepoIntegrity, loadBaseline, removeBaseline } from "./integrity";
+import { checkRepoIntegrity, loadBaseline, noteRadulfRefWrite, removeBaseline } from "./integrity";
 import type { StageDependencies } from "./stage";
 
 /** Every iteration runs on an injected checklist task, so a merge-conflict
@@ -356,6 +356,15 @@ export class ReviewService {
       return { ok: false, error: result.error };
     }
 
+    // Spec 20: Radulf just moved the base branch. Tell the runs still open on
+    // this repo, or each one reports our own merge as tampering at its run-end
+    // integrity check. The base branch is deliberately outside the managed
+    // namespace (spec 19), so nothing else would excuse this.
+    noteRadulfRefWrite(
+      repo.path,
+      `refs/heads/${run.baseBranch ?? repo.defaultBranch}`,
+      result.mergeCommit!,
+    );
     await this.completeApproval(card, run, repo, { mergeCommit: result.mergeCommit }, result.mergeCommit);
     return { ok: true };
   }

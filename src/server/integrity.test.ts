@@ -13,6 +13,9 @@ const {
   saveBaseline,
   loadBaseline,
   removeBaseline,
+  registerRunBaseline,
+  releaseRunBaseline,
+  noteRadulfRefWrite,
 } = await import("./integrity");
 
 function git(dir: string, ...args: string[]) {
@@ -157,6 +160,57 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
       ).toEqual(["ref appeared: refs/heads/attacker"]);
     } finally {
       git(repo, "update-ref", "-d", "refs/heads/attacker");
+    }
+  });
+
+  it("ignores the remote-tracking ref a PR push creates (spec 20)", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    // `git push --set-upstream origin ralph/<branch>` writes this locally.
+    git(repo, "update-ref", "refs/remotes/origin/ralph/pushed-card-run4", "HEAD");
+    git(repo, "update-ref", "refs/remotes/origin/someone-elses-branch", "HEAD");
+    try {
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual(["ref appeared: refs/remotes/origin/someone-elses-branch"]);
+    } finally {
+      git(repo, "update-ref", "-d", "refs/remotes/origin/ralph/pushed-card-run4");
+      git(repo, "update-ref", "-d", "refs/remotes/origin/someone-elses-branch");
+    }
+  });
+
+  it("takes Radulf's own base-branch move off a live run's baseline (spec 20)", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    registerRunBaseline("run-during-merge", repo, baseline);
+    try {
+      // Another card's approved merge moves the base branch under this run.
+      fs.writeFileSync(path.join(repo, "merged.txt"), "x");
+      git(repo, "add", ".");
+      git(repo, "commit", "-m", "ralph: merge another card");
+      const head = git(repo, "rev-parse", "HEAD");
+
+      // Unrecorded it reads as tampering, which is the point of still
+      // checking the base branch at all (spec 19).
+      const before = await checkRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(before).toHaveLength(1);
+      expect(before[0]).toMatch(/^ref moved: refs\/heads\/main /);
+
+      // A note for a different repo must not reach this run's baseline.
+      noteRadulfRefWrite("/not/this/repo", "refs/heads/main", "0".repeat(40));
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toHaveLength(1);
+
+      // Recorded against this repo, the run stops reporting our own merge.
+      noteRadulfRefWrite(repo, "refs/heads/main", head);
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual([]);
+    } finally {
+      releaseRunBaseline("run-during-merge");
+      git(repo, "reset", "--hard", "HEAD~1");
     }
   });
 

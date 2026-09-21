@@ -43,7 +43,13 @@ import { ClientError } from "./clientError";
 import { retryableFailedStep } from "@/shared/failedStep";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
-import { removeBaseline, saveBaseline, snapshotRepoIntegrity } from "./integrity";
+import {
+  registerRunBaseline,
+  releaseRunBaseline,
+  removeBaseline,
+  saveBaseline,
+  snapshotRepoIntegrity,
+} from "./integrity";
 import {
   collectLifecycleScripts,
   lockfileFingerprint,
@@ -230,6 +236,11 @@ export class Orchestrator {
   private planningService = new PlanningService({ ...this.stageDeps, pump: () => this.pump() });
   private evaluationService = new EvaluationService({
     ...this.stageDeps,
+    // Spec 20: the evaluator was the one stage that never pumped, so the slot
+    // it freed stayed empty until some unrelated event advanced the queue. A
+    // repo with cards waiting could sit idle indefinitely; with a cap above 1
+    // it would leave several slots empty at once.
+    pump: () => this.pump(),
     replan: (cardId) => this.startStage("planning", cardId),
     // "auto": the evaluator released this diff, not a human. Spec 15 makes a
     // pull request delivered this way a draft.
@@ -672,14 +683,45 @@ export class Orchestrator {
     );
   }
 
-  /** True while a card in `repoId` is actively running a harness — that
-   * repo's single pipeline slot is occupied. Queued or human-waiting cards do
-   * not count. Repos never share a slot. */
-  private pipelineBusy(repoId: string): boolean {
-    return (
-      [...this.activeLoopCards.values()].includes(repoId) ||
-      this.cardInStatus(HARNESS_STATUSES, repoId)
+  /** How many of `repoId`'s cards are actively running a harness. Queued or
+   * human-waiting cards do not count, and repos never share slots.
+   *
+   * Counted over distinct card ids: a loop appears in `activeLoopCards` from
+   * before its card reaches `looping` until after it leaves, so the two
+   * sources overlap for most of a run. */
+  private pipelineLoad(repoId: string): number {
+    const running = new Set(
+      db
+        .select({ id: cards.id })
+        .from(cards)
+        .where(and(inArray(cards.status, HARNESS_STATUSES), eq(cards.repoId, repoId)))
+        .all()
+        .map((c) => c.id),
     );
+    for (const [cardId, id] of this.activeLoopCards) if (id === repoId) running.add(cardId);
+    return running.size;
+  }
+
+  /**
+   * Cards this repo may run at once (spec 20). The operator's setting, except
+   * on a local loop provider: `omlx` owns the machine's unified memory, which
+   * is the actual reason locked decision 5 gave for a serial queue, so that
+   * queue stays serial however the setting reads. Ignored rather than
+   * rejected, because the provider can change under a saved setting.
+   */
+  private concurrencyLimit(): number {
+    const settings = getSettings();
+    if (normalizeProvider(settings.loopProvider, "anthropic") === "omlx") return 1;
+    // Clamped to the same bounds the setting validates against, and 1 for
+    // anything unreadable: a missing or hand-edited row must fail closed to
+    // the serial queue rather than uncap the server.
+    const configured = Math.trunc(Number(settings.maxConcurrentCards));
+    return Number.isFinite(configured) ? Math.min(8, Math.max(1, configured)) : 1;
+  }
+
+  /** True while `repoId` has no free pipeline slot. */
+  private pipelineBusy(repoId: string): boolean {
+    return this.pipelineLoad(repoId) >= this.concurrencyLimit();
   }
 
   /** Throw a 409 while `repoId` has work that deleting the repo would orphan:
@@ -688,7 +730,9 @@ export class Orchestrator {
    * still proposing before it has created a card. Synchronous, so a caller can
    * delete the repo with no intervening await. */
   assertRepoRemovable(repoId: string): void {
-    if (this.pipelineBusy(repoId) || this.cardInStatus(["reviewing"], repoId)) {
+    // Any load at all, not pipelineBusy: with a concurrency cap above 1 a repo
+    // can have a run in flight and still have a free slot (spec 20).
+    if (this.pipelineLoad(repoId) > 0 || this.cardInStatus(["reviewing"], repoId)) {
       throw new ClientError(
         "cannot remove a repository while one of its tasks is running or merging — cancel it or wait for it to finish",
         409,
@@ -734,33 +778,49 @@ export class Orchestrator {
     const repoIds = [...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds])];
 
     for (const repoId of repoIds) {
-      if (this.pipelineBusy(repoId)) continue;
+      const repoReady = readyCards.filter((c) => c.repoId === repoId);
+      /** Todo cards already handed to startCard in this pass. A planned card
+       * that has a plan goes back to Ready rather than consuming a slot, and
+       * startCard pumps again, so without this the loop would re-pick it from
+       * the stale list forever. */
+      const planned = new Set<string>();
+      let nextReady = 0;
+      // Spec 20: fill every free slot this repo has rather than one card per
+      // pump. pipelineLoad is re-read each pass, so a card started by a
+      // nested pump() is counted before the next start decision.
+      while (!this.pipelineBusy(repoId)) {
+        const readyCard = repoReady[nextReady++];
+        if (readyCard) {
+          // A nested pump may have claimed it since the list was read.
+          if (this.getCard(readyCard.id)?.status !== "ready") continue;
+          const id = readyCard.id;
+          this.activeLoopCards.set(id, repoId);
+          void this.runLoop(id)
+            .catch((err) => {
+              if (this.getCard(id)?.status === "looping") {
+                this.moveCard(id, "looping", "needs_attention", String(err));
+              }
+            })
+            .finally(() => {
+              this.activeLoopCards.delete(id);
+              this.pump();
+            });
+          continue;
+        }
 
-      const readyCard = readyCards.find((c) => c.repoId === repoId);
-      if (readyCard) {
-        const id = readyCard.id;
-        this.activeLoopCards.set(id, repoId);
-        void this.runLoop(id)
-          .catch((err) => {
-            if (this.getCard(id)?.status === "looping") {
-              this.moveCard(id, "looping", "needs_attention", String(err));
-            }
-          })
-          .finally(() => {
-            this.activeLoopCards.delete(id);
-            this.pump();
-          });
-        continue;
-      }
-
-      // Otherwise plan the next eligible Todo card in this repo. Backlog is
-      // never queried here.
-      const next = planningCandidates(todoCards.filter((c) => c.repoId === repoId), autoMode)[0];
-      if (!next) continue;
-      try {
-        this.startCard(next.cardId);
-      } catch {
-        // startCard throws on bad state — silently skip.
+        // Ready is exhausted: plan the next eligible Todo card in this repo.
+        // Backlog is never queried here.
+        const next = planningCandidates(
+          todoCards.filter((c) => c.repoId === repoId && !planned.has(c.id)),
+          autoMode,
+        )[0];
+        if (!next) break;
+        planned.add(next.cardId);
+        try {
+          this.startCard(next.cardId);
+        } catch {
+          // startCard throws on bad state — silently skip.
+        }
       }
     }
   }
@@ -819,7 +879,13 @@ export class Orchestrator {
     // Multi-GB allocation — skipped under test, fire-and-forget otherwise.
     if (process.env.NODE_ENV !== "test") void ensureBallast(this.ballastPath());
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
-    if (integrityBaseline) saveBaseline(runId, integrityBaseline);
+    if (integrityBaseline) {
+      saveBaseline(runId, integrityBaseline);
+      // Spec 20: with more than one card in flight, another card's approved
+      // merge moves this run's base branch. Registering lets that merge record
+      // its own write here instead of this run reporting it as tampering.
+      registerRunBaseline(runId, repo.path, integrityBaseline);
+    }
 
     startRunRow(
       { id: runId, cardId, planId: plan.id, kind: "loop", worktreePath, branch, baseBranch, provider, model: loopModel },
@@ -1263,6 +1329,7 @@ export class Orchestrator {
     } finally {
       watchdog.stop();
       this.controllers.delete(runId);
+      releaseRunBaseline(runId);
       // Reaps every recorded process group, then removes the run-private
       // TMPDIR/caches — on every exit path including failure and cancel.
       await ctx.cleanup();
@@ -1369,19 +1436,25 @@ export class Orchestrator {
     const rebuild = await rebuildPackages(run.worktreePath, [...new Set(present.map((p) => p.name))]);
     if (!rebuild.ok) throw new ClientError(`npm rebuild failed: ${rebuild.out.slice(0, 500)}`);
 
-    const approved = approvedScripts(repo);
-    const keys = new Set(approved.map(scriptKey));
-    for (const { name, version, scriptHash } of present) {
-      const entry = { name, version, scriptHash };
-      if (!keys.has(scriptKey(entry))) {
-        keys.add(scriptKey(entry));
-        approved.push(entry);
+    // Transaction, and re-read inside it: with more than one card in flight
+    // (spec 20) two gates can clear at the same moment, and a read-modify-write
+    // off the row this call captured earlier would drop the other's approvals.
+    db.transaction((tx) => {
+      const current = tx.select().from(repos).where(eq(repos.id, repo.id)).get() ?? repo;
+      const approved = approvedScripts(current);
+      const keys = new Set(approved.map(scriptKey));
+      for (const { name, version, scriptHash } of present) {
+        const entry = { name, version, scriptHash };
+        if (!keys.has(scriptKey(entry))) {
+          keys.add(scriptKey(entry));
+          approved.push(entry);
+        }
       }
-    }
-    db.update(repos)
-      .set({ approvedInstallScripts: JSON.stringify(approved) })
-      .where(eq(repos.id, repo.id))
-      .run();
+      tx.update(repos)
+        .set({ approvedInstallScripts: JSON.stringify(approved) })
+        .where(eq(repos.id, repo.id))
+        .run();
+    });
     emitEvent("install.approved", {
       cardId,
       runId: run.id,

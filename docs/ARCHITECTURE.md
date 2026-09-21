@@ -37,11 +37,12 @@ improvement-run drivers.
 `src/server/orchestrator.ts` is the single scheduler. Everything else in the
 pipeline is a service it owns.
 
-`pump()` advances one ticket. There is exactly one pipeline slot:
-`pipelineBusy()` returns true while any card is `planning`, `looping`, or
-`evaluating`, and `pump()` returns immediately if so. A `ready` card loops
-before any fresh `todo` card is planned — in-flight work finishes ahead of new
-work. Backlog is never queried.
+`pump()` fills a repo's free pipeline slots. `pipelineLoad()` counts that
+repo's cards currently `planning`, `looping` or `evaluating`, and
+`concurrencyLimit()` is the `maxConcurrentCards` setting, held at 1 while the
+loop provider is local (spec 20). A `ready` card loops before any fresh `todo`
+card is planned — in-flight work finishes ahead of new work. Backlog is never
+queried.
 
 State transitions go through `moveCard(cardId, from, to, reason)`, which is
 compare-and-swap on the current status: it returns false if the card moved
@@ -68,7 +69,7 @@ session. The role is what decides the tool set — see the capability split belo
 | Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
 
 The loop is not a separate service — it is the orchestrator's own method,
-because it is the thing the single pipeline slot exists to serialize.
+because it is the thing the pipeline slots exist to meter.
 
 `src/server/reviewService.ts` is the fourth service but not an agent role: it
 owns `approve`, `retryMerge`, and `abandon` — the human decisions.

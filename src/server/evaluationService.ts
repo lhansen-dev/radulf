@@ -11,7 +11,11 @@ import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
 import { tryGit } from "./git";
 import { createRunSandbox } from "./sandbox/context";
-import { snapshotRepoIntegrity } from "./integrity";
+import {
+  registerRunBaseline,
+  releaseRunBaseline,
+  snapshotRepoIntegrity,
+} from "./integrity";
 import {
   circuitOpenReason,
   harnessFailure,
@@ -48,6 +52,10 @@ export function renderEvaluatorPrompt(
 }
 
 export type EvaluationServiceDependencies = StageDependencies & {
+  /** Advance the repo's queue once this evaluation releases its slot. Every
+   * other stage already did this; without it a repo with cards waiting sits
+   * idle until an unrelated event pumps (spec 20). */
+  pump(): void;
   /** Run the planner on a card already moved to `planning` — a revise verdict
    * re-plans rather than re-entering the loop. */
   replan(cardId: string): void;
@@ -93,6 +101,10 @@ export class EvaluationService {
     // containment as the loop, including the parent-repo integrity check.
     const ctx = createRunSandbox(runId, { cwd: worktreePath, s: settings });
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
+    // Spec 20: an evaluation runs long enough that another card's merge can
+    // move this repo's base branch under it. Registering lets that merge
+    // record its own write rather than this run reporting it as tampering.
+    if (integrityBaseline) registerRunBaseline(runId, repo.path, integrityBaseline);
     startRunRow(
       { id: runId, cardId, planId: plan.id, kind: "evaluate", worktreePath, branch, baseBranch, provider, model },
       ctx,
@@ -255,7 +267,11 @@ export class EvaluationService {
       }
     } finally {
       deps.releaseController(runId);
+      releaseRunBaseline(runId);
       await ctx.cleanup();
+      // Last, and on every exit path: the card has already landed wherever
+      // this evaluation sent it, so the slot this run held is free.
+      deps.pump();
     }
   }
 }

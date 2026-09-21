@@ -650,6 +650,54 @@ describe("Orchestrator cancellation lifecycle", () => {
       // second must not also enter the loop.
       expect(getCard("same-repo-second").status).toBe("ready");
     });
+
+    it("runs two cards in one repo when the cap allows it (spec 20)", async () => {
+      mocks.settings.maxConcurrentCards = 2;
+      for (const id of ["cap-first", "cap-second", "cap-third"]) {
+        card(id, "ready", 0, 0, "repo-1");
+        plan(id);
+      }
+      db.update(cards).set({ startedAt: "2026-08-01T00:00:00.000Z" }).where(eq(cards.id, "cap-first")).run();
+      db.update(cards).set({ startedAt: "2026-08-02T00:00:00.000Z" }).where(eq(cards.id, "cap-second")).run();
+      db.update(cards).set({ startedAt: "2026-08-03T00:00:00.000Z" }).where(eq(cards.id, "cap-third")).run();
+      // Never resolves: both loops must reach "looping" from one pump(),
+      // without either depending on the other's harness call returning.
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+
+      await vi.waitFor(() => {
+        expect(getCard("cap-first").status).toBe("looping");
+        expect(getCard("cap-second").status).toBe("looping");
+      });
+      await settle();
+      // The cap is a cap: the third waits for a slot, oldest first.
+      expect(getCard("cap-third").status).toBe("ready");
+    });
+
+    it("keeps the queue serial on a local loop provider whatever the cap says", async () => {
+      mocks.settings.maxConcurrentCards = 4;
+      mocks.settings.loopProvider = "omlx";
+      mocks.settings.loopModel = "local-model";
+      card("local-first", "ready", 0, 0, "repo-1");
+      plan("local-first");
+      card("local-second", "ready", 0, 0, "repo-1");
+      plan("local-second");
+      db.update(cards).set({ startedAt: "2026-08-01T00:00:00.000Z" }).where(eq(cards.id, "local-first")).run();
+      db.update(cards).set({ startedAt: "2026-08-02T00:00:00.000Z" }).where(eq(cards.id, "local-second")).run();
+      mocks.listProviderModels.mockResolvedValue([{ value: "local-model" }]);
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+
+      await vi.waitFor(() => expect(getCard("local-first").status).toBe("looping"));
+      await settle();
+      // Locked decision 5's reason is the machine's unified memory, so a local
+      // provider owns it alone however high the operator set the cap.
+      expect(getCard("local-second").status).toBe("ready");
+    });
   });
 
   describe("iteration budget", () => {

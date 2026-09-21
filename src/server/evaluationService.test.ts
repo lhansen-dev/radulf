@@ -207,6 +207,7 @@ function makeDeps() {
     finishRun: vi.fn(() => true),
     registerController: vi.fn(),
     releaseController: vi.fn(),
+    pump: vi.fn(),
     replan: vi.fn(),
     approveReview: vi.fn(async () => ({ ok: true })),
   };
@@ -265,6 +266,24 @@ describe("EvaluationService.runEvaluator", () => {
     );
     expect(deps.replan).not.toHaveBeenCalled();
     expect(deps.approveReview).not.toHaveBeenCalled();
+  });
+
+  // Spec 20: the evaluator holds one of its repo's pipeline slots, so it owes
+  // the queue a pump when it lets go. It was the only stage that never did,
+  // which left ready cards parked behind a slot nothing was using.
+  it.each([
+    ["a verdict", "VERDICT: approve\n\nLooks solid."],
+    ["no usable verdict", "I could not tell."],
+  ])("pumps the queue when the evaluation ends with %s", async (_label, report) => {
+    seedCard("card-pump");
+    const planId = seedPlan("card-pump");
+    seedLoopRun("card-pump", planId);
+    mockEvaluationVerdict(report);
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-pump");
+
+    expect(deps.pump).toHaveBeenCalled();
   });
 
   // Auto-approve is granted by the card's own flag OR the workspace-wide
