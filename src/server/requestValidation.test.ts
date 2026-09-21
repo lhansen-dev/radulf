@@ -3,7 +3,7 @@ import { parseCreateCard, parseUpdateCard } from "./cardValidation";
 import { REDACTED, SETTING_DEFAULTS, redactSettings, validateSettingsPatch } from "./settings";
 
 describe("redactSettings", () => {
-  const secrets = ["omlxApiKey", "omlxHeaders", "openrouterApiKey", "braveApiKey"] as const;
+  const secrets = ["omlxApiKey", "omlxHeaders", "openrouterApiKey", "braveApiKey", "jiraApiToken"] as const;
 
   it("replaces every stored provider credential with the redaction marker", () => {
     const redacted = redactSettings({
@@ -12,12 +12,13 @@ describe("redactSettings", () => {
       omlxHeaders: "kong-api-key: header-secret",
       openrouterApiKey: "sk-or-v1-secret",
       braveApiKey: "brave-secret",
+      jiraApiToken: "jira-secret",
     });
 
     for (const key of secrets) expect(redacted[key]).toBe(REDACTED);
     // Not merely masked in place — no fragment of the real value survives.
     const serialized = JSON.stringify(redacted);
-    for (const secret of ["omlx-secret", "header-secret", "sk-or-v1-secret", "brave-secret"]) {
+    for (const secret of ["omlx-secret", "header-secret", "sk-or-v1-secret", "brave-secret", "jira-secret"]) {
       expect(serialized).not.toContain(secret);
     }
   });
@@ -169,5 +170,16 @@ describe("card request validation", () => {
       maxIterations: null,
       loopModel: null,
     });
+  });
+});
+
+describe("jiraBaseUrl", () => {
+  it("accepts blank (import disabled) and a site URL, and rejects anything else", () => {
+    expect(validateSettingsPatch({ jiraBaseUrl: "" })).toEqual({ jiraBaseUrl: "" });
+    expect(validateSettingsPatch({ jiraBaseUrl: "https://example.atlassian.net" })).toEqual({
+      jiraBaseUrl: "https://example.atlassian.net",
+    });
+    expect(() => validateSettingsPatch({ jiraBaseUrl: "example.atlassian.net" })).toThrow(/must be a URL/);
+    expect(() => validateSettingsPatch({ jiraBaseUrl: "ftp://example.atlassian.net" })).toThrow(/http or https/);
   });
 });

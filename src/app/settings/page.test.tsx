@@ -15,6 +15,7 @@ const initialSettings: Settings = {
   plannerTimeoutMinutes: 30, maxConcurrentCards: 1, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
   iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
   folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", omlxHeaders: "", openrouterApiKey: "••••••••", braveApiKey: "",
+  jiraBaseUrl: "", jiraEmail: "", jiraApiToken: "",
   minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",
   sandboxWeakerIsolationForGoTls: false, notificationsEnabled: false, soundEnabled: false,
   attentionStaleMinutes: 15, alertWebhookUrl: "",

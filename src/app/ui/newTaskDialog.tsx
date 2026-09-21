@@ -32,6 +32,23 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     }
   }
   const [description, setDescription] = useState("");
+  const [jiraRef, setJiraRef] = useState("");
+  const [importing, setImporting] = useState(false);
+  // Prefills title and description from the issue; the user edits before creating.
+  async function importFromJira() {
+    const ref = jiraRef.trim();
+    if (!ref || importing) return;
+    setImporting(true); setError("");
+    try {
+      const draft = await api<{ title: string; description: string }>(`/api/jira/issue?ref=${encodeURIComponent(ref)}`);
+      setTitle(draft.title);
+      setDescription(draft.description);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImporting(false);
+    }
+  }
   const [roleModels, setRoleModels] = useState(EMPTY_ROLE_MODELS);
   const { providers, models } = useRoleModelOptions();
   const [maxIterations, setMaxIterations] = useState("");
@@ -59,7 +76,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     : prStatus.ok
       ? "This repo has no `origin` remote to open a pull request against."
       : prStatus.detail;
-  const dirty = Boolean(title || description || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || autoApprove || openPr;
+  const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || autoApprove || openPr;
 
   const requestClose = useCallback(() => {
     if (dirty && !confirm("Discard your unsaved task?")) return;
@@ -118,6 +135,10 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       </>}
     >
           {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onError={setError} /></div> : <>
+            <div className="flex items-end gap-2">
+              <label className="block grow text-sm text-foreground/70">Import from Jira<input value={jiraRef} onChange={(e) => setJiraRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void importFromJira(); } }} placeholder="Issue link or key, e.g. DEV-123 (optional)" className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label>
+              <button type="button" onClick={() => void importFromJira()} disabled={importing || !jiraRef.trim()} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">{importing ? "Importing…" : "Import"}</button>
+            </div>
             <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" required /></label>
             <label className="block text-sm text-foreground/70">Repository<select value={repoId} onChange={(e) => { if (e.target.value === "__add__") { setAddingRepo(true); return; } setRepoId(e.target.value); setBranches([]); setSelectedBranch(""); setShowNewBranch(false); setNewBranchName(""); }} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3">{repoList.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}<option value="__add__">Add a repository…</option></select></label>
             {addingRepo && <FolderBrowser onPick={registerRepo} onError={setError} />}

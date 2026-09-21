@@ -49,6 +49,12 @@ export const SETTING_DEFAULTS = {
   // network reach (spec 14 role split). Blank → the tool is still registered but
   // fails loudly when invoked.
   braveApiKey: "",
+  // Jira import in the New Task dialog: the site's base URL, the Atlassian
+  // account email and an API token for that account. Read-only: Radulf fetches
+  // an issue to prefill a card and never writes to Jira. Blank URL disables it.
+  jiraBaseUrl: "",
+  jiraEmail: "",
+  jiraApiToken: "",
   // Per-agent reasoning/thinking effort, applied to every provider via the pi
   // session's thinking level (spec 13 — one harness, so nothing ignores these).
   // "medium" mirrors pi's own built-in default, so these are no-ops until
@@ -226,6 +232,7 @@ const SECRET_SETTINGS = new Set<keyof Settings>([
   "omlxHeaders",
   "openrouterApiKey",
   "braveApiKey",
+  "jiraApiToken",
 ]);
 
 /** Stand-in a stored secret is replaced with on the way out. Distinct from ""
@@ -296,6 +303,18 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         invalid("omlxBaseUrl must be a URL");
       }
       if (!["http:", "https:"].includes(url.protocol)) invalid("omlxBaseUrl must use http or https");
+    } else if (key === "jiraBaseUrl") {
+      if (typeof settingValue !== "string") invalid("jiraBaseUrl must be a URL");
+      // Blank disables the import; anything else must be a site URL.
+      if (settingValue.trim()) {
+        let url: URL;
+        try {
+          url = new URL(settingValue.trim());
+        } catch {
+          invalid("jiraBaseUrl must be a URL");
+        }
+        if (!["http:", "https:"].includes(url.protocol)) invalid("jiraBaseUrl must use http or https");
+      }
     } else if (key === "omlxHeaders") {
       if (typeof settingValue !== "string") invalid("omlxHeaders must be a string");
       // The form echoes a stored value back as REDACTED (see patchSettings).

@@ -31,6 +31,9 @@ beforeEach(() => {
         };
       }
       if (target === "/api/cards" && init?.method === "POST") return { id: "card-1" };
+      if (target.startsWith("/api/jira/issue")) {
+        return { key: "DEV-123", url: "https://jira.example/browse/DEV-123", title: "[DEV-123] Fix the widget", description: "Jira: https://jira.example/browse/DEV-123\n\nIt is broken." };
+      }
       if (target.includes("/api/repos") && init?.method !== "GET") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { name: string; path: string };
         return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", createdAt: "" };
@@ -57,6 +60,27 @@ describe("NewTaskDialog", () => {
     const repoSelect = await screen.findByLabelText("Repository");
     await waitFor(() => expect((repoSelect as HTMLSelectElement).value).toBe("new-repo"));
     expect(repoSelect.textContent).toContain("a-repo");
+    cleanup();
+  });
+
+  it("prefills the title and description from a Jira issue", async () => {
+    const user = userEvent.setup();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Import from Jira"), "https://jira.example/browse/DEV-123");
+    await user.click(screen.getByRole("button", { name: "Import" }));
+
+    await waitFor(() => expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("[DEV-123] Fix the widget"));
+    expect((screen.getByLabelText("Description and definition of done") as HTMLTextAreaElement).value)
+      .toBe("Jira: https://jira.example/browse/DEV-123\n\nIt is broken.");
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    expect(calls.some(([url]) => url === `/api/jira/issue?ref=${encodeURIComponent("https://jira.example/browse/DEV-123")}`)).toBe(true);
     cleanup();
   });
 

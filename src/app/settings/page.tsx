@@ -396,6 +396,18 @@ export default function SettingsPage() {
                   {textInput("folderBrowserRoot", { label: "Browsable root", placeholder: "$HOME" })}
                 </section>
                 <GithubSection />
+                <section className={sectionCls}>
+                  <SectionHeading title="Jira">
+                    Paste an issue link or key into the New task dialog to prefill a card from
+                    Jira. Read-only: Radulf fetches the issue and never writes to Jira. The token
+                    is an Atlassian API token for the account whose email is given.
+                  </SectionHeading>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {textInput("jiraBaseUrl", { label: "Jira base URL", placeholder: "https://your-site.atlassian.net" })}
+                    {textInput("jiraEmail", { label: "Atlassian account email", placeholder: "you@example.com" })}
+                    {textInput("jiraApiToken", { label: "Jira API token", type: "password", placeholder: "Atlassian API token" })}
+                  </div>
+                </section>
               </div>
             </SettingsPanel>
 
