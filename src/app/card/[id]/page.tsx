@@ -567,6 +567,9 @@ function TranscriptView({
   // should re-run/re-subscribe just because a byte offset changed.
   const cursorRef = useRef(0);
   const firstRef = useRef(true);
+  // True until some chunk has put rows on screen for the current target —
+  // the "previous.length > 0" the scroll decision needs, kept outside state.
+  const firstChunkRef = useRef(true);
   const inFlightRef = useRef(false);
   const stopRef = useRef(false);
   const catchUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -581,6 +584,19 @@ function TranscriptView({
   // dropped connection may have missed pushes written during the gap.
   const needsResyncRef = useRef(true);
   const wasDisconnectedRef = useRef(false);
+  // Whether the view is following the tail: re-decided by every appended
+  // chunk from where the reader is, and acted on by the effect below after
+  // each commit, for the row count the List actually has. The scroll used to
+  // fire from a requestAnimationFrame inside the setLines updater with the
+  // updater's own length, which raced the commit two ways: chunks arriving
+  // faster than React renders meant the frame could run against a List whose
+  // rowCount was still the old one, and react-window threw
+  // `RangeError: Invalid index specified` for the not-yet-rendered last row.
+  const followTailRef = useRef(false);
+  useEffect(() => {
+    if (!followTailRef.current || lines.length === 0) return;
+    listRef.current?.scrollToRow({ index: lines.length - 1, align: "end" });
+  }, [lines, listRef]);
 
   const applyChunk = useCallback(
     (d: { lines?: StreamLine[]; cursor: number; truncated?: boolean; reset?: boolean }, replace: boolean) => {
@@ -596,14 +612,19 @@ function TranscriptView({
       // renderableLine.ts) — a chunk that is nothing but raw framing must not
       // grow the list, move the scroll anchor, or raise "Jump to latest".
       const incoming = (d.lines ?? []).filter(isRenderableLine);
+      // An append to a view that already has rows either follows the tail or
+      // raises "Jump to latest". Decided here, outside the updater, which
+      // must stay pure: the scroll itself waits for the commit (see
+      // followTailRef), and the very first chunk has nothing to follow.
+      const appending = !replace && !d.reset && incoming.length > 0 && !firstChunkRef.current;
+      if (appending) {
+        followTailRef.current = nearBottom;
+        if (!nearBottom) setShowJump(true);
+      }
+      if (incoming.length > 0) firstChunkRef.current = false;
       setLines((previous) => {
         const merged = replace || d.reset ? incoming : [...previous, ...incoming];
-        const next = merged.slice(-MAX_TRANSCRIPT_LINES);
-        if (!replace && previous.length > 0 && incoming.length > 0) {
-          if (nearBottom) requestAnimationFrame(() => listRef.current?.scrollToRow({ index: next.length - 1, align: "end" }));
-          else setShowJump(true);
-        }
-        return next;
+        return merged.slice(-MAX_TRANSCRIPT_LINES);
       });
       if (d.truncated !== undefined) setHistoryTruncated(d.truncated);
       if (replace) setShowJump(false);
@@ -653,6 +674,8 @@ function TranscriptView({
     stopRef.current = false;
     cursorRef.current = 0;
     firstRef.current = true;
+    firstChunkRef.current = true;
+    followTailRef.current = false;
     needsResyncRef.current = true;
     void load(target);
     return () => {
