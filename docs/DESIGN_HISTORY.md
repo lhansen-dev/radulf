@@ -50,8 +50,9 @@ history inline.
 | [12 — Pi harness](../specs/12-pi-harness.md) | pi as a fourth harness, and the proxied-provider default | **Superseded by 13** |
 | [13 — One harness: pi in SDK mode](../specs/13-single-pi-sdk-harness.md) | Consolidating every provider onto pi in SDK mode | Current — this is what ships |
 | [13 — Implementation checklist](../specs/13-implementation-checklist.md) | The checklist that tracked the migration to 13 | Completed |
-| [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current — see also the [Sandboxing guide](SANDBOXING.md) |
+| [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current; amended by 19. See also the [Sandboxing guide](SANDBOXING.md) |
 | [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | Current; amends decision 6 |
+| [19 — Radulf's own refs](../specs/19-shared-git-ref-noise.md) | Why a sibling card's branch is not tampering, and what the run-end integrity check still compares | Current; amends 14 |
 
 ## Implementation plans
 
