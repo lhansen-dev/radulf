@@ -11,6 +11,7 @@
  * on next write.
  */
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
+import { ensureAuthSecret } from "./authSecret";
 
 const ENC_PREFIX = "enc:v1:";
 const HKDF_INFO = "radulf-settings-secret-v1";
@@ -18,9 +19,12 @@ const HKDF_INFO = "radulf-settings-secret-v1";
 // Cheap to derive fresh each call; avoids caching a key that could go stale
 // if RADULF_AUTH_SECRET were ever rotated mid-process.
 function deriveKey(): Buffer {
-  const secret = process.env.RADULF_AUTH_SECRET;
-  if (!secret) throw new Error("RADULF_AUTH_SECRET is not set — ensureAuthSecret() must run before settings crypto is used");
-  return Buffer.from(hkdfSync("sha256", secret, "", HKDF_INFO, 32));
+  // instrumentation.ts sets the variable at boot, but @next/env restores its
+  // boot-time snapshot of process.env on every forced env reload, so a
+  // long-running `next dev` loses it while data/auth-secret is still there.
+  // Reading the file again is what boot did, and it is cheap.
+  if (!process.env.RADULF_AUTH_SECRET) ensureAuthSecret();
+  return Buffer.from(hkdfSync("sha256", process.env.RADULF_AUTH_SECRET!, "", HKDF_INFO, 32));
 }
 
 export function encryptSecret(plaintext: string): string {
