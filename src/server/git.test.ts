@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import {
   createWorktree,
   hasCommits,
+  isRalphBranch,
   isValidBranchName,
   listBranches,
   worktreeIsDirty,
@@ -86,6 +87,16 @@ describe("isValidBranchName", () => {
 
   it.each(["-dangerous-option", "bad..name", "bad name", "main~1", ""])('rejects "%s"', async (name) => {
     expect(await isValidBranchName(name)).toBe(false);
+  });
+});
+
+describe("isRalphBranch", () => {
+  it.each(["ralph/fix-the-thing-abc123", "ralph/improve-1753500000000"])('claims "%s"', (name) => {
+    expect(isRalphBranch(name)).toBe(true);
+  });
+
+  it.each(["main", "feature/ralph", "ralph", "ralph-notes"])('leaves "%s" alone', (name) => {
+    expect(isRalphBranch(name)).toBe(false);
   });
 });
 

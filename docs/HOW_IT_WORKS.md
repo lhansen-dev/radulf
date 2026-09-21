@@ -206,4 +206,10 @@ Your registered checkout is written exactly once per card — the `--no-ff` merg
 on approval — and that merge is unsandboxed, trusted server code that re-verifies
 repo integrity immediately before it runs.
 
+The `ralph/` branch namespace is Radulf's own, and the New Task branch picker
+never offers one of those branches as a base: a run branch is checked out in
+its worktree, so the merge on approval could not check it out. Removing a
+repository in Settings removes its cards' worktrees and run branches along with
+their records, so nothing of the kind is left behind to pick.
+
 For what constrains the agents while they work, see [Sandboxing](SANDBOXING.md).

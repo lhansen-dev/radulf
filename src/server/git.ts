@@ -105,6 +105,15 @@ export async function listBranches(repoPath: string): Promise<string[]> {
   return out.split("\n").filter(Boolean);
 }
 
+/** `ralph/` is the namespace Radulf writes itself: card run branches and
+ * improvement-run feature branches (spec 19). A card must never be based on
+ * one. A run branch is checked out in a worktree Radulf owns, so the merge on
+ * approval cannot check it out, and once its card is gone the branch is an
+ * orphan that looks like any other branch in the picker. */
+export function isRalphBranch(name: string): boolean {
+  return name.startsWith("ralph/");
+}
+
 /** Ask Git to validate the exact branch shorthand. Unlike hand-written
  * regexes this follows the installed Git's ref rules. */
 export async function isValidBranchName(name: string): Promise<boolean> {
