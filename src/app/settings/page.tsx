@@ -512,7 +512,7 @@ export default function SettingsPage() {
                     {numberInput("defaultMaxIterations", "Max iterations")}
                     {numberInput("defaultTimeoutMinutes", "Timeout (minutes)")}
                     {numberInput("iterationHardTimeoutMinutes", "Iteration hard timeout (minutes)", "Caps one iteration; a single timeout retries, two in a row end the run.")}
-                    {numberInput("stallTimeoutSeconds", "Stall timeout (seconds)", "Kills any model call — planner, looper, evaluator, proposer, chat — that emits nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts as output, so this never cuts off a merely slow model.", 30)}
+                    {numberInput("stallTimeoutSeconds", "Stall timeout (seconds)", "Kills any model call — planner, looper, evaluator, proposer, scoping — that emits nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts as output, so this never cuts off a merely slow model.", 30)}
                   </div>
                   <div className="border-t border-foreground/10 pt-4">
                     <ToggleRow title="Minimal tool set" description="Deny tool permissions by default for the looper agent." {...toggle("minimalToolset")} />

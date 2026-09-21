@@ -75,7 +75,7 @@ export const SETTING_DEFAULTS = {
   // loop, rather than part of the loop's card-wide budget.
   evaluatorTimeoutMinutes: 10,
   // Kill ANY harness invocation that emits nothing for this long — planner,
-  // loop, evaluator, improvement proposer, planner chat. A hung provider
+  // loop, evaluator, improvement proposer, scoping. A hung provider
   // stream, dropped wifi, or laptop sleep otherwise burns that call's whole
   // timeout in silence (30 min for a plan, 15 for a proposer pass).
   // NOT a slowness cap: pi streams `thinking_delta` while a model reasons, and

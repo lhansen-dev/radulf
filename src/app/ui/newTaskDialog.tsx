@@ -1,12 +1,14 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { CreateCardRequest } from "@/shared/cardRequests";
-import { api, type PlannerMessage, type Repo } from "./api";
+import { api, type Repo } from "./api";
 import { DialogShell, EMPTY_ROLE_MODELS, RoleModelSelects, useBranches, useRoleModelOptions } from "./taskDialog";
 import { FolderBrowser } from "./folderBrowser";
 
 export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { repos: Repo[]; onClose: () => void; onCreated: () => void; defaultRepoId?: string }) {
+  const router = useRouter();
   const [title, setTitle] = useState("");
   // Seeded from the prop, then appended to when a repository is registered
   // from inside this dialog, so the new one is selectable without closing it.
@@ -34,7 +36,6 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const { providers, models } = useRoleModelOptions();
   const [maxIterations, setMaxIterations] = useState("");
   const [timeoutMinutes, setTimeoutMinutes] = useState("");
-  const [showPlanner, setShowPlanner] = useState(false);
   const [reviewPlanBeforeImplementation, setReviewPlanBeforeImplementation] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
   const [openPr, setOpenPr] = useState(false);
@@ -78,7 +79,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     return () => { live = false; };
   }, [repoId]);
 
-  async function create() {
+  // Spec 17: a rough ask is enough — "Create and scope" opens the card on
+  // its scoping thread, where an assistant that reads the repo sharpens it.
+  async function create(andScope = false) {
     setBusy(true); setError("");
     try {
       const request: CreateCardRequest = {
@@ -95,8 +98,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         openPr,
         baseBranch: selectedBranch || null,
       };
-      await api("/api/cards", { json: request });
+      const created = await api<{ id: string }>("/api/cards", { json: request });
       onCreated();
+      if (andScope) router.push(`/card/${created.id}`);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
   }
 
@@ -109,7 +113,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       footer={<>
         <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
         <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
-        <button type="button" onClick={create} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Creating…" : "Create task"}</button>
+        <button type="button" onClick={() => create(true)} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and scope</button>
+        <button type="button" onClick={() => create()} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Creating…" : "Create task"}</button>
       </>}
     >
           {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onError={setError} /></div> : <>
@@ -118,7 +123,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
             {addingRepo && <FolderBrowser onPick={registerRepo} onError={setError} />}
             {repoId && <label className="block text-sm text-foreground/70">Branch<select value={selectedBranch} onChange={(e) => { const v = e.target.value; if (v === "__new__") { setShowNewBranch(true); setSelectedBranch(""); } else { setShowNewBranch(false); setSelectedBranch(v); } }} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3"><option value="">Default branch</option>{branches.map((b) => <option key={b} value={b}>{b}</option>)}<option value="__new__">Add new branch…</option></select></label>}
             {showNewBranch && <div className="flex gap-2"><input value={newBranchName} onChange={(e) => setNewBranchName(e.target.value)} placeholder="Branch name" className="grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm" /><button type="button" onClick={async () => { const name = newBranchName.trim(); if (!name) return; try { const repo = repoList.find((r) => r.id === repoId); if (!repo) return; await api(`/api/repos/${repoId}/branches`, { json: { name, from: repo.defaultBranch } }); setBranches((prev) => prev.includes(name) ? prev : [...prev, name]); setSelectedBranch(name); setShowNewBranch(false); setNewBranchName(""); } catch { /* ignore */ }}} disabled={!newBranchName.trim()} className="rounded-lg bg-foreground/10 px-3 text-sm disabled:opacity-40">Add</button></div>}
-            <label className="block text-sm text-foreground/70">Description and definition of done<textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={7} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm" placeholder="Describe the outcome, constraints, and how Ralph can verify the work." /></label>
+            <label className="block text-sm text-foreground/70">Description and definition of done<textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={7} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm" placeholder="Describe the outcome, constraints, and how Ralph can verify the work — or start rough and use Create and scope." /></label>
             <details className="rounded-lg border border-foreground/10 bg-foreground/[0.02]">
               <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium">Advanced</summary>
               <div className="space-y-3 border-t border-foreground/10 p-3">
@@ -130,28 +135,10 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={openPr} disabled={!prDeliverable} onChange={(e) => setOpenPr(e.target.checked)} className="size-4 accent-amber-600 disabled:opacity-40" />Open a pull request instead of merging</label>
                 {prBlockedReason && <p className="text-xs text-foreground/45">{prBlockedReason}</p>}
                 {openPr && <p className="text-xs text-foreground/55">On approval the branch is pushed to <code>origin</code> and a pull request is opened against the base branch. Nothing is merged locally, and Radulf never merges the pull request.</p>}
-                <button type="button" onClick={() => setShowPlanner((value) => !value)} className="w-full rounded-lg bg-foreground/[0.06] px-3 text-left text-sm">{showPlanner ? "Hide planner chat" : "Open planner chat"}</button>
-                {showPlanner && <ConversationPlanner onInsert={(text) => setDescription((current) => current ? `${current}\n\n${text}` : text)} />}
               </div>
             </details>
           </>}
           {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
     </DialogShell>
   );
-}
-
-function ConversationPlanner({ onInsert }: { onInsert: (text: string) => void }) {
-  const [messages, setMessages] = useState<PlannerMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  async function send() {
-    const text = input.trim(); if (!text || busy) return;
-    const next = [...messages, { role: "user" as const, content: text }];
-    setMessages(next); setInput(""); setBusy(true); setError("");
-    try { const result = await api<{ reply: string }>("/api/planner-chat", { json: { messages: next } }); setMessages([...next, { role: "assistant", content: result.reply }]); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setBusy(false); }
-  }
-  return <div className="rounded-lg border border-foreground/10 bg-foreground/[0.06] p-3"><div className="max-h-64 space-y-2 overflow-y-auto">{messages.length === 0 && <p className="text-xs text-foreground/45">Ask the planner to clarify scope or acceptance criteria.</p>}{messages.map((message, index) => <div key={index} className={`rounded-lg p-2 text-sm ${message.role === "user" ? "ml-6 bg-amber-500/10" : "mr-6 bg-foreground/[0.05]"}`}><p>{message.content}</p>{message.role === "assistant" && <button type="button" onClick={() => onInsert(message.content)} className="mt-1 min-h-11 text-xs text-amber-300 underline">Insert into description</button>}</div>)}</div>{error && <p className="mt-2 text-xs text-red-300">{error}</p>}<div className="mt-2 flex gap-2"><input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void send(); } }} placeholder="Ask the planner…" className="min-w-0 grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm"/><button type="button" onClick={send} disabled={busy || !input.trim()} className="rounded-lg bg-foreground/10 px-3 text-sm disabled:opacity-40">Send</button></div></div>;
 }

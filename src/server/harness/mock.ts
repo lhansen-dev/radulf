@@ -131,8 +131,8 @@ const evaluator: Script = ({ step }) => {
   return [say("Evaluation written.")];
 };
 
-/** Planner chat and the improvement proposer (read-only, no pipeline role).
- * One reply serves both: prose for the chat, a JSON proposal for the
+/** Scoping and the improvement proposer (read-only, no pipeline role).
+ * One reply serves both: prose for scoping, a JSON proposal for the
  * proposer (pm.ts parseProposals). */
 const readOnly: Script = () => [
   say(

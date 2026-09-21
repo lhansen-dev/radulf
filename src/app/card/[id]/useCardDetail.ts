@@ -14,6 +14,15 @@ export type Plan = {
   createdAt: string;
 };
 
+/** One entry in the card's scoping thread (spec 17). `planner` is a set of
+ * blocking questions a planning run raised, waiting on the operator. */
+export type ScopingMessage = {
+  id: number;
+  role: "user" | "assistant" | "planner";
+  content: string;
+  createdAt: string;
+};
+
 export type CardDetailData = {
   card: {
     id: string;
@@ -56,6 +65,8 @@ export type CardDetailData = {
     loop: { provider: string; model: string | null; reasoningLevel: string };
     evaluator: { provider: string; model: string | null; reasoningLevel: string };
   };
+  /** The card's scoping thread, oldest first. Absent on older cached responses. */
+  scoping?: ScopingMessage[];
 };
 
 type ModelOption = { value: string; displayName: string };

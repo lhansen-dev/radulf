@@ -7,6 +7,7 @@ import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
+import { ScopingPanel } from "./scopingPanel";
 import { describeToolCall } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
@@ -110,6 +111,10 @@ export default function CardDetail() {
   if (card.status === "needs_attention" && questionsEvent) {
     try { plannerQuestions = JSON.parse(questionsEvent.payload).questions ?? ""; } catch {}
   }
+  // Spec 17: the questions live in the scoping thread, where they are
+  // answered. Cards parked before that existed still show them here.
+  const scoping = detail.scoping ?? [];
+  const questionsInThread = scoping.some((m) => m.role === "planner");
   // Install-script gate (spec 14): a loop halted on unapproved lifecycle
   // scripts — show the packages with their VERBATIM script bodies.
   let gatePackages: GatePackage[] = [];
@@ -143,7 +148,7 @@ export default function CardDetail() {
       ? { label: "Retry merge", run: () => post("retry-merge") }
       : canRetryFailedStep
         ? { label: "Retry failed step", run: () => post("retry-failed-step") }
-        : { label: "Restart task", run: () => post("restart") },
+        : { label: plannerQuestions ? "Plan again" : "Restart task", run: () => post("restart") },
     review: { label: "Review changes", run: () => router.push(`/review/${id}`) },
     plan_review: { label: "Approve plan and implement", run: () => post("approve-plan") },
     paused: { label: "Continue", run: () => post("resume") },
@@ -252,11 +257,13 @@ export default function CardDetail() {
           <h3 className="text-sm font-medium text-amber-300 mb-1">
             The planner needs more detail before it can plan this task
           </h3>
-          <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">
-            {plannerQuestions}
-          </pre>
+          {!questionsInThread && (
+            <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">
+              {plannerQuestions}
+            </pre>
+          )}
           <p className="text-xs text-amber-400/70 mt-2">
-            Edit the task description with more detail, then restart the task.
+            Answer its questions under Scoping below, then plan again. Editing the description works too.
           </p>
         </div>
       )}
@@ -291,6 +298,7 @@ export default function CardDetail() {
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
             {card.description || "(no description)"}
           </pre>
+          <ScopingPanel cardId={id} status={card.status} messages={scoping} onChanged={refetch} />
           <div className="text-sm text-foreground/60">
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes
