@@ -187,6 +187,13 @@ const PROVIDER_CLASS: Record<string, "subscription" | "local" | "api" | "mock"> 
 
 const AGENTS = [
   {
+    role: "scoping",
+    title: "Scoping agent",
+    subtitle: "Sharpens a task with you before it is planned.",
+    demand:
+      "Runs interactively, one turn at a time, while you wait on it. It reads the repository read-only and asks the questions that make a plan possible. Slow or shallow answers here cost your time directly, and a session is short.",
+  },
+  {
     role: "planner",
     title: "Planner agent",
     subtitle: "Turns a task into a plan and acceptance criteria.",
@@ -219,6 +226,9 @@ type AgentRole = (typeof AGENTS)[number]["role"];
 function roleFitWarning(role: AgentRole, provider: string): string | undefined {
   const providerClass = PROVIDER_CLASS[provider];
   if (providerClass === "mock" || providerClass === undefined) return undefined;
+  if (role === "scoping" && providerClass === "local") {
+    return "Scoping is a live conversation about an unfamiliar repository, and you wait on every turn. A self-hosted model is slow to explore and quick to ask generic questions. A subscription model costs you one short session per card here.";
+  }
   if (role === "planner" && providerClass === "local") {
     return "Planning is the pipeline's hardest reasoning and runs only once per card. A self-hosted model has to decompose an unfamiliar repository into ordered, self-contained items, and a weak plan degrades every iteration after it. A subscription model costs you one run per card here.";
   }
@@ -437,6 +447,7 @@ export default function SettingsPage() {
                 <RoleFitSummary
                   misfitRoles={misfitRoles}
                   onApply={() => set({
+                    scopingProvider: "anthropic", scopingModel: "",
                     plannerProvider: "anthropic", plannerModel: "",
                     evaluatorProvider: "anthropic", evaluatorModel: "",
                     loopProvider: "omlx", loopModel: "",
@@ -772,8 +783,8 @@ function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string
           Use Claude for planning and review, local for the loop
         </button>
         <p className="mt-2 text-xs text-foreground/40">
-          Sets the planner and evaluator to your Anthropic subscription and the looper to your
-          self-hosted endpoint, each on its default model. Adjust any of them afterwards.
+          Sets the scoping, planner and evaluator roles to your Anthropic subscription and the
+          looper to your self-hosted endpoint, each on its default model. Adjust any of them afterwards.
         </p>
       </div>
     </section>

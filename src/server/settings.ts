@@ -27,6 +27,11 @@ export const SETTING_DEFAULTS = {
   loopModel: "",
   evaluatorProvider: "anthropic",
   evaluatorModel: "",
+  // Spec 17: the scoping session is interactive and read-only, and the
+  // operator is waiting on every turn, so it gets its own seat rather than
+  // riding on whatever was chosen for batch planning.
+  scopingProvider: "anthropic",
+  scopingModel: "",
   // The one directory the repository picker may browse. Blank means the server
   // user's home directory. Everything the picker lists is confined beneath
   // this, resolved through symlinks, because unlike the old native dialog this
@@ -51,6 +56,7 @@ export const SETTING_DEFAULTS = {
   plannerReasoningLevel: "medium",
   loopReasoningLevel: "medium",
   evaluatorReasoningLevel: "medium",
+  scopingReasoningLevel: "medium",
   // Spec 20: how many of a repo's cards may hold a harness at once (planning,
   // looping or evaluating). 1 keeps the serial queue locked decision 5
   // describes. Forced back to 1 whenever the loop provider is local, since
@@ -154,6 +160,7 @@ const REASONING_LEVEL_SETTINGS = new Set<keyof Settings>([
   "plannerReasoningLevel",
   "loopReasoningLevel",
   "evaluatorReasoningLevel",
+  "scopingReasoningLevel",
 ]);
 const THEMES = new Set([
   "default",
@@ -204,6 +211,7 @@ const PRIMARY_PROVIDER_SETTINGS = new Set<keyof Settings>([
   "plannerProvider",
   "loopProvider",
   "evaluatorProvider",
+  "scopingProvider",
 ]);
 const PROMPT_TEMPLATE_SETTINGS = new Set<keyof Settings>(
   Object.keys(PROMPT_TEMPLATE_DEFAULTS) as (keyof typeof PROMPT_TEMPLATE_DEFAULTS)[],
