@@ -14,20 +14,21 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "@/db";
 
-const SECRET_FILE = join(DATA_DIR, "auth-secret");
-
 export function ensureAuthSecret(): void {
   if (process.env.RADULF_AUTH_SECRET) {
     return; // already set (e.g. by a test or previous call)
   }
 
+  // Resolved here rather than at import time: settingsCrypto imports this
+  // module, and tests that mock "@/db" without DATA_DIR must still load it.
+  const secretFile = join(DATA_DIR, "auth-secret");
   let secret: string;
-  if (existsSync(SECRET_FILE)) {
-    secret = readFileSync(SECRET_FILE, "utf-8").trim();
+  if (existsSync(secretFile)) {
+    secret = readFileSync(secretFile, "utf-8").trim();
   } else {
     secret = randomBytes(32).toString("hex");
     mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(SECRET_FILE, secret, "utf-8");
+    writeFileSync(secretFile, secret, "utf-8");
   }
 
   process.env.RADULF_AUTH_SECRET = secret;
