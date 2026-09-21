@@ -48,6 +48,11 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
    Re-amended 2026-07-17 by [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md):
    the client holding the subscription token is now pi (SDK mode), not
    `claude -p`. Frontier-on-subscription stands; only the client changed.
+   Amended 2026-09-20 by [17-task-scoping.md](17-task-scoping.md): a fourth
+   role, scoping, sits alongside planner, loop and evaluator with its own
+   provider, model and reasoning level. It is interactive and read-only, and
+   its thread is part of the card the planner receives; the planning agent
+   itself is unchanged.
 4. **Loop agent** — one harness for every provider: **pi in SDK mode**.
    Re-amended 2026-07-17 by [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md)
    (previously, per [09-multi-harness.md](09-multi-harness.md): claude-code for
