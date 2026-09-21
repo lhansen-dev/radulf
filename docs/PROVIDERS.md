@@ -251,7 +251,8 @@ still need an occasional real run.
 
 Provider credentials — the local server's base URL, key and extra headers, the OpenRouter key,
 the Brave key — are stored in Radulf's SQLite database and flow into the agent session at
-runtime. They never touch disk inside the worktree, and the agent's shell runs
+runtime. The Jira API token is stored the same way but used only host-side, when you
+import an issue into a card; it never reaches an agent session. They never touch disk inside the worktree, and the agent's shell runs
 with a scrubbed environment so it cannot read Radulf's own secrets.
 
 Subscription credentials are held by pi in `data/pi-agent/auth.json`, not by

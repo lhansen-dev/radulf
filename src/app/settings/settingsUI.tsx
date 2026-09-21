@@ -4,7 +4,7 @@ import { useSyncExternalStore, type ReactNode } from "react";
 
 export const SETTINGS_SECTIONS = [
   { id: "general", label: "General", group: "Workspace", description: "Appearance, notifications, and the little things that make Radulf yours.", icon: "M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0" },
-  { id: "repos", label: "Repositories", group: "Workspace", description: "Choose where your agents work and connect GitHub for pull requests.", icon: "M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z" },
+  { id: "repos", label: "Repositories", group: "Workspace", description: "Choose where your agents work, connect GitHub for pull requests and Jira for importing issues.", icon: "M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z" },
   { id: "models", label: "Agents & models", group: "Agents", description: "Give each stage of your workflow the right model and reasoning effort.", icon: "M8 3v3m8-3v3M5 6h14v14H5V6Zm3 5h.01M16 11h.01M9 16h6M2 10v6m20-6v6" },
   { id: "agents", label: "Providers & keys", group: "Agents", description: "Connect your subscriptions, local models, and API services.", icon: "m14 8 2 2m-9 4-4 4v3h3v-3h3l3-3M21 7a5 5 0 1 1-10 0 5 5 0 0 1 10 0" },
   { id: "defaults", label: "Run limits", group: "Agents", description: "Set the time and iteration budgets for your agents.", icon: "M12 8v4l3 2M9 2h6M12 2v3m6 1 2-2M21 13a9 9 0 1 1-18 0 9 9 0 0 1 18 0" },

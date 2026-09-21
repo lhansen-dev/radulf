@@ -23,6 +23,9 @@ export type Settings = {
   omlxHeaders: string;
   openrouterApiKey: string;
   braveApiKey: string;
+  jiraBaseUrl: string;
+  jiraEmail: string;
+  jiraApiToken: string;
   maxConcurrentCards: number;
   defaultMaxIterations: number;
   defaultTimeoutMinutes: number;
