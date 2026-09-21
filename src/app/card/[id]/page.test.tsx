@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import CardDetail from "./page";
 
 vi.mock("next/link", () => ({
@@ -19,6 +19,37 @@ vi.mock("next/navigation", () => ({
   useParams: () => ({ id: "c1" }),
   useRouter: () => ({ push: () => {} }),
   usePathname: () => "/card/c1",
+}));
+
+// react-window needs ResizeObserver and real layout, neither of which jsdom
+// has. The stand-in keeps the two things the transcript view depends on: the
+// rendered row count, and an imperative handle whose scrollToRow refuses an
+// index the list has not rendered yet, exactly as the real one does.
+const listStub = vi.hoisted(() => {
+  const element = { scrollHeight: 1000, scrollTop: 900, clientHeight: 100 };
+  type ScrollToRow = (opts: { index: number; align?: string }) => void;
+  const stub = {
+    rowCount: 0,
+    scrollToRow: vi.fn(),
+    element,
+    // One ref object for the whole test file: the real useListRef is stable
+    // across renders, and the view's effects depend on that identity.
+    ref: { current: null as null | { element: typeof element; scrollToRow: ScrollToRow } },
+  };
+  const scrollToRow: ScrollToRow = (opts) => {
+    if (opts.index >= stub.rowCount) throw new RangeError(`Invalid index specified: ${opts.index}`);
+    stub.scrollToRow(opts);
+  };
+  stub.ref.current = { element, scrollToRow };
+  return stub;
+});
+vi.mock("react-window", () => ({
+  List: ({ rowCount }: { rowCount: number }) => {
+    listStub.rowCount = rowCount;
+    return <div data-testid="transcript-list" data-rowcount={rowCount} />;
+  },
+  useListRef: () => listStub.ref,
+  useDynamicRowHeight: () => 28,
 }));
 
 class MockEventSource {
@@ -308,6 +339,60 @@ describe("CardDetail", () => {
 
     fireEvent.click(back);
     expect(await screen.findByRole("button", { name: /Planning/ })).toBeTruthy();
+  });
+
+  /** A live transcript that arrives in two chunks: the historical load, then
+   * an appended tail. Returns the fetch spy so a test can count the reads. */
+  function liveTranscriptInTwoChunks() {
+    cardStatus = "looping";
+    cardRuns = [
+      { id: "r1", kind: "plan", status: "completed", iterationsDone: 0, exitReason: null, startedAt: "2026-07-17T10:00:00.000Z", endedAt: "2026-07-17T10:01:00.000Z", provider: "anthropic", model: "opus", planId: "p1", iterations: [] },
+    ];
+    const baseFetch = globalThis.fetch;
+    let reads = 0;
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/runs/")) {
+        reads += 1;
+        const body = reads === 1
+          ? { lines: [{ t: "text", role: "assistant", content: "one" }], cursor: 10, hasMore: true, truncated: false, reset: false }
+          : { lines: [{ t: "text", role: "assistant", content: "two" }], cursor: 20, hasMore: false, truncated: false, reset: false };
+        return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+    listStub.rowCount = 0;
+    listStub.scrollToRow.mockClear();
+  }
+
+  it("follows a live transcript's tail only once the new rows are rendered", async () => {
+    liveTranscriptInTwoChunks();
+    listStub.element.scrollTop = 900; // sitting at the bottom
+
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Planning/ }));
+    fireEvent.click(screen.getByRole("button", { name: "view transcript" }));
+
+    await waitFor(() => expect(listStub.rowCount).toBe(2));
+    // Fired after each commit while following, for the row count the list
+    // actually has — never for a row it did not have yet, which is what threw
+    // RangeError before. The stub throws on such an index, so reaching the
+    // final call proves every earlier one was in range too.
+    await waitFor(() => expect(listStub.scrollToRow).toHaveBeenLastCalledWith({ index: 1, align: "end" }));
+    expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  });
+
+  it("offers Jump to latest instead of stealing the scroll position when the reader is not at the bottom", async () => {
+    liveTranscriptInTwoChunks();
+    listStub.element.scrollTop = 0; // scrolled up, reading
+
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Planning/ }));
+    fireEvent.click(screen.getByRole("button", { name: "view transcript" }));
+
+    expect(await screen.findByRole("button", { name: "Jump to latest" })).toBeTruthy();
+    expect(listStub.scrollToRow).not.toHaveBeenCalled();
   });
 
   it("lands an old ?tab=plan link on Task and ?tab=transcript on Activity", async () => {
