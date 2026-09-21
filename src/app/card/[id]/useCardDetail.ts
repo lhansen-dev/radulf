@@ -15,10 +15,11 @@ export type Plan = {
 };
 
 /** One entry in the card's scoping thread (spec 17). `planner` is a set of
- * blocking questions a planning run raised, waiting on the operator. */
+ * blocking questions a planning run raised, `loop` a blocker the loop hit
+ * while carrying the card out; both wait on the operator. */
 export type ScopingMessage = {
   id: number;
-  role: "user" | "assistant" | "planner";
+  role: "user" | "assistant" | "planner" | "loop";
   content: string;
   createdAt: string;
 };

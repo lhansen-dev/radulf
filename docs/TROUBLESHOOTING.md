@@ -88,8 +88,18 @@ change, which is a plan problem more often than a model problem.
 The iteration cap was reached (default 50, overridable per card).
 
 **`plan checklist exhausted without a DONE signal`**
-The last task finished without the loop signalling completion — typically its
-criteria failed. There is no fallback prompt; an empty checklist ends the run.
+The last task was ticked without the loop signalling completion — typically its
+own check failed. There is nothing left to inject, so retrying the loop is not
+offered; **Plan again** re-plans the remaining work on top of the branch.
+
+**`loop blocked`**
+The loop hit something outside its control — credentials or a logged-in
+session it does not have, a decision only you can make — and wrote
+`.ralph/BLOCKED` instead of faking completion. The blocker is on the card,
+under Scoping. Answer it there if the planner needs to know something, then
+**Plan again**: the planner re-plans around it on top of the work so far. The
+loop runs sandboxed by design, so live access to an external service is never
+something a retry can supply.
 
 **`loop failed: …`**
 The harness itself errored. Three consecutive failures end the run, and a

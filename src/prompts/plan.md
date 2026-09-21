@@ -15,6 +15,19 @@ Title: {{TITLE}}
 {{SCOPING_SECTION}}
 {{FEEDBACK_SECTION}}
 
+WHERE THE WORK RUNS
+===================
+The loop and the evaluator run inside a sandbox: no network except package
+registries, no access to the operator's home directory, credentials, or
+logged-in sessions, no browser, and nobody to answer a question mid-task. A
+task that needs an authenticated external service, a live system, or a human
+decision cannot be a checklist item — the loop will stop on it and the card
+comes back to the operator. Plan only what can be built and verified offline,
+and list anything that needs the operator in a `## Operator steps` section of
+PLAN.md, outside `## Tasks`. Acceptance criteria must be runnable in the same
+sandbox. If nothing useful can be built without live access, use the escape
+hatch below instead of writing a plan.
+
 YOUR TASK
 =========
 Explore the repository, then write exactly three files into the `.ralph/`

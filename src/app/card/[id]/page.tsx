@@ -15,7 +15,7 @@ import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
-import { retryableFailedStep } from "@/shared/failedStep";
+import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 
 const TABS = ["Task", "Activity"] as const;
 
@@ -115,6 +115,18 @@ export default function CardDetail() {
   // answered. Cards parked before that existed still show them here.
   const scoping = detail.scoping ?? [];
   const questionsInThread = scoping.some((m) => m.role === "planner");
+  // The loop stopped for the planner, not for a retry: a blocker outside its
+  // control, or a checklist ticked off without DONE. "Plan again" re-plans on
+  // top of the branch either way (pendingReplanFeedback).
+  const newestRun = runs[0];
+  const loopBlocker =
+    card.status === "needs_attention" && newestRun?.kind === "loop" && newestRun.exitReason === LOOP_BLOCKED_EXIT
+      ? newestRun.feedback || "(no detail recorded)"
+      : "";
+  const checklistExhausted =
+    card.status === "needs_attention" && newestRun?.kind === "loop" && newestRun.exitReason === CHECKLIST_EXHAUSTED_EXIT;
+  const blockerInThread = scoping.some((m) => m.role === "loop");
+  const planAgain = Boolean(plannerQuestions || loopBlocker || checklistExhausted);
   // Install-script gate (spec 14): a loop halted on unapproved lifecycle
   // scripts — show the packages with their VERBATIM script bodies.
   let gatePackages: GatePackage[] = [];
@@ -148,7 +160,7 @@ export default function CardDetail() {
       ? { label: "Retry merge", run: () => post("retry-merge") }
       : canRetryFailedStep
         ? { label: "Retry failed step", run: () => post("retry-failed-step") }
-        : { label: plannerQuestions ? "Plan again" : "Restart task", run: () => post("restart") },
+        : { label: planAgain ? "Plan again" : "Restart task", run: () => post("restart") },
     review: { label: "Review changes", run: () => router.push(`/review/${id}`) },
     plan_review: { label: "Approve plan and implement", run: () => post("approve-plan") },
     paused: { label: "Continue", run: () => post("resume") },
@@ -264,6 +276,27 @@ export default function CardDetail() {
           )}
           <p className="text-xs text-amber-400/70 mt-2">
             Answer its questions under Scoping below, then plan again. Editing the description works too.
+          </p>
+        </div>
+      )}
+      {loopBlocker && (
+        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-amber-300 mb-1">The loop stopped on something it cannot resolve</h3>
+          {!blockerInThread && (
+            <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">{loopBlocker}</pre>
+          )}
+          <p className="text-xs text-amber-400/70 mt-2">
+            Answer under Scoping below if the planner needs to know something, then plan again. The planner
+            re-plans around the blocker on top of the work already on the branch.
+          </p>
+        </div>
+      )}
+      {checklistExhausted && (
+        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-amber-300 mb-1">Every task is ticked, but the loop never signalled done</h3>
+          <p className="text-sm text-amber-100/80">
+            The final task&rsquo;s own check did not pass. Retrying the loop would find nothing left to do, so plan
+            again instead: the planner writes the remaining work on top of what is already on the branch.
           </p>
         </div>
       )}

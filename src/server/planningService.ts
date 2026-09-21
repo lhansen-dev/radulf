@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, plans, runs, repos, reviews, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
 import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
+import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
 import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
@@ -48,7 +49,29 @@ const SCOPING_SPEAKER: Record<ScopingRole, string> = {
   user: "Operator",
   assistant: "Scoping assistant",
   planner: "Planner (an earlier planning run)",
+  loop: "Implementation loop (blocked)",
 };
+
+/** What the planner re-plans from when the loop stopped for it rather than
+ * for a retry: the blocker it reported, or a checklist it ticked off without
+ * ever signalling DONE. Either way the work so far is on the branch. */
+function loopStopFeedback(exitReason: string, feedback: string | null): string {
+  if (exitReason === LOOP_BLOCKED_EXIT) {
+    return (
+      "The implementation loop stopped on a blocker outside its control:\n\n" +
+      (feedback ?? "(no detail recorded)") +
+      "\n\nPlan around it. The loop runs sandboxed — no network beyond package registries, " +
+      "no credentials, no logged-in sessions, nobody to ask — so do not give it a task that " +
+      "needs what it does not have. Leave what only the operator can do to the operator, and " +
+      "say so in PLAN.md. The scoping thread holds the operator's answers, if any."
+    );
+  }
+  return (
+    "Every checklist item was ticked, but the loop never signalled DONE, so the final task's " +
+    "own check did not pass. Plan the work still needed on top of the code already on this " +
+    "branch. The scoping thread holds anything the operator added since."
+  );
+}
 
 export function renderPlanPrompt(
   template: string,
@@ -112,7 +135,21 @@ export function pendingReplanFeedback(cardId: string): string | null {
     .orderBy(desc(runs.startedAt))
     .limit(1)
     .get();
-  const newest = [rejection, revise]
+  // A loop that stopped for the planner: blocked, or exhausted without DONE.
+  // Older exhausted rows carry no feedback of their own, so the wording is
+  // supplied here rather than read from the row.
+  const loopStop = db
+    .select({ feedback: runs.feedback, exitReason: runs.exitReason, at: runs.startedAt })
+    .from(runs)
+    .where(and(onLatestPlan, eq(runs.kind, "loop"), inArray(runs.exitReason, [...REPLAN_LOOP_EXITS])))
+    .orderBy(desc(runs.startedAt))
+    .limit(1)
+    .get();
+  const newest = [
+    rejection,
+    revise,
+    loopStop && { feedback: loopStopFeedback(loopStop.exitReason!, loopStop.feedback), at: loopStop.at },
+  ]
     .filter((row) => row?.feedback)
     .sort((a, b) => b!.at.localeCompare(a!.at))[0];
   return newest?.feedback ?? null;

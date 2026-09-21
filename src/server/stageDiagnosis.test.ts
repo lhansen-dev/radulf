@@ -53,6 +53,45 @@ describe("misconfiguredStage", () => {
     ).toBeNull();
   });
 
+  it("ignores loop runs that never ran an iteration or stopped for the planner", () => {
+    // The shape of the real thing: one loop that ticked every task without
+    // DONE, then two "Retry failed step" clicks that died in milliseconds on
+    // the same exhausted checklist. Nothing here is about the model.
+    expect(
+      misconfiguredStage(
+        history(
+          { kind: "loop", iterationsDone: 6, exitReason: "plan checklist exhausted without a DONE signal" },
+          { kind: "loop", iterationsDone: 0, exitReason: "plan checklist exhausted without a DONE signal" },
+          { kind: "loop", iterationsDone: 0, exitReason: "plan checklist exhausted without a DONE signal" },
+        ),
+        "loop",
+      ),
+    ).toBeNull();
+    // A blocker outside the loop's control says nothing about the model either.
+    expect(
+      misconfiguredStage(
+        history(
+          { kind: "loop", iterationsDone: 3, exitReason: "stalled" },
+          { kind: "loop", iterationsDone: 2, exitReason: "stalled" },
+          { kind: "loop", iterationsDone: 1, exitReason: "loop blocked" },
+        ),
+        "loop",
+      ),
+    ).toBeNull();
+    // Three real failures still count, whatever sits between them.
+    expect(
+      misconfiguredStage(
+        history(
+          { kind: "loop", iterationsDone: 3, exitReason: "stalled" },
+          { kind: "loop", iterationsDone: 0, exitReason: "plan checklist exhausted without a DONE signal" },
+          { kind: "loop", iterationsDone: 2, exitReason: "stalled" },
+          { kind: "loop", iterationsDone: 4, exitReason: "stuck" },
+        ),
+        "loop",
+      ),
+    ).toMatchObject({ kind: "loop", attempts: 3 });
+  });
+
   it("judges each stage on its own history", () => {
     // A planner that failed three times is a planner problem even though an
     // evaluator run happened after it. finishRun only ever asks about the

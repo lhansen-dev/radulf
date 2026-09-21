@@ -111,12 +111,13 @@ export const plans = sqliteTable("plans", {
 }, (table) => [index("plans_card_version_idx").on(table.cardId, table.version)]);
 
 /**
- * Spec 17: a card's scoping thread — the operator, the scoping assistant, and
- * the planner's own blocking questions, in order. Part of the card rather
- * than of a run: the planner receives it as context, and it is the durable
- * record of why the card is shaped the way it is.
+ * Spec 17: a card's scoping thread — the operator, the scoping assistant, the
+ * planner's own blocking questions, and any blocker the loop reported, in
+ * order. Part of the card rather than of a run: the planner receives it as
+ * context, and it is the durable record of why the card is shaped the way it
+ * is.
  */
-export type ScopingRole = "user" | "assistant" | "planner";
+export type ScopingRole = "user" | "assistant" | "planner" | "loop";
 
 export const scopingMessages = sqliteTable(
   "scoping_messages",

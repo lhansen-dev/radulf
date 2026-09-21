@@ -33,7 +33,10 @@ export function ScopingPanel({
   const [error, setError] = useState("");
   const [proposal, setProposal] = useState<{ title: string; description: string } | null>(null);
   const open = SCOPABLE.has(status);
-  const plannerAsked = status === "needs_attention" && messages.some((m) => m.role === "planner");
+  // The planner asked, or the loop stopped on a blocker: either way an answer
+  // here is what "plan again" re-plans from.
+  const awaitingAnswer = status === "needs_attention" && messages.some((m) => m.role === "planner" || m.role === "loop");
+  const loopBlocked = awaitingAnswer && messages.at(-1)?.role === "loop";
   if (!open && messages.length === 0) return null;
 
   async function run(kind: Exclude<Busy, null>, fn: () => Promise<void>) {
@@ -98,14 +101,14 @@ export function ScopingPanel({
               className={`rounded-lg p-2.5 text-sm ${
                 m.role === "user"
                   ? "ml-6 bg-amber-500/10"
-                  : m.role === "planner"
+                  : m.role === "planner" || m.role === "loop"
                     ? "mr-6 border border-amber-700/40 bg-amber-950/20"
                     : "mr-6 bg-foreground/[0.05]"
               }`}
             >
               {m.role !== "user" && (
-                <p className={`mb-1 text-[11px] font-medium uppercase tracking-wide ${m.role === "planner" ? "text-amber-300" : "text-foreground/45"}`}>
-                  {m.role === "planner" ? "Planner asked" : "Scoping assistant"}
+                <p className={`mb-1 text-[11px] font-medium uppercase tracking-wide ${m.role === "assistant" ? "text-foreground/45" : "text-amber-300"}`}>
+                  {m.role === "planner" ? "Planner asked" : m.role === "loop" ? "Loop blocked" : "Scoping assistant"}
                 </p>
               )}
               {m.role === "user" ? <p className="whitespace-pre-wrap">{m.content}</p> : <Markdown>{m.content}</Markdown>}
@@ -124,7 +127,9 @@ export function ScopingPanel({
             rows={3}
             disabled={busy !== null}
             placeholder={
-              plannerAsked
+              loopBlocked
+                ? "Say what the loop was missing, or what to do instead…"
+                : awaitingAnswer
                 ? "Answer the planner's questions…"
                 : messages.length
                   ? "Reply…"
@@ -136,7 +141,7 @@ export function ScopingPanel({
             <button type="button" onClick={send} disabled={busy !== null || !draft.trim()} className={`${buttonCls} bg-foreground/10`}>
               {busy === "send" ? "Thinking…" : "Send"}
             </button>
-            {plannerAsked && (
+            {awaitingAnswer && (
               <button type="button" onClick={answerAndPlan} disabled={busy !== null || !draft.trim()} className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}>
                 {busy === "answer" ? "Planning…" : "Answer and plan again"}
               </button>

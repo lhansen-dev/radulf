@@ -226,6 +226,36 @@ describe("CardDetail", () => {
     expect(screen.getByRole("button", { name: "Answer and plan again" })).toBeTruthy();
   });
 
+  it("sends a loop that stopped on a blocker back to the planner, not to a retry", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "loop-b", kind: "loop", status: "failed", iterationsDone: 5, exitReason: "loop blocked", feedback: "No Atlassian session in the sandbox.", startedAt: "2026-09-21T16:10:00.000Z", endedAt: "2026-09-21T16:12:00.000Z", planId: "p1", iterations: [] },
+    ];
+    cardScoping = [{ id: 1, role: "loop", content: "No Atlassian session in the sandbox.", createdAt: "" }];
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("The loop stopped on something it cannot resolve")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plan again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry failed step" })).toBeNull();
+    // Shown once, in the thread, labelled as the loop's.
+    expect(screen.getAllByText("No Atlassian session in the sandbox.")).toHaveLength(1);
+    expect(screen.getByText("Loop blocked")).toBeTruthy();
+  });
+
+  it("offers to plan again, not retry, when the checklist ran out without a DONE signal", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "loop-x", kind: "loop", status: "failed", iterationsDone: 0, exitReason: "plan checklist exhausted without a DONE signal", startedAt: "2026-09-21T16:18:00.000Z", endedAt: "2026-09-21T16:18:00.000Z", planId: "p1", iterations: [] },
+    ];
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("Every task is ticked, but the loop never signalled done")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plan again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry failed step" })).toBeNull();
+  });
+
   it("still shows questions raised before the thread existed", async () => {
     cardStatus = "needs_attention";
     cardRuns = [

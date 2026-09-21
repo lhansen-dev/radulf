@@ -125,7 +125,7 @@ const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-planningServic
 process.env.RADULF_DATA_DIR = testDataDir;
 
 const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
-const { PlanningService } = await import("./planningService");
+const { PlanningService, pendingReplanFeedback } = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
 function seedRepo() {
@@ -269,6 +269,30 @@ describe("PlanningService.runPlanning", () => {
     expect(
       db.select().from(scopingMessages).where(eq(scopingMessages.cardId, "card-questions")).all(),
     ).toMatchObject([{ role: "planner", content: "Which auth provider should this use?" }]);
+  });
+
+  it("re-plans from a loop that stopped for the planner: a blocker, or an exhausted checklist", () => {
+    seedCard("card-loop-stop");
+    db.insert(plans)
+      .values({ id: "plan-loop-stop", cardId: "card-loop-stop", version: 1, planMd: "## Tasks\n- [x] a\n", promptMd: "p", acceptanceCriteria: "c", createdAt: now() })
+      .run();
+    const loopRun = (id: string, exitReason: string, feedback: string | null, startedAt: string) =>
+      db.insert(runs).values({ id, cardId: "card-loop-stop", planId: "plan-loop-stop", kind: "loop", status: "failed", worktreePath: "/tmp/wt", branch: "ralph/x", exitReason, feedback, startedAt, endedAt: startedAt }).run();
+
+    // The real card: ticked every task, no DONE, and the row predates feedback.
+    loopRun("run-exhausted", "plan checklist exhausted without a DONE signal", null, "2026-09-21T16:14:00.000Z");
+    expect(pendingReplanFeedback("card-loop-stop")).toContain("never signalled DONE");
+
+    // A newer run that reported a blocker wins, with its own words inside.
+    loopRun("run-blocked", "loop blocked", "No Atlassian session in the sandbox.", "2026-09-21T16:20:00.000Z");
+    const feedback = pendingReplanFeedback("card-loop-stop")!;
+    expect(feedback).toContain("blocker outside its control");
+    expect(feedback).toContain("No Atlassian session in the sandbox.");
+    expect(feedback).toContain("Leave what only the operator can do to the operator");
+
+    // Any other loop ending is a retry, not a re-plan.
+    loopRun("run-stalled", "stalled", null, "2026-09-21T16:30:00.000Z");
+    expect(pendingReplanFeedback("card-loop-stop")).toContain("No Atlassian session in the sandbox.");
   });
 
   it("hands the scoping thread to the planner", async () => {
