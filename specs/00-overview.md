@@ -63,7 +63,12 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
 5. **Concurrency** — one ticket in the pipeline at a time. A single card runs
    the planner, loop, or evaluator at any moment; the next card starts only once
    that slot frees. Local models own the machine's unified memory, so the queue
-   is always serial — there are no parallel loops or planners.
+   is always serial — there are no parallel loops or planners. Amended
+   2026-09-21 by [20-concurrent-cards.md](20-concurrent-cards.md): the slot is a
+   per-repo cap (`maxConcurrentCards`, default 1) rather than a constant, held
+   at 1 whenever the loop provider is local, which is where this decision's
+   stated reason actually applies. One card is still one agent with one
+   checklist; nothing splits a card across agents.
 6. **Review** — in-app diff review. Loops work in per-card git worktrees on
    per-card branches; the In Review column shows diff + transcript with
    Approve-merge / Reject-with-feedback actions. Amended 2026-09-02 by

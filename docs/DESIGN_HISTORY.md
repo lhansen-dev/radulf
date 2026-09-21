@@ -54,6 +54,7 @@ history inline.
 | [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | Current; amends decision 6 |
 | [18 — Loop failure modes](../specs/18-loop-failure-modes.md) | What the loop knows when an iteration ends badly, and what it does with it | Current; amends 11 |
 | [19: Radulf's own refs](../specs/19-shared-git-ref-noise.md) | Why a sibling card's branch is not tampering, and what the run-end integrity check still compares | Current; amends 14 |
+| [20: More than one card at a time](../specs/20-concurrent-cards.md) | The per-repo concurrency cap, and telling the integrity check about the merges Radulf itself performs | Current; amends locked decision 5, completes 19 |
 
 ## Implementation plans
 
@@ -70,7 +71,8 @@ What they built is documented in [Sandboxing](SANDBOXING.md) and
 
 A handful of decisions were made at the outset and are treated as fixed unless
 explicitly revisited: the task domain (coding tasks against local Git repos),
-the stack, one ticket in the pipeline at a time, in-app diff review, and — the
+the stack, a metered pipeline (one card at a time until you raise it, and
+always one on a local model), in-app diff review, and — the
 one that matters most — **merging always requires human approval**. No version
 of Radulf merges on its own without an explicit opt-in design.
 
