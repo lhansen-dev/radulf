@@ -44,6 +44,8 @@ export type Run = {
   /** Spec 18 §3: what the exit reason said about the provider. "config" means
    * the request itself was rejected, so no retry can change the outcome. */
   failureKind?: string | null;
+  /** An evaluate run's revise feedback, or the blocker a loop run stopped on. */
+  feedback?: string | null;
   startedAt: string;
   endedAt: string | null;
   provider?: string | null;

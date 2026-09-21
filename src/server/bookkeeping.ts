@@ -82,6 +82,13 @@ export function taskInjectionBlock(planMd: string): string {
     "The orchestrator tracks completion. Run only the targeted check named in",
     "your assigned task.",
     "",
+    "If the task cannot be done for a reason outside your control — credentials,",
+    "network access, or a logged-in session you do not have, a decision only the",
+    "operator can make, a prerequisite that does not exist — do NOT write",
+    "`.ralph/ITERATION_DONE`. Write the concrete blocker and what the operator",
+    "must supply into `.ralph/BLOCKED` and stop. Never invent evidence or mark",
+    "the task complete.",
+    "",
     "---",
   ].join("\n");
 }

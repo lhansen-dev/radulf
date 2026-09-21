@@ -21,11 +21,11 @@ process.env.RADULF_MOCK_LLM = "1";
 // No pi.dev model-catalog fetch: the mock needs no catalog.
 process.env.PI_OFFLINE = "1";
 
-const { db, cards, runs, plans, repos, now } = await import("@/db");
+const { db, cards, runs, plans, repos, events, now } = await import("@/db");
 const { patchSettings, getSettings } = await import("./settings");
 const { Orchestrator } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
-const { proposeScopedCard, scopingTurn } = await import("./scoping");
+const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
 
 const TERMINAL = new Set(["review", "needs_attention", "done", "plan_review"]);
 
@@ -162,6 +162,27 @@ describe("mock provider — full pipeline", () => {
     expect(cardRuns(cardId)).toEqual([
       expect.objectContaining({ kind: "plan", exitReason: "planner raised follow-up questions" }),
     ]);
+  }, 30_000);
+
+  it("loop-blocked: hands the card back with the blocker in its thread, and plans again around it", async () => {
+    const { cardId } = await runScenario("loop-blocked");
+    expect(cardStatus(cardId)).toBe("needs_attention");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "failed", exitReason: "loop blocked", iterationsDone: 1 });
+    expect(loop.feedback).toContain("Mock blocker");
+    // The blocked task was not ticked, and the blocker is where the operator answers it.
+    expect(listScopingMessages(cardId).map((m) => [m.role, m.content.split(":")[0]])).toEqual([["loop", "Mock blocker"]]);
+    expect(
+      db.select().from(events).where(eq(events.cardId, cardId)).all().filter((e) => e.type === "stage.misconfigured"),
+    ).toHaveLength(0);
+
+    // Plan again re-plans on top of the branch with the blocker as feedback,
+    // rather than re-running the loop.
+    orch.restartCard(cardId);
+    await waitFor(() => TERMINAL.has(cardStatus(cardId)) && !orch.hasInFlightWork());
+    expect(cardRuns(cardId, "plan")).toHaveLength(2);
+    const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+    expect(replan?.feedback).toContain("Mock blocker");
   }, 30_000);
 
   it("provider-error: the planner fails with the provider's message", async () => {

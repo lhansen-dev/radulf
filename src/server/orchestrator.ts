@@ -40,7 +40,8 @@ import { PlanningService, pendingReplanFeedback } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService } from "./reviewService";
 import { ClientError } from "./clientError";
-import { retryableFailedStep } from "@/shared/failedStep";
+import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
+import { addScopingMessage } from "./scoping";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
 import {
@@ -1007,7 +1008,10 @@ export class Orchestrator {
         // ended without a DONE signal (e.g. its criteria failed).
         const planMd = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
         const task = firstUnchecked(planMd);
-        if (!task) return fail("plan checklist exhausted without a DONE signal", n);
+        // Nothing to inject means the final task was ticked without its DONE.
+        // This ending belongs to the planner (`pendingReplanFeedback` turns it
+        // into a re-plan on top of the branch), not to a retry of the loop.
+        if (!task) return fail(CHECKLIST_EXHAUSTED_EXIT, n);
         n += 1;
         const transcriptFile = `iter-${String(n).padStart(3, "0")}.jsonl`;
         const iter = db
@@ -1131,6 +1135,30 @@ export class Orchestrator {
           for (const name of ["DONE", "DONE.md"]) {
             fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
           }
+        }
+
+        // The loop's honest way out of a task it cannot do (see
+        // taskInjectionBlock): a `.ralph/BLOCKED` note wins over any completion
+        // signal written alongside it, so a blocked task is never ticked. The
+        // blocker becomes this run's feedback — what the planner re-plans
+        // around — and joins the card's scoping thread, where the operator
+        // answers it (spec 17, backward direction).
+        const blockedPath = ralphFile("BLOCKED");
+        if (fs.existsSync(/* turbopackIgnore: true */ blockedPath)) {
+          const blocker =
+            fs.readFileSync(/* turbopackIgnore: true */ blockedPath, "utf8").trim() ||
+            "(the loop reported a blocker without saying what it was)";
+          for (const name of ["BLOCKED", "ITERATION_DONE", "DONE", "DONE.md"]) {
+            fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
+          }
+          db.update(runs).set({ feedback: blocker }).where(eq(runs.id, runId)).run();
+          addScopingMessage(cardId, "loop", blocker);
+          emitEvent("loop.blocked", {
+            cardId,
+            runId,
+            payload: { n, taskNumber: task.taskNumber, blocker: blocker.slice(0, 500) },
+          });
+          return fail(LOOP_BLOCKED_EXIT, n);
         }
 
         // DONE is the trigger for independent evaluation, not a direct pass to

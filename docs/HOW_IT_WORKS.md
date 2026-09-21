@@ -41,7 +41,10 @@ fresh context — the agent remembers nothing from the previous pass. The repo i
 the memory: the plan, the progress notes, and the code already written are all
 on disk. When the loop believes it is finished it writes a `DONE` signal, which
 is trusted only as far as "start the evaluator" — it never sends a card to you
-directly.
+directly. A task it cannot do at all, because it needs credentials, a live
+service, or a decision that is yours, it reports as a blocker instead of faking:
+the card comes back to you with the blocker in its scoping thread, and **Plan
+again** re-plans around it.
 
 **3 · Evaluate.** The evaluator is the sole whole-card verifier, and it is
 deliberately not the agent that did the work. It independently inspects the diff

@@ -65,6 +65,17 @@ describe("ScopingPanel", () => {
     expect(json(0)).toEqual({ content: "Per account.", reply: false });
   });
 
+  it("labels a blocker the loop reported and offers to answer and plan again", () => {
+    render(<ScopingPanel cardId="c1" status="needs_attention" messages={[
+      { id: 1, role: "loop", content: "No Atlassian session in the sandbox.", createdAt: "" },
+    ]} onChanged={() => {}} />);
+
+    expect(screen.getByText("Loop blocked")).toBeTruthy();
+    expect(screen.getByText("No Atlassian session in the sandbox.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Answer and plan again" })).toBeTruthy();
+    expect((screen.getByLabelText("Your message") as HTMLTextAreaElement).placeholder).toMatch(/what the loop was missing/);
+  });
+
   it("does not offer to plan again unless the planner asked", () => {
     render(<ScopingPanel cardId="c1" status="backlog" messages={thread.slice(1)} onChanged={() => {}} />);
     expect(screen.queryByRole("button", { name: "Answer and plan again" })).toBeNull();

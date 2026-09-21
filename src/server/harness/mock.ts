@@ -207,6 +207,15 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
     description: "The stream never produces output, until the stall watchdog aborts it.",
     scripts: everyRole(() => "hang"),
   },
+  "loop-blocked": {
+    description: "Loop reports a blocker outside its control instead of completing its task.",
+    scripts: {
+      loop: ({ step }) =>
+        step === 0
+          ? [write(".ralph/BLOCKED", "Mock blocker: the sandbox has no credentials for the live service.\n")]
+          : [say("Blocked; reported, not faked.")],
+    },
+  },
 };
 
 export const DEFAULT_MOCK_SCENARIO = "happy-path";

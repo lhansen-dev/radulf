@@ -88,6 +88,8 @@ describe("buildLoopPrompt", () => {
     expect(block).toContain("LAST_TASK=false");
     expect(block).toContain("This is your ONLY task");
     expect(block).toContain("Run only the targeted check named in");
+    // The honest way out of a task the loop cannot do, so it is never faked.
+    expect(block).toContain(".ralph/BLOCKED");
     // Both files are orchestrator-private: the loop cannot access them.
     expect(block).not.toContain("PLAN.md");
     expect(block).not.toContain("CRITERIA.md");

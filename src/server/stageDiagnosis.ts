@@ -15,6 +15,8 @@
  * informs the operator rather than blocking them.
  */
 
+import { REPLAN_LOOP_EXITS } from "@/shared/failedStep";
+
 /** The run columns the diagnosis reads. */
 export type DiagnosisRun = {
   kind: "plan" | "loop" | "evaluate";
@@ -22,7 +24,22 @@ export type DiagnosisRun = {
   provider: string | null;
   model: string | null;
   startedAt: string;
+  iterationsDone?: number;
+  exitReason?: string | null;
 };
+
+/**
+ * A loop run that says nothing about the model: it never ran an iteration
+ * (an exhausted checklist, a circuit breaker, a budget already spent), or it
+ * stopped for the planner — a blocker outside its control, or a ticked-off
+ * checklist with no DONE. Two instant re-runs of an exhausted checklist once
+ * turned one plan problem into a "this model keeps failing" advisory.
+ */
+function saysNothingAboutTheModel(run: DiagnosisRun): boolean {
+  if (run.kind !== "loop") return false;
+  if (run.iterationsDone === 0) return true;
+  return Boolean(run.exitReason && REPLAN_LOOP_EXITS.has(run.exitReason));
+}
 
 /** How many attempts in a row, on one provider and model, before the pattern
  * is worth naming. Two is a coincidence; three is a configuration. */
@@ -63,6 +80,7 @@ export function misconfiguredStage(
   for (const run of ofKind) {
     if (!FAILED.has(run.status)) break;
     if (run.provider !== newest.provider || run.model !== newest.model) break;
+    if (saysNothingAboutTheModel(run)) continue;
     attempts += 1;
   }
   if (attempts < MISCONFIGURED_STREAK) return null;

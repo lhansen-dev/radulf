@@ -37,6 +37,7 @@ const SPEAKER: Record<ScopingRole, string> = {
   user: "Operator",
   assistant: "You",
   planner: "Planner",
+  loop: "Implementation loop",
 };
 
 /**
@@ -77,7 +78,8 @@ export function renderScopingPrompt(
       "- Briefly reflect the settled decisions when they change. Never repeat an answered " +
       "question, and never treat silence as agreement.\n" +
       "- Messages from \"Planner\" are blocking questions the planning agent raised when it tried " +
-      "to plan this card. Make sure the operator's answers resolve them, and say so when they do.\n" +
+      "to plan this card, and messages from \"Implementation loop\" are blockers the loop hit while " +
+      "carrying it out. Make sure the operator's answers resolve them, and say so when they do.\n" +
       "- Reply in plain Markdown and keep it short. No preamble, no sign-off.",
     `THE CONVERSATION SO FAR\n=======================\n${thread}`,
     tail,
