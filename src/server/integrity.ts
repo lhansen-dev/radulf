@@ -95,11 +95,27 @@ export async function snapshotRepoIntegrity(
 }
 
 /**
+ * Branch namespace Radulf writes on its own behalf: a card's run branch
+ * (`ralph/<slug>-<runId>`, `git.ts`) and an improvement run's feature branch
+ * (`ralph/improve-<ts>`, `improvementRuns.ts`). Nothing else in the server
+ * creates, moves or deletes a ref under it.
+ */
+const MANAGED_BRANCH_PREFIX = "refs/heads/ralph/";
+
+/**
  * Compare the repo against a baseline. Returns human-readable violations —
- * empty means intact. `runBranch` (e.g. "ralph/slug-runid") is the one ref
- * the run may legitimately move or create; with `checkRefs: false` only the
- * hook/config portion runs (the pre-merge check, where the base branch and
- * other refs may have moved legitimately since run end).
+ * empty means intact. `runBranch` (e.g. "ralph/slug-runid") is the run's own
+ * branch; with `checkRefs: false` only the hook/config portion runs (the
+ * pre-merge check, where the base branch and other refs may have moved
+ * legitimately since run end).
+ *
+ * Spec 19: the refs portion skips the whole `refs/heads/ralph/` namespace,
+ * not just `runBranch`. Every worktree shares one `.git`, so a sibling card's
+ * commit, a worktree cleanup and an improvement run's new branch all land in
+ * this run's ref snapshot, where they read as tampering even though Radulf
+ * wrote them itself. Refs outside that namespace (base branches, `main`,
+ * tags, remotes) are still compared, and hooks and `.git/config` are
+ * untouched by this.
  */
 export async function checkRepoIntegrity(
   repoPath: string,
@@ -131,16 +147,17 @@ export async function checkRepoIntegrity(
 
   if (opts.checkRefs) {
     const allowed = `refs/heads/${opts.runBranch}`;
+    const managed = (ref: string) => ref === allowed || ref.startsWith(MANAGED_BRANCH_PREFIX);
     const refsNow = await snapshotRefs(repoPath);
     for (const [ref, oid] of Object.entries(refsNow)) {
-      if (ref === allowed) continue;
+      if (managed(ref)) continue;
       if (!(ref in baseline.refs)) violations.push(`ref appeared: ${ref}`);
       else if (baseline.refs[ref] !== oid) {
         violations.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
       }
     }
     for (const ref of Object.keys(baseline.refs)) {
-      if (ref !== allowed && !(ref in refsNow)) violations.push(`ref deleted: ${ref}`);
+      if (!managed(ref) && !(ref in refsNow)) violations.push(`ref deleted: ${ref}`);
     }
   }
 
