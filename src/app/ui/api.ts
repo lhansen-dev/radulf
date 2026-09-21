@@ -79,8 +79,6 @@ export type ImprovementRun = {
   endedAt: string | null;
 };
 
-export type PlannerMessage = { role: "user" | "assistant"; content: string };
-
 export async function api<T = unknown>(
   url: string,
   init?: RequestInit & { json?: unknown }

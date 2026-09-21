@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, plans, runs, repos, reviews } from "@/db";
+import { db, now, plans, runs, repos, reviews, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
+import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
 import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
@@ -43,18 +44,37 @@ export function clearPlannerArtifacts(worktreePath: string) {
   removeRalphFiles(worktreePath, PLANNER_FILES);
 }
 
+const SCOPING_SPEAKER: Record<ScopingRole, string> = {
+  user: "Operator",
+  assistant: "Scoping assistant",
+  planner: "Planner (an earlier planning run)",
+};
+
 export function renderPlanPrompt(
   template: string,
   title: string,
   description: string,
   feedback?: string,
+  scoping: Pick<ScopingMessage, "role" | "content">[] = [],
 ) {
   const feedbackSection = feedback
     ? `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n\nThe working directory already holds the previous attempt's implementation,\ncommitted on this branch. Plan only the work needed to address the feedback\nabove on top of that code — do not re-plan tasks it already satisfies.\n`
     : "";
-  return template
+  // Spec 17: the thread is part of the card, so the planner gets it whole and
+  // the decisions reached there constrain the plan. Questions an earlier
+  // planning run raised appear with the operator's answers under them.
+  const scopingSection = scoping.length
+    ? `\nSCOPING THREAD\n==============\nThe operator scoped this card in conversation before planning. Decisions\nreached below are part of the card; where they and the description disagree,\nthe thread is the newer of the two.\n\n${scoping.map((m) => `${SCOPING_SPEAKER[m.role]}: ${m.content}`).join("\n\n")}\n`
+    : "";
+  // A template customized before this placeholder existed still gets the
+  // thread, right after the description, rather than silently losing it.
+  const withScoping = template.includes("{{SCOPING_SECTION}}")
+    ? template
+    : template.replace("{{DESCRIPTION}}", "{{DESCRIPTION}}\n{{SCOPING_SECTION}}");
+  return withScoping
     .replaceAll("{{TITLE}}", title)
     .replaceAll("{{DESCRIPTION}}", description || "(no description)")
+    .replaceAll("{{SCOPING_SECTION}}", scopingSection)
     .replaceAll("{{FEEDBACK_SECTION}}", feedbackSection);
 }
 
@@ -170,6 +190,7 @@ export class PlanningService {
           card.title,
           card.description,
           replanFeedback ?? prevPlan?.feedback ?? undefined,
+          listScopingMessages(cardId),
         ),
         cwd: worktreePath,
         timeoutMs: settings.plannerTimeoutMinutes * 60 * 1000,
@@ -189,6 +210,9 @@ export class PlanningService {
         await tryGit(worktreePath, "add", ".ralph");
         await tryGit(worktreePath, "commit", "-m", `ralph: planner raised questions for "${card.title}"`);
         emitEvent("plan.questions", { cardId, runId, payload: { questions } });
+        // Spec 17: the questions join the card's scoping thread, where the
+        // operator answers them; the next planning run reads the whole thread.
+        addScopingMessage(cardId, "planner", questions);
         deps.finishRun(runId, "completed", "planner raised follow-up questions", telemetry);
         deps.moveCard(cardId, "planning", "needs_attention", "planner has follow-up questions");
         return;

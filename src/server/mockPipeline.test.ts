@@ -25,7 +25,7 @@ const { db, cards, runs, plans, repos, now } = await import("@/db");
 const { patchSettings, getSettings } = await import("./settings");
 const { Orchestrator } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
-const { plannerChat } = await import("./chat");
+const { proposeScopedCard, scopingTurn } = await import("./scoping");
 
 const TERMINAL = new Set(["review", "needs_attention", "done", "plan_review"]);
 
@@ -36,6 +36,7 @@ beforeAll(() => {
     plannerProvider: "mock",
     loopProvider: "mock",
     evaluatorProvider: "mock",
+    scopingProvider: "mock",
     plannerModel: "",
     loopModel: "",
     evaluatorModel: "",
@@ -204,9 +205,26 @@ describe("mock provider — outside the pipeline", () => {
     expect(result).toMatchObject({ stalled: true, code: 1 });
   });
 
-  it("answers the read-only planner chat", async () => {
-    await expect(plannerChat([{ role: "user", content: "hi" }])).resolves.toMatch(/^Mock reply/);
-  });
+  it("scopes a card read-only against its own repository and proposes a card from the thread", async () => {
+    const repo = seedRepo("scoping");
+    db.insert(cards)
+      .values({
+        id: "card-scoping", repoId: repo.id, title: "Rough ask", description: "Do a thing.",
+        status: "backlog", position: 1, createdAt: now(), updatedAt: now(),
+      })
+      .run();
+
+    const thread = await scopingTurn("card-scoping", "What would this touch?");
+    expect(thread.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(thread[1].content).toMatch(/^Mock reply/);
+
+    // The mock's reply has no TITLE line, so the card keeps its title and the
+    // whole reply becomes the description — and stays in the thread.
+    const proposal = await proposeScopedCard("card-scoping");
+    expect(proposal.title).toBe("Rough ask");
+    expect(proposal.description).toMatch(/^Mock reply/);
+    expect(proposal.messages).toHaveLength(3);
+  }, 30_000);
 
   it("without RADULF_MOCK_LLM=1, refuses to run rather than fall back to a paid provider", async () => {
     process.env.RADULF_MOCK_LLM = "0";
@@ -215,9 +233,7 @@ describe("mock provider — outside the pipeline", () => {
       // anthropic default)…
       expect(getSettings().plannerProvider).toBe("mock");
       // …and the run fails loudly instead of reaching a real model.
-      await expect(plannerChat([{ role: "user", content: "hi" }])).rejects.toThrow(
-        /mock provider is disabled/,
-      );
+      await expect(scopingTurn("card-scoping", "hi")).rejects.toThrow(/mock provider is disabled/);
     } finally {
       process.env.RADULF_MOCK_LLM = "1";
     }

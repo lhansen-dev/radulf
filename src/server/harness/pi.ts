@@ -491,7 +491,7 @@ export type AgentRole = "planner" | "loop" | "evaluator";
  * | loop      | ✓    | ✗          | full set                       |
  * | evaluator | ✓    | ✗          | full set                       |
  *
- * `readOnly` (planner chat, improvement proposer — human-interactive, outside the pipeline
+ * `readOnly` (scoping, improvement proposer — human-interactive, outside the pipeline
  * roles) keeps the read-only browse set plus web_search. With no role and not
  * readOnly the loop set applies — never web_search by default.
  */

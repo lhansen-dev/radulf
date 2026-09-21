@@ -26,6 +26,39 @@ describe("renderPlanPrompt", () => {
     expect(rendered).toContain("Add templates\nMake prompts configurable");
     expect(rendered).toContain("PREVIOUS ATTEMPT — REVIEWER FEEDBACK");
     expect(rendered).toContain("Keep the existing defaults");
+    expect(rendered).not.toContain("SCOPING THREAD");
+  });
+
+  it("renders the scoping thread with every speaker named, after the description", () => {
+    const rendered = renderPlanPrompt(
+      "{{TITLE}}\n{{DESCRIPTION}}\n{{SCOPING_SECTION}}\n{{FEEDBACK_SECTION}}",
+      "Add templates",
+      "Make prompts configurable",
+      undefined,
+      [
+        { role: "planner", content: "1. Per repo or per workspace?" },
+        { role: "user", content: "Per workspace." },
+        { role: "assistant", content: "Settled: workspace-wide." },
+      ],
+    );
+
+    expect(rendered).toContain("Make prompts configurable\n\nSCOPING THREAD");
+    expect(rendered).toContain("Planner (an earlier planning run): 1. Per repo or per workspace?");
+    expect(rendered).toContain("Operator: Per workspace.");
+    expect(rendered).toContain("Scoping assistant: Settled: workspace-wide.");
+  });
+
+  it("still delivers the thread to a template customized before the placeholder existed", () => {
+    const rendered = renderPlanPrompt(
+      "{{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
+      "Add templates",
+      "Make prompts configurable",
+      undefined,
+      [{ role: "user", content: "Per workspace." }],
+    );
+
+    expect(rendered).toContain("Make prompts configurable\n\nSCOPING THREAD");
+    expect(rendered).toContain("Operator: Per workspace.");
   });
 });
 
@@ -91,7 +124,7 @@ vi.mock("./settings", () => ({
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-planningService-"));
 process.env.RADULF_DATA_DIR = testDataDir;
 
-const { db, cards, plans, runs, repos, worktrees, now } = await import("@/db");
+const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
 const { PlanningService } = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
@@ -231,6 +264,25 @@ describe("PlanningService.runPlanning", () => {
     );
     // No plan is ever created off a questions run.
     expect(db.select().from(plans).where(eq(plans.cardId, "card-questions")).all()).toHaveLength(0);
+    // Spec 17: the questions are now part of the card's scoping thread, where
+    // the operator answers them.
+    expect(
+      db.select().from(scopingMessages).where(eq(scopingMessages.cardId, "card-questions")).all(),
+    ).toMatchObject([{ role: "planner", content: "Which auth provider should this use?" }]);
+  });
+
+  it("hands the scoping thread to the planner", async () => {
+    seedCard("card-scoped");
+    db.insert(scopingMessages)
+      .values({ cardId: "card-scoped", role: "user", content: "Only the password login path.", createdAt: now() })
+      .run();
+    mockPlannerHarness(completeArtifacts);
+
+    await new PlanningService(makeDeps()).runPlanning("card-scoped");
+
+    const prompt = mocks.runHarness.mock.calls.at(-1)![0].prompt as string;
+    expect(prompt).toContain("SCOPING THREAD");
+    expect(prompt).toContain("Operator: Only the password login path.");
   });
 
   it("escalates to needs_attention when a required artifact is missing", async () => {

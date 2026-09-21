@@ -35,8 +35,8 @@ are available for the provider.
 
 ## Configuring a role
 
-Open **Settings → Agents & models** in the app. Each of the three roles —
-planner, loop, and evaluator — gets its own three pickers:
+Open **Settings → Agents & models** in the app. Each of the four roles —
+scoping, planner, loop, and evaluator — gets its own three pickers:
 
 - **Provider** — one of the five above.
 - **Model** — a model id. Leaving it blank means "the subscription's default
@@ -60,6 +60,12 @@ struggling loop, raise its model, and continue.
 The roles have genuinely different demands, and matching them is where the cost
 savings live.
 
+**Scoping is the one role you wait on.** It runs a turn at a time while you sit
+in the conversation, reading the repository to ask a useful question rather
+than a generic one. A slow or shallow model here costs your attention directly,
+and a session is a handful of turns per card, so it is a cheap place for a
+strong model.
+
 **The planner benefits most from a frontier model.** It reads a repo it has
 never seen and decides what the work actually is; a weak plan poisons every
 iteration downstream. This is the last role to economize on.
@@ -82,7 +88,7 @@ without having decided in advance that the diff is correct.
 Settings states each of these demands next to the role it applies to, and flags
 a provider that does not suit its role: a planner or evaluator on a self-hosted
 endpoint, and equally a loop on a subscription, which is the same mistake
-pointed the other way. A summary above the three sections offers the split in
+pointed the other way. A summary above the four sections offers the split in
 one click when any role is off it, and stays out of the way when none is. The
 advisories never block saving, so a deliberate choice (benchmarking a local
 planner, say) is one dropdown away.

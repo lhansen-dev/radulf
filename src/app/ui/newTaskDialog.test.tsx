@@ -10,7 +10,11 @@ vi.mock("next/link", () => ({
     (props as { href?: string }).href ? <a href={(props as { href?: string }).href}>{children as React.ReactNode}</a> : <span>{children as React.ReactNode}</span>,
 }));
 
+const push = vi.fn();
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
+
 beforeEach(() => {
+  push.mockClear();
   vi.stubGlobal("confirm", () => false);
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => ({
     ok: true,
@@ -26,6 +30,7 @@ beforeEach(() => {
           ],
         };
       }
+      if (target === "/api/cards" && init?.method === "POST") return { id: "card-1" };
       if (target.includes("/api/repos") && init?.method !== "GET") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { name: string; path: string };
         return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", createdAt: "" };
@@ -83,6 +88,39 @@ describe("NewTaskDialog", () => {
     await user.click(title);
     await user.keyboard("a");
     expect(document.activeElement).toBe(title);
+  });
+
+  it("creates the task and opens it for scoping from Create and scope, but not from Create task", async () => {
+    cleanup();
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={onCreated}
+      />
+    );
+    await user.type(screen.getByLabelText("Title"), "Rough ask");
+    await user.click(screen.getByRole("button", { name: "Create and scope" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+    expect(push).toHaveBeenCalledWith("/card/card-1");
+    // The old planner chat is gone from Advanced.
+    expect(screen.queryByText(/planner chat/i)).toBeNull();
+    cleanup();
+
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={onCreated}
+      />
+    );
+    await user.type(screen.getByLabelText("Title"), "Full ask");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(2));
+    expect(push).toHaveBeenCalledTimes(1);
+    cleanup();
   });
 
   it("defaults to the scoped repo when defaultRepoId is provided", async () => {

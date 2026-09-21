@@ -18,10 +18,22 @@ three agents. This page is the map.
                                        └──▶ Needs Attention (stuck, capped, or errored)
 ```
 
-**1 · Plan.** The planner reads the card and the repo, then writes plan
-artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop to run, and
-a `CRITERIA.md` holding the acceptance criteria. This is a single invocation,
-and the card shows you the plan when it lands.
+**Scope it first, if the card is rough.** Every card carries a scoping thread
+on its Task tab. An assistant that reads the card's repository, with no way to
+change it, asks the questions a plan needs answered and can draft the scoped
+task itself: a title and description for you to edit and apply. The planner
+receives the whole thread, so decisions reached there shape the plan instead of
+being retyped into the description. **Create and scope** in the New task dialog
+takes a rough ask straight to that thread. Scoping is a role of its own in
+Settings, separate from the planner, because you wait on every turn.
+
+**1 · Plan.** The planner reads the card, its scoping thread, and the repo, then
+writes plan artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop
+to run, and a `CRITERIA.md` holding the acceptance criteria. This is a single
+invocation, and the card shows you the plan when it lands. A card the planner
+finds too vague to plan gets questions instead of a guess: they land in the
+scoping thread and the card goes to Needs Attention. Answer them there and
+**Plan again**.
 
 **2 · Loop.** The loop agent implements one task at a time inside a per-card
 `git worktree`, running its targeted check each iteration. Every iteration is a
@@ -84,11 +96,12 @@ If auto-approve and pull-request delivery are both on, the pull request is opene
 as a **draft** — nobody looked at the diff, and the draft says so. A pull request
 Radulf opens as ready-for-review is one a human approved.
 
-## The three agent roles
+## The four agent roles
 
 | Role | Job |
 |------|-----|
-| **Planner** | Turns a card into a plan, a loop prompt, and acceptance criteria. |
+| **Scoping** | Talks a rough card through with you, reading the repo read-only, and drafts the scoped task. Interactive; runs only when you ask. |
+| **Planner** | Turns a card and its scoping thread into a plan, a loop prompt, and acceptance criteria. |
 | **Loop** | Implements one task at a time against the worktree, running its targeted check each iteration. |
 | **Evaluator** | The sole whole-card verifier. Runs every criterion, inspects the diff, returns `approve` or `revise`, and on approve writes the summary and refreshes stale docs. |
 
@@ -106,7 +119,7 @@ on the Settings page. See [Providers and models](PROVIDERS.md).
 | **Todo** | The ordered execution queue. Auto Mode pulls from here. | You |
 | **In Progress** | Planning, looping, or evaluating — including revision cycles. | You start it; the orchestrator works it |
 | **In Review** | An evaluator-cleared diff is waiting on your judgment. | Orchestrator |
-| **Needs Attention** | Stalled, capped, errored, or merge-conflicted. | Orchestrator |
+| **Needs Attention** | Stalled, capped, errored, merge-conflicted, or waiting on your answers to the planner's questions. | Orchestrator |
 | **Done** | Approved and merged. | Orchestrator, on your approval |
 
 The orchestrator moves cards on its own as it works them. The transitions that

@@ -31,10 +31,14 @@ class MockEventSource {
 let cardStatus = "plan_review";
 let cardRuns: Array<Record<string, unknown>> = [];
 let cardPlans: Array<Record<string, unknown>> = [];
+let cardEvents: Array<Record<string, unknown>> = [];
+let cardScoping: Array<Record<string, unknown>> = [];
 
 beforeEach(() => {
   cleanup();
   cardStatus = "plan_review";
+  cardEvents = [];
+  cardScoping = [];
   cardRuns = [
     {
       id: "r1",
@@ -107,7 +111,8 @@ beforeEach(() => {
             repo: null,
             plans: cardPlans,
             runs: cardRuns,
-            events: [],
+            events: cardEvents,
+            scoping: cardScoping,
             models: {
               planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
               loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
@@ -166,6 +171,43 @@ describe("CardDetail", () => {
     render(<CardDetail />);
 
     expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
+  });
+
+  it("points a card the planner questioned at its scoping thread, and offers to plan again", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "plan-q", kind: "plan", status: "completed", iterationsDone: 0, exitReason: "planner raised follow-up questions", startedAt: "", endedAt: "", iterations: [] },
+    ];
+    cardEvents = [
+      { id: 1, runId: "plan-q", type: "plan.questions", payload: JSON.stringify({ questions: "1. Which module?" }), createdAt: "2026-09-21T10:00:00.000Z" },
+    ];
+    cardScoping = [{ id: 1, role: "planner", content: "1. Which module?", createdAt: "" }];
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("The planner needs more detail before it can plan this task")).toBeTruthy();
+    // The questions are shown once — in the thread (as a rendered list), not
+    // duplicated verbatim in the banner.
+    expect(screen.queryByText("1. Which module?")).toBeNull();
+    expect(screen.getByText("Which module?").tagName).toBe("LI");
+    expect(screen.getByText("Planner asked")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plan again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Answer and plan again" })).toBeTruthy();
+  });
+
+  it("still shows questions raised before the thread existed", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "plan-q", kind: "plan", status: "completed", iterationsDone: 0, exitReason: "planner raised follow-up questions", startedAt: "", endedAt: "", iterations: [] },
+    ];
+    cardEvents = [
+      { id: 1, runId: "plan-q", type: "plan.questions", payload: JSON.stringify({ questions: "1. Which module?" }), createdAt: "2026-09-21T10:00:00.000Z" },
+    ];
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("1. Which module?")).toBeTruthy();
+    expect(screen.queryByText("Planner asked")).toBeNull();
   });
 
   it("lets a needs-attention card change its model overrides before retrying", async () => {

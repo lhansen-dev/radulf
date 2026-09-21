@@ -11,6 +11,7 @@ const initialSettings: Settings = {
   plannerProvider: "anthropic", plannerModel: "planner", plannerReasoningLevel: "medium",
   loopProvider: "anthropic", loopModel: "looper", loopReasoningLevel: "medium",
   evaluatorProvider: "anthropic", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
+  scopingProvider: "anthropic", scopingModel: "", scopingReasoningLevel: "medium",
   plannerTimeoutMinutes: 30, maxConcurrentCards: 1, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
   iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
   folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", omlxHeaders: "", openrouterApiKey: "••••••••", braveApiKey: "",
@@ -219,17 +220,20 @@ describe("SettingsPage", () => {
   });
 
   it("flags a role whose provider does not suit it, and applies the suggested split", async () => {
-    savedSettings = { ...initialSettings, plannerProvider: "omlx", plannerModel: "llm", evaluatorProvider: "omlx", evaluatorModel: "llm" };
+    savedSettings = { ...initialSettings, scopingProvider: "omlx", scopingModel: "llm", plannerProvider: "omlx", plannerModel: "llm", evaluatorProvider: "omlx", evaluatorModel: "llm" };
     render(<SettingsPage />);
     await screen.findByRole("heading", { name: "General", level: 2 });
     section("Agents & models");
 
-    // The planner and evaluator are on the self-hosted endpoint, the looper on
-    // a subscription, so every role is off the split and all three are named.
+    // Scoping, the planner and the evaluator are on the self-hosted endpoint,
+    // the looper on a subscription, so every role is off the split and all
+    // four are named.
     const summary = screen.getByRole("region", { name: "Suggested model split" });
+    expect(summary.textContent).toContain("Scoping agent");
     expect(summary.textContent).toContain("Planner agent");
     expect(summary.textContent).toContain("Looper agent");
     expect(summary.textContent).toContain("Evaluator agent");
+    expect(screen.getByText(/Scoping is a live conversation/)).toBeTruthy();
     expect(screen.getByText(/Planning is the pipeline's hardest reasoning/)).toBeTruthy();
     expect(screen.getByText(/only gate that runs the whole-card acceptance criteria/)).toBeTruthy();
     expect(screen.getByText(/drives most of your token spend/)).toBeTruthy();
@@ -237,6 +241,7 @@ describe("SettingsPage", () => {
     fireEvent.click(within(summary).getByRole("button", { name: /Use Claude for planning and review/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
     await waitFor(() => expect(savedSettings.plannerProvider).toBe("anthropic"));
+    expect(savedSettings.scopingProvider).toBe("anthropic");
     expect(savedSettings.evaluatorProvider).toBe("anthropic");
     expect(savedSettings.loopProvider).toBe("omlx");
     // The callout goes quiet once every role suits its stage.

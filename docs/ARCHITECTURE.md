@@ -57,21 +57,28 @@ the mapping to the five board columns is in the comment above the list.
 `reviewing` renders as nothing at all, because it is a short-lived atomic claim
 on a review decision rather than a state a card rests in.
 
-## The three roles
+## The four roles
 
 Each role is a service with one entry point, and each constructs its own pi
 session. The role is what decides the tool set — see the capability split below.
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
+| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)` | 5 min per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
 | Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
 
+Scoping is not a pipeline stage (spec 17): it runs on demand from the card's
+API route, outside the orchestrator's slots, as a read-only session against the
+repository checkout. Its thread lives in `scoping_messages` and is rendered
+into the planner's prompt; a planner run that raises `QUESTIONS.md` appends
+them to the same thread.
+
 The loop is not a separate service — it is the orchestrator's own method,
 because it is the thing the pipeline slots exist to meter.
 
-`src/server/reviewService.ts` is the fourth service but not an agent role: it
+`src/server/reviewService.ts` is a service too but not an agent role: it
 owns `approve`, `retryMerge`, and `abandon` — the human decisions.
 
 ### What one loop iteration does

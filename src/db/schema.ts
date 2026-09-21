@@ -111,6 +111,28 @@ export const plans = sqliteTable("plans", {
 }, (table) => [index("plans_card_version_idx").on(table.cardId, table.version)]);
 
 /**
+ * Spec 17: a card's scoping thread — the operator, the scoping assistant, and
+ * the planner's own blocking questions, in order. Part of the card rather
+ * than of a run: the planner receives it as context, and it is the durable
+ * record of why the card is shaped the way it is.
+ */
+export type ScopingRole = "user" | "assistant" | "planner";
+
+export const scopingMessages = sqliteTable(
+  "scoping_messages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    cardId: text("card_id")
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    role: text("role").$type<ScopingRole>().notNull(),
+    content: text("content").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("scoping_messages_card_id_idx").on(table.cardId, table.id)],
+);
+
+/**
  * Why a run's provider call failed, when the error said anything about it.
  * Null when the failure says nothing about the provider — an unparseable
  * plan or a failing test is not the provider's doing.

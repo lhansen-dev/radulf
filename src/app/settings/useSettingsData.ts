@@ -13,6 +13,9 @@ export type Settings = {
   evaluatorProvider: string;
   evaluatorModel: string;
   evaluatorReasoningLevel: string;
+  scopingProvider: string;
+  scopingModel: string;
+  scopingReasoningLevel: string;
   plannerTimeoutMinutes: number;
   folderBrowserRoot: string;
   omlxBaseUrl: string;
