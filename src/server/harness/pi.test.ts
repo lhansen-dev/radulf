@@ -92,6 +92,17 @@ describe("omlxProviderConfig", () => {
     const s = testSettings({ omlxBaseUrl: "http://localhost:8000" });
     expect(omlxProviderConfig("m", s).models[0].contextWindow).toBe(32_768);
   });
+
+  it("passes extra headers through, escaped so pi sends them literally", () => {
+    // pi reads `$NAME` as an env reference and a leading `!` as a shell
+    // command; a pasted value must survive that as-is.
+    const config = omlxProviderConfig(
+      "m",
+      testSettings({ omlxHeaders: "kong-api-key: abc$123\nX-Note: !literal" }),
+    );
+    expect(config.headers).toEqual({ "kong-api-key": "abc$$123", "X-Note": "$!literal" });
+    expect(omlxProviderConfig("m", testSettings()).headers).toEqual({});
+  });
 });
 
 describe("piNormalize", () => {

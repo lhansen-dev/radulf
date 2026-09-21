@@ -1,7 +1,7 @@
 import { getSettings, type Settings } from "./settings";
 import { listAuthedModels } from "./harness";
 import { fetchJson } from "./fetchJson";
-import { listLocalModels } from "./localEndpoint";
+import { listLocalModels, parseHeaderLines } from "./localEndpoint";
 import { mockProviderModels } from "./harness/mock";
 
 /**
@@ -117,7 +117,7 @@ async function fetchProviderModels(
     case "mock":
       return mockProviderModels();
     case "omlx": {
-      const models = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey);
+      const models = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey, parseHeaderLines(s.omlxHeaders));
       return models.map((m) => ({
         value: m.id,
         displayName: m.id,

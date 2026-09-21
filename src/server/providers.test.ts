@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { listProviderModels, resetProviderModelsCacheForTests } from "./providers";
 import type { Settings } from "./settings";
 
-const omlxSettings = { omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "key" } as Settings;
+const omlxSettings = { omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "key", omlxHeaders: "" } as Settings;
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status });

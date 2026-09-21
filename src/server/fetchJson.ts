@@ -15,13 +15,22 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-export async function fetchJson(url: string, bearer: string, who: string): Promise<unknown> {
+export async function fetchJson(
+  url: string,
+  bearer: string,
+  who: string,
+  headers: Record<string, string> = {},
+): Promise<unknown> {
+  // Extra headers ride alongside the bearer token. One named Authorization
+  // replaces it, so a gateway with its own scheme sees exactly one.
+  const hasAuthorization = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+  const requestHeaders = hasAuthorization ? headers : { Authorization: `Bearer ${bearer}`, ...headers };
   let lastError: Error | undefined;
   for (let attempt = 0; ; attempt++) {
     let res: Response;
     try {
       res = await fetch(url, {
-        headers: { Authorization: `Bearer ${bearer}` },
+        headers: requestHeaders,
         signal: AbortSignal.timeout(10_000),
         cache: "no-store",
       });

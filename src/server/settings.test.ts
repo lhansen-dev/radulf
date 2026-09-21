@@ -35,4 +35,11 @@ describe("secret settings encryption at rest", () => {
 
     expect(getSettings().openrouterApiKey).toBe("sk-real-value");
   });
+
+  it("validates a stored header list against its plaintext, not its ciphertext", () => {
+    // Without decrypt-before-validate the ciphertext fails the Name: value
+    // check and the setting silently falls back to blank.
+    patchSettings({ omlxHeaders: "kong-api-key: abc123" });
+    expect(getSettings().omlxHeaders).toBe("kong-api-key: abc123");
+  });
 });
