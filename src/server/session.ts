@@ -81,6 +81,23 @@ export function isAllowedOrigin(origin: string | null): boolean {
   }
 }
 
+/**
+ * Base URL a Route Handler should build its redirects against.
+ *
+ * `request.url` in a Route Handler carries the address the server is bound to,
+ * not the Host the client asked for. On anything but a localhost-only
+ * deployment that sends the browser somewhere it cannot reach: bound to
+ * 0.0.0.0 a LAN client is redirected to http://0.0.0.0:3000/, and bound to
+ * 127.0.0.1 it is sent to the client's own loopback. The proxy rejects any
+ * mutating request whose Origin is not allowed before a handler ever runs, so
+ * when a browser sent one it is both present and safe to redirect to. Non-
+ * browser clients send none, and fall back to the previous behaviour.
+ */
+export function redirectBase(request: Request): string {
+  const origin = request.headers.get("origin");
+  return origin && isAllowedOrigin(origin) ? origin : request.url;
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
