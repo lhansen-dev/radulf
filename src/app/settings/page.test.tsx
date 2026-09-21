@@ -48,6 +48,11 @@ describe("SettingsPage", () => {
       if (url === "/api/settings") {
         return init?.method === "PATCH" ? patch(JSON.parse(String(init.body))) : json(savedSettings);
       }
+      if (url === "/api/repos/init" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { parentPath: string; name: string };
+        repositories = [{ id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", createdAt: "2026-09-21" }];
+        return json(repositories[0], 201);
+      }
       if (url === "/api/repos") {
         if (init?.method === "POST") {
           repositories = [{ id: "new-repo", createdAt: "2026-09-12", ...JSON.parse(String(init.body)) }];
@@ -178,6 +183,22 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByLabelText("OpenRouter API key") as HTMLInputElement).value).toBe("••••••••");
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("creates a fresh repository from the folder browser and lists it", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Repositories");
+    fireEvent.click(screen.getByRole("button", { name: "Choose repository folder" }));
+    await screen.findByRole("list", { name: "Folders" });
+
+    fireEvent.change(screen.getByLabelText("New repository name"), { target: { value: "fresh-project" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create here" }));
+
+    await screen.findByText("fresh-project");
+    expect(screen.getByText("/home/dev/fresh-project")).toBeTruthy();
+    // The browser closes once the repository exists; the list is the result.
+    expect(screen.queryByRole("list", { name: "Folders" })).toBeNull();
   });
 
   it("browses for a repository folder in the browser, not a host dialog", async () => {
