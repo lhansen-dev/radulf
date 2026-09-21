@@ -280,6 +280,13 @@ before merge** in `approveClaimedRun`, however long the card sat in In Review.
 The pre-merge check is the load-bearing one; a violation halts the card to Needs
 Attention with the diff of what moved.
 
+The run-end ref comparison skips everything under `refs/heads/ralph/`, which is
+the namespace Radulf writes itself: card run branches and improvement-run
+feature branches. Every worktree shares one `.git`, so without that a sibling
+card's ordinary commit shows up as tampering in this run's snapshot and throws
+away a finished run (spec 19). Base branches, `main`, tags and remotes are
+still compared, as are hooks and `.git/config`.
+
 ### Install-script gate
 
 After an install, the orchestrator enumerates every `preinstall`/`install`/

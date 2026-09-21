@@ -122,6 +122,44 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
     }
   });
 
+  it("ignores sibling ralph/* refs, which Radulf moves itself (spec 19)", async () => {
+    const sibling = "refs/heads/ralph/other-card-run2";
+    const finished = "refs/heads/ralph/finished-card-run3";
+    git(repo, "update-ref", sibling, "HEAD");
+    git(repo, "update-ref", finished, "HEAD");
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    // Every worktree shares one .git, so this run's snapshot picks up what
+    // the rest of the server did meanwhile: a second card's loop committing,
+    // an improvement run cutting its feature branch, and a finished card's
+    // worktree cleanup dropping its branch. commit-tree rather than commit,
+    // so `main` stays put and only the ralph/ refs move.
+    const tree = git(repo, "rev-parse", "HEAD^{tree}");
+    const oid = git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "sibling card's iteration");
+    git(repo, "update-ref", sibling, oid);
+    git(repo, "update-ref", "refs/heads/ralph/improve-1789947998164", oid);
+    git(repo, "update-ref", "-d", finished);
+    try {
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual([]);
+    } finally {
+      git(repo, "update-ref", "-d", sibling);
+      git(repo, "update-ref", "-d", "refs/heads/ralph/improve-1789947998164");
+    }
+  });
+
+  it("still catches a ref planted outside the ralph/ namespace", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    git(repo, "update-ref", "refs/heads/attacker", "HEAD");
+    try {
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual(["ref appeared: refs/heads/attacker"]);
+    } finally {
+      git(repo, "update-ref", "-d", "refs/heads/attacker");
+    }
+  });
+
   it("catches a hook planted AFTER a clean run-end check, at the pre-merge re-check", async () => {
     const baseline = (await snapshotRepoIntegrity(repo))!;
     // Run-end check passes…
