@@ -1011,6 +1011,14 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
     if (!name.trim()) setName(picked.split("/").pop() ?? "");
   }
 
+  // Errors propagate: the browser reports them through onError.
+  async function createRepo(parentPath: string, repoName: string) {
+    setError("");
+    await api("/api/repos/init", { json: { parentPath, name: repoName } });
+    setBrowsing(false);
+    onChange();
+  }
+
   async function add() {
     setError("");
     try {
@@ -1110,7 +1118,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 </button>
                 {browsing && (
                   <div className="mt-2">
-                    <FolderBrowser onPick={pickFolder} onError={setError} />
+                    <FolderBrowser onPick={pickFolder} onCreate={createRepo} onError={setError} />
                   </div>
                 )}
               </>
