@@ -13,7 +13,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import { listLocalModels, v1Root } from "../localEndpoint";
+import { listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
 import type { ProviderId } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
@@ -200,6 +200,11 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
     baseUrl: v1Root(s.omlxBaseUrl),
     apiKey: s.omlxApiKey || "omlx",
     api: "openai-completions" as const,
+    // Sent on every request; a header named Authorization wins over the
+    // bearer token pi derives from apiKey.
+    headers: Object.fromEntries(
+      Object.entries(parseHeaderLines(s.omlxHeaders)).map(([name, value]) => [name, piLiteral(value)]),
+    ),
     models: [
       {
         id: model,
@@ -215,6 +220,16 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
       },
     ],
   };
+}
+
+/**
+ * pi reads a provider header value as a config reference: `$NAME` is an
+ * environment variable and a leading `!` runs a shell command. A header pasted
+ * into Settings is a literal, so escape it the way pi documents: `$$` for `$`,
+ * `$!` for `!`.
+ */
+function piLiteral(value: string): string {
+  return value.replace(/\$/g, "$$$$").replace(/^!/, "$!");
 }
 
 /** The OpenRouter endpoint pi's installed `openai-completions` API expects. */
@@ -291,7 +306,7 @@ export async function resolveModel(
     // Ask the server what it is actually serving. The context window is a
     // per-deployment number (vLLM's --max-model-len), so it cannot be a
     // constant here, and a wrong one surfaces as a 400 deep into a loop.
-    const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey);
+    const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey, parseHeaderLines(s.omlxHeaders));
     const meta = served.find((x) => x.id === model);
     if (!meta) {
       throw new Error(

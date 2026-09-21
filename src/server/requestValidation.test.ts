@@ -3,12 +3,13 @@ import { parseCreateCard, parseUpdateCard } from "./cardValidation";
 import { REDACTED, SETTING_DEFAULTS, redactSettings, validateSettingsPatch } from "./settings";
 
 describe("redactSettings", () => {
-  const secrets = ["omlxApiKey", "openrouterApiKey", "braveApiKey"] as const;
+  const secrets = ["omlxApiKey", "omlxHeaders", "openrouterApiKey", "braveApiKey"] as const;
 
   it("replaces every stored provider credential with the redaction marker", () => {
     const redacted = redactSettings({
       ...SETTING_DEFAULTS,
       omlxApiKey: "omlx-secret",
+      omlxHeaders: "kong-api-key: header-secret",
       openrouterApiKey: "sk-or-v1-secret",
       braveApiKey: "brave-secret",
     });
@@ -16,7 +17,7 @@ describe("redactSettings", () => {
     for (const key of secrets) expect(redacted[key]).toBe(REDACTED);
     // Not merely masked in place — no fragment of the real value survives.
     const serialized = JSON.stringify(redacted);
-    for (const secret of ["omlx-secret", "sk-or-v1-secret", "brave-secret"]) {
+    for (const secret of ["omlx-secret", "header-secret", "sk-or-v1-secret", "brave-secret"]) {
       expect(serialized).not.toContain(secret);
     }
   });
@@ -70,6 +71,7 @@ describe("validateSettingsPatch", () => {
         theme: "nord",
         loopReasoningLevel: "high",
         omlxBaseUrl: "http://127.0.0.1:8000",
+        omlxHeaders: "kong-api-key: abc123\n",
         plannerPromptTemplate: "Plan {{TITLE}}",
         sandboxEnabled: false,
         sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -86,6 +88,7 @@ describe("validateSettingsPatch", () => {
       theme: "nord",
       loopReasoningLevel: "high",
       omlxBaseUrl: "http://127.0.0.1:8000",
+      omlxHeaders: "kong-api-key: abc123\n",
       plannerPromptTemplate: "Plan {{TITLE}}",
       sandboxEnabled: false,
       sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -104,6 +107,8 @@ describe("validateSettingsPatch", () => {
     [{ theme: "matrix" }, /known theme/],
     [{ evaluatorReasoningLevel: "extreme" }, /evaluatorReasoningLevel must be one of/],
     [{ omlxBaseUrl: "file:///tmp/model" }, /http or https/],
+    [{ omlxHeaders: "kong-api-key abc123" }, /omlxHeaders: line 1 must look like "Name: value"/],
+    [{ omlxHeaders: 42 }, /omlxHeaders must be a string/],
     [{ evaluatorPromptTemplate: 42 }, /must be a string/],
     [{ improvePromptTemplate: "x".repeat(100_001) }, /at most 100000 characters/],
     [{ madeUpSetting: true }, /unknown setting/],

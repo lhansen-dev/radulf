@@ -405,6 +405,21 @@ export default function SettingsPage() {
                     {textInput("omlxBaseUrl", { label: "Local server base URL" })}
                     {textInput("omlxApiKey", { label: "Local server API key", type: "password", placeholder: "optional; many local servers need none" })}
                   </div>
+                  <label className="text-sm text-foreground/70">
+                    Extra request headers (one per line)
+                    <textarea
+                      rows={2}
+                      value={settings.omlxHeaders}
+                      onChange={(e) => set({ omlxHeaders: e.target.value })}
+                      placeholder="kong-api-key: …"
+                      className={`${inputCls} font-mono`}
+                    />
+                  </label>
+                  <p className="text-xs text-foreground/40">
+                    For a gateway in front of the server that authenticates on a header of its own.
+                    Sent with every request alongside the API key; a header named Authorization
+                    replaces the key&apos;s bearer token.
+                  </p>
                 </section>
                 <section className={sectionCls}>
                   <SectionHeading title="API keys">Optional services for hosted models and planner web search.</SectionHeading>
@@ -412,7 +427,7 @@ export default function SettingsPage() {
                   {textInput("braveApiKey", { label: "Brave Search API key", type: "password", placeholder: "Brave Search API key" })}
                 </section>
                 <p className="px-1 text-xs leading-relaxed text-foreground/50">
-                  Saved keys are hidden as <code>••••••••</code>. Leave them as shown to keep them, replace to update, or clear and save to remove.
+                  Saved keys and headers are hidden as <code>••••••••</code>. Leave them as shown to keep them, replace to update, or clear and save to remove.
                 </p>
               </div>
             </SettingsPanel>

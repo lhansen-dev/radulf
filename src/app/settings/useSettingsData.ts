@@ -17,6 +17,7 @@ export type Settings = {
   folderBrowserRoot: string;
   omlxBaseUrl: string;
   omlxApiKey: string;
+  omlxHeaders: string;
   openrouterApiKey: string;
   braveApiKey: string;
   maxConcurrentCards: number;

@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db, settings } from "@/db";
 import { ClientError } from "./clientError";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
+import { parseHeaderLines } from "./localEndpoint";
 
 function readBuiltInPromptTemplate(fileName: string): string {
   return fs.readFileSync(
@@ -33,6 +34,10 @@ export const SETTING_DEFAULTS = {
   folderBrowserRoot: "",
   omlxBaseUrl: "http://127.0.0.1:8000",
   omlxApiKey: "",
+  // Extra headers for the local endpoint, one `Name: value` per line, for a
+  // gateway that authenticates on a header of its own (Kong's `kong-api-key`)
+  // rather than the bearer token above. Sent with every request to it.
+  omlxHeaders: "",
   openrouterApiKey: "",
   // Brave Search API key. When set, the planner gains a `web_search` tool —
   // planner only, since the loop and evaluator hold bash and must not also hold
@@ -210,6 +215,7 @@ const MAX_PROMPT_TEMPLATE_LENGTH = 100_000;
  * which is unredacted; only the HTTP layer redacts. */
 const SECRET_SETTINGS = new Set<keyof Settings>([
   "omlxApiKey",
+  "omlxHeaders",
   "openrouterApiKey",
   "braveApiKey",
 ]);
@@ -282,6 +288,16 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         invalid("omlxBaseUrl must be a URL");
       }
       if (!["http:", "https:"].includes(url.protocol)) invalid("omlxBaseUrl must use http or https");
+    } else if (key === "omlxHeaders") {
+      if (typeof settingValue !== "string") invalid("omlxHeaders must be a string");
+      // The form echoes a stored value back as REDACTED (see patchSettings).
+      if (settingValue !== REDACTED) {
+        try {
+          parseHeaderLines(settingValue);
+        } catch (e) {
+          invalid(`omlxHeaders: ${e instanceof Error ? e.message : e}`);
+        }
+      }
     } else if (PROMPT_TEMPLATE_SETTINGS.has(key)) {
       if (typeof settingValue !== "string") invalid(`${key} must be a string`);
       if (settingValue.length > MAX_PROMPT_TEMPLATE_LENGTH) {
@@ -300,17 +316,19 @@ export function getSettings(): Settings {
   const out = { ...SETTING_DEFAULTS } as Settings;
   const apply = (key: string, rawValue: string) => {
     try {
-      const validated = validateSettingsPatch({ [key]: JSON.parse(rawValue) });
+      const stored: unknown = JSON.parse(rawValue);
+      // Stored value may be encrypted (current writes) or legacy plaintext
+      // (rows written before this module existed) — decryptSecret handles both.
+      // Decrypt before validating: a format check has to see the plaintext.
+      const plain = SECRET_SETTINGS.has(key as keyof Settings) && typeof stored === "string"
+        ? decryptSecret(stored)
+        : stored;
+      const validated = validateSettingsPatch({ [key]: plain });
       const value = validated[key as keyof Settings];
       // Blank templates are a reset signal, never an executable prompt.
       if (PROMPT_TEMPLATE_SETTINGS.has(key as keyof Settings) &&
           typeof value === "string" && !value.trim()) return;
-      // Stored value may be encrypted (current writes) or legacy plaintext
-      // (rows written before this module existed) — decryptSecret handles both.
-      const resolved = SECRET_SETTINGS.has(key as keyof Settings) && typeof value === "string"
-        ? decryptSecret(value)
-        : value;
-      (out as Record<string, unknown>)[key] = resolved;
+      (out as Record<string, unknown>)[key] = value;
     } catch {
       // Ignore legacy/corrupt values and retain the safe default.
     }

@@ -92,6 +92,13 @@ serving from `/v1/models` and runs the loop against `/v1/chat/completions`. The
 base URL is the server root (`http://127.0.0.1:8000`, the default), though a URL
 that already ends in `/v1` is accepted too.
 
+Most local servers need no credential, so the **Local server API key** can stay
+blank; when set, it is sent as a bearer token. A gateway in front of the server
+that authenticates on a header of its own, such as Kong's `kong-api-key`, takes
+**Extra request headers**: one `Name: value` per line, sent with every request
+alongside the key. A header named `Authorization` replaces the key's bearer
+token rather than being sent next to it.
+
 Two things must hold before you start a loop: the server has to be running and
 reachable at that base URL, and the model has to be tool-capable. On vLLM that
 means starting it with `--enable-auto-tool-choice` and the `--tool-call-parser`
@@ -236,7 +243,7 @@ still need an occasional real run.
 
 ## Where credentials live
 
-Provider credentials — the local server's base URL and key, the OpenRouter key,
+Provider credentials — the local server's base URL, key and extra headers, the OpenRouter key,
 the Brave key — are stored in Radulf's SQLite database and flow into the agent session at
 runtime. They never touch disk inside the worktree, and the agent's shell runs
 with a scrubbed environment so it cannot read Radulf's own secrets.

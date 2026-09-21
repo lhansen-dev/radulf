@@ -13,7 +13,7 @@ const initialSettings: Settings = {
   evaluatorProvider: "anthropic", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
   plannerTimeoutMinutes: 30, maxConcurrentCards: 1, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
   iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
-  folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
+  folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", omlxHeaders: "", openrouterApiKey: "••••••••", braveApiKey: "",
   minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",
   sandboxWeakerIsolationForGoTls: false, notificationsEnabled: false, soundEnabled: false,
   attentionStaleMinutes: 15, alertWebhookUrl: "",
