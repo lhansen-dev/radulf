@@ -1,8 +1,8 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api } from "../../ui/api";
+import { api, useEventStream } from "../../ui/api";
 import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
@@ -79,6 +79,24 @@ export default function ReviewPage() {
     api<DiffResponse>(`/api/cards/${id}/diff`).then(setDiff).catch((e) => setError(String(e)));
   }, [id]);
   useEffect(refetch, [refetch]);
+  const wasDisconnected = useRef(false);
+  useEventStream(
+    (event) => {
+      if (event.cardId === id) refetch();
+    },
+    (connected) => {
+      if (!connected) {
+        wasDisconnected.current = true;
+        return;
+      }
+      // Missed events aren't replayed: refetch on a genuine reconnect, not on
+      // the first open after mount, which the initial load already covers.
+      if (wasDisconnected.current) {
+        wasDisconnected.current = false;
+        refetch();
+      }
+    },
+  );
 
   const files = useMemo(() => (diff ? parseDiff(diff.diff) : []), [diff]);
   const evaluation = useMemo(() => (diff?.evaluation ? parseEvaluation(diff.evaluation) : null), [diff]);
