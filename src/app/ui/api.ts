@@ -55,9 +55,60 @@ export async function api<T = unknown>(
   return data as T;
 }
 
+type StreamEvent = { type: string; cardId: string | null; payload?: string };
+type StreamSubscriber = {
+  onEvent: (e: StreamEvent) => void;
+  onConnectionChange: (connected: boolean) => void;
+};
+
+// One EventSource per tab, shared by every useEventStream caller. The board
+// and a card page's two subscribers would otherwise each hold a connection,
+// and a few open tabs exhaust the browser's per-origin HTTP/1.1 limit under
+// `next dev`. Opened by the first subscriber, closed when the last leaves.
+let sharedStream: EventSource | null = null;
+let sharedConnected: boolean | null = null;
+const subscribers = new Set<StreamSubscriber>();
+
+function subscribeToStream(subscriber: StreamSubscriber): () => void {
+  subscribers.add(subscriber);
+  if (sharedStream) {
+    // A late subscriber gets the same open/error callback its own stream
+    // would have fired by now.
+    if (sharedConnected !== null) subscriber.onConnectionChange(sharedConnected);
+  } else {
+    const es = new EventSource("/api/events/stream");
+    es.onopen = () => {
+      sharedConnected = true;
+      subscribers.forEach((s) => s.onConnectionChange(true));
+    };
+    es.onerror = () => {
+      sharedConnected = false;
+      subscribers.forEach((s) => s.onConnectionChange(false));
+    };
+    es.onmessage = (msg) => {
+      let event: StreamEvent;
+      try {
+        event = JSON.parse(msg.data);
+      } catch {
+        return; // ignore malformed frames
+      }
+      subscribers.forEach((s) => s.onEvent(event));
+    };
+    sharedStream = es;
+  }
+  return () => {
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0) {
+      sharedStream?.close();
+      sharedStream = null;
+      sharedConnected = null;
+    }
+  };
+}
+
 /** Subscribe to the server event stream; call onEvent for each event row. */
 export function useEventStream(
-  onEvent: (e: { type: string; cardId: string | null; payload?: string }) => void,
+  onEvent: (e: StreamEvent) => void,
   onConnectionChange?: (connected: boolean) => void
 ) {
   const cb = useRef(onEvent);
@@ -66,19 +117,10 @@ export function useEventStream(
     cb.current = onEvent;
     connectionCb.current = onConnectionChange;
   });
-  useEffect(() => {
-    const es = new EventSource("/api/events/stream");
-    es.onopen = () => connectionCb.current?.(true);
-    es.onerror = () => connectionCb.current?.(false);
-    es.onmessage = (msg) => {
-      try {
-        cb.current(JSON.parse(msg.data));
-      } catch {
-        // ignore malformed frames
-      }
-    };
-    return () => es.close();
-  }, []);
+  useEffect(() => subscribeToStream({
+    onEvent: (event) => cb.current(event),
+    onConnectionChange: (connected) => connectionCb.current?.(connected),
+  }), []);
 }
 
 export function timeAgo(iso: string | null): string {
