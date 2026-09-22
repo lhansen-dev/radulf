@@ -193,13 +193,6 @@ export function computeAnalytics(input: {
   const model = (r: AnalyticsRunRow) => (r.model?.trim() ? r.model : "unknown");
   const count = () => 1;
 
-  // Ordered ascending; spec 11 forbids a second duration calculation, so the
-  // loop KPIs derive from this same list.
-  const iterationDurationsMs = iterations
-    .filter((i) => i.startedAt && i.endedAt)
-    .map(durationMs)
-    .sort((a, b) => a - b);
-
   // "paused" is deliberately absent (spec 18 §6): the operator stopped that
   // run, so it is neither a success nor a failure and belongs on neither side
   // of the rate.
@@ -221,7 +214,7 @@ export function computeAnalytics(input: {
     runsByStatus: groupBars(runs, (r) => r.status, count),
     tokensPerRun: byValueDesc(runs.map((r) => ({ label: runLabel(r), value: tokens(r) }))),
     costPerRun: byValueDesc(pricedRuns.map((r) => ({ label: runLabel(r), value: cost(r) }))),
-    loopKpis: computeLoopKpis(iterations, iterationDurationsMs),
+    loopKpis: computeLoopKpis(iterations),
     loopCohorts: computeLoopCohorts(iterations, runs),
     successRate: terminal.length === 0 ? 0 : completed / terminal.length,
     tokensByModel: groupBars(runs, model, tokens),
@@ -244,16 +237,34 @@ function median(values: number[]): number | null {
   return percentile([...values].sort((a, b) => a - b), 50);
 }
 
-function computeLoopKpis(
-  iterations: AnalyticsIterationRow[],
-  sortedDurationsMs: number[],
-): LoopKpis {
-  const sampleSize = sortedDurationsMs.length;
+/** The duration and model-turn facts both the loop KPIs and the rollout
+ * acceptance read off a set of iterations: the measurable durations ranked
+ * ascending (spec 11 forbids a second duration calculation, so this is the
+ * one place it happens), their p50 and p90, the share at or over
+ * SLOW_ITERATION_MS, and the median of the reported model turns. */
+function loopWindowStats(iterations: AnalyticsIterationRow[]) {
+  const sortedDurationsMs = iterations
+    .filter((i) => i.startedAt && i.endedAt)
+    .map(durationMs)
+    .sort((a, b) => a - b);
   const slowCount = sortedDurationsMs.filter((d) => d >= SLOW_ITERATION_MS).length;
-
   const turnSamples = iterations
     .map((i) => i.modelTurns)
     .filter((t): t is number => t != null);
+  return {
+    sortedDurationsMs,
+    durationP50Ms: percentile(sortedDurationsMs, 50),
+    durationP90Ms: percentile(sortedDurationsMs, 90),
+    slowIterationRate: sortedDurationsMs.length > 0 ? slowCount / sortedDurationsMs.length : null,
+    medianModelTurns: median(turnSamples),
+    modelTurnsSampleSize: turnSamples.length,
+  };
+}
+
+function computeLoopKpis(iterations: AnalyticsIterationRow[]): LoopKpis {
+  const stats = loopWindowStats(iterations);
+  const { sortedDurationsMs } = stats;
+  const sampleSize = sortedDurationsMs.length;
 
   // Cache-hit ratio only over iterations that actually reported cache facts —
   // mixing in pre-telemetry rows would understate the ratio.
@@ -261,16 +272,15 @@ function computeLoopKpis(
   const cachedInput = cacheRows.reduce((sum, i) => sum + (i.cachedInputTokens ?? 0), 0);
   const uncachedInput = cacheRows.reduce((sum, i) => sum + (i.promptTokens ?? 0), 0);
 
-
   return {
     sampleSize,
-    durationP50Ms: percentile(sortedDurationsMs, 50),
-    durationP90Ms: percentile(sortedDurationsMs, 90),
+    durationP50Ms: stats.durationP50Ms,
+    durationP90Ms: stats.durationP90Ms,
     durationP95Ms: percentile(sortedDurationsMs, 95),
     durationMaxMs: sampleSize > 0 ? sortedDurationsMs[sampleSize - 1] : null,
-    slowIterationRate: sampleSize > 0 ? slowCount / sampleSize : null,
-    medianModelTurns: median(turnSamples),
-    modelTurnsSampleSize: turnSamples.length,
+    slowIterationRate: stats.slowIterationRate,
+    medianModelTurns: stats.medianModelTurns,
+    modelTurnsSampleSize: stats.modelTurnsSampleSize,
     cacheHitRatio:
       cachedInput + uncachedInput > 0 ? cachedInput / (cachedInput + uncachedInput) : null,
     cacheSampleSize: cacheRows.length,
@@ -287,21 +297,9 @@ function computeLoopKpis(
 export function computeRolloutAcceptance(
   iterations: AnalyticsIterationRow[],
 ): RolloutAcceptance {
-  const window = iterations.filter((i) => i.startedAt && i.endedAt);
-  const sufficientSample = window.length >= ROLLOUT_SAMPLE_SIZE;
-
-  const durations = window.map(durationMs).sort((a, b) => a - b);
-  const turnSamples = window
-    .map((i) => i.modelTurns)
-    .filter((t): t is number => t != null);
-
-  const medianDuration = percentile(durations, 50);
-  const p90Duration = percentile(durations, 90);
-  const slowRate =
-    durations.length > 0
-      ? durations.filter((d) => d >= SLOW_ITERATION_MS).length / durations.length
-      : null;
-  const medianTurns = median(turnSamples);
+  const stats = loopWindowStats(iterations);
+  const windowSize = stats.sortedDurationsMs.length;
+  const sufficientSample = windowSize >= ROLLOUT_SAMPLE_SIZE;
 
   function evaluate(
     key: RolloutTarget["key"],
@@ -321,10 +319,10 @@ export function computeRolloutAcceptance(
   }
 
   const targets = [
-    evaluate("medianDurationMs", "Median iteration duration", medianDuration, 120_000, "atMost", "ms"),
-    evaluate("p90DurationMs", "p90 iteration duration", p90Duration, 240_000, "atMost", "ms"),
-    evaluate("slowIterationRate", "Iterations at least 5 minutes", slowRate, 0.05, "under", "ratio"),
-    evaluate("medianModelTurns", "Median model turns", medianTurns, 14, "atMost", "count"),
+    evaluate("medianDurationMs", "Median iteration duration", stats.durationP50Ms, 120_000, "atMost", "ms"),
+    evaluate("p90DurationMs", "p90 iteration duration", stats.durationP90Ms, 240_000, "atMost", "ms"),
+    evaluate("slowIterationRate", "Iterations at least 5 minutes", stats.slowIterationRate, 0.05, "under", "ratio"),
+    evaluate("medianModelTurns", "Median model turns", stats.medianModelTurns, 14, "atMost", "count"),
   ];
 
   const accepted = targets.some((t) => t.pass === false)
@@ -334,7 +332,7 @@ export function computeRolloutAcceptance(
       : null;
 
   return {
-    windowSize: window.length,
+    windowSize,
     requiredSampleSize: ROLLOUT_SAMPLE_SIZE,
     sufficientSample,
     targets,
