@@ -857,7 +857,13 @@ export class Orchestrator {
     }
     // CRITERIA.md is orchestrator-private like PLAN.md (the evaluator gets the
     // criteria injected into its prompt). Only PROMPT.md and the signal files
-    // may remain in the worktree.
+    // may remain in the worktree. PROMPT.md is the committed record of the
+    // prompt on the run branch (the plan-sync commit below carries a newer
+    // version onto a reused worktree, and the evaluator prompt names the
+    // file); the iteration prompt itself is built from `plan.promptMd` and
+    // never read back from here, because the loop agent's write root is the
+    // whole worktree and a file it can edit must not become its next
+    // instructions.
     removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md", ...DONE_FILE_NAMES]);
     fs.writeFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), plan.promptMd);
     clearEvaluationArtifact(worktreePath);
@@ -1034,7 +1040,6 @@ export class Orchestrator {
 
         const preIteration = await captureIterationState(worktreePath);
         const before = await buildProgressState(worktreePath, planPath, preIteration);
-        const promptMd = fs.readFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), "utf8");
         const budgetMs = iterationBudgetMs(hardTimeoutMs, productiveMs);
         // Soft signal only — spec 11 forbids terminating an iteration merely
         // for being slow; the hard timeout is the enforcement point.
@@ -1052,7 +1057,7 @@ export class Orchestrator {
             provider,
             model,
             reasoningLevel: settings.loopReasoningLevel,
-            prompt: buildLoopPrompt(promptMd, planMd) + (remindSignal ? SIGNAL_REMINDER : ""),
+            prompt: buildLoopPrompt(plan.promptMd, planMd) + (remindSignal ? SIGNAL_REMINDER : ""),
             cwd: worktreePath,
             timeoutMs: Math.min(remaining, budgetMs),
             signal: controller.signal,
