@@ -146,6 +146,10 @@ The SQLite database and every runtime directory (`./data`, plus the agent-writab
 `./worktrees`, `./plans` and `./runtmp` beside it) are created automatically on first
 run and are all gitignored — **no manual migration step needed**.
 
+Running it on a server? [`docs/DOCKER.md`](docs/DOCKER.md) builds the same thing
+into a container: `docker compose up -d --build`, one volume for state, and restarts
+handled by Docker instead of a service unit.
+
 > [!TIP]
 > **First time here?** Once the dev server is up, open the in-app **Docs** tab
 > (desktop rail / mobile bottom nav, or [`/docs`](http://localhost:3000/docs)). Its

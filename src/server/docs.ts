@@ -97,6 +97,13 @@ export const DOCS: DocMeta[] = [
     sourcePath: "docs/AUTHENTICATION.md",
   },
   {
+    slug: "docker",
+    title: "Running in Docker",
+    description: "One image and one volume instead of a Node toolchain and a service unit: build, run, update, back up.",
+    group: "Guides",
+    sourcePath: "docs/DOCKER.md",
+  },
+  {
     slug: "troubleshooting",
     title: "Troubleshooting",
     description: "Keyed on the exit reasons and error strings Radulf actually prints.",
