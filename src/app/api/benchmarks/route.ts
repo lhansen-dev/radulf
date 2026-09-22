@@ -12,8 +12,6 @@ import type { ActiveBenchmark, BenchmarkFixture, BenchmarkReport } from "@/serve
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
-
 export type BenchmarksResponse = {
   fixtures: BenchmarkFixture[];
   reports: BenchmarkReport[];

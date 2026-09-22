@@ -4,8 +4,6 @@ import { record } from "@/server/requestValidation";
 import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../../_lib";
 
-export const dynamic = "force-dynamic";
-
 /** Create a fresh repository inside the browsable root and register it. */
 export async function POST(req: Request) {
   return handle(async () => {

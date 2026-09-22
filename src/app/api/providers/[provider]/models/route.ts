@@ -1,8 +1,6 @@
 import { isProviderId, listProviderModels } from "@/server/providers";
 import { json, err, handle } from "../../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ provider: string }> };
 
 /** Models a provider can serve, for the settings and new-card pickers. */

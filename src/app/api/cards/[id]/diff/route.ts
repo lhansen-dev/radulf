@@ -6,8 +6,6 @@ import { worktreeDiff, worktreeDiffStat } from "@/server/git";
 import { requireRepo } from "@/server/repos";
 import { json, err, handle } from "../../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {

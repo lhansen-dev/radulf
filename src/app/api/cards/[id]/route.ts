@@ -14,8 +14,6 @@ import { listScopingMessages } from "@/server/scoping";
 import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 /** Full card detail: plans, runs (+iterations), reviews, recent events. */

@@ -5,8 +5,6 @@ import { registerRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
-
 export async function GET() {
   return json(db.select().from(repos).orderBy(asc(repos.createdAt)).all());
 }

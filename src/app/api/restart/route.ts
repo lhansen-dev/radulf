@@ -3,8 +3,6 @@ import { db, cards, now } from "@/db";
 import { getOrchestrator } from "@/server/orchestrator";
 import { json, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
-
 // `next dev`'s CLI parent respawns the server child when it exits with this
 // code — the same hook it uses to restart itself on next.config changes
 // (RESTART_EXIT_CODE in next/dist/server/lib/utils). Under `next start`

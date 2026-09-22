@@ -6,8 +6,6 @@ import { computeProviderUsage, USAGE_WINDOW_HOURS } from "@/server/providerUsage
 import { readProviderRateLimit } from "@/server/providerRateLimit";
 import { json } from "../../_lib";
 
-export const dynamic = "force-dynamic";
-
 // Enough to cover the window on a busy day without scanning the full history;
 // the window filter in computeProviderUsage does the real narrowing.
 const MAX_USAGE_RUNS = 2_000;

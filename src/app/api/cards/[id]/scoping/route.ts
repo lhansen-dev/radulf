@@ -2,8 +2,6 @@ import { record } from "@/server/requestValidation";
 import { scopingTurn } from "@/server/scoping";
 import { json, err, handle } from "../../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 /** POST /api/cards/:id/scoping — one turn of the card's scoping thread (spec 17).

@@ -4,8 +4,6 @@ import { record } from "@/server/requestValidation";
 import type { ApprovedInstallScript } from "@/db";
 import { json, err, handle } from "../../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string; action: string }> };
 
 /** Body: { packages: { name, version, scriptHash }[] } — the install-script

@@ -5,8 +5,6 @@ import { getOrchestrator } from "@/server/orchestrator";
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 /**

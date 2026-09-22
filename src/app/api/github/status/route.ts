@@ -3,8 +3,6 @@ import { getRepo } from "@/server/repos";
 import { githubStatus } from "@/server/github";
 import { json, handle } from "../../_lib";
 
-export const dynamic = "force-dynamic";
-
 /**
  * Spec 15: can this workspace (and optionally this repo) deliver a pull
  * request right now? The two `gh` failures are reported separately because the

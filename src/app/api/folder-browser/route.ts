@@ -2,8 +2,6 @@ import { listFolder } from "@/server/folderBrowser";
 import { getSettings } from "@/server/settings";
 import { json, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
-
 /**
  * List the directories inside `path`, confined to the configured browsable
  * root. Read-only, directories only, and it discloses nothing above the root.

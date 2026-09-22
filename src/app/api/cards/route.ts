@@ -12,8 +12,6 @@ import { parseCreateCard } from "@/server/cardValidation";
 import { emitEvent } from "@/server/events";
 import { json, err, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
-
 /** Board payload: every card plus what its column badge needs. */
 export async function GET() {
   const settings = getSettings();

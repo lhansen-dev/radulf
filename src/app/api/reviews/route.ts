@@ -2,8 +2,6 @@ import { getOrchestrator } from "@/server/orchestrator";
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
-
 export async function POST(req: Request) {
   return handle(async () => {
     const body = record(await req.json(), "review body");

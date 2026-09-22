@@ -1,7 +1,5 @@
 import { bus, type RalphEvent, type TranscriptPush } from "@/server/events";
 
-export const dynamic = "force-dynamic";
-
 /** SSE feed of every orchestrator event, plus live transcript pushes — the
  * board's (and the transcript view's) live-update channel. */
 export async function GET(req: Request) {

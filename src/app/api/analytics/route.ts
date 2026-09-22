@@ -4,7 +4,6 @@ import { computeAnalytics } from "@/server/analytics";
 import type { AnalyticsResponse } from "@/server/analytics";
 import { json } from "../_lib";
 
-export const dynamic = "force-dynamic";
 const MAX_ANALYTICS_RUNS = 5_000;
 
 export async function GET(req: Request) {

@@ -3,8 +3,6 @@ import { requireRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {

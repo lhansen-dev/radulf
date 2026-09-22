@@ -1,8 +1,6 @@
 import { proposeScopedCard } from "@/server/scoping";
 import { json, handle } from "../../../../_lib";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 /** POST /api/cards/:id/scoping/proposal — write the scoped card from the
