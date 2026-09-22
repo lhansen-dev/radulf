@@ -16,7 +16,7 @@ import {
   type CardStatus,
 } from "@/db";
 import { emitEvent } from "./events";
-import { getSettings } from "./settings";
+import { getSettings, type Settings } from "./settings";
 import {
   DONE_FILE_NAMES,
   buildLoopPrompt,
@@ -705,8 +705,7 @@ export class Orchestrator {
    * queue stays serial however the setting reads. Ignored rather than
    * rejected, because the provider can change under a saved setting.
    */
-  private concurrencyLimit(): number {
-    const settings = getSettings();
+  private concurrencyLimit(settings: Settings = getSettings()): number {
     if (normalizeProvider(settings.loopProvider, "anthropic") === "omlx") return 1;
     // Clamped to the same bounds the setting validates against, and 1 for
     // anything unreadable: a missing or hand-edited row must fail closed to
@@ -754,6 +753,9 @@ export class Orchestrator {
    * evaluating. Unrelated repos never wait on each other. */
   pump() {
     if (this.draining) return;
+    // One settings read per pump: getSettings() reads and decrypts the whole
+    // table, and the slot loop below used to call it again on every pass.
+    const settings = getSettings();
 
     // Read once, then filter per repo — preserving the tie-break order
     // (ready before todo, oldest startedAt/position first) within each repo.
@@ -769,7 +771,8 @@ export class Orchestrator {
       .where(eq(cards.status, "todo"))
       .orderBy(asc(cards.position))
       .all();
-    const autoMode = getSettings().autoMode;
+    const autoMode = settings.autoMode;
+    const limit = this.concurrencyLimit(settings);
     const eligibleTodoRepoIds = planningCandidates(todoCards, autoMode).map((c) => c.repoId);
     const repoIds = [...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds])];
 
@@ -784,7 +787,7 @@ export class Orchestrator {
       // Spec 20: fill every free slot this repo has rather than one card per
       // pump. pipelineLoad is re-read each pass, so a card started by a
       // nested pump() is counted before the next start decision.
-      while (!this.pipelineBusy(repoId)) {
+      while (this.pipelineLoad(repoId) < limit) {
         const readyCard = repoReady[nextReady++];
         if (readyCard) {
           // A nested pump may have claimed it since the list was read.
