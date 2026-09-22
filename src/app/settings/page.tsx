@@ -276,6 +276,12 @@ export default function SettingsPage() {
       <input type={props.type} value={settings[key]} onChange={(e) => set({ [key]: e.target.value })} placeholder={props.placeholder} className={inputCls} />
     </label>
   );
+  const textArea = (key: StringKey, props: { label: string; rows: number; placeholder?: string }) => (
+    <label className="text-sm text-foreground/70">
+      {props.label}
+      <textarea rows={props.rows} value={settings[key]} onChange={(e) => set({ [key]: e.target.value })} placeholder={props.placeholder} className={`${inputCls} font-mono`} />
+    </label>
+  );
   const numberInput = (key: NumberKey, label: string, hint?: string, min = 1, className = "text-sm text-foreground/70") => (
     <label className={className}>
       {label}
@@ -402,16 +408,7 @@ export default function SettingsPage() {
                     {textInput("omlxBaseUrl", { label: "Local server base URL" })}
                     {textInput("omlxApiKey", { label: "Local server API key", type: "password", placeholder: "optional; many local servers need none" })}
                   </div>
-                  <label className="text-sm text-foreground/70">
-                    Extra request headers (one per line)
-                    <textarea
-                      rows={2}
-                      value={settings.omlxHeaders}
-                      onChange={(e) => set({ omlxHeaders: e.target.value })}
-                      placeholder="kong-api-key: …"
-                      className={`${inputCls} font-mono`}
-                    />
-                  </label>
+                  {textArea("omlxHeaders", { label: "Extra request headers (one per line)", rows: 2, placeholder: "kong-api-key: …" })}
                   <p className="text-xs text-foreground/40">
                     For a gateway in front of the server that authenticates on a header of its own.
                     Sent with every request alongside the API key; a header named Authorization
@@ -521,16 +518,7 @@ export default function SettingsPage() {
                   banner appears everywhere, and every affected run is stamped{" "}
                   <code>sandboxed: false</code> in its run detail and in analytics.
                 </p>
-                <label className="text-sm text-foreground/70">
-                  Extra network allowlist (one domain per line)
-                  <textarea
-                    rows={3}
-                    value={settings.sandboxNetworkAllowlist}
-                    onChange={(e) => set({ sandboxNetworkAllowlist: e.target.value })}
-                    placeholder="pypi.org"
-                    className={`${inputCls} font-mono`}
-                  />
-                </label>
+                {textArea("sandboxNetworkAllowlist", { label: "Extra network allowlist (one domain per line)", rows: 3, placeholder: "pypi.org" })}
                 <p className="text-xs text-foreground/40">
                   Package registries (registry.npmjs.org) are always reachable. Every domain added here
                   widens egress: the proxy allows by requested hostname and does not terminate TLS, so a
@@ -628,14 +616,6 @@ function PromptTemplateEditor({
   );
 }
 
-/** Provider dropdown + model input with a datalist/chips loaded from the provider. */
-/**
- * Summary callout above the three agent sections. Silent when every role's
- * provider already suits it, so a deliberate setup is not nagged at; when it
- * does appear it names the roles and offers the split Radulf's pipeline is
- * designed around: strong models on the once-per-card stages, the cheap seat
- * on the stage that runs every iteration.
- */
 /** How often the health panel re-reads usage while the settings page is open. */
 const PROVIDER_HEALTH_POLL_MS = 60_000;
 
@@ -749,6 +729,13 @@ function ProviderHealthPanel() {
   );
 }
 
+/**
+ * Summary callout above the three agent sections. Silent when every role's
+ * provider already suits it, so a deliberate setup is not nagged at; when it
+ * does appear it names the roles and offers the split Radulf's pipeline is
+ * designed around: strong models on the once-per-card stages, the cheap seat
+ * on the stage that runs every iteration.
+ */
 function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string[]; onApply: () => void }) {
   if (misfitRoles.length === 0) return null;
   return (
@@ -778,6 +765,7 @@ function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string
   );
 }
 
+/** Provider dropdown + model input with a datalist/chips loaded from the provider. */
 function AgentSection({
   title,
   subtitle,
@@ -960,8 +948,6 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   // Shown on the row it belongs to — e.g. the conflict when a repo still has
   // running work — rather than below the add form.
   const [removeError, setRemoveError] = useState<{ repoId: string; message: string } | null>(null);
-  const [notARepo, setNotARepo] = useState(false);
-  const [emptyRepo, setEmptyRepo] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   // Typing an absolute path stays available: the browser is confined to one
   // root, and a repo kept outside it has to be reachable some other way.
@@ -970,10 +956,6 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   function pickFolder(picked: string) {
     setPath(picked);
     setBrowsing(false);
-    setNotARepo(false);
-    setEmptyRepo(false);
-    // POST /api/repos validates with git; these flags only pre-empt the
-    // round trip for the two cases worth warning about early.
     if (!name.trim()) setName(picked.split("/").pop() ?? "");
   }
 
@@ -992,8 +974,6 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
       setName("");
       setPath("");
       setBranch("");
-      setNotARepo(false);
-      setEmptyRepo(false);
       onChange();
     } catch (e) {
       setError(errorMessage(e));
@@ -1058,11 +1038,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
               <input
                 id="repo-path"
                 value={path}
-                onChange={(e) => {
-                  setPath(e.target.value);
-                  setNotARepo(false);
-                  setEmptyRepo(false);
-                }}
+                onChange={(e) => setPath(e.target.value)}
                 placeholder="/absolute/path/to/repo"
                 className={`${inputCls} font-mono`}
               />
@@ -1098,17 +1074,6 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
             Add repository
           </button>
         </div>
-        {notARepo && (
-          <p className="text-xs text-amber-400/80">
-            That folder is not a git repository — pick the folder containing <code>.git</code>.
-          </p>
-        )}
-        {emptyRepo && (
-          <p className="text-xs text-amber-400/80">
-            That repository has no commits yet — Radulf branches each task off an existing commit, so
-            make an initial commit first.
-          </p>
-        )}
         {!typePath && (
           <button
             type="button"
