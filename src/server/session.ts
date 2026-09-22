@@ -20,14 +20,7 @@ export function authEnabled(): boolean {
  * Format: `<expiresAtMs>.<base64url(hmac_sha256(expiresAtMs))>`
  */
 export async function signSession(expiresAtMs: number): Promise<string> {
-  const secret = getSecret();
-  const key = await importHmacKey(secret);
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(String(expiresAtMs)),
-  );
-  return `${expiresAtMs}.${base64url(sig)}`;
+  return `${expiresAtMs}.${base64url(await hmac(expiresAtMs))}`;
 }
 
 /**
@@ -43,21 +36,7 @@ export async function verifySession(value: string): Promise<boolean> {
 
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
 
-  const secret = getSecret();
-  const key = await importHmacKey(secret);
-
-  const expectedSig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(String(expiresAtMs)),
-  );
-
-  // Constant-time comparison
-  const expectedArr = new Uint8Array(expectedSig);
-  const actualArr = base64urlDecode(sigB64);
-  if (expectedArr.byteLength !== actualArr.byteLength) return false;
-
-  return constantTimeEqual(expectedArr, actualArr);
+  return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), base64urlDecode(sigB64));
 }
 
 /**
@@ -117,6 +96,19 @@ async function importHmacKey(secret: string): Promise<CryptoKey> {
     false,
     ["sign"],
   );
+}
+
+/** The imported key for the secret it was imported from. Importing once per
+ * process rather than once per request (the proxy verifies on every hit)
+ * while still following a rotated RADULF_AUTH_SECRET. */
+let cachedKey: { secret: string; key: CryptoKey } | undefined;
+
+/** HMAC-SHA256 of the expiry timestamp — what signSession writes and
+ * verifySession recomputes. */
+async function hmac(expiresAtMs: number): Promise<ArrayBuffer> {
+  const secret = getSecret();
+  if (cachedKey?.secret !== secret) cachedKey = { secret, key: await importHmacKey(secret) };
+  return crypto.subtle.sign("HMAC", cachedKey.key, new TextEncoder().encode(String(expiresAtMs)));
 }
 
 /** Base64url-encode an ArrayBuffer (no padding). */
