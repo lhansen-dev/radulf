@@ -8,7 +8,7 @@ export type Role = (typeof ROLES)[number];
 type ModelOption = { value: string; displayName: string };
 export type RoleModels = Record<Role, string>;
 export const EMPTY_ROLE_MODELS: RoleModels = { planner: "", loop: "", evaluator: "" };
-const ROLE_LABELS: Record<Role, string> = { planner: "Planner model", loop: "Loop model", evaluator: "Evaluator model" };
+export const ROLE_LABELS: Record<Role, string> = { planner: "Planner model", loop: "Loop model", evaluator: "Evaluator model" };
 export const dialogInputCls = "mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3";
 
 /** Each role's configured provider and the models it serves, for the pickers. */

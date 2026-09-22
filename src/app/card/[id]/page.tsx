@@ -12,7 +12,7 @@ import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
-import { DialogShell } from "../../ui/taskDialog";
+import { DialogShell, ROLES, ROLE_LABELS, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
@@ -22,12 +22,6 @@ import { parsePayload } from "@/shared/eventPayload";
 import { errorMessage } from "@/shared/errorMessage";
 
 const TABS = ["Task", "Activity"] as const;
-
-const ROLES = [
-  { key: "planner", label: "Planner" },
-  { key: "loop", label: "Loop" },
-  { key: "evaluator", label: "Evaluator" },
-] as const;
 
 /** Tab names this page used to have, so old links and bookmarks still land
  * somewhere sensible: the plan moved into Task, the transcript became a
@@ -41,15 +35,7 @@ const RETIRED_TABS: Record<string, (typeof TABS)[number]> = {
 export default function CardDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const {
-    detail,
-    error,
-    setError,
-    plannerModels,
-    loopModels,
-    evaluatorModels,
-    refetch,
-  } = useCardDetail(id);
+  const { detail, error, setError, refetch } = useCardDetail(id);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Task");
   const [transcript, setTranscript] = useState<TranscriptTarget | null>(null);
   const [showEdit, setShowEdit] = useState(false);
@@ -236,9 +222,6 @@ export default function CardDetail() {
       {showEdit && (
         <EditCardModal
           detail={detail}
-          plannerModels={plannerModels}
-          loopModels={loopModels}
-          evaluatorModels={evaluatorModels}
           onClose={() => setShowEdit(false)}
           onSaved={() => { setShowEdit(false); refetch(); }}
         />
@@ -342,9 +325,9 @@ export default function CardDetail() {
           </div>
           {detail.models && (
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-foreground/60">
-              {ROLES.map(({ key, label }) => {
-                const m = detail.models![key];
-                return <span key={key}>{label}: <span className="font-mono text-foreground/80">{formatProviderModel(m.provider, m.model, m.reasoningLevel)}</span></span>;
+              {ROLES.map((role) => {
+                const m = detail.models![role];
+                return <span key={role}>{ROLE_LABELS[role]}: <span className="font-mono text-foreground/80">{formatProviderModel(m.provider, m.model, m.reasoningLevel)}</span></span>;
               })}
             </div>
           )}
@@ -876,27 +859,21 @@ function TranscriptLine({ line }: { line: StreamLine }) {
 
 function EditCardModal({
   detail,
-  plannerModels,
-  loopModels,
-  evaluatorModels,
   onClose,
   onSaved,
 }: {
   detail: CardDetailData;
-  plannerModels: { value: string; displayName: string }[];
-  loopModels: { value: string; displayName: string }[];
-  evaluatorModels: { value: string; displayName: string }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [title, setTitle] = useState(detail.card.title);
   const [description, setDescription] = useState(detail.card.description);
-  const [models, setModels] = useState({
+  const [roleModels, setRoleModels] = useState<RoleModels>({
     planner: detail.card.plannerModel ?? "",
     loop: detail.card.loopModel ?? "",
     evaluator: detail.card.evaluatorModel ?? "",
   });
-  const options = { planner: plannerModels, loop: loopModels, evaluator: evaluatorModels };
+  const { providers, models } = useRoleModelOptions();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const fieldCls = "bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm";
@@ -910,9 +887,9 @@ function EditCardModal({
         json: {
           title,
           description,
-          plannerModel: models.planner || null,
-          loopModel: models.loop || null,
-          evaluatorModel: models.evaluator || null,
+          plannerModel: roleModels.planner || null,
+          loopModel: roleModels.loop || null,
+          evaluatorModel: roleModels.evaluator || null,
         },
       });
       onSaved();
@@ -935,14 +912,7 @@ function EditCardModal({
     >
       <div className="flex flex-col gap-3">
         <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className={fieldCls} />
-        {ROLES.map(({ key, label }) => (
-          <select key={key} value={models[key]} onChange={(e) => setModels({ ...models, [key]: e.target.value })} className={fieldCls}>
-            <option value="">{label} model: Default (from settings)</option>
-            {options[key].map((m) => (
-              <option key={m.value} value={m.value}>{label} model: {m.displayName}</option>
-            ))}
-          </select>
-        ))}
+        <RoleModelSelects providers={providers} models={models} values={roleModels} onChange={setRoleModels} idPrefix="edit-" />
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
