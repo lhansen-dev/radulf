@@ -1,9 +1,9 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, worktrees, WORKTREES_DIR } from "@/db";
+import { execBounded } from "./exec";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -16,65 +16,30 @@ const GIT_TIMEOUT_MS = 30_000;
 // the orchestrator runs one card at a time globally, so a wedged git freezes
 // everything.
 const GIT_REMOTE_TIMEOUT_MS = 10 * 60_000;
-// A process wedged deep in a blocking syscall can ignore SIGTERM; escalate to
-// SIGKILL this long after if it's still alive.
-const GIT_KILL_GRACE_MS = 5_000;
 
-/**
- * Run `git -C cwd ...args` with a bounded lifetime: SIGTERM at
- * GIT_TIMEOUT_MS, SIGKILL at GIT_TIMEOUT_MS + GIT_KILL_GRACE_MS if it's still
- * alive. Not built on `promisify(execFile)`'s own `timeout` option because
- * that only ever sends one signal — a hung git process (credential-helper
- * prompt on stdin, corrupt lock file, dead network mount) must not be able to
- * freeze the whole app, since the orchestrator runs exactly one card at a
- * time globally.
- */
 type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
 
-function execGit(
+/** Run `git -C cwd ...args` under `execBounded`'s two-signal timeout,
+ * rejecting on any failure with the child's output attached to the error. */
+async function execGit(
   cwd: string,
   args: string[],
   options: ExecGitOptions = {}
 ): Promise<{ stdout: string; stderr: string }> {
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
-  return new Promise((resolve, reject) => {
-    let timedOut = false;
-    const child = execFile(
-      "git",
-      ["-C", cwd, ...args],
-      {
-        encoding: "utf8" as const,
-        maxBuffer: MAX_BUFFER,
-        ...(options.env ? { env: options.env } : {}),
-      },
-      (err, stdout, stderr) => {
-        clearTimeout(termTimer);
-        clearTimeout(killTimer);
-        if (err) {
-          if (timedOut) {
-            // Make the failure actionable instead of an opaque "Command
-            // failed" — surfaced both via the thrown Error's message (git())
-            // and via `out` (tryGit(), which never looks at err.message).
-            const msg = `git ${args.join(" ")} timed out after ${timeoutMs}ms`;
-            err.message = msg;
-            stderr = stderr ? `${stderr}\n${msg}` : msg;
-          }
-          reject(Object.assign(err, { stdout, stderr }));
-        } else {
-          resolve({ stdout, stderr });
-        }
-      }
-    );
-    // Nothing this module runs is ever meant to read stdin. Closing it makes a
-    // credential helper that decides to prompt fail immediately instead of
-    // blocking on a read that will never be answered.
-    child.stdin?.end();
-    const termTimer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, timeoutMs);
-    const killTimer = setTimeout(() => child.kill("SIGKILL"), timeoutMs + GIT_KILL_GRACE_MS);
+  const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...args], {
+    timeoutMs,
+    maxBuffer: MAX_BUFFER,
+    ...(options.env ? { env: options.env } : {}),
   });
+  if (!err) return { stdout, stderr };
+  if (!timedOut) throw Object.assign(err, { stdout, stderr });
+  // Make the failure actionable instead of an opaque "Command failed" —
+  // surfaced both via the thrown Error's message (git()) and via `out`
+  // (tryGit(), which never looks at err.message).
+  const msg = `git ${args.join(" ")} timed out after ${timeoutMs}ms`;
+  err.message = msg;
+  throw Object.assign(err, { stdout, stderr: stderr ? `${stderr}\n${msg}` : msg });
 }
 
 /** Run git, throwing on a non-zero exit. Async so a slow or large git

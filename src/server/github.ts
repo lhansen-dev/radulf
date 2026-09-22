@@ -16,7 +16,7 @@
  * its deny list, so an agent can neither push nor read the credential this
  * module depends on.
  */
-import { execFile } from "node:child_process";
+import { execBounded } from "./exec";
 
 const GH_TIMEOUT_MS = 30_000;
 const GH_PR_TIMEOUT_MS = 2 * 60_000;
@@ -31,49 +31,28 @@ export type GithubStatus =
   | { ok: false; reason: "missing"; detail: string }
   | { ok: false; reason: "unauthenticated"; detail: string };
 
-function run(
+async function run(
   args: string[],
   options: { cwd?: string; timeoutMs: number },
 ): Promise<{ ok: boolean; out: string }> {
-  return new Promise((resolve) => {
-    let timedOut = false;
-    const child = execFile(
-      "gh",
-      args,
-      {
-        encoding: "utf8" as const,
-        maxBuffer: 8 * 1024 * 1024,
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-        env: {
-          ...process.env,
-          // gh renders progress and colour differently under a TTY; force the
-          // plain, parseable form regardless of how the server was started.
-          NO_COLOR: "1",
-          GH_PROMPT_DISABLED: "1",
-        },
-      },
-      (err, stdout, stderr) => {
-        clearTimeout(termTimer);
-        clearTimeout(killTimer);
-        const out = ((stdout ?? "") + (stderr ?? "")).trim();
-        if (err) {
-          resolve({
-            ok: false,
-            out: timedOut ? `gh ${args[0]} timed out after ${options.timeoutMs}ms` : out || err.message,
-          });
-        } else {
-          resolve({ ok: true, out });
-        }
-      },
-    );
-    // gh must never sit waiting on input it will not get.
-    child.stdin?.end();
-    const termTimer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, options.timeoutMs);
-    const killTimer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs + 5_000);
+  const { err, stdout, stderr, timedOut } = await execBounded("gh", args, {
+    timeoutMs: options.timeoutMs,
+    maxBuffer: 8 * 1024 * 1024,
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    env: {
+      ...process.env,
+      // gh renders progress and colour differently under a TTY; force the
+      // plain, parseable form regardless of how the server was started.
+      NO_COLOR: "1",
+      GH_PROMPT_DISABLED: "1",
+    },
   });
+  const out = ((stdout ?? "") + (stderr ?? "")).trim();
+  if (!err) return { ok: true, out };
+  return {
+    ok: false,
+    out: timedOut ? `gh ${args[0]} timed out after ${options.timeoutMs}ms` : out || err.message,
+  };
 }
 
 let cached: { at: number; status: GithubStatus } | null = null;
