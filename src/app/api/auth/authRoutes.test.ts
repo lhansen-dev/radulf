@@ -230,6 +230,14 @@ describe("authentication routes", () => {
     expect(read.headers.get("x-middleware-next")).toBe("1");
   });
 
+  it("lets the liveness check through without a session, so a container HEALTHCHECK works with auth on", async () => {
+    const health = await proxy(new NextRequest("http://localhost:3000/api/health", { method: "GET" }));
+    expect(health.headers.get("x-middleware-next")).toBe("1");
+    // Only the liveness GET: every other unauthenticated API call is still refused.
+    const cards = await proxy(new NextRequest("http://localhost:3000/api/cards", { method: "GET" }));
+    expect(cards.status).toBe(401);
+  });
+
   it("origin-checks the login route itself, so a session cannot be forced", async () => {
     const forbidden = await proxy(
       new NextRequest("http://localhost:3000/api/auth/login", {

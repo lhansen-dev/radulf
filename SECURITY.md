@@ -47,7 +47,9 @@ assumes the operator trusts the machine it runs on. Two properties matter:
   localhost only. To expose it beyond localhost you **must** set
   `RADULF_AUTH_PASSWORD_HASH` (a bcrypt hash); this puts every page, API route,
   and SSE stream behind a single-password login, and flips the bind to
-  `0.0.0.0`. The bind address is derived from that one variable so the insecure
+  `0.0.0.0`. The one exception is `GET /api/health`, the liveness check a
+  container `HEALTHCHECK` or reverse proxy probes without a session; it reveals
+  only that the process is up and whether a restart is pending. The bind address is derived from that one variable so the insecure
   combination — listening on the LAN with the login gate off — is not reachable
   by accident. Note that Next's own default is `0.0.0.0`: if you invoke
   `next dev`/`next start` directly instead of through the Makefile, pass

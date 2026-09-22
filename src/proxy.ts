@@ -61,6 +61,12 @@ export async function proxy(request: NextRequest) {
   if (pathname === "/login" || pathname === "/api/auth/login") {
     return NextResponse.next();
   }
+  // The liveness check answers a container HEALTHCHECK and a reverse proxy's
+  // probe, neither of which has a session. It reveals nothing but that the
+  // process is up and whether a restart is pending.
+  if (pathname === "/api/health" && request.method === "GET") {
+    return NextResponse.next();
+  }
 
   const sessionValue = request.cookies.get(SESSION_COOKIE)?.value;
   const valid = sessionValue ? await verifySession(sessionValue) : false;
