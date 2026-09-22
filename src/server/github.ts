@@ -34,7 +34,7 @@ export type GithubStatus =
 async function run(
   args: string[],
   options: { cwd?: string; timeoutMs: number },
-): Promise<{ ok: boolean; out: string }> {
+): Promise<{ ok: boolean; out: string; code?: string | number }> {
   const { err, stdout, stderr, timedOut } = await execBounded("gh", args, {
     timeoutMs: options.timeoutMs,
     maxBuffer: 8 * 1024 * 1024,
@@ -52,6 +52,9 @@ async function run(
   return {
     ok: false,
     out: timedOut ? `gh ${args[0]} timed out after ${options.timeoutMs}ms` : out || err.message,
+    // A non-zero exit arrives as a number; a spawn failure (no `gh` on PATH)
+    // arrives as the string "ENOENT".
+    code: err.code ?? undefined,
   };
 }
 
@@ -71,32 +74,27 @@ export function invalidateGithubStatus(): void {
 export async function githubStatus(options: { refresh?: boolean } = {}): Promise<GithubStatus> {
   if (options.refresh) cached = null;
   if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
-  const version = await run(["--version"], { timeoutMs: GH_TIMEOUT_MS });
+  const auth = await run(["auth", "status"], { timeoutMs: GH_TIMEOUT_MS });
   let status: GithubStatus;
-  if (!version.ok) {
+  if (auth.code === "ENOENT") {
     status = {
       ok: false,
       reason: "missing",
       detail: "the GitHub CLI (`gh`) is not installed or not on PATH",
     };
+  } else if (!auth.ok) {
+    status = {
+      ok: false,
+      reason: "unauthenticated",
+      detail: "`gh` is not authenticated — run `gh auth login` in a terminal",
+    };
   } else {
-    const auth = await run(["auth", "status"], { timeoutMs: GH_TIMEOUT_MS });
     // Which account will open the pull requests is the part worth surfacing —
     // "logged in" is not reassuring if it is the wrong identity. Scraped from
     // gh's human-readable output, so treat its absence as unremarkable: the
     // status is still `ok`, just unnamed.
-    const account = auth.ok
-      ? /account\s+(\S+)/.exec(auth.out)?.[1]
-      : undefined;
-    status = auth.ok
-      ? account
-        ? { ok: true, account }
-        : { ok: true }
-      : {
-          ok: false,
-          reason: "unauthenticated",
-          detail: "`gh` is not authenticated — run `gh auth login` in a terminal",
-        };
+    const account = /account\s+(\S+)/.exec(auth.out)?.[1];
+    status = account ? { ok: true, account } : { ok: true };
   }
   cached = { at: Date.now(), status };
   return status;
