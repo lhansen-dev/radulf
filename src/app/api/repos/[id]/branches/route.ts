@@ -1,4 +1,4 @@
-import { listBranches, git, isRalphBranch, isValidBranchName } from "@/server/git";
+import { assertBranchExists, listBranches, git, isRalphBranch, isValidBranchName } from "@/server/git";
 import { requireRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../../../_lib";
@@ -26,14 +26,13 @@ export async function POST(req: Request, { params }: Ctx) {
     if (!name) return err("branch name is required", 400);
     if (!(await isValidBranchName(name))) return err("branch name is not a valid Git ref", 400);
 
-    const existing = await listBranches(repo.path);
-    if (existing.includes(name)) return err("branch already exists", 400);
+    if ((await listBranches(repo.path)).includes(name)) return err("branch already exists", 400);
     const from = values.from === undefined
       ? repo.defaultBranch
       : typeof values.from === "string"
         ? values.from.trim()
         : "";
-    if (!from || !existing.includes(from)) return err("base branch does not exist", 400);
+    await assertBranchExists(repo.path, from, "base branch");
 
     await git(repo.path, "branch", "--", name, from);
     return json({ name }, 201);

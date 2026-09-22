@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { eq } from "drizzle-orm";
 import { db, cards, repos, runs } from "@/db";
 import { planStatePath } from "@/server/bookkeeping";
-import { hasCommits, isGitRepo, listBranches, removeWorktree } from "@/server/git";
+import { assertBranchExists, assertUsableRepo, removeWorktree } from "@/server/git";
 import { getRepo, requireRepo } from "@/server/repos";
 import { removeRunTranscripts } from "@/server/retention";
 import { json, err, handle } from "../../_lib";
@@ -25,17 +25,11 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const patch: Partial<typeof repos.$inferInsert> = {};
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
     if (typeof body.path === "string" && body.path.trim()) {
-      if (!(await isGitRepo(body.path.trim()))) return err(`${body.path} is not a git repository`);
-      if (!(await hasCommits(body.path.trim()))) {
-        return err(`${body.path} has no commits yet — make an initial commit before adding it`);
-      }
+      await assertUsableRepo(body.path.trim());
       patch.path = body.path.trim();
     }
     if (typeof body.defaultBranch === "string" && body.defaultBranch.trim()) {
-      const repoPath = patch.path ?? current.path;
-      if (!(await listBranches(repoPath)).includes(body.defaultBranch.trim())) {
-        return err("defaultBranch does not exist in the repository");
-      }
+      await assertBranchExists(patch.path ?? current.path, body.defaultBranch.trim(), "defaultBranch");
       patch.defaultBranch = body.defaultBranch.trim();
     }
     if (Object.keys(patch).length === 0) return err("nothing to update");

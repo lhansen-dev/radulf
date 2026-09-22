@@ -3,6 +3,7 @@ import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, worktrees, WORKTREES_DIR } from "@/db";
+import { ClientError } from "./clientError";
 import { execBounded } from "./exec";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
@@ -120,6 +121,25 @@ export async function isGitRepo(dir: string): Promise<boolean> {
  * opaque `invalid reference: main` from `git worktree add`. */
 export async function hasCommits(dir: string): Promise<boolean> {
   return (await tryGit(dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")).ok;
+}
+
+/** The repo-registration check: `dir` must be a git repository with at
+ * least one commit, otherwise a ClientError the API returns verbatim. */
+export async function assertUsableRepo(dir: string): Promise<void> {
+  if (!(await isGitRepo(dir))) throw new ClientError(`${dir} is not a git repository`);
+  // An unborn HEAD has no ref to branch a worktree from — reject here rather
+  // than let every task on this repo die at `git worktree add`.
+  if (!(await hasCommits(dir))) {
+    throw new ClientError(`${dir} has no commits yet — make an initial commit before adding it`);
+  }
+}
+
+/** ClientError unless `name` is a local branch of the repo; `label` names
+ * the field in the message ("baseBranch does not exist in the repository"). */
+export async function assertBranchExists(repoPath: string, name: string, label: string): Promise<void> {
+  if (!(await listBranches(repoPath)).includes(name)) {
+    throw new ClientError(`${label} does not exist in the repository`);
+  }
 }
 
 export function slugify(s: string): string {

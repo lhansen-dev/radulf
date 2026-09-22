@@ -5,7 +5,7 @@ import { getSettings } from "@/server/settings";
 import { modelTag } from "@/server/modelTag";
 import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo } from "@/server/repos";
-import { isRalphBranch, listBranches } from "@/server/git";
+import { assertBranchExists, isRalphBranch } from "@/server/git";
 import { currentTaskFromFile } from "@/server/currentTask";
 import { planStatePath } from "@/server/bookkeeping";
 import { parseCreateCard } from "@/server/cardValidation";
@@ -73,9 +73,7 @@ export async function POST(req: Request) {
     if (body.baseBranch && isRalphBranch(body.baseBranch)) {
       return err("baseBranch cannot be one of Radulf's own ralph/* branches");
     }
-    if (body.baseBranch && !(await listBranches(repo.path)).includes(body.baseBranch)) {
-      return err("baseBranch does not exist in the repository");
-    }
+    if (body.baseBranch) await assertBranchExists(repo.path, body.baseBranch, "baseBranch");
 
     const maxPos =
       db
