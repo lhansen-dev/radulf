@@ -254,7 +254,17 @@ export class Orchestrator {
     if (options.autoStart !== false) {
       this.recover();
       this.pump();
-      this.attentionTimer = setInterval(() => this.sweepStaleAttention(), ATTENTION_SWEEP_MS);
+      // Guarded: a throw from a timer callback is an uncaught exception, and
+      // nothing above this registers a handler for those, so a busy SQLite
+      // (a VACUUM INTO backup holding the lock past the 5s busy timeout, say)
+      // would take the whole server down once a minute instead of once.
+      this.attentionTimer = setInterval(() => {
+        try {
+          this.sweepStaleAttention();
+        } catch (e) {
+          console.error("[radulf] attention sweep failed:", e);
+        }
+      }, ATTENTION_SWEEP_MS);
       // Never hold the process open for a sweep (same reasoning as the disk
       // watchdog): this is a reminder, not work.
       this.attentionTimer.unref?.();
