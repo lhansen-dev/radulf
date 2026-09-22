@@ -193,6 +193,10 @@ export function foldTranscriptEvent(totals: TranscriptTotals, event: TranscriptE
  */
 export const MAX_REPLY_CHARS = 1024 * 1024;
 
+/** Why a watchdog aborted the session. The first cause to fire is the one
+ * reported; a later one finds the session already aborting. */
+type TripCause = "timeout" | "stalled" | "stuck" | "oversized" | "aborted";
+
 type RunHarnessOpts = {
   provider: ProviderId;
   prompt: string;
@@ -236,10 +240,9 @@ type RunHarnessOpts = {
 export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   const totals = createTranscriptTotals();
   let firstTokenMs: number | null = null;
-  let timedOut = false;
-  let stalled = false;
-  let stuck = false;
-  let oversized = false;
+  // `as`: assigned from closures and read after them; a bare `= null` would
+  // narrow it to null for the rest of the function.
+  let tripped = null as TripCause | null;
   let replyChars = 0;
   const stuckDetector = new StuckDetector();
   const startedAtMs = Date.now();
@@ -253,9 +256,9 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   const result = (code: number | null): RunnerResult => ({
     code,
-    timedOut,
-    stalled,
-    stuck,
+    timedOut: tripped === "timeout",
+    stalled: tripped === "stalled",
+    stuck: tripped === "stuck",
     ...totals,
     firstTokenMs,
     harness: "pi",
@@ -295,13 +298,14 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   const watchdog = new Promise<void>((res) => {
     releaseWatchdog = res;
   });
-  const trip = (mark: () => void) => {
-    mark();
+  const trip = (cause: TripCause) => {
+    if (tripped !== null) return;
+    tripped = cause;
     void session.abort().catch(() => {});
     releaseWatchdog();
   };
 
-  const hardTimer = setTimeout(() => trip(() => (timedOut = true)), opts.timeoutMs);
+  const hardTimer = setTimeout(() => trip("timeout"), opts.timeoutMs);
 
   // Stall watchdog: any streamed event resets it — including the
   // `message_update` deltas piNormalize drops, so a model that is merely slow
@@ -326,13 +330,13 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   const armStallTimer = (delayMs: number) => {
     stallTimer = setTimeout(() => {
       const idleMs = Date.now() - lastActivityMs;
-      if (idleMs >= stallTimeoutMs) trip(() => (stalled = true));
+      if (idleMs >= stallTimeoutMs) trip("stalled");
       else armStallTimer(stallTimeoutMs - idleMs);
     }, delayMs);
   };
   if (stallTimeoutMs > 0) armStallTimer(stallTimeoutMs);
 
-  const onAbort = () => trip(() => {});
+  const onAbort = () => trip("aborted");
   opts.signal?.addEventListener("abort", onAbort, { once: true });
 
   const unsubscribe = session.subscribe((evt) => {
@@ -349,9 +353,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
         update.type === "toolcall_delta"
       ) {
         replyChars += update.delta.length;
-        if (replyChars > MAX_REPLY_CHARS && !oversized) {
-          trip(() => (oversized = true));
-        }
+        if (replyChars > MAX_REPLY_CHARS) trip("oversized");
       }
     }
     for (const e of piNormalize(evt)) {
@@ -360,9 +362,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
         firstTokenMs = Date.now() - startedAtMs;
       }
       foldTranscriptEvent(totals, e);
-      if (e.t === "tool" && stuckDetector.record(e.name, e.input)) {
-        trip(() => (stuck = true));
-      }
+      if (e.t === "tool" && stuckDetector.record(e.name, e.input)) trip("stuck");
     }
   });
 
@@ -387,16 +387,21 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     await closeTranscript();
   }
 
-  if (stalled) {
-    totals.error = `harness emitted no output for ${Math.round(stallTimeoutMs / 1000)}s — stream hung (network drop or machine sleep?)`;
-  } else if (stuck) {
-    totals.error = "harness repeated the same tool call 4 times in a row — likely stuck";
-  } else if (oversized) {
-    totals.error = `assistant reply exceeded ${MAX_REPLY_CHARS / (1024 * 1024)} MiB in a single turn — likely a corrupted stream (duplicated deltas or leaked tool-call markup)`;
+  // The watchdogs whose verdict overrides whatever the stream reported. A
+  // timeout or external abort has no message of its own.
+  const TRIP_ERRORS: Partial<Record<TripCause, string>> = {
+    stalled: `harness emitted no output for ${Math.round(stallTimeoutMs / 1000)}s — stream hung (network drop or machine sleep?)`,
+    stuck: "harness repeated the same tool call 4 times in a row — likely stuck",
+    oversized: `assistant reply exceeded ${MAX_REPLY_CHARS / (1024 * 1024)} MiB in a single turn — likely a corrupted stream (duplicated deltas or leaked tool-call markup)`,
+  };
+  const tripError = tripped === null ? undefined : TRIP_ERRORS[tripped];
+  if (tripError) {
+    totals.error = tripError;
   } else if (!totals.error && promptError) {
     totals.error = promptError;
   }
 
-  const failed = Boolean(totals.error) || timedOut || stalled || stuck || oversized;
+  // An external abort is the caller's decision, not a failure of the run.
+  const failed = Boolean(totals.error) || (tripped !== null && tripped !== "aborted");
   return result(failed ? 1 : 0);
 }
