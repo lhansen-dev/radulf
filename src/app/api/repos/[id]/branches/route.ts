@@ -1,6 +1,5 @@
-import { eq } from "drizzle-orm";
-import { db, repos } from "@/db";
 import { listBranches, git, isRalphBranch, isValidBranchName } from "@/server/git";
+import { requireRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../../../_lib";
 
@@ -9,18 +8,18 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const { id } = await params;
-  const repo = db.select().from(repos).where(eq(repos.id, id)).get();
-  if (!repo) return err("repo not found", 404);
-  // Radulf's own branches are never a valid base for a task (see isRalphBranch).
-  return json((await listBranches(repo.path)).filter((branch) => !isRalphBranch(branch)));
+  return handle(async () => {
+    const { id } = await params;
+    const repo = requireRepo(id);
+    // Radulf's own branches are never a valid base for a task (see isRalphBranch).
+    return json((await listBranches(repo.path)).filter((branch) => !isRalphBranch(branch)));
+  });
 }
 
 export async function POST(req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const repo = db.select().from(repos).where(eq(repos.id, id)).get();
-    if (!repo) return err("repo not found", 404);
+    const repo = requireRepo(id);
 
     const values = record(await req.json(), "branch body");
     const name = typeof values.name === "string" ? values.name.trim() : "";
