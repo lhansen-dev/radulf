@@ -43,9 +43,12 @@ export function describeToolCall(name: string, input: unknown): string {
   }
 
   if (raw.length === 0) return "";
+  return previewLine(raw);
+}
 
-  // Single line, no newlines
-  const singleLine = raw.replace(/\n/g, " ").trim();
-  if (singleLine.length <= 120) return singleLine;
-  return singleLine.slice(0, 120) + "…";
+/** One line of at most 120 characters: the budget a collapsed transcript
+ * row gets for a tool call's summary or a reasoning block's preview. */
+export function previewLine(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  return singleLine.length <= 120 ? singleLine : singleLine.slice(0, 120) + "…";
 }

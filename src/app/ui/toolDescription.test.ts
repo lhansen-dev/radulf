@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeToolCall } from "./toolDescription";
+import { describeToolCall, previewLine } from "./toolDescription";
 
 describe("describeToolCall", () => {
   it.each([
@@ -38,5 +38,15 @@ describe("describeToolCall", () => {
   it("truncates long values to 120 characters plus …", () => {
     expect(describeToolCall("bash", { command: "a".repeat(200) })).toBe("a".repeat(120) + "…");
     expect(describeToolCall("Read", { file_path: "/long/" + "x".repeat(200) })).toHaveLength(121);
+  });
+});
+
+describe("previewLine", () => {
+  it("collapses whitespace runs and newlines into single spaces", () => {
+    expect(previewLine("  thinking\n\n  about\tthis ")).toBe("thinking about this");
+  });
+
+  it("truncates to 120 characters plus …", () => {
+    expect(previewLine("b".repeat(130))).toBe("b".repeat(120) + "…");
   });
 });

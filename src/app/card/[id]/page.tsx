@@ -8,7 +8,7 @@ import { AppShell } from "../../ui/appShell";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
-import { describeToolCall } from "../../ui/toolDescription";
+import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
@@ -812,13 +812,6 @@ function TranscriptRow({ index, style, ariaAttributes, lines }: RowComponentProp
   );
 }
 
-/** Collapsed-summary text for a reasoning block — one line, same 120-char
- * budget `describeToolCall` uses for a tool's summary. */
-function reasoningPreview(content: string): string {
-  const singleLine = content.replace(/\s+/g, " ").trim();
-  return singleLine.length <= 120 ? singleLine : singleLine.slice(0, 120) + "…";
-}
-
 function TranscriptLine({ line }: { line: StreamLine }) {
   if (line.t === "text") {
     return (
@@ -833,7 +826,7 @@ function TranscriptLine({ line }: { line: StreamLine }) {
       <details className="my-0.5 text-foreground/50">
         <summary className="cursor-pointer hover:text-foreground/80">
           ✻ reasoning
-          {content && <span className="text-foreground/40 ml-2">{reasoningPreview(content)}</span>}
+          {content && <span className="text-foreground/40 ml-2">{previewLine(content)}</span>}
         </summary>
         <div className="whitespace-pre-wrap pl-4 pt-1 font-sans text-sm text-foreground/45 italic">
           {content || "(redacted by the provider)"}
