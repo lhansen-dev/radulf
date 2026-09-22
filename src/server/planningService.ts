@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, plans, runs, reviews, type ScopingRole } from "@/db";
+import { db, now, plans, runs, reviews, type PlanOrigin, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
 import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
 import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
@@ -148,6 +148,53 @@ export function pendingReplanFeedback(cardId: string): string | null {
   return newest?.feedback ?? null;
 }
 
+/**
+ * Persist one plan version and make it the card's private checklist.
+ *
+ * Shared by the planning run below and by a scoping session that authored the
+ * plan itself (spec 17), so the version numbering, the `plan.created` event
+ * and the private PLAN.md all happen in one place regardless of which role
+ * wrote the artifacts. Returns the new plan's id.
+ *
+ * The private state file is overwritten, not merged: a new plan version is a
+ * new checklist, and its ticks start empty. That is the opposite of the
+ * loop's own re-entry, which must never clobber the ticks it has earned
+ * (see `startLoop`).
+ */
+export function writePlanRow(
+  cardId: string,
+  artifacts: { planMd: string; promptMd: string; acceptanceCriteria: string },
+  opts: { origin: PlanOrigin; feedback?: string | null; runId?: string },
+): { planId: string; version: number } {
+  const previous = db
+    .select({ version: plans.version })
+    .from(plans)
+    .where(eq(plans.cardId, cardId))
+    .orderBy(desc(plans.version))
+    .get();
+  const version = (previous?.version ?? 0) + 1;
+  const planId = nanoid();
+  db.insert(plans)
+    .values({
+      id: planId,
+      cardId,
+      version,
+      planMd: artifacts.planMd,
+      promptMd: artifacts.promptMd,
+      acceptanceCriteria: artifacts.acceptanceCriteria,
+      feedback: opts.feedback ?? null,
+      origin: opts.origin,
+      createdAt: now(),
+    })
+    .run();
+  emitEvent("plan.created", { cardId, runId: opts.runId, payload: { version, origin: opts.origin } });
+
+  const statePath = planStatePath(cardId);
+  fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(/* turbopackIgnore: true */ statePath, artifacts.planMd);
+  return { planId, version };
+}
+
 /** Opted-in cards pause for human plan review; ordinary cards go straight to ready. */
 export function planningDestination(
   card: { reviewPlanBeforeImplementation: number }
@@ -266,30 +313,20 @@ export class PlanningService {
         return fail("plan checklist unparseable or has no unchecked tasks");
       }
 
-      const version = (prevPlan?.version ?? 0) + 1;
-      const planId = nanoid();
-      db.insert(plans)
-        .values({
-          id: planId,
-          cardId,
-          version,
-          planMd: contents["PLAN.md"],
-          promptMd: contents["PROMPT.md"],
-          acceptanceCriteria: contents["CRITERIA.md"],
-          feedback: replanFeedback,
-          createdAt: now(),
-        })
-        .run();
-      db.update(runs).set({ planId }).where(eq(runs.id, runId)).run();
-      emitEvent("plan.created", { cardId, runId, payload: { version } });
-
       // PLAN.md and CRITERIA.md are orchestrator-private: remove them before
       // the plan commit so the loop agent can never read them — not in the
       // working tree and not in branch history. PLAN.md lives on in the
       // private state file, CRITERIA.md in the plan row.
-      const statePath = planStatePath(cardId);
-      fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(statePath), { recursive: true });
-      fs.writeFileSync(/* turbopackIgnore: true */ statePath, contents["PLAN.md"]);
+      const { planId, version } = writePlanRow(
+        cardId,
+        {
+          planMd: contents["PLAN.md"],
+          promptMd: contents["PROMPT.md"],
+          acceptanceCriteria: contents["CRITERIA.md"],
+        },
+        { origin: "planner", feedback: replanFeedback, runId },
+      );
+      db.update(runs).set({ planId }).where(eq(runs.id, runId)).run();
       removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md"]);
 
       await tryGit(worktreePath, "add", ".ralph");

@@ -9,6 +9,7 @@ export type CreateCardRequest = {
   timeoutMinutes: string | number;
   reviewPlanBeforeImplementation: boolean;
   grillMe: boolean;
+  scopingAuthorsPlan: boolean;
   autoApprove: boolean;
   openPr: boolean;
   baseBranch: string | null;

@@ -27,6 +27,19 @@ being retyped into the description. **Create and scope** in the New task dialog
 takes a rough ask straight to that thread. Scoping is a role of its own in
 Settings, separate from the planner, because you wait on every turn.
 
+The thread can end three ways. **Draft the scoped task** rewrites this one
+card. **Propose a split** comes back with two or more cards in the order they
+should be done, for you to edit, drop or discard; applying it makes this card
+the first piece and queues the rest behind it. **Grill me while scoping**, on
+card creation or edit, makes the questioning relentless rather than a few
+questions a turn: the assistant maps the card as a design tree and asks every
+question it can at once, each with a recommended answer, until nothing is left
+assumed. **Let scoping write the plan** goes further and lets the session write
+`PLAN.md`, `PROMPT.md` and `CRITERIA.md` itself, skipping the planner
+entirely — worth it when the planner is the weakest model you have configured.
+Tick **Review plan before implementation** alongside it to read the result
+before anything runs.
+
 **1 · Plan.** The planner reads the card, its scoping thread, and the repo, then
 writes plan artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop
 to run, and a `CRITERIA.md` holding the acceptance criteria. This is a single

@@ -28,15 +28,21 @@ export type UpdateCardInput = {
   plannerModel?: string | null;
   loopModel?: string | null;
   evaluatorModel?: string | null;
-  /** Stored as SQLite's 0/1, so the PATCH route can spread this straight in. */
+  /** Stored as SQLite's 0/1, so the PATCH route can spread these straight in. */
   grillMe?: number;
+  scopingAuthorsPlan?: number;
 };
 
 const CREATE_FIELDS = new Set([
   "repoId", "title", "description", "maxIterations", "timeoutMinutes", "plannerModel",
   "loopModel", "evaluatorModel", "reviewPlanBeforeImplementation", "autoApprove", "openPr",
-  "grillMe", "baseBranch",
+  "grillMe", "scopingAuthorsPlan", "baseBranch",
 ]);
+
+/** The create body's boolean flags, all optional and all defaulting to false. */
+const CREATE_BOOLEANS = [
+  "reviewPlanBeforeImplementation", "autoApprove", "openPr", "grillMe", "scopingAuthorsPlan",
+] as const;
 
 export function parseCreateCard(value: unknown): CreateCardInput {
   const body = record(value, "card body");
@@ -44,7 +50,7 @@ export function parseCreateCard(value: unknown): CreateCardInput {
   if (body.description !== undefined && typeof body.description !== "string") {
     invalid("description must be a string");
   }
-  for (const field of ["reviewPlanBeforeImplementation", "autoApprove", "openPr", "grillMe"]) {
+  for (const field of CREATE_BOOLEANS) {
     if (body[field] !== undefined && typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
   }
   return {
@@ -60,13 +66,14 @@ export function parseCreateCard(value: unknown): CreateCardInput {
     autoApprove: body.autoApprove ?? false,
     openPr: body.openPr ?? false,
     grillMe: body.grillMe ?? false,
+    scopingAuthorsPlan: body.scopingAuthorsPlan ?? false,
     baseBranch: optionalString(body.baseBranch, "baseBranch"),
   } as CreateCardInput;
 }
 
 const UPDATE_FIELDS = new Set([
   "title", "description", "maxIterations", "timeoutMinutes", "position", "plannerModel", "loopModel",
-  "evaluatorModel", "grillMe",
+  "evaluatorModel", "grillMe", "scopingAuthorsPlan",
 ]);
 
 export function parseUpdateCard(value: unknown): UpdateCardInput {
@@ -93,9 +100,10 @@ export function parseUpdateCard(value: unknown): UpdateCardInput {
   for (const field of ["plannerModel", "loopModel", "evaluatorModel"] as const) {
     if (field in body) patch[field] = optionalString(body[field], field);
   }
-  if ("grillMe" in body) {
-    if (typeof body.grillMe !== "boolean") invalid("grillMe must be a boolean");
-    patch.grillMe = body.grillMe ? 1 : 0;
+  for (const field of ["grillMe", "scopingAuthorsPlan"] as const) {
+    if (!(field in body)) continue;
+    if (typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
+    patch[field] = body[field] ? 1 : 0;
   }
   if (Object.keys(patch).length === 0) invalid("nothing to update");
   return patch;

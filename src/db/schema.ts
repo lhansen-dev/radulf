@@ -76,6 +76,12 @@ export const cards = sqliteTable(
     // conversation, which is the point on a vague card and pure cost on a
     // clear one.
     grillMe: integer("grill_me").notNull().default(0),
+    // Spec 17: let this card's scoping session write PLAN.md, PROMPT.md and
+    // CRITERIA.md itself and skip the planning stage. Default off, because
+    // planning stays the one path that produces a plan; the flag exists for
+    // when the planner is the weakest link in the pipeline, where being
+    // forced through it is the failure mode rather than the safeguard.
+    scopingAuthorsPlan: integer("scoping_authors_plan").notNull().default(0),
     // When set, an evaluator `approve` verdict skips the human In Review gate
     // and merges straight through the same load-bearing review path. Trusts the
     // evaluator. A per-card opt-in that holds even when the global `autoApprove`
@@ -105,6 +111,10 @@ export const cards = sqliteTable(
   ],
 );
 
+/** Spec 17: which role wrote a plan. Rows predating the column are planning
+ * runs, which is what the default records. */
+export type PlanOrigin = "planner" | "scoping";
+
 export const plans = sqliteTable("plans", {
   id: text("id").primaryKey(),
   cardId: text("card_id")
@@ -115,6 +125,9 @@ export const plans = sqliteTable("plans", {
   promptMd: text("prompt_md").notNull(),
   acceptanceCriteria: text("acceptance_criteria").notNull(),
   feedback: text("feedback"),
+  // Spec 17: "A card that carries its own plan is stamped as such on the plan
+  // row, so the origin of any plan is always recoverable."
+  origin: text("origin").$type<PlanOrigin>().notNull().default("planner"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("plans_card_version_idx").on(table.cardId, table.version)]);
 

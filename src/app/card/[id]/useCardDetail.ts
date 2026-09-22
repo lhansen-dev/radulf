@@ -11,6 +11,8 @@ export type Plan = {
   promptMd: string;
   acceptanceCriteria: string;
   feedback: string | null;
+  /** Spec 17: which role wrote it. Absent on rows from before the column. */
+  origin?: "planner" | "scoping" | null;
   createdAt: string;
 };
 
@@ -37,6 +39,7 @@ export type CardDetailData = {
     evaluatorModel: string | null;
     reviewPlanBeforeImplementation: number;
     grillMe: number;
+    scopingAuthorsPlan: number;
     autoApprove: number;
     summary: string | null;
     startedAt: string | null;

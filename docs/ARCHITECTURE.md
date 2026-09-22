@@ -64,7 +64,7 @@ session. The role is what decides the tool set — see the capability split belo
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
-| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)` | 5 min per turn |
+| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)`, `proposeSplit(cardId)`, `proposeScopedPlan(cardId)` | 5 min per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
 | Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
@@ -74,6 +74,23 @@ API route, outside the orchestrator's slots, as a read-only session against the
 repository checkout. Its thread lives in `scoping_messages` and is rendered
 into the planner's prompt; a planner run that raises `QUESTIONS.md` appends
 them to the same thread.
+
+A session ends by producing one of three concrete things, and the last two are
+the orchestrator's to apply because they change card state:
+
+| Output | Route | Applied by |
+|---|---|---|
+| A scoped card | `POST /api/cards/:id/scoping/proposal` | the operator, as a card `PATCH` |
+| An ordered split | `POST /api/cards/:id/scoping/split` | `applyScopingSplit` — the card becomes the first piece, the rest are queued after it |
+| The plan itself | `POST /api/cards/:id/scoping/plan` | `adoptScopingPlan` — a plan row stamped `origin: "scoping"`, no planning run |
+
+A split is a proposal and never an action: the same POST with a `cards` body
+applies the operator's own edited version of it. It is refused once the card
+has a plan, which would otherwise leave the pieces running a plan for the
+scope they no longer have. A scoping-authored plan needs the card's
+`scopingAuthorsPlan` flag and still honours `reviewPlanBeforeImplementation`,
+so it is the plan-review gate, not a second approval step, that puts a human
+in front of it.
 
 The loop is not a separate service — it is the orchestrator's own method,
 because it is the thing the pipeline slots exist to meter.

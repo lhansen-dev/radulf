@@ -315,7 +315,7 @@ export default function CardDetail() {
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
             {card.description || "(no description)"}
           </pre>
-          <ScopingPanel cardId={id} status={card.status} messages={scoping} onChanged={refetch} />
+          <ScopingPanel cardId={id} status={card.status} scopingAuthorsPlan={Boolean(card.scopingAuthorsPlan)} messages={scoping} onChanged={refetch} />
           <div className="text-sm text-foreground/60">
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes
@@ -334,6 +334,7 @@ export default function CardDetail() {
               label="Review plan before implementation"
             />
             <WorkflowFlag on={Boolean(card.grillMe)} label="Grill me while scoping" />
+            <WorkflowFlag on={Boolean(card.scopingAuthorsPlan)} label="Scoping writes the plan" />
             <WorkflowFlag
               on={Boolean(card.autoApprove)}
               label="Auto-approve on evaluator pass"
@@ -926,6 +927,7 @@ function EditCardModal({
     evaluator: detail.card.evaluatorModel ?? "",
   });
   const [grillMe, setGrillMe] = useState(Boolean(detail.card.grillMe));
+  const [scopingAuthorsPlan, setScopingAuthorsPlan] = useState(Boolean(detail.card.scopingAuthorsPlan));
   const { providers, models } = useRoleModelOptions();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -944,6 +946,7 @@ function EditCardModal({
           loopModel: roleModels.loop || null,
           evaluatorModel: roleModels.evaluator || null,
           grillMe,
+          scopingAuthorsPlan,
         },
       });
       onSaved();
@@ -982,6 +985,15 @@ function EditCardModal({
             className="size-4 accent-amber-600"
           />
           Grill me while scoping
+        </label>
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          <input
+            type="checkbox"
+            checked={scopingAuthorsPlan}
+            onChange={(e) => setScopingAuthorsPlan(e.target.checked)}
+            className="size-4 accent-amber-600"
+          />
+          Let scoping write the plan
         </label>
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>

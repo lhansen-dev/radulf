@@ -67,6 +67,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [timeoutMinutes, setTimeoutMinutes] = useState("");
   const [reviewPlanBeforeImplementation, setReviewPlanBeforeImplementation] = useState(false);
   const [grillMe, setGrillMe] = useState(false);
+  const [scopingAuthorsPlan, setScopingAuthorsPlan] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
   const [openPr, setOpenPr] = useState(false);
   // Spec 15: PR delivery is only offerable when `gh` is installed and
@@ -89,7 +90,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     : prStatus.ok
       ? "This repo has no `origin` remote to open a pull request against."
       : prStatus.detail;
-  const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || autoApprove || openPr;
+  const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || autoApprove || openPr;
 
   const requestClose = useCallback(() => {
     if (dirty && !confirm("Discard your unsaved task?")) return;
@@ -125,6 +126,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         timeoutMinutes,
         reviewPlanBeforeImplementation,
         grillMe,
+        scopingAuthorsPlan,
         autoApprove,
         openPr,
         baseBranch: selectedBranch || null,
@@ -167,6 +169,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={reviewPlanBeforeImplementation} onChange={(e) => setReviewPlanBeforeImplementation(e.target.checked)} className="size-4 accent-amber-600" />Review plan before implementation</label>
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={grillMe} onChange={(e) => setGrillMe(e.target.checked)} className="size-4 accent-amber-600" />Grill me while scoping</label>
                 {grillMe && <p className="text-xs text-foreground/55">The scoping session maps the card as a design tree and asks every question whose prerequisites are already settled in one numbered round, each with a recommendation, until nothing is left assumed. A longer conversation than the default few questions a turn, and worth it on a vague ask.</p>}
+                <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={scopingAuthorsPlan} onChange={(e) => setScopingAuthorsPlan(e.target.checked)} className="size-4 accent-amber-600" />Let scoping write the plan</label>
+                {scopingAuthorsPlan && <p className="text-xs text-foreground/55">The scoping session can write PLAN.md, PROMPT.md and CRITERIA.md itself and the planning stage is skipped. Worth it when the planner is the weakest model in the pipeline. Tick <em>Review plan before implementation</em> too if you want to read the result first.</p>}
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
                 {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run. This card keeps this setting even when the workspace-wide toggle is off.</p>}
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={openPr} disabled={!prDeliverable} onChange={(e) => setOpenPr(e.target.checked)} className="size-4 accent-amber-600 disabled:opacity-40" />Open a pull request instead of merging</label>

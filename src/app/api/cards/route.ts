@@ -112,6 +112,7 @@ export async function POST(req: Request) {
         evaluatorModel: body.evaluatorModel,
         reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation ? 1 : 0,
         grillMe: body.grillMe ? 1 : 0,
+        scopingAuthorsPlan: body.scopingAuthorsPlan ? 1 : 0,
         autoApprove: body.autoApprove ? 1 : 0,
         openPr: body.openPr ? 1 : 0,
         baseBranch: body.baseBranch,
