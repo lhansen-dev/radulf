@@ -23,6 +23,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DATA_DIR } from "@/db";
 import { firstUnchecked, markChecked } from "./checklist";
 import { tryGit } from "./git";
 
@@ -38,14 +39,7 @@ import { tryGit } from "./git";
  * prompt. The orchestrator alone reads and ticks this file.
  */
 export function planStatePath(cardId: string): string {
-  if (process.env.RADULF_DATA_DIR) {
-    return path.join(
-      /* turbopackIgnore: true */ process.env.RADULF_DATA_DIR,
-      "plans",
-      `${cardId}.md`,
-    );
-  }
-  return path.join(process.cwd(), "data", "plans", `${cardId}.md`);
+  return path.join(DATA_DIR, "plans", `${cardId}.md`);
 }
 
 /** The card's private PLAN.md, or null when none is on disk. */
