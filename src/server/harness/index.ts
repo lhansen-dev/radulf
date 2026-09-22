@@ -282,9 +282,15 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   // Watchdog race: any of the three triggers aborts the session and unblocks.
   const { promise: watchdog, resolve: releaseWatchdog } = Promise.withResolvers<void>();
+  // Snapshot of totals.error the instant we request an abort — before pi's own
+  // "stopReason: aborted" result event (folded below, asynchronously) can
+  // overwrite it. Lets us tell a genuine pre-abort failure apart from the
+  // abort's own stream message once the run is over.
+  let preAbortError: string | null = null;
   const trip = (cause: TripCause) => {
     if (tripped !== null) return;
     tripped = cause;
+    if (cause === "aborted") preAbortError = totals.error;
     void session.abort().catch(() => {});
     releaseWatchdog();
   };
@@ -381,6 +387,13 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   const tripError = tripped === null ? undefined : TRIP_ERRORS[tripped];
   if (tripError) {
     totals.error = tripError;
+  } else if (tripped === "aborted") {
+    // pi ends an in-flight turn with its own "stopReason: aborted" result
+    // rather than rejecting — that's the abort we requested, not a failure,
+    // so it must not stand as totals.error. Restore whatever was there right
+    // before we called trip("aborted") instead: "" if the run was clean, or
+    // a real unresolved error if one had already happened.
+    totals.error = preAbortError ?? "";
   } else if (!totals.error && promptError) {
     totals.error = promptError;
   }

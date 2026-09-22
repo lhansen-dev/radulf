@@ -165,6 +165,50 @@ describe("runHarness watchdogs", () => {
     message: { role: "assistant", content: [] },
   } as unknown as AgentSessionEvent;
 
+  /** Mirrors pi ending an in-flight turn on abort: message_end with
+   * stopReason "aborted" rather than the prompt promise rejecting. */
+  function abortedEvt(): AgentSessionEvent {
+    return {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "aborted",
+        timestamp: Date.now(),
+      },
+    } as unknown as AgentSessionEvent;
+  }
+
+  /** Mirrors pi ending a turn on a genuine (non-abort) failure. */
+  function failedEvt(errorMessage: string): AgentSessionEvent {
+    return {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "error",
+        errorMessage,
+        timestamp: Date.now(),
+      },
+    } as unknown as AgentSessionEvent;
+  }
+
   type Script = (ctx: {
     emit: (e: AgentSessionEvent) => void;
     signal: AbortSignal;
@@ -314,6 +358,52 @@ describe("runHarness watchdogs", () => {
 
     expect(result.code).toBe(0);
     expect(result.error).toBe("");
+  });
+
+  it("does not report an external abort that lands mid-turn as a failure", async () => {
+    // An abort mid-stream doesn't reject session.prompt() — pi ends the turn
+    // with its own message_end{stopReason:"aborted"}, which is what trips the
+    // bug this test guards: that stream message must not read back as
+    // totals.error once the caller's own abort decision unwinds it.
+    const ac = new AbortController();
+    const result = await run(
+      async ({ emit, signal }) => {
+        emit(messageStartEvt);
+        // The caller cancels while the turn is in flight.
+        ac.abort();
+        // trip("aborted") already called session.abort() synchronously above,
+        // which aborts this fake session's internal signal — mirrors pi
+        // unwinding the in-flight request before it emits the turn's result.
+        await sleep(0, signal);
+        emit(abortedEvt());
+      },
+      { signal: ac.signal },
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.error).toBe("");
+    expect(result.timedOut).toBe(false);
+    expect(result.stalled).toBe(false);
+    expect(result.stuck).toBe(false);
+  });
+
+  it("keeps a genuine pre-abort failure even when the abort follows it", async () => {
+    // If a real error already happened before the caller asked to cancel,
+    // the abort that follows must not erase it.
+    const ac = new AbortController();
+    const result = await run(
+      async ({ emit, signal }) => {
+        emit(failedEvt("429 rate limited"));
+        emit(messageStartEvt);
+        ac.abort();
+        await sleep(0, signal);
+        emit(abortedEvt());
+      },
+      { signal: ac.signal },
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.error).toBe("429 rate limited");
   });
 
   it("surfaces a session-construction failure as an error result", async () => {
