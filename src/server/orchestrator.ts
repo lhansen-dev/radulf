@@ -227,7 +227,7 @@ export class Orchestrator {
     latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
     moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
     finishRun: (runId, status, exitReason, telemetry) =>
-      this.finishRun(runId, status, exitReason, undefined, telemetry),
+      this.finishRun(runId, status, exitReason, telemetry),
     registerController: (runId, controller) => this.controllers.set(runId, controller),
     releaseController: (runId) => this.controllers.delete(runId),
   };
@@ -405,7 +405,6 @@ export class Orchestrator {
     runId: string,
     status: FinishStatus,
     exitReason: string,
-    iterationsDone?: number,
     telemetry?: RunTelemetry,
   ): boolean {
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
@@ -429,7 +428,6 @@ export class Orchestrator {
         exitReason,
         failureKind,
         endedAt: now(),
-        ...(iterationsDone !== undefined ? { iterationsDone } : {}),
         ...(rollup ?? {}),
       })
       .where(eq(runs.id, runId))
@@ -897,8 +895,8 @@ export class Orchestrator {
     const controller = new AbortController();
     this.controllers.set(runId, controller);
     const active = () => this.isRunActive(runId, cardId, controller.signal);
-    const fail = (reason: string, n?: number, status: FinishStatus = "failed") => {
-      this.finishRun(runId, status, reason, n);
+    const fail = (reason: string, status: FinishStatus = "failed") => {
+      this.finishRun(runId, status, reason);
       this.moveCard(cardId, "looping", "needs_attention", reason);
     };
 
@@ -992,7 +990,7 @@ export class Orchestrator {
 
       while (n < maxIterations) {
         const remaining = deadline - Date.now();
-        if (remaining < 30_000) return fail("timeout", n, "timeout");
+        if (remaining < 30_000) return fail("timeout", "timeout");
         // Every iteration needs an unchecked task to inject — there is no
         // fallback prompt. An exhausted checklist here means the final task
         // ended without a DONE signal (e.g. its criteria failed).
@@ -1001,7 +999,7 @@ export class Orchestrator {
         // Nothing to inject means the final task was ticked without its DONE.
         // This ending belongs to the planner (`pendingReplanFeedback` turns it
         // into a re-plan on top of the branch), not to a retry of the loop.
-        if (!task) return fail(CHECKLIST_EXHAUSTED_EXIT, n);
+        if (!task) return fail(CHECKLIST_EXHAUSTED_EXIT);
         n += 1;
         const transcriptFile = `iter-${String(n).padStart(3, "0")}.jsonl`;
         const iter = db
@@ -1077,7 +1075,7 @@ export class Orchestrator {
         // the orchestrator's own commits on the base branch as tampering. Stop
         // here, before anything is committed.
         const offBranch = await offRunBranchReason(worktreePath, branch);
-        if (offBranch) return fail(offBranch, n);
+        if (offBranch) return fail(offBranch);
 
         /**
          * Bank whatever the iteration left behind: tick and commit a signalled
@@ -1147,7 +1145,7 @@ export class Orchestrator {
             runId,
             payload: { n, taskNumber: task.taskNumber, blocker: blocker.slice(0, 500) },
           });
-          return fail(LOOP_BLOCKED_EXIT, n);
+          return fail(LOOP_BLOCKED_EXIT);
         }
 
         // DONE is the trigger for independent evaluation, not a direct pass to
@@ -1162,8 +1160,8 @@ export class Orchestrator {
           // then the install gate (forced — nothing unapproved may reach the
           // evaluator), and only then hand over to evaluation.
           const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
-          if (violation) return fail(violation, n);
-          if (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n })) return;
+          if (violation) return fail(violation);
+          if (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath })) return;
 
           // Spec 18 §7: DONE is the model's own word, and an evaluation is the
           // most expensive thing the pipeline does. Run the acceptance
@@ -1202,7 +1200,7 @@ export class Orchestrator {
               continue;
             }
           }
-          this.finishRun(runId, "completed", "done-signal", n);
+          this.finishRun(runId, "completed", "done-signal");
           // Phase 3: every DONE goes through the evaluator before a human
           // sees it. An evaluator crash is a loud failure, not a pass-through.
           this.moveCard(cardId, "looping", "evaluating");
@@ -1223,7 +1221,7 @@ export class Orchestrator {
           if (banked?.advanced) consecutiveStalls = 0;
           // When the iteration budget WAS the remaining run budget, this is
           // the run-level wall-clock cap — final.
-          if (remaining <= budgetMs) return fail("timeout", n, "timeout");
+          if (remaining <= budgetMs) return fail("timeout", "timeout");
           // Per-iteration hard timeout: one retry with the worktree
           // preserved; a second timeout anywhere in the run ends it (spec 11,
           // amended by spec 18 §2).
@@ -1233,7 +1231,7 @@ export class Orchestrator {
             runId,
             payload: { n, hardTimeoutMs, budgetMs, timeoutsThisRun: iterationTimeouts },
           });
-          if (iterationTimeouts >= 2) return fail("iteration-timeout", n, "timeout");
+          if (iterationTimeouts >= 2) return fail("iteration-timeout", "timeout");
           continue;
         }
         if (failed) {
@@ -1250,7 +1248,7 @@ export class Orchestrator {
           // the remaining failure budget rediscovering that is pure waste.
           const isConfigErr = failureKind === "config";
           if (consecutiveFailures >= 3 || isLimitErr || isConfigErr || (n === 1 && isConnErr)) {
-            return fail(`loop failed: ${result.error.slice(0, 300)}`, n);
+            return fail(`loop failed: ${result.error.slice(0, 300)}`);
           }
           continue;
         }
@@ -1264,7 +1262,7 @@ export class Orchestrator {
           consecutiveStalls = 0;
           productiveMs.push(Date.now() - iterationStartedMs);
         } else if (!bkResult && consecutiveUnsignalled >= 2) {
-          return fail("loop ended two iterations without writing .ralph/ITERATION_DONE", n);
+          return fail("loop ended two iterations without writing .ralph/ITERATION_DONE");
         }
         recordTaskCompleted(iter.id, planPath, task.taskNumber);
 
@@ -1275,14 +1273,14 @@ export class Orchestrator {
         lockfilesBefore = lockfilesAfter;
         if (
           installHappened &&
-          (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n }))
+          (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath }))
         ) {
           return;
         }
 
         if ((await buildProgressState(worktreePath, planPath)) === before) {
           consecutiveStalls += 1;
-          if (consecutiveStalls >= 3) return fail("stalled", n);
+          if (consecutiveStalls >= 3) return fail("stalled");
         } else {
           consecutiveStalls = 0;
         }
@@ -1306,7 +1304,7 @@ export class Orchestrator {
             },
           });
           if (consecutiveBloat >= 2) {
-            return fail(`prompt grew to ${Math.round(bloat)}x the run's median for two iterations`, n);
+            return fail(`prompt grew to ${Math.round(bloat)}x the run's median for two iterations`);
           }
         } else {
           consecutiveBloat = 0;
@@ -1318,7 +1316,7 @@ export class Orchestrator {
           // did not achieve anything. Scoring it as a success put a run that
           // spent 51.6 minutes on one unfinished task in the numerator of the
           // success rate.
-          this.finishRun(runId, "paused", "paused by user", n);
+          this.finishRun(runId, "paused", "paused by user");
           this.moveCard(cardId, "looping", "paused", "paused by user");
           return;
         }
@@ -1329,12 +1327,12 @@ export class Orchestrator {
         // nothing. A drain that runs out of time mid-iteration still exits
         // hard, and that path costs the one iteration.
         if (this.draining) {
-          this.finishRun(runId, "interrupted", "stopped for restart", n);
+          this.finishRun(runId, "interrupted", "stopped for restart");
           this.moveCard(cardId, "looping", "ready", "stopped for restart");
           return;
         }
       }
-      fail("max-iterations", n);
+      fail("max-iterations");
     } finally {
       watchdog.stop();
       this.controllers.delete(runId);
@@ -1391,7 +1389,6 @@ export class Orchestrator {
     runId: string;
     repoId: string;
     worktreePath: string;
-    n: number;
   }): Promise<boolean> {
     const repo = getRepo(opts.repoId);
     if (!repo) return false;
@@ -1408,7 +1405,7 @@ export class Orchestrator {
     // The run pauses with its state preserved (worktree + checklist ticks);
     // approval resumes it in place rather than requeueing to Todo.
     const names = unapproved.map((p) => `${p.name}@${p.version}`).join(", ");
-    this.finishRun(opts.runId, "completed", "install-script gate", opts.n);
+    this.finishRun(opts.runId, "completed", "install-script gate");
     this.moveCard(opts.cardId, "looping", "needs_attention", `install-script gate: unapproved lifecycle scripts in ${names}`);
     return true;
   }
