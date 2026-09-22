@@ -17,6 +17,7 @@ import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { errorMessage } from "@/shared/errorMessage";
 
 const TABS = ["Task", "Activity"] as const;
 
@@ -149,7 +150,7 @@ export default function CardDetail() {
       await fn();
       refetch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
   const post = (path: string, json: object = {}) => action(() => api(`/api/cards/${id}/${path}`, { json }));
@@ -471,7 +472,7 @@ function InstallGateBanner({
       });
       onApproved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -921,7 +922,7 @@ function EditCardModal({
       });
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
       setBusy(false);
     }
   }

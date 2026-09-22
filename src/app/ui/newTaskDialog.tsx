@@ -6,6 +6,7 @@ import type { CreateCardRequest } from "@/shared/cardRequests";
 import { api, type Repo } from "./api";
 import { DialogShell, EMPTY_ROLE_MODELS, RoleModelSelects, useBranches, useRoleModelOptions } from "./taskDialog";
 import { FolderBrowser } from "./folderBrowser";
+import { errorMessage } from "@/shared/errorMessage";
 
 export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { repos: Repo[]; onClose: () => void; onCreated: () => void; defaultRepoId?: string }) {
   const router = useRouter();
@@ -30,7 +31,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         json: { name: folder.split("/").pop() || folder, path: folder },
       }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
   // Errors propagate: the browser reports them through onError.
@@ -51,7 +52,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       setTitle(draft.title);
       setDescription(draft.description);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setImporting(false);
     }
@@ -125,7 +126,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       const created = await api<{ id: string }>("/api/cards", { json: request });
       onCreated();
       if (andScope) router.push(`/card/${created.id}`);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
+    } catch (e) { setError(errorMessage(e)); setBusy(false); }
   }
 
   return (

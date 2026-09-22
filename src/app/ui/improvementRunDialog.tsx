@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import type { CreateImprovementRunRequest } from "@/shared/improvementRunRequests";
 import { api, type Repo } from "./api";
 import { DialogShell, EMPTY_ROLE_MODELS, RoleModelSelects, useBranches, useRoleModelOptions } from "./taskDialog";
+import { errorMessage } from "@/shared/errorMessage";
 
 type BudgetUnit = "minutes" | "hours";
 
@@ -48,7 +49,7 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
       };
       await api("/api/improvement-runs", { json: request });
       onCreated();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
+    } catch (e) { setError(errorMessage(e)); setBusy(false); }
   }
 
   const budgetValid = Number.isFinite(Number(budgetAmount)) && Number(budgetAmount) > 0;

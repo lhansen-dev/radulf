@@ -11,6 +11,7 @@ import {
   SETTINGS_SECTIONS, SettingsNav, SettingsPanel, ThemePicker, ToggleRow,
   inputCls, secondaryButtonCls, sectionCls, useSettingsSection,
 } from "./settingsUI";
+import { errorMessage } from "@/shared/errorMessage";
 
 type GithubStatusResponse = {
   ok: boolean;
@@ -230,7 +231,6 @@ function SectionHeading({ title, children }: { title: string; children?: React.R
   );
 }
 
-const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function SettingsPage() {
   const { settings, setSettings, repos, saved, saving, dirty, error, setError, refetch, save } = useSettingsData();
@@ -825,7 +825,7 @@ function AgentSection({
       })
       .catch((e) => {
         setModels([]);
-        setStatus(`✗ ${e instanceof Error ? e.message : e}`);
+        setStatus(`✗ ${errorMessage(e)}`);
       });
   }, []);
 
@@ -1006,7 +1006,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
       setEmptyRepo(false);
       onChange();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -1034,7 +1034,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 setRemoveError(null);
                 api(`/api/repos/${r.id}`, { method: "DELETE" })
                   .then(onChange)
-                  .catch((cause) => setRemoveError({ repoId: r.id, message: cause instanceof Error ? cause.message : String(cause) }));
+                  .catch((cause) => setRemoveError({ repoId: r.id, message: errorMessage(cause) }));
               }}
               className="min-h-11 px-2 text-xs text-red-400/70 hover:text-red-400"
             >

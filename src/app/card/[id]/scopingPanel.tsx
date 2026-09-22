@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../../ui/api";
 import type { ScopingMessage } from "./useCardDetail";
+import { errorMessage } from "@/shared/errorMessage";
 
 /** Statuses in which the thread can still change what gets planned. */
 const SCOPABLE = new Set(["backlog", "todo", "needs_attention"]);
@@ -45,7 +46,7 @@ export function ScopingPanel({
     try {
       await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(null);
     }

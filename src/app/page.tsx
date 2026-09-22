@@ -22,6 +22,7 @@ import { DetailsMenu } from "./ui/detailsMenu";
 import { useWorkData } from "./ui/useWorkData";
 import { useNow } from "./ui/useNow";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { errorMessage } from "@/shared/errorMessage";
 
 type View = "overview" | "needs" | "active" | "queue" | "backlog" | "done";
 
@@ -168,7 +169,7 @@ export default function WorkPage() {
       await fn();
       refetch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -189,7 +190,7 @@ export default function WorkPage() {
       await api(`/api/cards/${card.id}/move`, { json: { to: "todo", position } });
       refetch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
       refetch();
     }
   }
@@ -209,7 +210,7 @@ export default function WorkPage() {
       await api("/api/settings", { method: "PATCH", json: { [key]: !current } });
     } catch (e) {
       setValue(current);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
   const workspaceToggles = [

@@ -9,6 +9,7 @@ import { classifySelfModifying } from "./selfModifying";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { segmentSuspiciousChars } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
+import { errorMessage } from "@/shared/errorMessage";
 
 type Detail = {
   card: { id: string; title: string; status: string };
@@ -113,7 +114,7 @@ export default function ReviewPage() {
       await api("/api/reviews", { json: { runId: loopRun.id, decision, feedback } });
       router.push("/");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
       setBusy(false);
     }
   }

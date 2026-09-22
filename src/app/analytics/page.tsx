@@ -6,6 +6,7 @@ import { BarList } from "../ui/barList";
 import { formatCostUsd } from "../ui/formatCost";
 import type { AnalyticsResponse } from "../../server/analytics";
 import { AppShell } from "../ui/appShell";
+import { errorMessage } from "@/shared/errorMessage";
 
 export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsResponse | null>(null);
@@ -22,7 +23,7 @@ export default function AnalyticsPage() {
     const query = qs.toString();
     api<AnalyticsResponse>(`/api/analytics${query ? `?${query}` : ""}`)
       .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errorMessage(e)));
   }, [range, provider, model]);
 
   if (error) {

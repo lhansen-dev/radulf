@@ -7,6 +7,7 @@ import { AppShell } from "../ui/appShell";
 import { formatCostUsd } from "../ui/formatCost";
 import type { BenchmarksResponse } from "../api/benchmarks/route";
 import type { RolloutTarget } from "../../server/analytics";
+import { errorMessage } from "@/shared/errorMessage";
 
 export default function BenchmarksPage() {
   const [data, setData] = useState<BenchmarksResponse | null>(null);
@@ -26,7 +27,7 @@ export default function BenchmarksPage() {
   const refresh = useCallback(() => {
     api<BenchmarksResponse>("/api/benchmarks")
       .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errorMessage(e)));
   }, []);
 
   useEffect(() => {
@@ -59,7 +60,7 @@ export default function BenchmarksPage() {
       setNotice(`Benchmark started — report will land in benchmarks/reports/${res.reportFile}`);
       refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setStarting(false);
     }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Repo } from "../ui/api";
 import type { Settings } from "@/server/settings";
+import { errorMessage } from "@/shared/errorMessage";
 
 export type { Settings };
 
@@ -59,7 +60,7 @@ export function useSettingsData() {
       setSaved(true);
       setTimeout(() => setSaved(false), 5000);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
       throw cause;
     } finally {
       setSaving(false);
