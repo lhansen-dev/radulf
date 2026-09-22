@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db, repos } from "@/db";
 import { listBranches, git, isRalphBranch, isValidBranchName } from "@/server/git";
+import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../../../_lib";
 
 export const dynamic = "force-dynamic";
@@ -21,11 +22,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const repo = db.select().from(repos).where(eq(repos.id, id)).get();
     if (!repo) return err("repo not found", 404);
 
-    const body: unknown = await req.json();
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      return err("branch body must be an object");
-    }
-    const values = body as Record<string, unknown>;
+    const values = record(await req.json(), "branch body");
     const name = typeof values.name === "string" ? values.name.trim() : "";
     if (!name) return err("branch name is required", 400);
     if (!(await isValidBranchName(name))) return err("branch name is not a valid Git ref", 400);

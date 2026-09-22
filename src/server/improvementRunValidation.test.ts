@@ -38,8 +38,8 @@ describe("parseCreateImprovementRun", () => {
   it.each([
     [{ baseBranch: "main", budgetMinutes: 30 }, "repoId is required"],
     [{ repoId: "repo-1", budgetMinutes: 30 }, "baseBranch is required"],
-    [{ ...valid, budgetMinutes: 0 }, "budgetMinutes must be a positive integer"],
-    [{ ...valid, budgetMinutes: 1.5 }, "budgetMinutes must be a positive integer"],
+    [{ ...valid, budgetMinutes: 0 }, "budgetMinutes must be an integer between 1 and 10080"],
+    [{ ...valid, budgetMinutes: 1.5 }, "budgetMinutes must be an integer between 1 and 10080"],
     [{ ...valid, bogus: "nope" }, "unknown field: bogus"],
     ["nope", "improvement run body must be an object"],
   ])("rejects %j", (body, message) => {
