@@ -1,6 +1,6 @@
-import { desc, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { db, cards, runs, iterations } from "@/db";
-import { computeAnalytics, filterAnalyticsInput } from "@/server/analytics";
+import { computeAnalytics } from "@/server/analytics";
 import type { AnalyticsResponse } from "@/server/analytics";
 import { json } from "../_lib";
 
@@ -31,7 +31,9 @@ export async function GET(req: Request) {
     .from(cards)
     .all();
 
-  const allRuns = db
+  // startedAt is ISO text, so an ISO lower bound compares correctly in SQL.
+  const fromMs = fromMsForRange(range);
+  const filteredRuns = db
     .select({
       id: runs.id,
       cardId: runs.cardId,
@@ -47,11 +49,18 @@ export async function GET(req: Request) {
       costUsd: runs.costUsd,
     })
     .from(runs)
+    .where(
+      and(
+        fromMs == null ? undefined : gte(runs.startedAt, new Date(fromMs).toISOString()),
+        provider ? eq(runs.provider, provider) : undefined,
+        model ? eq(runs.model, model) : undefined,
+      ),
+    )
     .orderBy(desc(runs.startedAt))
     .limit(MAX_ANALYTICS_RUNS)
     .all();
 
-  const runIds = allRuns.map((run) => run.id);
+  const runIds = filteredRuns.map((run) => run.id);
   const allIterations = runIds.length === 0
     ? []
     : db.select({
@@ -78,20 +87,12 @@ export async function GET(req: Request) {
     .where(inArray(iterations.runId, runIds))
     .all();
 
-  const filtered = filterAnalyticsInput(
-    { cards: allCards, runs: allRuns, iterations: allIterations },
-    { fromMs: fromMsForRange(range), provider, model },
-  );
-
-  const result = computeAnalytics(filtered);
+  const result = computeAnalytics({ cards: allCards, runs: filteredRuns, iterations: allIterations });
 
   // Distinct sorted non-empty labels from ALL runs for dropdown options
-  const providers = [
-    ...new Set(allRuns.map((r) => r.provider).filter((p): p is string => !!p)),
-  ].sort();
-  const models = [
-    ...new Set(allRuns.map((r) => r.model).filter((m): m is string => !!m)),
-  ].sort();
+  const pairs = db.selectDistinct({ provider: runs.provider, model: runs.model }).from(runs).all();
+  const providers = [...new Set(pairs.map((r) => r.provider).filter((p): p is string => !!p))].sort();
+  const models = [...new Set(pairs.map((r) => r.model).filter((m): m is string => !!m))].sort();
 
   const response: AnalyticsResponse = { ...result, providers, models };
 

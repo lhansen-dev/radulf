@@ -132,7 +132,6 @@ export type Analytics = {
   runsByStatus: BarDatum[];
   tokensPerRun: BarDatum[];
   costPerRun: BarDatum[];
-  iterationDurationsMs: number[];
   loopKpis: LoopKpis;
   loopCohorts: LoopCohort[];
   successRate: number;
@@ -145,29 +144,7 @@ export type Analytics = {
   tokensByRole: BarDatum[];
 };
 
-export type AnalyticsFilter = {
-  fromMs?: number | null;   // inclusive lower bound on run.startedAt; null = no bound
-  provider?: string;        // exact match on run.provider; "" / undefined = no filter
-  model?: string;           // exact match on run.model; "" / undefined = no filter
-};
-
 export type AnalyticsResponse = Analytics & { providers: string[]; models: string[] };
-
-export function filterAnalyticsInput(
-  input: { cards: AnalyticsCardRow[]; runs: AnalyticsRunRow[]; iterations: AnalyticsIterationRow[] },
-  filter: AnalyticsFilter,
-): { cards: AnalyticsCardRow[]; runs: AnalyticsRunRow[]; iterations: AnalyticsIterationRow[] } {
-  const { fromMs, provider, model } = filter;
-
-  const runs = input.runs.filter(
-    (r) =>
-      (fromMs == null || new Date(r.startedAt).getTime() >= fromMs) &&
-      (!provider || r.provider === provider) &&
-      (!model || r.model === model),
-  );
-  const runIds = new Set(runs.map((r) => r.id));
-  return { cards: input.cards, runs, iterations: input.iterations.filter((i) => runIds.has(i.runId)) };
-}
 
 /** Sum `value` per `label`, drop empty groups, largest first. */
 function groupBars<T>(rows: T[], label: (row: T) => string, value: (row: T) => number): BarDatum[] {
@@ -242,7 +219,6 @@ export function computeAnalytics(input: {
     runsByStatus: groupBars(runs, (r) => r.status, count),
     tokensPerRun: byValueDesc(runs.map((r) => ({ label: runLabel(r), value: tokens(r) }))),
     costPerRun: byValueDesc(pricedRuns.map((r) => ({ label: runLabel(r), value: cost(r) }))),
-    iterationDurationsMs,
     loopKpis: computeLoopKpis(iterations, iterationDurationsMs),
     loopCohorts: computeLoopCohorts(iterations, runs),
     successRate: terminal.length === 0 ? 0 : completed / terminal.length,
