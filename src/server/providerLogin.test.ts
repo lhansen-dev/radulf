@@ -170,6 +170,42 @@ describe("startLogin", () => {
     expect(eventTypes()).not.toContain("provider.login");
   });
 
+  it("renders a stack-trailing provider error as one readable line", async () => {
+    // Verbatim shape of a rejected code from pi: the reason, then the request,
+    // then the frames. The page gets the first line; the log keeps the rest.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.flow = async () => {
+      throw new Error(
+        `Token exchange request failed. url=https://platform.claude.com/v1/oauth/token; body={"error": "invalid_grant"}\n` +
+          "    at postJson (file:///app/node_modules/.../anthropic.js:155:15)\n" +
+          "    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)",
+      );
+    };
+
+    const started = await startLogin("anthropic", "oauth");
+    await settle();
+
+    const error = readLogin(started.id).error!;
+    expect(error).toContain("invalid_grant");
+    expect(error).not.toContain("    at ");
+    expect(error.split("\n")).toHaveLength(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("bounds a failure long enough to fill the page", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.flow = async () => {
+      throw new Error("x".repeat(1_000));
+    };
+
+    const started = await startLogin("anthropic", "oauth");
+    await settle();
+
+    expect(readLogin(started.id).error!.length).toBeLessThanOrEqual(301);
+    warn.mockRestore();
+  });
+
   it("frees the provider once a login has settled", async () => {
     mocks.flow = async () => {
       throw new Error("nope");

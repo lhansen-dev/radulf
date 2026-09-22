@@ -224,12 +224,33 @@ export async function startLogin(providerId: string, type: AuthType): Promise<Lo
       if (session.status === "expired") return; // already explained
       session.status = "failed";
       session.pending = null;
-      session.error = errorMessage(cause);
+      session.error = readableFailure(cause);
       session.expiresAt = Date.now() + 60_000;
     });
 
   return view(session);
 }
+
+/**
+ * A login failure the settings page can render.
+ *
+ * pi's own messages carry the request that failed and then a stack trace, so
+ * a rejected code arrives as twenty lines ending in `at processTicks…`. Keep
+ * the first line, drop the frames, and bound the length: what the operator
+ * needs is "invalid_grant: Invalid 'code' in request", and the rest is in the
+ * server log where a stack belongs.
+ */
+function readableFailure(cause: unknown): string {
+  const full = errorMessage(cause);
+  if (full.length > FAILURE_CHARS || /\n\s*at /.test(full)) {
+    console.warn("[radulf] provider login failed:", cause);
+  }
+  const firstLine = full.split("\n")[0].trim();
+  return firstLine.length > FAILURE_CHARS ? `${firstLine.slice(0, FAILURE_CHARS)}…` : firstLine;
+}
+
+/** Enough to name the cause, not enough to fill the page. */
+const FAILURE_CHARS = 300;
 
 /**
  * Park pi's question until the browser answers it.
