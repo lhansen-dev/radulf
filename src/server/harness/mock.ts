@@ -359,8 +359,7 @@ function untilAborted(signal: AbortSignal | undefined): Promise<void> {
 }
 
 const streamSimple: StreamSimple = (model, ctx, options) => {
-  let resolveResult!: (message: AssistantMessage) => void;
-  const result = new Promise<AssistantMessage>((resolve) => (resolveResult = resolve));
+  const { promise: result, resolve: resolveResult } = Promise.withResolvers<AssistantMessage>();
 
   async function* events(): AsyncGenerator<AssistantEvent> {
     const scripted = reply(model, ctx);

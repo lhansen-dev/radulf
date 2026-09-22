@@ -489,10 +489,8 @@ export async function wrapBashCommand(
   queuedConfig = incomingPolicy;
   queueDepth++;
   const myTurn = sandboxQueueTail;
-  let releaseMyTurn!: () => void;
-  sandboxQueueTail = new Promise<void>((resolve) => {
-    releaseMyTurn = resolve;
-  });
+  const { promise: myDone, resolve: releaseMyTurn } = Promise.withResolvers<void>();
+  sandboxQueueTail = myDone;
   await myTurn;
   try {
     SandboxManager.updateConfig(runConfig);

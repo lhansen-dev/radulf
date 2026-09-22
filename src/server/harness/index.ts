@@ -280,10 +280,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   }
 
   // Watchdog race: any of the three triggers aborts the session and unblocks.
-  let releaseWatchdog: () => void = () => {};
-  const watchdog = new Promise<void>((res) => {
-    releaseWatchdog = res;
-  });
+  const { promise: watchdog, resolve: releaseWatchdog } = Promise.withResolvers<void>();
   const trip = (cause: TripCause) => {
     if (tripped !== null) return;
     tripped = cause;
