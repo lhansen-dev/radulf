@@ -151,4 +151,12 @@ export type TranscriptEvent =
       content: string;
       redacted?: boolean;
     }
+  /**
+   * A pi SDK event the normalizer doesn't map, kept whole so nothing is lost.
+   * The object itself, not a pre-serialized string: the transcript writer
+   * JSON-encodes the line once, and `tool_execution_end` carries the full
+   * tool output.
+   */
+  | { t: "raw"; event: unknown }
+  /** A transcript line the reader could not parse as a tagged event. */
   | { t: "raw"; line: string };

@@ -202,7 +202,7 @@ describe("piNormalize", () => {
       type: "message_end",
       message: { role: "toolResult", toolCallId: "tc_1", content: [] },
     };
-    expect(norm(evt)).toEqual([{ t: "raw", line: JSON.stringify(evt) }]);
+    expect(norm(evt)).toEqual([{ t: "raw", event: evt }]);
   });
 
   it("maps a failed auto_retry_end to result:failed", () => {
@@ -213,7 +213,7 @@ describe("piNormalize", () => {
   it("keeps a successful auto_retry_end as raw and marks the retry completed", () => {
     const evt = { type: "auto_retry_end", success: true, attempt: 1 };
     expect(norm(evt)).toEqual([
-      { t: "raw", line: JSON.stringify(evt) },
+      { t: "raw", event: evt },
       { t: "result", exit: "completed" },
     ]);
   });
@@ -226,9 +226,9 @@ describe("piNormalize", () => {
       result: "ok",
       isError: false,
     };
-    expect(norm(end)).toEqual([{ t: "raw", line: JSON.stringify(end) }]);
+    expect(norm(end)).toEqual([{ t: "raw", event: end }]);
 
     const unknown = { type: "queue_update", steering: [], followUp: [] };
-    expect(norm(unknown)).toEqual([{ t: "raw", line: JSON.stringify(unknown) }]);
+    expect(norm(unknown)).toEqual([{ t: "raw", event: unknown }]);
   });
 });

@@ -359,11 +359,11 @@ export async function resolveModel(
  * `thinking`, and `toolCall` — plus usage and stopReason); `auto_retry_end`
  * carries `success`/`finalError`. Streaming deltas and lifecycle framing are
  * dropped deliberately — their content is fully duplicated by `message_end`.
- * Everything unrecognized is preserved as `t:"raw"` with a stringified event
+ * Everything unrecognized is preserved as `t:"raw"` carrying the event object
  * so nothing is lost.
  */
 export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
-  const raw = (): TranscriptEvent[] => [{ t: "raw", line: JSON.stringify(evt) }];
+  const raw = (): TranscriptEvent[] => [{ t: "raw", event: evt }];
 
   if (evt.type === "message_end") {
     const message = evt.message as unknown as Record<string, unknown> | undefined;
