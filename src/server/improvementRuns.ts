@@ -14,7 +14,7 @@ import { normalizeProvider } from "./providers";
 import { getOrchestrator } from "./orchestrator";
 import { proposeOneImprovement } from "./improvementProposer";
 import type { Proposal } from "./pm";
-import { assertBranchExists, git } from "./git";
+import { assertBranchExists, git, isRalphBranch } from "./git";
 import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
@@ -148,6 +148,11 @@ export async function createImprovementRun(
   if (!repo) throw new ClientError("repoId does not exist");
   if (activeRunForRepo(input.repoId)) {
     throw new ClientError("an improvement run is already active for this repo");
+  }
+  // The same rule card creation applies (spec 19): a run cut off one of
+  // Radulf's own branches would accumulate onto another run's or card's work.
+  if (isRalphBranch(input.baseBranch)) {
+    throw new ClientError("baseBranch cannot be one of Radulf's own ralph/* branches");
   }
   await assertBranchExists(repo.path, input.baseBranch, "baseBranch");
 

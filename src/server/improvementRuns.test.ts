@@ -203,6 +203,15 @@ describe("createImprovementRun", () => {
     ).rejects.toThrow(/already active/);
   });
 
+  it("refuses a ralph/* base branch, as card creation does", async () => {
+    await expect(
+      createImprovementRun({ repoId: "repo-1", baseBranch: "ralph/improve-1700000000000", budgetMinutes: 30 }),
+    ).rejects.toThrow(/ralph\//);
+
+    expect(mocks.git).not.toHaveBeenCalled();
+    expect(db.select().from(improvementRuns).all()).toHaveLength(0);
+  });
+
   it("cuts a feature branch off baseBranch and persists the run", async () => {
     const row = await createImprovementRun({
       repoId: "repo-1",
