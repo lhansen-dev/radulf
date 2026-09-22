@@ -344,9 +344,26 @@ export function getSettings(): Settings {
       // Stored value may be encrypted (current writes) or legacy plaintext
       // (rows written before this module existed) — decryptSecret handles both.
       // Decrypt before validating: a format check has to see the plaintext.
-      const plain = SECRET_SETTINGS.has(key as keyof Settings) && typeof stored === "string"
-        ? decryptSecret(stored)
-        : stored;
+      let plain: unknown = stored;
+      if (SECRET_SETTINGS.has(key as keyof Settings) && typeof stored === "string") {
+        try {
+          plain = decryptSecret(stored);
+        } catch (e) {
+          // The row is encrypted under a key derived from `data/auth-secret`,
+          // and SECURITY.md documents deleting that file as the kill switch
+          // for a leaked session cookie. Doing it also makes every stored
+          // provider key undecryptable, and the catch-all below used to
+          // swallow that: the key read as unset, the next run failed with "no
+          // API key", and nothing connected the two. Say it instead — the row
+          // is intact, and re-entering the key in Settings is the fix.
+          console.warn(
+            `[radulf] ${key} could not be decrypted: data/auth-secret no longer matches the ` +
+              `value stored for it (rotated or replaced). Re-enter the key in Settings. ` +
+              errorMessage(e),
+          );
+          return;
+        }
+      }
       const validated = validateSettingsPatch({ [key]: plain });
       const value = validated[key as keyof Settings];
       // Blank templates are a reset signal, never an executable prompt.
