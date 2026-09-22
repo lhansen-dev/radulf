@@ -56,6 +56,7 @@ history inline.
 | [18 — Loop failure modes](../specs/18-loop-failure-modes.md) | What the loop knows when an iteration ends badly, and what it does with it | Current; amends 11 |
 | [19: Radulf's own refs](../specs/19-shared-git-ref-noise.md) | Why a sibling card's branch is not tampering, and what the run-end integrity check still compares | Current; amends 14 |
 | [20: More than one card at a time](../specs/20-concurrent-cards.md) | The per-repo concurrency cap, and telling the integrity check about the merges Radulf itself performs | Current; amends locked decision 5, completes 19 |
+| [21: Registering a repository by URL](../specs/21-clone-on-register.md) | Cloning into Radulf's own repos dir when a URL is registered, so a server or container install needs no pre-mounted checkouts | Current; extends locked decision 1 |
 
 ## Implementation plans
 
