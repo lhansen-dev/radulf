@@ -2577,6 +2577,34 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(fs.existsSync(abandonedWorktree)).toBe(false);
     });
 
+    it("keeps an unfinished card's aged events, which are state and not history", () => {
+      const aged = "2020-01-01T00:00:00.000Z";
+      // Parked on the install gate. The `install.gate` event holds the ONLY
+      // copy of the scripts the operator has to read before approving them,
+      // and the `card.moved` is what sweepStaleAttention anchors on to decide
+      // the card is waiting — lose either and the card cannot be resolved or
+      // announced. A card parked long enough to age past the cutoff is exactly
+      // the one this used to delete.
+      card("gated", "needs_attention");
+      card("finished", "done");
+      db.insert(events)
+        .values([
+          { cardId: "gated", type: "install.gate", payload: JSON.stringify({ packages: [{ name: "left-pad" }] }), createdAt: aged },
+          { cardId: "gated", type: "card.moved", payload: JSON.stringify({ to: "needs_attention" }), createdAt: aged },
+          { cardId: "finished", type: "card.moved", payload: "{}", createdAt: aged },
+          // Card-less lifecycle noise still ages out on the cutoff alone.
+          { cardId: null, type: "improvement.completed", payload: "{}", createdAt: aged },
+        ])
+        .run();
+
+      const result = pruneRuntimeHistory(30);
+
+      expect(result.eventsDeleted).toBe(2);
+      expect(
+        db.select().from(events).all().map((event) => `${event.cardId}:${event.type}`).sort(),
+      ).toEqual(["gated:card.moved", "gated:install.gate"]);
+    });
+
     it("is a no-op, not an error, when the worktree directory or row is already gone", () => {
       card("old-history-2", "done");
       plan("old-history-2");

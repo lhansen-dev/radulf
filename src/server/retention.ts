@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import { cards, db, events, runs, TRANSCRIPTS_DIR } from "@/db";
 import { planStatePath } from "./bookkeeping";
 import { ClientError } from "./clientError";
@@ -50,9 +50,11 @@ export async function removeCardArtifacts(repoPath: string, artifacts: CardArtif
 
 /** Delete terminal run history/events older than the requested window and
  * clean aged orphan/standalone transcript entries. Cards and plans remain.
- * Only runs of finished (done/abandoned) cards are pruned: an unfinished card
- * — waiting in review or needs_attention, or mid-cycle — reuses its runs'
- * worktree and finds it again through those rows (latestWorktreeRun). */
+ * Only runs and events of finished (done/abandoned) cards are pruned: an
+ * unfinished card — waiting in review or needs_attention, or mid-cycle —
+ * reuses its runs' worktree and finds it again through those rows
+ * (latestWorktreeRun), and its events still hold state the UI and the stale
+ * sweep read back. Card-less events age out on the cutoff alone. */
 export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
   if (!Number.isInteger(olderThanDays) || olderThanDays < 1 || olderThanDays > 3_650) {
     throw new ClientError("olderThanDays must be an integer between 1 and 3650");
@@ -93,7 +95,33 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
     worktreesRemoved += 1;
   }
 
-  const eventsDeleted = db.delete(events).where(lt(events.createdAt, cutoff)).run().changes;
+  // Scoped to finished cards for the same reason the run sweep above is, and
+  // it was not: an unfinished card's events are not history, they are state.
+  // `install.gate` carries the only copy of the unapproved lifecycle scripts
+  // the operator has to read before they can approve them, `plan.questions`
+  // the planner's blocking questions, and `sweepStaleAttention` anchors on the
+  // `card.moved` that put a card into Needs Attention — delete that and the
+  // card is never announced as waiting again, which is precisely the card the
+  // sweep exists for. Cards parked long enough to age past a cutoff are the
+  // ones this hurt.
+  //
+  // Events with no card (improvement-run lifecycle, server restarts) age out
+  // on the cutoff alone, as before — nothing is waiting on them.
+  const finishedCardIds = db
+    .select({ id: cards.id })
+    .from(cards)
+    .where(inArray(cards.status, ["done", "abandoned"]))
+    .all()
+    .map((card) => card.id);
+  const eventsDeleted = db
+    .delete(events)
+    .where(
+      and(
+        lt(events.createdAt, cutoff),
+        or(isNull(events.cardId), inArray(events.cardId, finishedCardIds)),
+      ),
+    )
+    .run().changes;
 
   const liveRunIds = new Set(db.select({ id: runs.id }).from(runs).all().map((run) => run.id));
   if (fs.existsSync(/* turbopackIgnore: true */ TRANSCRIPTS_DIR)) {
