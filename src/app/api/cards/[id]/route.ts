@@ -6,9 +6,10 @@ import { planStatePath } from "@/server/bookkeeping";
 import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
 import { getCard, requireCard } from "@/server/cards";
-import { getRepo } from "@/server/repos";
+import { getOrchestrator } from "@/server/orchestrator";
+import { getRepo, requireRepo } from "@/server/repos";
 import { groupBy } from "@/server/queryGrouping";
-import { removeRunTranscripts } from "@/server/retention";
+import { removeCardArtifacts } from "@/server/retention";
 import { listScopingMessages } from "@/server/scoping";
 import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../../_lib";
@@ -112,23 +113,17 @@ export async function DELETE(_req: Request, { params }: Ctx) {
     if (["planning", "looping", "evaluating"].includes(card.status))
       return err("cannot delete a card with an active run — pull it back to Backlog first");
     // Clean up any leftover worktree before the rows cascade away.
-    const { getOrchestrator } = await import("@/server/orchestrator");
-    const run = getOrchestrator().latestWorktreeRun(id);
-    if (run) {
-      const repo = getRepo(card.repoId);
-      if (repo) {
-        const { removeWorktree } = await import("@/server/git");
-        await removeWorktree(repo.path, run.worktreePath, run.branch);
-      }
-    }
     const runIds = db
       .select({ id: runs.id })
       .from(runs)
       .where(eq(runs.cardId, id))
       .all()
       .map((item) => item.id);
-    removeRunTranscripts(runIds);
-    fs.rmSync(/* turbopackIgnore: true */ planStatePath(id), { force: true });
+    await removeCardArtifacts(requireRepo(card.repoId).path, {
+      cardId: id,
+      worktreeRun: getOrchestrator().latestWorktreeRun(id),
+      runIds,
+    });
     db.delete(events).where(eq(events.cardId, id)).run();
     db.delete(cards).where(eq(cards.id, id)).run();
     return json({ ok: true });
