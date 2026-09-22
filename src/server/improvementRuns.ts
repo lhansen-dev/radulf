@@ -158,9 +158,6 @@ export async function createImprovementRun(
   if (!(await listBranches(repo.path)).includes(input.baseBranch)) {
     throw new ClientError("baseBranch does not exist in the repository");
   }
-  if (!Number.isInteger(input.budgetMinutes) || input.budgetMinutes < 1) {
-    throw new ClientError("budgetMinutes must be a positive integer");
-  }
 
   const featureBranch = `ralph/improve-${Date.now()}`;
   await git(repo.path, "branch", featureBranch, input.baseBranch);
