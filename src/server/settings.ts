@@ -5,6 +5,7 @@ import { db, settings } from "@/db";
 import { invalid, record } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
 import { parseHeaderLines } from "./localEndpoint";
+import { REASONING_LEVELS } from "@/shared/providers";
 
 function readBuiltInPromptTemplate(fileName: string): string {
   return fs.readFileSync(
@@ -150,17 +151,7 @@ export type Settings = { [K in keyof typeof SETTING_DEFAULTS]: (typeof SETTING_D
 // the default, so gating it here would silently turn a stored "mock" into a
 // paid provider. The run itself refuses instead (harness/mock.ts).
 const PROVIDERS = new Set(["anthropic", "chatgpt", "copilot", "omlx", "openrouter", "mock"]);
-// pi's thinking levels (pi --thinking): the full ladder pi accepts. Pi clamps
-// an unsupported level to the nearest one the chosen model supports.
-export const REASONING_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
+export { REASONING_LEVELS };
 const REASONING_LEVEL_SET = new Set<string>(REASONING_LEVELS);
 const REASONING_LEVEL_SETTINGS = new Set<keyof Settings>([
   "plannerReasoningLevel",

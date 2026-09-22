@@ -1,15 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
-
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: "Anthropic (Claude subscription)",
-  chatgpt: "ChatGPT (Codex subscription)",
-  copilot: "GitHub Copilot (subscription)",
-  omlx: "Local / self-hosted",
-  openrouter: "OpenRouter",
-  mock: "Mock (scripted, no model)",
-};
+import { providerLabel } from "@/shared/providers";
 
 export const ROLES = ["planner", "loop", "evaluator"] as const;
 export type Role = (typeof ROLES)[number];
@@ -79,7 +71,7 @@ function ModelSelect({ label, providerId, value, setValue, models, inputId, data
   return (
     <div>
       <label htmlFor={inputId} className="block text-sm text-foreground/70">{label}</label>
-      <p className="mt-0.5 text-xs text-foreground/40">Provider: {PROVIDER_LABELS[providerId] ?? providerId}</p>
+      <p className="mt-0.5 text-xs text-foreground/40">Provider: {providerLabel(providerId)}</p>
       <input
         id={inputId}
         value={value}

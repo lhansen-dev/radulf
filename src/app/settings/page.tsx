@@ -6,22 +6,11 @@ import { playAlertSound, requestNotificationPermission, showCardNotification } f
 import { AppShell } from "../ui/appShell";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
+import { PROVIDERS, REASONING_LEVELS, providerLabel, type ProviderModel } from "@/shared/providers";
 import {
   SETTINGS_SECTIONS, SettingsNav, SettingsPanel, ThemePicker, ToggleRow,
   inputCls, secondaryButtonCls, sectionCls, useSettingsSection,
 } from "./settingsUI";
-
-type ProviderModel = {
-  value: string;
-  displayName: string;
-  description: string;
-  reasoningEfforts?: string[];
-  reasoningMandatory?: boolean;
-  /** USD per 1M tokens, when the provider reports pricing. Undefined for a
-   * self-hosted model, which has no market rate. */
-  costPerMillionInput?: number;
-  costPerMillionOutput?: number;
-};
 
 type GithubStatusResponse = {
   ok: boolean;
@@ -122,21 +111,6 @@ function priceLabel(m: ProviderModel, input = " / 1M input", output = " / 1M out
     m.costPerMillionOutput != null && `${formatPricePerMillion(m.costPerMillionOutput)}${output}`,
   ].filter(Boolean).join(sep);
 }
-
-const PROVIDERS = [
-  { id: "anthropic", label: "Anthropic (Claude subscription)" },
-  { id: "omlx", label: "Local / self-hosted (OpenAI-compatible)" },
-  { id: "openrouter", label: "OpenRouter" },
-  { id: "chatgpt", label: "ChatGPT (Codex subscription)" },
-  { id: "copilot", label: "GitHub Copilot (subscription)" },
-  // Testing-only (RADULF_MOCK_LLM=1) — listed only while a role already uses
-  // it, so a stored "mock" renders as itself; select it via PATCH /api/settings.
-  { id: "mock", label: "Mock (scripted, no model)" },
-] as const;
-
-// Mirror of REASONING_LEVELS in src/server/settings.ts (pi's --thinking ladder);
-// the server validates, this only populates the picker.
-const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /**
  * Levels to offer for the picked model, ordered by the canonical ladder. When
@@ -735,7 +709,7 @@ function ProviderHealthPanel() {
         <div key={row.provider} className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-t border-foreground/10 pt-3 first-of-type:border-t-0 first-of-type:pt-0">
           <div className="min-w-0">
             <p className="text-sm font-medium">
-              {PROVIDERS.find((p) => p.id === row.provider)?.label ?? row.provider}
+              {providerLabel(row.provider)}
             </p>
             {row.rateLimit && (
               <p className="mt-1 text-xs leading-relaxed text-foreground/55">
@@ -884,6 +858,8 @@ function AgentSection({
             onChange={(e) => onProvider(e.target.value)}
             className={inputCls}
           >
+            {/* Mock is testing-only (RADULF_MOCK_LLM=1) — listed only while this role already
+                uses it, so a stored "mock" renders as itself; select it via PATCH /api/settings. */}
             {PROVIDERS.filter((p) => p.id !== "mock" || provider === "mock").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
