@@ -9,6 +9,17 @@ import { json, err, handle } from "../../../_lib";
 
 type Ctx = { params: Promise<{ id: string }> };
 
+export type DiffResponse = {
+  runId: string;
+  branch: string;
+  diff: string;
+  stat: string;
+  /** The loop's DONE summary, when it wrote one. */
+  done: string | null;
+  /** The evaluator's EVALUATION.md, when it wrote one. */
+  evaluation: string | null;
+};
+
 export async function GET(_req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
@@ -23,13 +34,14 @@ export async function GET(_req: Request, { params }: Ctx) {
       worktreeDiff(run.worktreePath, baseBranch),
       worktreeDiffStat(run.worktreePath, baseBranch),
     ]);
-    return json({
+    const body: DiffResponse = {
       runId: run.id,
       branch: run.branch,
       diff,
       stat,
       done: donePath ? fs.readFileSync(donePath, "utf8") : null,
       evaluation: fs.existsSync(evaluationPath) ? fs.readFileSync(evaluationPath, "utf8") : null,
-    });
+    };
+    return json(body);
   });
 }

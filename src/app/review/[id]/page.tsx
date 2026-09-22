@@ -13,23 +13,8 @@ import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { hasSuspiciousChars, segmentSuspiciousChars, type DiffLineSegment } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
 import { errorMessage } from "@/shared/errorMessage";
-
-type Detail = {
-  card: { id: string; title: string; status: string };
-  plans: { version: number; planMd: string; acceptanceCriteria: string }[];
-  runs: {
-    id: string;
-    kind: string;
-    status: string;
-    iterationsDone: number;
-    startedAt: string;
-    endedAt: string | null;
-    iterations: { n: number; summary: string | null }[];
-    provider: string | null;
-    model: string | null;
-  }[];
-};
-type DiffPayload = { runId: string; branch: string; diff: string; stat: string; done: string | null; evaluation: string | null };
+import type { CardDetailData } from "../../card/[id]/useCardDetail";
+import type { DiffResponse } from "../../api/cards/[id]/diff/route";
 
 /** A diff line with its suspicious-character segments, scanned once when the
  * diff is parsed rather than on every render. */
@@ -80,16 +65,16 @@ function renderDiffLineContent({ text, segments }: DiffLine) {
 export default function ReviewPage() {
   const { id } = useParams<{ id: string }>()!;
   const router = useRouter();
-  const [detail, setDetail] = useState<Detail | null>(null);
-  const [diff, setDiff] = useState<DiffPayload | null>(null);
+  const [detail, setDetail] = useState<CardDetailData | null>(null);
+  const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
 
   const refetch = useCallback(() => {
-    api<Detail>(`/api/cards/${id}`).then(setDetail).catch((e) => setError(String(e)));
-    api<DiffPayload>(`/api/cards/${id}/diff`).then(setDiff).catch((e) => setError(String(e)));
+    api<CardDetailData>(`/api/cards/${id}`).then(setDetail).catch((e) => setError(String(e)));
+    api<DiffResponse>(`/api/cards/${id}/diff`).then(setDiff).catch((e) => setError(String(e)));
   }, [id]);
   useEffect(refetch, [refetch]);
 
