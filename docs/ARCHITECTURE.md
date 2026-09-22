@@ -168,9 +168,10 @@ an unrecoverable failure.
 
 ## Persistence
 
-`src/db/schema.ts`, Drizzle over SQLite, created on first run with no migration
-step. Nine tables: `repos`, `cards`, `plans`, `runs`, `iterations`, `reviews`,
-`events`, `improvementRuns`, `settings`.
+`src/db/schema.ts`, Drizzle over SQLite, created on first run with no manual
+migration step. Eleven tables: `repos`, `cards`, `plans`, `scopingMessages`,
+`runs`, `iterations`, `reviews`, `events`, `improvementRuns`, `settings`,
+`worktrees`.
 
 Transcripts are **not** in the database — they are JSONL files on disk, read in
 chunks by `src/server/transcript.ts` (`TRANSCRIPT_CHUNK_BYTES`, 512 KB). A long
