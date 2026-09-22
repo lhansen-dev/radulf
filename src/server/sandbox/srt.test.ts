@@ -202,14 +202,15 @@ describe("resolveGitCommonDir", () => {
   });
 
   it("resolves the SHARED .git dir for a linked worktree, not the worktree's own pointer file", async () => {
-    const worktreePath = path.join(tmpDir, "..", "radulf-srt-git-wt");
-    await git(tmpDir, "worktree", "add", worktreePath, "-b", "feature");
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-git-wt-"));
     try {
+      await git(tmpDir, "worktree", "add", worktreePath, "-b", "feature");
       // realpath: on macOS os.tmpdir() is a /var symlink into /private/var,
       // and `git rev-parse` resolves through it — compare canonical paths.
       expect(await resolveGitCommonDir(worktreePath)).toBe(fs.realpathSync(path.join(tmpDir, ".git")));
     } finally {
       await git(tmpDir, "worktree", "remove", "--force", worktreePath).catch(() => {});
+      fs.rmSync(worktreePath, { recursive: true, force: true });
     }
   });
 
@@ -237,7 +238,7 @@ describe("gitWorktreeDenies", () => {
     await git(repoDir, "add", ".");
     await git(repoDir, "commit", "-m", "init");
     gitCommonDir = await resolveGitCommonDir(repoDir);
-    worktreePath = path.join(repoDir, "..", "radulf-srt-wtdeny-wt");
+    worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wtdeny-wt-"));
     await git(repoDir, "worktree", "add", worktreePath, "-b", "wtdeny");
   });
 
@@ -515,7 +516,7 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
     fs.writeFileSync(path.join(repoDir, "f"), "x");
     await git(repoDir, "add", ".");
     await git(repoDir, "commit", "-m", "init");
-    worktree = path.join(repoDir, "..", "radulf-accept-wt");
+    worktree = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-accept-wt-"));
     await git(repoDir, "worktree", "add", worktree, "-b", "accept-feature");
     // A branch nothing has checked out: the one shape of `git checkout` that
     // git itself would not refuse inside a linked worktree.
