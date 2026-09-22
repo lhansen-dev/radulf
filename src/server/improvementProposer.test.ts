@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { initScratchRepo } from "@/testUtils/gitRepo";
 
 const mocks = vi.hoisted(() => ({ runHarness: vi.fn() }));
 // vi.mock factories run before any top-level `beforeAll`, so the directories
@@ -24,10 +24,6 @@ vi.mock("@/db", () => ({
 }));
 
 import { parseProposals, proposeOneImprovement, renderImprovePrompt } from "./improvementProposer";
-
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
-}
 
 function leakedWorktrees(): string[] {
   return fs.readdirSync(dirs.worktreesDir).filter((n) => n.startsWith("improve-proposer-"));
@@ -139,13 +135,7 @@ describe("proposeOneImprovement", () => {
   beforeAll(() => {
     dirs.worktreesDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-improve-worktrees-"));
     dirs.transcriptsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-improve-transcripts-"));
-    repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-improve-repo-"));
-    git(repoPath, "init", "-b", "main");
-    git(repoPath, "config", "user.email", "test@test.com");
-    git(repoPath, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(repoPath, "README.md"), "# test");
-    git(repoPath, "add", ".");
-    git(repoPath, "commit", "-m", "initial");
+    repoPath = initScratchRepo("ralph-improve-repo-");
   });
 
   afterAll(() => {

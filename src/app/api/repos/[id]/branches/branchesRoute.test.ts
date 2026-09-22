@@ -1,30 +1,18 @@
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 
 setupTestDataDir("radulf-branches-route-");
 
 const { db, repos, now } = await import("@/db");
 const { GET, POST } = await import("./route");
 
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
-}
-
 const ctx = { params: Promise.resolve({ id: "repo-1" }) };
 let repo: string;
 
 beforeAll(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-branches-repo-"));
-  git(repo, "init", "--initial-branch=main");
-  git(repo, "config", "user.email", "test@test.com");
-  git(repo, "config", "user.name", "Test");
-  fs.writeFileSync(path.join(repo, "README.md"), "# test");
-  git(repo, "add", ".");
-  git(repo, "commit", "-m", "initial");
+  repo = initScratchRepo("radulf-branches-repo-");
   git(repo, "branch", "feature-x");
   git(repo, "branch", "ralph/some-card-abc123");
   git(repo, "branch", "ralph/improve-1753500000000");

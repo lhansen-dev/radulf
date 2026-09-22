@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -15,10 +16,6 @@ import {
   worktreeDiffStat,
 } from "./git";
 
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
-}
-
 describe("repository inspection", () => {
   let repo: string;
   let emptyRepo: string;
@@ -26,13 +23,7 @@ describe("repository inspection", () => {
   const missingPath = "/tmp/nonexistent-ralph-test-path-12345";
 
   beforeAll(() => {
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-git-test-"));
-    git(repo, "init");
-    git(repo, "config", "user.email", "test@test.com");
-    git(repo, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(repo, "README.md"), "# test");
-    git(repo, "add", ".");
-    git(repo, "commit", "-m", "initial");
+    repo = initScratchRepo("ralph-git-test-");
     git(repo, "branch", "feature-x");
     emptyRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-empty-repo-"));
     git(emptyRepo, "init");

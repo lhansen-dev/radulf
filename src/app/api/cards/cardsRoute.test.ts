@@ -1,9 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 
 const mocks = vi.hoisted(() => ({ pump: vi.fn() }));
 
@@ -16,10 +14,6 @@ setupTestDataDir("radulf-cards-route-");
 const { db, cards, repos, now } = await import("@/db");
 const { POST } = await import("./route");
 
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
-}
-
 function post(body: unknown) {
   return new Request("http://localhost/api/cards", {
     method: "POST",
@@ -31,13 +25,7 @@ function post(body: unknown) {
 let repo: string;
 
 beforeAll(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cards-repo-"));
-  git(repo, "init", "--initial-branch=main");
-  git(repo, "config", "user.email", "test@test.com");
-  git(repo, "config", "user.name", "Test");
-  fs.writeFileSync(path.join(repo, "README.md"), "# test");
-  git(repo, "add", ".");
-  git(repo, "commit", "-m", "initial");
+  repo = initScratchRepo("radulf-cards-repo-");
   git(repo, "branch", "feature-x");
   // A run branch whose card is gone: it exists, so the existence check alone
   // would let it through.
