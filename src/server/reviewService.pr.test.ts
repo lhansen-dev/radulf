@@ -331,7 +331,7 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
     for (const [id, arrange, expected] of [
       [
         "card-no-gh",
-        () => mocks.githubStatus.mockResolvedValue({ ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed or not on PATH" }),
+        () => mocks.githubStatus.mockResolvedValue({ ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed, not on PATH, or not executable" }),
         "not installed",
       ],
       [

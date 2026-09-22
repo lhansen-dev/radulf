@@ -333,8 +333,8 @@ describe("NewTaskDialog", () => {
       ],
       [
         "the install, when gh is missing",
-        { ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed or not on PATH", hasRemote: true },
-        /not installed or not on PATH/,
+        { ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed, not on PATH, or not executable", hasRemote: true },
+        /not installed, not on PATH, or not executable/,
       ],
     ])("is disabled, naming %s", async (_label, status, reason) => {
       stubGithubStatus(status);
