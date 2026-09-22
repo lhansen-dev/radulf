@@ -10,6 +10,7 @@ import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
+import { diffHeaderPath } from "./diffHeader";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { hasSuspiciousChars, segmentSuspiciousChars, type DiffLineSegment } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
@@ -27,7 +28,7 @@ function parseDiff(diff: string): DiffFile[] {
   let current: DiffFile | null = null;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      current = { header: line.replace(/^diff --git a\/(.*) b\/.*$/, "$1"), lines: [] };
+      current = { header: diffHeaderPath(line), lines: [] };
       files.push(current);
     } else if (current) {
       current.lines.push({ text: line, segments: segmentSuspiciousChars(line) });

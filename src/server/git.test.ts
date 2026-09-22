@@ -189,4 +189,26 @@ describe("review diff generation (worktreeDiff / worktreeDiffStat)", () => {
 
     git(tmpDir, "config", "--unset", "diff.evil.textconv");
   });
+
+  it("core.quotePath=false keeps a non-ASCII path readable in the diff --git header", async () => {
+    // The review page prefix-matches these paths to decide whether to raise
+    // its sandbox/self-modifying banners, so a C-quoted header is a banner
+    // that never fires. See diffHeader.ts.
+    fs.mkdirSync(path.join(tmpDir, "src", "server", "sandbox"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "server", "sandbox", "café.ts"), "export {};\n");
+    git(tmpDir, "add", "-A");
+    git(tmpDir, "commit", "-m", "add a non-ascii path under the sandbox dir");
+
+    // Sanity check: git's default really does quote it.
+    const unhardened = execFileSync(
+      "git",
+      ["-C", tmpDir, "diff", defaultBranch, "HEAD", "--", "src/"],
+      { encoding: "utf8" },
+    );
+    expect(unhardened).toContain(String.raw`"a/src/server/sandbox/caf\303\251.ts"`);
+
+    const diff = await worktreeDiff(tmpDir, defaultBranch);
+    expect(diff).toContain("diff --git a/src/server/sandbox/café.ts b/src/server/sandbox/café.ts");
+    expect(diff).not.toContain(String.raw`caf\303\251`);
+  });
 });

@@ -220,6 +220,16 @@ export async function removeWorktree(
 const REVIEW_DIFF_FLAGS = [
   "-c",
   "core.excludesFile=/dev/null",
+  // Keep a non-ASCII path readable and, more to the point, PARSEABLE: git
+  // C-quotes the whole `diff --git` header when a path has a byte it will not
+  // print raw, and the review page prefix-matches those paths to decide
+  // whether to raise its sandbox/self-modifying banners. A header it cannot
+  // parse is a banner that does not fire, which is the same class of problem
+  // as the textconv and `-diff` hijacks the flags below shut down. This does
+  // not cover a `"`, a `\` or a control character in a path — git quotes
+  // those regardless — so `diffHeaderPath` unquotes on the client as well.
+  "-c",
+  "core.quotePath=false",
   "diff",
   "--no-ext-diff",
   "--no-textconv",
