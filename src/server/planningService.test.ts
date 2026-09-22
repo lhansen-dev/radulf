@@ -243,6 +243,29 @@ describe("PlanningService.runPlanning", () => {
     expect(deps.moveCard).toHaveBeenCalledWith("card-plan-review", "planning", "plan_review");
   });
 
+  it("finishes the run and parks the card when the planner harness throws", async () => {
+    // Without a catch, a throw after startRunRow left the run row `running`
+    // and the card landed in needs_attention with no finished run behind it.
+    seedCard("card-throws");
+    mocks.runHarness.mockRejectedValueOnce(new Error("harness crashed"));
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-throws");
+
+    expect(deps.finishRun.mock.calls[0].slice(0, 3)).toEqual([
+      expect.any(String),
+      "failed",
+      expect.stringContaining("planner failed: harness crashed"),
+    ]);
+    expect(deps.moveCard).toHaveBeenCalledWith(
+      "card-throws",
+      "planning",
+      "needs_attention",
+      expect.stringContaining("harness crashed"),
+    );
+    expect(deps.pump).toHaveBeenCalled();
+  });
+
   it("escalates to needs_attention when the planner raises follow-up questions", async () => {
     seedCard("card-questions");
     mockPlannerHarness({ "QUESTIONS.md": "Which auth provider should this use?" });

@@ -290,6 +290,14 @@ export class PlanningService {
 
       deps.finishRun(runId, "completed", "plan artifacts written", telemetry);
       deps.moveCard(cardId, "planning", planningDestination(card));
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        const reason = `planner failed: ${error instanceof Error ? error.message : String(error)}`;
+        deps.finishRun(runId, "failed", reason.slice(0, 500), telemetry);
+        if (deps.getCard(cardId)?.status === "planning") {
+          deps.moveCard(cardId, "planning", "needs_attention", reason);
+        }
+      }
     } finally {
       deps.releaseController(runId);
       await ctx.cleanup();
