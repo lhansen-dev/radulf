@@ -64,7 +64,6 @@ export async function tryGit(
 
 /** List local branch names; returns [] when the path is not a git repo. */
 export async function listBranches(repoPath: string): Promise<string[]> {
-  if (!(await isGitRepo(repoPath))) return [];
   const { ok, out } = await tryGit(repoPath, "branch", "--format=%(refname:short)");
   if (!ok || !out) return [];
   return out.split("\n").filter(Boolean);
