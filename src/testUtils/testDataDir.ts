@@ -14,12 +14,27 @@ import { afterAll } from "vitest";
  */
 export function setupTestDataDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  pointDataDirAt(dir, dir);
+  return dir;
+}
+
+/**
+ * Like setupTestDataDir, but with the data dir one level down (`<root>/data`)
+ * so the siblings Radulf derives from it (worktrees/, plans/, repos/) land
+ * inside the temp root too, not in the system temp dir. Returns the root.
+ */
+export function setupTestStateDir(prefix: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  pointDataDirAt(path.join(root, "data"), root);
+  return root;
+}
+
+function pointDataDirAt(dataDir: string, removeOnExit: string): void {
   const previous = process.env.RADULF_DATA_DIR;
-  process.env.RADULF_DATA_DIR = dir;
+  process.env.RADULF_DATA_DIR = dataDir;
   afterAll(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(removeOnExit, { recursive: true, force: true });
     if (previous === undefined) delete process.env.RADULF_DATA_DIR;
     else process.env.RADULF_DATA_DIR = previous;
   });
-  return dir;
 }

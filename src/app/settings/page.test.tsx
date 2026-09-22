@@ -46,6 +46,10 @@ describe("SettingsPage", () => {
         repositories = [{ id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-21" }];
         return json(repositories[0], 201);
       }
+      if (url === "/api/repos/clone" && init?.method === "POST") {
+        repositories = [{ id: "cloned-repo", name: "repo", path: "/var/lib/radulf/repos/repo", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-22" }];
+        return json(repositories[0], 201);
+      }
       if (url === "/api/repos") {
         if (init?.method === "POST") {
           repositories = [{ id: "new-repo", createdAt: "2026-09-12", ...JSON.parse(String(init.body)) }];
@@ -191,6 +195,21 @@ describe("SettingsPage", () => {
     await screen.findByText("fresh-project");
     expect(screen.getByText("/home/dev/fresh-project")).toBeTruthy();
     // The browser closes once the repository exists; the list is the result.
+    expect(screen.queryByRole("list", { name: "Folders" })).toBeNull();
+  });
+
+  it("clones a repository from a URL in the folder browser and lists it", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Repositories");
+    fireEvent.click(screen.getByRole("button", { name: "Choose repository folder" }));
+    await screen.findByRole("list", { name: "Folders" });
+
+    fireEvent.change(screen.getByLabelText("Repository URL"), { target: { value: "https://example.com/acme/repo.git" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clone" }));
+
+    await screen.findByText("repo");
+    expect(screen.getByText("/var/lib/radulf/repos/repo")).toBeTruthy();
     expect(screen.queryByRole("list", { name: "Folders" })).toBeNull();
   });
 

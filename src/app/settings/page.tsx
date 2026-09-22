@@ -986,6 +986,13 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
     onChange();
   }
 
+  async function cloneRepo(url: string) {
+    setError("");
+    await api("/api/repos/clone", { json: { url } });
+    setBrowsing(false);
+    onChange();
+  }
+
   async function add() {
     setError("");
     try {
@@ -1079,7 +1086,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 </button>
                 {browsing && (
                   <div className="mt-2">
-                    <FolderBrowser onPick={pickFolder} onCreate={createRepo} onError={setError} />
+                    <FolderBrowser onPick={pickFolder} onCreate={createRepo} onClone={cloneRepo} onError={setError} />
                   </div>
                 )}
               </>

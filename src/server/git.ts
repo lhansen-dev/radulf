@@ -468,6 +468,40 @@ export async function hasRemote(repoPath: string): Promise<boolean> {
   return ok && out.trim().length > 0;
 }
 
+/** Env for every operation that touches a remote: refuse to prompt for a
+ * credential on a terminal that is not there, so a helper that would have
+ * blocked fails loudly instead. Same intent for the SSH path, which reads a
+ * passphrase from /dev/tty and so would not be stopped by a closed stdin.
+ * Only when the operator has not set their own command, in which case theirs
+ * wins. */
+function remoteEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
+  return env;
+}
+
+/**
+ * `git clone url dest` with the operator's own credentials (spec 21). Host-side
+ * only, from the repo-registration path: no agent can reach it, and the
+ * sandbox keeps blocking clone and fetch inside a run exactly as it blocks
+ * push. `dest` must not exist yet; `cwd` is where git runs, since `-C` needs
+ * a directory that does.
+ */
+export async function cloneRemote(
+  url: string,
+  dest: string,
+  cwd: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await execGit(cwd, ["clone", "--", url, dest], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env: remoteEnv() });
+    return { ok: true };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    const out = ((err.stdout ?? "") + (err.stderr ?? "")).trim();
+    return { ok: false, error: out || err.message || "git clone failed" };
+  }
+}
+
 /**
  * Drop `.ralph/` from the branch and commit that removal.
  *
@@ -507,20 +541,10 @@ export async function pushBranch(
   worktreePath: string,
   branch: string
 ): Promise<{ ok: boolean; error?: string }> {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    // Refuse to prompt for credentials on a terminal that is not there. A
-    // helper that would have blocked fails loudly instead.
-    GIT_TERMINAL_PROMPT: "0",
-  };
-  // Same intent for the SSH path, which reads a passphrase from /dev/tty and
-  // so would not be stopped by a closed stdin. Only when the operator has not
-  // set their own command — theirs wins.
-  if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
   try {
     await execGit(worktreePath, ["push", "--set-upstream", PR_REMOTE, branch], {
       timeoutMs: GIT_REMOTE_TIMEOUT_MS,
-      env,
+      env: remoteEnv(),
     });
     return { ok: true };
   } catch (e) {

@@ -13,7 +13,7 @@ import {
 import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 
-import { DATA_DIR, WORKTREES_DIR } from "@/db";
+import { CLONES_DIR, DATA_DIR, WORKTREES_DIR } from "@/db";
 import { errorMessage } from "@/shared/errorMessage";
 import { git } from "../git";
 import { isInsideOrEqual } from "./pathGuard";
@@ -200,7 +200,9 @@ export function buildFilesystemConfig(opts: {
   tmpdir: string;
   cacheRoot: string;
 }): FilesystemConfig {
-  const protectedRoots = [HOME, DATA_DIR, WORKTREES_DIR];
+  // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
+  // run's own shared .git is re-allowed through opts.gitCommonDir below.
+  const protectedRoots = [HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR];
   const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
     opts.worktree,
@@ -216,7 +218,7 @@ export function buildFilesystemConfig(opts: {
     denyRead,
     // PATH-derived roots are untrusted input to this filter — a shallow PATH
     // entry (`/bin`, whose dirname is `/`) must never silently re-open the
-    // deny list. `HOME`/`DATA_DIR`/`WORKTREES_DIR` themselves are checked
+    // deny list. `HOME`/`DATA_DIR`/`WORKTREES_DIR`/`CLONES_DIR` themselves are checked
     // (not just their listed backstop children) because an allow entry
     // doesn't need to name a deny target exactly to reopen it — containing
     // it is enough, per srt's recursive subpath matching.

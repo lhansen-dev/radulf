@@ -14,7 +14,8 @@ type Listing = {
 };
 
 /**
- * Browse the server's directories and pick a repository folder.
+ * Browse the server's directories and pick a repository folder, create one,
+ * or clone one by URL.
  *
  * Replaces the macOS-only native chooser, which opened a dialog on the machine
  * running the server: unavailable on Linux, and unusable from a phone on any
@@ -24,12 +25,16 @@ type Listing = {
 export function FolderBrowser({
   onPick,
   onCreate,
+  onClone,
   onError,
 }: {
   onPick: (path: string) => void;
   /** When given, the browser also offers to create a fresh repository inside
    * the folder being viewed. A rejection is reported through `onError`. */
   onCreate?: (parentPath: string, name: string) => Promise<void>;
+  /** When given, the browser also offers to clone a repository by URL into
+   * Radulf's own repos dir (spec 21). A rejection is reported through `onError`. */
+  onClone?: (url: string) => Promise<void>;
   /** Surfaced by the caller next to its own form errors. */
   onError?: (message: string) => void;
 }) {
@@ -38,6 +43,17 @@ export function FolderBrowser({
   const [error, setError] = useState("");
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [cloneUrl, setCloneUrl] = useState("");
+  const [cloning, setCloning] = useState(false);
+
+  const clone = () => {
+    if (!onClone || cloning || !cloneUrl.trim()) return;
+    setCloning(true);
+    onClone(cloneUrl.trim())
+      .then(() => setCloneUrl(""))
+      .catch((cause) => onError?.(errorMessage(cause)))
+      .finally(() => setCloning(false));
+  };
 
   const create = () => {
     if (!onCreate || !listing || creating || !newName.trim()) return;
@@ -95,6 +111,26 @@ export function FolderBrowser({
           Use this folder
         </button>
       </div>
+      {onClone && (
+        <div className="flex items-center gap-2 border-b border-foreground/10 px-2 py-2">
+          <input
+            aria-label="Repository URL"
+            value={cloneUrl}
+            onChange={(e) => setCloneUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); clone(); } }}
+            placeholder="Clone from URL (https://… or git@…)"
+            className="min-h-11 min-w-0 grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 font-mono text-sm"
+          />
+          <button
+            type="button"
+            onClick={clone}
+            disabled={cloning || !cloneUrl.trim()}
+            className="min-h-11 shrink-0 rounded-lg bg-foreground/[0.08] px-3 text-xs font-medium hover:bg-foreground/[0.12] disabled:opacity-40"
+          >
+            {cloning ? "Cloning…" : "Clone"}
+          </button>
+        </div>
+      )}
       {onCreate && (
         <div className="flex items-center gap-2 border-b border-foreground/10 px-2 py-2">
           <input

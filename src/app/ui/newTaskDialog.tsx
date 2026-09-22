@@ -39,6 +39,10 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     setError("");
     adoptRepo(await api<Repo>("/api/repos/init", { json: { parentPath, name } }));
   }
+  async function cloneRepo(url: string) {
+    setError("");
+    adoptRepo(await api<Repo>("/api/repos/clone", { json: { url } }));
+  }
   const [description, setDescription] = useState("");
   const [jiraRef, setJiraRef] = useState("");
   const [importing, setImporting] = useState(false);
@@ -142,14 +146,14 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         <button type="button" onClick={() => create()} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Creating…" : "Create task"}</button>
       </>}
     >
-          {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onCreate={createRepo} onError={setError} /></div> : <>
+          {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} /></div> : <>
             <div className="flex items-end gap-2">
               <label className="block grow text-sm text-foreground/70">Import from Jira<input value={jiraRef} onChange={(e) => setJiraRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void importFromJira(); } }} placeholder="Issue link or key, e.g. DEV-123 (optional)" className={dialogInputCls} /></label>
               <button type="button" onClick={() => void importFromJira()} disabled={importing || !jiraRef.trim()} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">{importing ? "Importing…" : "Import"}</button>
             </div>
             <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={dialogInputCls} required /></label>
             <RepoSelect repos={repoList} value={repoId} onChange={(value) => { if (value === "__add__") { setAddingRepo(true); return; } setRepoId(value); setBranches([]); setSelectedBranch(""); setShowNewBranch(false); setNewBranchName(""); }}><option value="__add__">Add a repository…</option></RepoSelect>
-            {addingRepo && <FolderBrowser onPick={registerRepo} onCreate={createRepo} onError={setError} />}
+            {addingRepo && <FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} />}
             {repoId && <label className="block text-sm text-foreground/70">Branch<select value={selectedBranch} onChange={(e) => { const v = e.target.value; if (v === "__new__") { setShowNewBranch(true); setSelectedBranch(""); } else { setShowNewBranch(false); setSelectedBranch(v); } }} className={dialogInputCls}><option value="">Default branch</option>{branches.map((b) => <option key={b} value={b}>{b}</option>)}<option value="__new__">Add new branch…</option></select></label>}
             {showNewBranch && <div className="flex gap-2"><input value={newBranchName} onChange={(e) => setNewBranchName(e.target.value)} placeholder="Branch name" className="grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm" /><button type="button" onClick={async () => { const name = newBranchName.trim(); if (!name) return; try { const repo = repoList.find((r) => r.id === repoId); if (!repo) return; await api(`/api/repos/${repoId}/branches`, { json: { name, from: repo.defaultBranch } }); setBranches((prev) => prev.includes(name) ? prev : [...prev, name]); setSelectedBranch(name); setShowNewBranch(false); setNewBranchName(""); } catch (e) { setError(errorMessage(e)); }}} disabled={!newBranchName.trim()} className="rounded-lg bg-foreground/10 px-3 text-sm disabled:opacity-40">Add</button></div>}
             <label className="block text-sm text-foreground/70">Description and definition of done<textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={7} className={`${dialogInputCls} py-2 text-sm`} placeholder="Describe the outcome, constraints, and how Ralph can verify the work — or start rough and use Create and scope." /></label>

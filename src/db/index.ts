@@ -21,6 +21,10 @@ export const WORKTREES_DIR = process.env.RADULF_WORKTREES_DIR
 export const PLANS_DIR = process.env.RADULF_PLANS_DIR
   ? path.resolve(/* turbopackIgnore: true */ process.env.RADULF_PLANS_DIR)
   : path.join(path.dirname(DATA_DIR), "plans");
+// Spec 21: repositories Radulf clones itself when one is registered by URL. A
+// sibling of data/ like the two above, so it sits outside the sandbox's data/
+// deny, and on a container install inside the same volume as everything else.
+export const CLONES_DIR = path.join(path.dirname(DATA_DIR), "repos");
 export const TRANSCRIPTS_DIR = path.join(DATA_DIR, "transcripts");
 
 function createDb() {
