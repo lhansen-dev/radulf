@@ -24,16 +24,13 @@ const mocks = vi.hoisted(() => ({
   // this file, which deliberately keeps sandboxing off — see the comment on
   // `sandboxEnabled` below.
   settings: {
-    evaluatorProvider: "anthropic",
     evaluatorModel: "evaluator-model",
-    evaluatorReasoningLevel: "medium",
     evaluatorTimeoutMinutes: 10,
     evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}\n{{CRITERIA}}",
     // Lifecycle tests use plain mkdtemp worktrees, not real git repos — same
     // reasoning applies here: sandboxEnabled:false keeps createRunSandbox
     // from resolving a real git-common-dir against a fake worktree.
     sandboxEnabled: false,
-    sandboxNetworkAllowlist: "",
     sandboxWeakerIsolationForGoTls: false,
     // The workspace-wide auto-approve override. Off for every test but the
     // ones that flip it, so the card's own flag stays the only grant.
@@ -50,11 +47,13 @@ vi.mock("./git", async (importOriginal) => ({
   tryGit: mocks.tryGit,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
-vi.mock("./settings", () => ({
-  getSettings: () => mocks.settings,
+vi.mock("./settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./settings")>()),
+  getSettings: () => testSettings(mocks.settings),
 }));
 
 const testDataDir = setupTestDataDir("radulf-evaluationService-");
+const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
 const { EvaluationService, renderEvaluatorPrompt } = await import("./evaluationService");

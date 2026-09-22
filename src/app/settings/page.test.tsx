@@ -4,25 +4,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import SettingsPage from "./page";
 import type { Settings } from "./useSettingsData";
 import type { Repo } from "../ui/api";
+import { testSettings } from "@/testUtils/testSettings";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/settings" }));
 
-const initialSettings: Settings = {
-  plannerProvider: "anthropic", plannerModel: "planner", plannerReasoningLevel: "medium",
-  loopProvider: "anthropic", loopModel: "looper", loopReasoningLevel: "medium",
-  evaluatorProvider: "anthropic", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
-  scopingProvider: "anthropic", scopingModel: "", scopingReasoningLevel: "medium",
-  plannerTimeoutMinutes: 30, maxConcurrentCards: 1, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
-  iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
-  folderBrowserRoot: "", omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", omlxHeaders: "", openrouterApiKey: "••••••••", braveApiKey: "",
-  jiraBaseUrl: "", jiraEmail: "", jiraApiToken: "",
-  autoMode: true, autoApprove: false, openPr: false,
-  minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",
-  sandboxWeakerIsolationForGoTls: false, notificationsEnabled: false, soundEnabled: false,
-  attentionStaleMinutes: 15, alertWebhookUrl: "",
-  theme: "default", plannerPromptTemplate: "Plan {{TITLE}}", evaluatorPromptTemplate: "Review {{CRITERIA}}",
+const initialSettings = testSettings({
+  plannerModel: "planner", loopModel: "looper", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
+  openrouterApiKey: "••••••••",
+  plannerPromptTemplate: "Plan {{TITLE}}", evaluatorPromptTemplate: "Review {{CRITERIA}}",
   improvePromptTemplate: "Improve {{FOCUS}}",
-};
+});
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

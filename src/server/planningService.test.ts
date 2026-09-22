@@ -109,20 +109,19 @@ vi.mock("./git", async (importOriginal) => ({
   createWorktree: mocks.createWorktree,
   tryGit: mocks.tryGit,
 }));
-vi.mock("./settings", () => ({
-  getSettings: () => ({
-    plannerProvider: "anthropic",
-    plannerModel: "planner-model",
-    plannerReasoningLevel: "medium",
-    plannerTimeoutMinutes: 42,
-    plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
-    sandboxEnabled: false,
-    sandboxNetworkAllowlist: "",
-    sandboxWeakerIsolationForGoTls: false,
-  }),
+vi.mock("./settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./settings")>()),
+  getSettings: () =>
+    testSettings({
+      plannerModel: "planner-model",
+      plannerTimeoutMinutes: 42,
+      plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
+      sandboxEnabled: false,
+    }),
 }));
 
 const testDataDir = setupTestDataDir("radulf-planningService-");
+const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
 const { PlanningService, pendingReplanFeedback } = await import("./planningService");

@@ -2,19 +2,19 @@ import { describe, expect, it } from "vitest";
 import { parseCreateCard, parseUpdateCard } from "./cardValidation";
 import { optionalInteger, record, rejectUnknownKeys, requiredInteger } from "./requestValidation";
 import { REDACTED, SETTING_DEFAULTS, redactSettings, validateSettingsPatch } from "./settings";
+import { testSettings } from "@/testUtils/testSettings";
 
 describe("redactSettings", () => {
   const secrets = ["omlxApiKey", "omlxHeaders", "openrouterApiKey", "braveApiKey", "jiraApiToken"] as const;
 
   it("replaces every stored provider credential with the redaction marker", () => {
-    const redacted = redactSettings({
-      ...SETTING_DEFAULTS,
+    const redacted = redactSettings(testSettings({
       omlxApiKey: "omlx-secret",
       omlxHeaders: "kong-api-key: header-secret",
       openrouterApiKey: "sk-or-v1-secret",
       braveApiKey: "brave-secret",
       jiraApiToken: "jira-secret",
-    });
+    }));
 
     for (const key of secrets) expect(redacted[key]).toBe(REDACTED);
     // Not merely masked in place — no fragment of the real value survives.
@@ -25,13 +25,12 @@ describe("redactSettings", () => {
   });
 
   it("keeps unset credentials empty, leaves non-secret settings alone, and never mutates its input", () => {
-    const input = {
-      ...SETTING_DEFAULTS,
+    const input = testSettings({
       openrouterApiKey: "",
       braveApiKey: "brave-secret",
       omlxBaseUrl: "http://127.0.0.1:9999",
       theme: "nord",
-    };
+    });
     const redacted = redactSettings(input);
     expect(redacted.openrouterApiKey).toBe("");
     expect(redacted.omlxBaseUrl).toBe("http://127.0.0.1:9999");

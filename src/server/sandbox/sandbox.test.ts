@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentEnv, AGENT_GIT_IDENTITY } from "../harness/types";
-import { SETTING_DEFAULTS, type Settings } from "../settings";
+import { testSettings } from "@/testUtils/testSettings";
 
 import { cgroupPlanForRun } from "./cgroup";
 import {
@@ -13,10 +13,6 @@ import {
   sampleUsageBytes,
   startDiskWatchdog,
 } from "./diskWatchdog";
-
-function testSettings(overrides: Partial<Settings> = {}): Settings {
-  return { ...SETTING_DEFAULTS, ...overrides } as Settings;
-}
 
 // context.ts resolves its scratch root from DATA_DIR at import time — point it
 // at a throwaway dir before loading it.

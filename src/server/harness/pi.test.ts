@@ -2,12 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { omlxProviderConfig, pathRootsForRole, piNormalize, shouldSandboxBash, toolsForRole } from "./pi";
-import { SETTING_DEFAULTS, type Settings } from "../settings";
-
-/** A minimal settings object for testing — never touches the db. */
-function testSettings(overrides: Partial<Settings> = {}): Settings {
-  return { ...SETTING_DEFAULTS, ...overrides } as Settings;
-}
+import { testSettings } from "@/testUtils/testSettings";
 
 /** piNormalize takes SDK event objects; cast arbitrary shapes for the tests. */
 function norm(evt: unknown) {

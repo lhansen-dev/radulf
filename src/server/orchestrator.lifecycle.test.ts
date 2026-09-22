@@ -3,6 +3,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
+import type { Settings } from "./settings";
 
 const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
@@ -34,43 +35,29 @@ vi.mock("./providers", () => ({
   normalizeProvider: (value: string) => value,
   preflightProvider: mocks.preflightProvider,
 }));
-vi.mock("./settings", () => ({
-  getSettings: () => ({
-    plannerProvider: "anthropic",
-    plannerModel: "planner-model",
-    loopProvider: "anthropic",
-    loopModel: "loop-model",
-    evaluatorProvider: "anthropic",
-    evaluatorModel: "evaluator-model",
-    omlxBaseUrl: "http://127.0.0.1:8000",
-    omlxApiKey: "",
-    openrouterApiKey: "",
-    defaultMaxIterations: 5,
-    defaultTimeoutMinutes: 10,
-    iterationHardTimeoutMinutes: 2,
-    plannerTimeoutMinutes: 30,
-    evaluatorTimeoutMinutes: 10,
-    stallTimeoutSeconds: 60,
-    autoMode: false,
-    minimalToolset: false,
-    // Lifecycle tests use plain mkdtemp worktrees, not real git repos, and
-    // exercise bookkeeping/state-machine logic, not spec 14's sandbox
-    // wiring (that has its own dedicated tests) — sandboxEnabled: false
-    // keeps createRunSandbox from resolving a real git-common-dir against
-    // a fake worktree.
-    sandboxEnabled: false,
-    sandboxNetworkAllowlist: "",
-    sandboxWeakerIsolationForGoTls: false,
-    notificationsEnabled: false,
-    attentionStaleMinutes: 15,
-    alertWebhookUrl: "",
-    soundEnabled: false,
-    theme: "default",
-    plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
-    evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}",
-    improvePromptTemplate: "Existing cards:\n{{EXISTING_CARDS}}\n{{FOCUS}}",
-    ...mocks.settings,
-  }),
+vi.mock("./settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./settings")>()),
+  getSettings: () =>
+    testSettings({
+      plannerModel: "planner-model",
+      loopModel: "loop-model",
+      evaluatorModel: "evaluator-model",
+      defaultMaxIterations: 5,
+      defaultTimeoutMinutes: 10,
+      iterationHardTimeoutMinutes: 2,
+      stallTimeoutSeconds: 60,
+      autoMode: false,
+      // Lifecycle tests use plain mkdtemp worktrees, not real git repos, and
+      // exercise bookkeeping/state-machine logic, not spec 14's sandbox
+      // wiring (that has its own dedicated tests) — sandboxEnabled: false
+      // keeps createRunSandbox from resolving a real git-common-dir against
+      // a fake worktree.
+      sandboxEnabled: false,
+      plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
+      evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}",
+      improvePromptTemplate: "Existing cards:\n{{EXISTING_CARDS}}\n{{FOCUS}}",
+      ...(mocks.settings as Partial<Settings>),
+    }),
 }));
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
@@ -84,6 +71,7 @@ vi.mock("./git", async (importOriginal) => ({
 }));
 
 const testDataDir = setupTestDataDir("radulf-orchestrator-");
+const { testSettings } = await import("@/testUtils/testSettings");
 
 const {
   db,

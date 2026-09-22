@@ -9,7 +9,7 @@ import {
   runHarness,
 } from "./index";
 import type { TranscriptEvent } from "./types";
-import { SETTING_DEFAULTS, type Settings } from "../settings";
+import { testSettings } from "@/testUtils/testSettings";
 
 describe("foldTranscriptEvent", () => {
   function fold(events: TranscriptEvent[]) {
@@ -252,7 +252,7 @@ describe("runHarness watchdogs", () => {
     // setting — floored at 30s — that has to arm the watchdog.
     const result = await runFor(30_000, silentAfterStart, {
       stallTimeoutMs: undefined,
-      settings: { ...SETTING_DEFAULTS, stallTimeoutSeconds: 1 } as Settings,
+      settings: testSettings({ stallTimeoutSeconds: 1 }),
     });
 
     expect(result.stalled).toBe(true);
