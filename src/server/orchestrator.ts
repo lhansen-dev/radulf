@@ -983,6 +983,11 @@ export class Orchestrator {
        * what spec 11 intended and never got, because every run started
        * counting from zero. */
       const productiveMs: number[] = this.priorProductiveMs(cardId, plan.id);
+      // Install-script gate trigger (spec 14): a changed lockfile fingerprint
+      // after an iteration means an install happened. Each iteration's
+      // after-fingerprint is the next one's before, so the tree is walked
+      // once per iteration rather than twice.
+      let lockfilesBefore = lockfileFingerprint(worktreePath);
       let n = 0;
 
       while (n < maxIterations) {
@@ -1016,9 +1021,6 @@ export class Orchestrator {
 
         const before = await buildProgressState(worktreePath, planPath);
         const preIteration = await captureIterationState(worktreePath);
-        // Install-script gate trigger (spec 14): a changed lockfile
-        // fingerprint after the iteration means an install happened.
-        const lockfilesBefore = lockfileFingerprint(worktreePath);
         const promptMd = fs.readFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), "utf8");
         const budgetMs = iterationBudgetMs(hardTimeoutMs, productiveMs);
         // Soft signal only — spec 11 forbids terminating an iteration merely
@@ -1268,8 +1270,11 @@ export class Orchestrator {
 
         // Install-script gate (spec 14): fire on any lockfile change, after
         // bookkeeping so a resumed run starts its next iteration cleanly.
+        const lockfilesAfter = lockfileFingerprint(worktreePath);
+        const installHappened = lockfilesAfter !== lockfilesBefore;
+        lockfilesBefore = lockfilesAfter;
         if (
-          lockfileFingerprint(worktreePath) !== lockfilesBefore &&
+          installHappened &&
           (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath, n }))
         ) {
           return;
