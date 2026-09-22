@@ -301,19 +301,16 @@ function computeLoopKpis(
   };
 }
 
-/** Evaluate the spec 11 performance-policy targets over the most recent
- * ROLLOUT_SAMPLE_SIZE iterations that have a measurable duration. The
- * criteria-pass / approval-rate "no regression" condition needs a baseline
- * cohort comparison and stays a human judgment — it is not encoded here. */
+/** Evaluate the spec 11 performance-policy targets over `iterations`: the
+ * rollout window, i.e. the most recent ROLLOUT_SAMPLE_SIZE iterations with a
+ * measurable duration, which the caller's query selects. The criteria-pass /
+ * approval-rate "no regression" condition needs a baseline cohort comparison
+ * and stays a human judgment — it is not encoded here. */
 export function computeRolloutAcceptance(
   iterations: AnalyticsIterationRow[],
 ): RolloutAcceptance {
-  const measurable = iterations
-    .filter((i) => i.startedAt && i.endedAt)
-    .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
-
-  const window = measurable.slice(-ROLLOUT_SAMPLE_SIZE);
-  const sufficientSample = measurable.length >= ROLLOUT_SAMPLE_SIZE;
+  const window = iterations.filter((i) => i.startedAt && i.endedAt);
+  const sufficientSample = window.length >= ROLLOUT_SAMPLE_SIZE;
 
   const durations = window.map(durationMs).sort((a, b) => a - b);
   const turnSamples = window

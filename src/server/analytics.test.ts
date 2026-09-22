@@ -378,13 +378,9 @@ describe("computeRolloutAcceptance", () => {
     expect(target(result, "medianDurationMs").actual).not.toBeNull();
   });
 
-  it("accepts the most recent 30 measurable iterations when all four targets are met", () => {
-    // 30 old slow iterations and an unmeasurable one fall outside the window.
-    const result = computeRolloutAcceptance([
-      ...batch(30, 400, 20),
-      iter(31, null),
-      ...batch(30, 90, 9, 32),
-    ]);
+  it("accepts a full window of 30 measurable iterations when all four targets are met", () => {
+    // The caller's query selects the window; an unmeasurable row is still skipped.
+    const result = computeRolloutAcceptance([iter(31, null), ...batch(30, 90, 9, 32)]);
 
     expect(result.sufficientSample).toBe(true);
     expect(result.windowSize).toBe(30);

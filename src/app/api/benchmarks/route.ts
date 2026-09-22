@@ -1,5 +1,6 @@
+import { and, desc, isNotNull } from "drizzle-orm";
 import { db, iterations } from "@/db";
-import { computeRolloutAcceptance } from "@/server/analytics";
+import { computeRolloutAcceptance, ROLLOUT_SAMPLE_SIZE } from "@/server/analytics";
 import type { RolloutAcceptance } from "@/server/analytics";
 import {
   launchBenchmark,
@@ -20,7 +21,9 @@ export type BenchmarksResponse = {
 };
 
 export async function GET() {
-  const allIterations = db
+  // The rollout window: the most recent ROLLOUT_SAMPLE_SIZE iterations with a
+  // measurable duration, selected here rather than by loading the whole table.
+  const window = db
     .select({
       id: iterations.id,
       runId: iterations.runId,
@@ -32,13 +35,16 @@ export async function GET() {
       endedAt: iterations.endedAt,
     })
     .from(iterations)
+    .where(and(isNotNull(iterations.startedAt), isNotNull(iterations.endedAt)))
+    .orderBy(desc(iterations.startedAt))
+    .limit(ROLLOUT_SAMPLE_SIZE)
     .all();
 
   const response: BenchmarksResponse = {
     fixtures: listFixtures(),
     reports: listReports(),
     active: listActiveBenchmarks(),
-    rollout: computeRolloutAcceptance(allIterations),
+    rollout: computeRolloutAcceptance(window),
   };
   return json(response);
 }
