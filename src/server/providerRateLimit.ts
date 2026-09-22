@@ -1,5 +1,4 @@
-import { eq } from "drizzle-orm";
-import { db, settings } from "@/db";
+import { readSettingJson, upsertSettingJson } from "@/db";
 import type { ProviderId } from "./providers";
 import { parseRateLimitHeaders, type ProviderRateLimit } from "./harness/rateLimit";
 import {
@@ -21,23 +20,13 @@ function key(provider: ProviderId): string {
 }
 
 export function recordProviderRateLimit(reading: ProviderRateLimit): void {
-  const value = JSON.stringify(reading);
-  db.insert(settings)
-    .values({ key: key(reading.provider), value })
-    .onConflictDoUpdate({ target: settings.key, set: { value } })
-    .run();
+  upsertSettingJson(key(reading.provider), reading);
 }
 
 export function readProviderRateLimit(provider: ProviderId): ProviderRateLimit | null {
-  const row = db.select().from(settings).where(eq(settings.key, key(provider))).get();
-  if (!row) return null;
-  try {
-    const parsed = JSON.parse(row.value) as ProviderRateLimit;
-    // Trust the shape only as far as the two fields every consumer reads.
-    return parsed && typeof parsed.status === "string" ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parsed = readSettingJson(key(provider)) as ProviderRateLimit | null;
+  // Trust the shape only as far as the two fields every consumer reads.
+  return parsed && typeof parsed.status === "string" ? parsed : null;
 }
 
 /**

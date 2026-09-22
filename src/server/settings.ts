@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { db, settings } from "@/db";
+import { db, settings, upsertSettingJson } from "@/db";
 import { invalid, record } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
 import { parseHeaderLines } from "./localEndpoint";
@@ -376,9 +376,6 @@ export function patchSettings(value: unknown) {
       db.delete(settings).where(eq(settings.key, key)).run();
       continue;
     }
-    db.insert(settings)
-      .values({ key, value: JSON.stringify(value) })
-      .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify(value) } })
-      .run();
+    upsertSettingJson(key, value);
   }
 }
