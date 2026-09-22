@@ -125,6 +125,27 @@ function requireCard(cardId: string) {
   return { card, repo: requireRepo(card.repoId) };
 }
 
+/**
+ * Cards with a scoping turn in flight. Scoping runs outside the pipeline
+ * slots, so nothing else bounds it: every POST started another model session
+ * against the repository for up to TURN_TIMEOUT_MS, however many were already
+ * running for the same card. One turn per card at a time; the thread is
+ * sequential anyway.
+ */
+const turnsInFlight = new Set<string>();
+
+async function oneTurnAtATime<T>(cardId: string, turn: () => Promise<T>): Promise<T> {
+  if (turnsInFlight.has(cardId)) {
+    throw new ClientError("a scoping turn is already running for this card", 409);
+  }
+  turnsInFlight.add(cardId);
+  try {
+    return await turn();
+  } finally {
+    turnsInFlight.delete(cardId);
+  }
+}
+
 /** One read-only harness turn against the card's repository, on the scoping role. */
 async function ask(
   card: { id: string; title: string; description: string },
@@ -163,11 +184,16 @@ export async function scopingTurn(
   const text = content.trim();
   if (!text) throw new ClientError("content is required");
   const { card, repo } = requireCard(cardId);
-  addScopingMessage(cardId, "user", text);
-  if (opts.reply === false) return listScopingMessages(cardId);
-  const reply = await ask(card, repo, listScopingMessages(cardId), "reply");
-  addScopingMessage(cardId, "assistant", reply);
-  return listScopingMessages(cardId);
+  if (opts.reply === false) {
+    addScopingMessage(cardId, "user", text);
+    return listScopingMessages(cardId);
+  }
+  return oneTurnAtATime(cardId, async () => {
+    addScopingMessage(cardId, "user", text);
+    const reply = await ask(card, repo, listScopingMessages(cardId), "reply");
+    addScopingMessage(cardId, "assistant", reply);
+    return listScopingMessages(cardId);
+  });
 }
 
 /**
@@ -179,7 +205,9 @@ export async function proposeScopedCard(
   cardId: string,
 ): Promise<{ title: string; description: string; messages: ScopingMessage[] }> {
   const { card, repo } = requireCard(cardId);
-  const raw = await ask(card, repo, listScopingMessages(cardId), "proposal");
-  addScopingMessage(cardId, "assistant", raw);
-  return { ...parseScopedCardProposal(raw, card.title), messages: listScopingMessages(cardId) };
+  return oneTurnAtATime(cardId, async () => {
+    const raw = await ask(card, repo, listScopingMessages(cardId), "proposal");
+    addScopingMessage(cardId, "assistant", raw);
+    return { ...parseScopedCardProposal(raw, card.title), messages: listScopingMessages(cardId) };
+  });
 }
