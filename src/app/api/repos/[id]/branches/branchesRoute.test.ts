@@ -8,7 +8,7 @@ const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-branches-route
 process.env.RADULF_DATA_DIR = testDataDir;
 
 const { db, repos, now } = await import("@/db");
-const { GET } = await import("./route");
+const { GET, POST } = await import("./route");
 
 function git(dir: string, ...args: string[]) {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
@@ -55,5 +55,32 @@ describe("GET /api/repos/:id/branches", () => {
     });
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe("POST /api/repos/:id/branches", () => {
+  function post(body: unknown) {
+    return POST(
+      new Request("http://localhost/api/repos/repo-1/branches", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      ctx,
+    );
+  }
+
+  it("rejects a name that is already a branch", async () => {
+    const response = await post({ name: "feature-x" });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "branch already exists" });
+  });
+
+  it("rejects a base branch the repo does not have", async () => {
+    const response = await post({ name: "brand-new", from: "nope" });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "base branch does not exist in the repository" });
   });
 });

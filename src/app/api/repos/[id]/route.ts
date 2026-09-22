@@ -3,6 +3,7 @@ import { db, cards, repos, runs } from "@/db";
 import { assertBranchExists, assertUsableRepo } from "@/server/git";
 import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo, requireRepo } from "@/server/repos";
+import { record } from "@/server/requestValidation";
 import { removeCardArtifacts } from "@/server/retention";
 import { json, err, handle } from "../../_lib";
 
@@ -17,7 +18,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 export async function PATCH(req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const body = await req.json();
+    const body = record(await req.json(), "repo body");
     const current = requireRepo(id);
     const patch: Partial<typeof repos.$inferInsert> = {};
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
