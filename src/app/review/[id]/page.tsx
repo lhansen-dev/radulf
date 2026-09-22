@@ -8,7 +8,7 @@ import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
-import { segmentSuspiciousChars } from "@/shared/diffSafety";
+import { hasSuspiciousChars, segmentSuspiciousChars, type DiffLineSegment } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -29,7 +29,10 @@ type Detail = {
 };
 type DiffPayload = { runId: string; branch: string; diff: string; stat: string; done: string | null; evaluation: string | null };
 
-type DiffFile = { header: string; lines: string[] };
+/** A diff line with its suspicious-character segments, scanned once when the
+ * diff is parsed rather than on every render. */
+type DiffLine = { text: string; segments: DiffLineSegment[] };
+type DiffFile = { header: string; lines: DiffLine[] };
 
 function parseDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
@@ -39,7 +42,7 @@ function parseDiff(diff: string): DiffFile[] {
       current = { header: line.replace(/^diff --git a\/(.*) b\/.*$/, "$1"), lines: [] };
       files.push(current);
     } else if (current) {
-      current.lines.push(line);
+      current.lines.push({ text: line, segments: segmentSuspiciousChars(line) });
     }
   }
   return files;
@@ -58,10 +61,9 @@ function lineClass(line: string): string {
 /** Render a diff line with any bidi-override/zero-width/tag/confusable
  * character shown as a visible, labeled escape instead of silently doing
  * whatever it does to the surrounding text's display order. */
-function renderDiffLineContent(line: string) {
-  if (!line) return " ";
-  const segments = segmentSuspiciousChars(line);
-  if (segments.length === 1 && segments[0].kind === "text") return segments[0].value;
+function renderDiffLineContent({ text, segments }: DiffLine) {
+  if (!text) return " ";
+  if (segments.length === 1 && segments[0].kind === "text") return text;
   return segments.map((seg, i) =>
     seg.kind === "text" ? (
       <span key={i}>{seg.value}</span>
@@ -94,10 +96,7 @@ export default function ReviewPage() {
   const flags = useMemo(() => classifySelfModifying(files.map((f) => f.header)), [files]);
   const sensitiveFlags = useMemo(() => classifySensitivePaths(files.map((f) => f.header)), [files]);
   const ignoreFilesChanged = useMemo(() => changedIgnoreFiles(files.map((f) => f.header)), [files]);
-  const hasSuspiciousChars = useMemo(
-    () => files.some((f) => f.lines.some((line) => segmentSuspiciousChars(line).length > 1)),
-    [files],
-  );
+  const hasSuspicious = useMemo(() => (diff ? hasSuspiciousChars(diff.diff) : false), [diff]);
   const loopRun = detail?.runs.find((r) => r.kind === "loop" && r.status === "completed");
   const plan = detail?.plans[0];
   const planTag = detail ? plannerModelTag(detail.runs) : null;
@@ -161,7 +160,7 @@ export default function ReviewPage() {
           </p>
         </Banner>
       )}
-      {hasSuspiciousChars && (
+      {hasSuspicious && (
         <Banner tone="red" title="🛑 Invisible or confusable characters in the diff">
           <p>
             Highlighted inline below — bidi-override, zero-width, tag, or homoglyph characters can
@@ -189,14 +188,14 @@ export default function ReviewPage() {
               feedback or abandon.
             </p>
           )}
-          {files.map((file) => (
-            <details id={`diff-file-${files.indexOf(file)}`} key={file.header} open className="w-full min-w-0 scroll-mt-4 rounded border border-foreground/10 bg-foreground/[0.03]">
+          {files.map((file, index) => (
+            <details id={`diff-file-${index}`} key={file.header} open className="w-full min-w-0 scroll-mt-4 rounded border border-foreground/10 bg-foreground/[0.03]">
               <summary className="cursor-pointer px-3 py-2 text-sm font-mono text-foreground/80 hover:bg-foreground/[0.05]">
                 {file.header}
               </summary>
               <pre className="text-xs font-mono overflow-x-auto px-3 pb-3 leading-5">
                 {file.lines.map((line, i) => (
-                  <div key={i} className={lineClass(line)}>
+                  <div key={i} className={lineClass(line.text)}>
                     {renderDiffLineContent(line)}
                   </div>
                 ))}
