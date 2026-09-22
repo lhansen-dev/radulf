@@ -1,8 +1,6 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const mocks = vi.hoisted(() => ({
   startCard: vi.fn(),
@@ -19,8 +17,7 @@ vi.mock("./git", async (importOriginal) => ({
   assertBranchExists: mocks.assertBranchExists,
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-improvement-runs-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-improvement-runs-");
 
 const { db, cards, repos, improvementRuns, events, now } = await import("@/db");
 const { emitEvent } = await import("./events");
@@ -30,10 +27,6 @@ const {
   stopImprovementRun,
   awaitCardTerminal,
 } = await import("./improvementRuns");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-});
 
 function insertRepo(id = "repo-1") {
   db.insert(repos)

@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, desc, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const execFileAsync = promisify(execFile);
 
@@ -54,8 +54,7 @@ vi.mock("./settings", () => ({
   getSettings: () => mocks.settings,
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-evaluationService-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-evaluationService-");
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
 const { EvaluationService, renderEvaluatorPrompt } = await import("./evaluationService");
@@ -245,11 +244,6 @@ describe("EvaluationService.runEvaluator", () => {
     mocks.settings.autoApprove = false;
     mocks.settings.evaluatorTimeoutMinutes = 10;
     seedRepo();
-  });
-
-  afterAll(() => {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    delete process.env.RADULF_DATA_DIR;
   });
 
   it("approves and advances the card to review", async () => {

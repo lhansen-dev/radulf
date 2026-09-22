@@ -1,10 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-circuit-breaker-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-circuit-breaker-");
 
 const { db, settings } = await import("@/db");
 const {
@@ -17,11 +14,6 @@ const {
   parseLimitRetryAfterMs,
   providerBreakerStatus,
 } = await import("./circuitBreaker");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
-});
 
 beforeEach(() => {
   db.delete(settings).run();

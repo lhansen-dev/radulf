@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-branches-route-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-branches-route-");
 
 const { db, repos, now } = await import("@/db");
 const { GET, POST } = await import("./route");
@@ -35,8 +35,6 @@ beforeAll(() => {
 
 afterAll(() => {
   fs.rmSync(repo, { recursive: true, force: true });
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
 });
 
 describe("GET /api/repos/:id/branches", () => {

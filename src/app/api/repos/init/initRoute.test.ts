@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-init-route-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-init-route-");
 
 const { db, repos } = await import("@/db");
 const { patchSettings } = await import("@/server/settings");
@@ -27,8 +27,6 @@ beforeAll(() => {
 
 afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
 });
 
 describe("POST /api/repos/init", () => {

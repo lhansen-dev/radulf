@@ -1,13 +1,11 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 import { eq } from "drizzle-orm";
 
 // The DB must open against a throwaway data dir, so the env var is set before
 // the module (and its import-time path resolution) loads.
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-schema-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-schema-");
 
 const {
   db,
@@ -23,11 +21,6 @@ const {
   WORKTREES_DIR,
   PLANS_DIR,
 } = await import("@/db");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
-});
 
 describe("spec 14 directory layout", () => {
   it("keeps worktrees and plans OUTSIDE data/ (sandbox denies data/ wholesale)", () => {

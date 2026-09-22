@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 import { planningDestination, clearPlannerArtifacts, renderPlanPrompt } from "./planningService";
 
 describe("planningDestination", () => {
@@ -121,8 +122,7 @@ vi.mock("./settings", () => ({
   }),
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-planningService-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-planningService-");
 
 const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
 const { PlanningService, pendingReplanFeedback } = await import("./planningService");
@@ -202,11 +202,6 @@ describe("PlanningService.runPlanning", () => {
       return { worktreePath, branch: `ralph/${runId}` };
     });
     seedRepo();
-  });
-
-  afterAll(() => {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    delete process.env.RADULF_DATA_DIR;
   });
 
   it("routes a completed plan straight to ready when reviewPlanBeforeImplementation is 0", async () => {

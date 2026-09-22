@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const mocks = vi.hoisted(() => ({ pump: vi.fn() }));
 
@@ -10,8 +11,7 @@ vi.mock("@/server/orchestrator", () => ({
   getOrchestrator: () => ({ pump: mocks.pump }),
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cards-route-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-cards-route-");
 
 const { db, cards, repos, now } = await import("@/db");
 const { POST } = await import("./route");
@@ -54,8 +54,6 @@ beforeEach(() => {
 
 afterAll(() => {
   fs.rmSync(repo, { recursive: true, force: true });
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
 });
 
 describe("POST /api/cards", () => {

@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 // Spec 15 acceptance tests: delivering an approved diff as a GitHub pull
 // request instead of merging it into the local base branch. The git and gh
@@ -38,8 +38,7 @@ vi.mock("./github", () => ({
 }));
 vi.mock("./settings", () => ({ getSettings: () => mocks.settings }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-reviewService-pr-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-reviewService-pr-");
 
 const { db, cards, improvementRuns, plans, runs, repos, reviews, events, now } =
   await import("@/db");
@@ -153,11 +152,6 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
       url: "https://github.com/o/r/pull/7",
     });
     seedRepo();
-  });
-
-  afterAll(() => {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    delete process.env.RADULF_DATA_DIR;
   });
 
   it("1 — delivers by local merge and spawns no gh when PR delivery is off", async () => {
