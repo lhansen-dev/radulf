@@ -5,6 +5,7 @@ import { FolderBrowser } from "../ui/folderBrowser";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
 import { ModelChips } from "../ui/taskDialog";
+import { ProviderLoginSection } from "./providerLogin";
 import { SchedulesSection } from "./schedulesSection";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
@@ -26,9 +27,12 @@ type GithubStatusResponse = {
  * Whether `gh` can deliver a pull request right now (spec 15).
  *
  * Read-only and deliberately so — Radulf has no GitHub login of its own, by
- * design: interactive OAuth belongs in the operator's terminal, the same
- * position `make login` takes for the subscription providers. So this reports
- * and points at the fix; it never performs one. The re-check bypasses the
+ * design. Spec 23 moved the provider logins into Settings, so the reason is
+ * no longer "interactive OAuth belongs in the terminal": it is that Radulf
+ * drives a login where a typed interface exists, and shells out where one
+ * does not. pi hands us an `AuthInteraction` to implement; `gh auth login`
+ * hands us stdout to scrape, on a contract that can change in any release.
+ * So this reports and points at the fix; it never performs one. The re-check bypasses the
  * server's 30s cache, because the whole flow is "fix it in a terminal, come
  * straight back".
  */
@@ -410,11 +414,8 @@ export default function SettingsPage() {
               <div id="agents" className="flex scroll-mt-32 flex-col gap-5">
                 <ProviderHealthPanel />
                 <section className={sectionCls}>
-                  <SectionHeading title="Subscriptions">Use your Anthropic, ChatGPT, or GitHub Copilot subscription.</SectionHeading>
-                  <p className="rounded-lg border border-foreground/10 bg-background px-4 py-3 text-sm leading-relaxed text-foreground/70">
-                    Run <code className="text-foreground">make login</code> in a terminal, then type <code className="text-foreground">/login</code> to connect a provider.
-                  </p>
-                  <p className="text-xs leading-relaxed text-foreground/50">Sign in through Radulf so your agents can use the connection. Logins in your personal pi or Claude directory are separate.</p>
+                  <SectionHeading title="Subscriptions and provider logins">Sign in with a subscription, or store an API key, without leaving the app.</SectionHeading>
+                  <ProviderLoginSection onChanged={refetch} />
                 </section>
                 <section className={sectionCls}>
                   <SectionHeading title="Local models">Connect your own OpenAI-compatible server (oMLX, vLLM, LM Studio) running a model that supports tool use.</SectionHeading>

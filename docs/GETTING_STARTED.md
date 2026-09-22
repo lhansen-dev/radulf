@@ -39,7 +39,14 @@ by Docker.
 
 Radulf needs at least one provider before it can run anything. For the
 subscription providers (Claude, ChatGPT, GitHub Copilot) this is a one-time
-interactive login pointed at Radulf's own agent directory:
+login, and the easiest place to do it is the app: open
+**Settings → Providers & keys** and press **Sign in**. Radulf runs pi's own
+login flow and shows you what it asks for, which is a link to open plus a box
+to paste the resulting code into, or a device code to enter. Your browser does
+not have to be on the machine running Radulf, so this is the same three clicks
+on a laptop, a server, or in Docker.
+
+A terminal still works, and is what to use when there is no browser to hand:
 
 ```bash
 make login

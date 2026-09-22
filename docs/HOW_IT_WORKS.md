@@ -88,8 +88,9 @@ instead pushes the branch to `origin` and opens a pull request against the base,
 leaving the local base branch untouched. It is one or the other, never both.
 
 This needs the GitHub CLI (`gh`) installed and already authenticated: run
-`gh auth login` in your terminal, the same way `make login` handles provider
-auth. The option is unavailable, with the reason shown, when `gh` is missing,
+`gh auth login` in your terminal. Provider logins moved into Settings (spec
+23) but this one did not, because Radulf drives `gh` as a foreign binary whose
+login has no interface to drive, only output to read. The option is unavailable, with the reason shown, when `gh` is missing,
 `gh` is logged out, or the repo has no `origin`. Before pushing, Radulf merges
 the base branch in (a conflict goes back to the loop exactly as it would for a
 local merge) and strips `.ralph/`, so the pull request contains what you

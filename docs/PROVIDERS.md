@@ -10,14 +10,34 @@ roles.
 
 | Provider | Auth | Where it runs | Notes |
 |----------|------|---------------|-------|
-| **Anthropic / Claude** | `make login` | Remote | The default. Uses your Claude Pro/Max subscription. Third-party harness usage is billed per token as extra usage. |
-| **ChatGPT (Codex)** | `make login` | Remote | Uses your ChatGPT Plus/Pro subscription. |
-| **GitHub Copilot** | `make login` | Remote | Uses your GitHub Copilot subscription. |
+| **Anthropic / Claude** | Settings, or `make login` | Remote | The default. Uses your Claude Pro/Max subscription. Third-party harness usage is billed per token as extra usage. |
+| **ChatGPT (Codex)** | Settings, or `make login` | Remote | Uses your ChatGPT Plus/Pro subscription. |
+| **GitHub Copilot** | Settings, or `make login` | Remote | Uses your GitHub Copilot subscription. |
 | **OpenRouter** | API key | Remote | Bring your own model. Set the key in Settings — no login. |
 | **Local / self-hosted** | Base URL | Wherever you run it | Any OpenAI-compatible server: oMLX, vLLM, LM Studio. Optional and unmetered. Set the base URL in Settings, no login. |
 
-The three subscription providers share one interactive setup step, run once and
-pointed at Radulf's own agent directory (`data/pi-agent/`):
+### From the app
+
+**Settings → Providers & keys** lists every provider that can be logged in to,
+says which are connected, and runs the login itself (spec 23). Pick **Sign in**
+and Radulf drives pi's own login flow, showing you what it asks for:
+
+- A link to open, for Anthropic and Codex. Authorize in whatever browser you
+  like, then paste back either the authorization code or the whole URL your
+  browser was redirected to. That page will have failed to load if the browser
+  is not on the machine running Radulf, which is expected and does not matter.
+- A device code and a URL, for GitHub Copilot. Enter the code there; nothing
+  to paste back.
+- A masked field, for a provider you would rather give an API key.
+
+**Disconnect** forgets the credential. Radulf never reads or stores a token
+itself: pi owns `auth.json`, including refreshing it, and all that crosses the
+app is your answers.
+
+### From a terminal
+
+Still supported, and the only way with no browser to hand. One interactive
+step, run once, pointed at Radulf's own agent directory (`data/pi-agent/`):
 
 ```bash
 make login

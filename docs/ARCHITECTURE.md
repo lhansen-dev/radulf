@@ -171,6 +171,28 @@ One `RunSandboxContext` is created per run by the entry point and cleaned up in
 its `finally`; it threads into the pi session's bash spawn hook via
 `RunHarnessOpts.runContext`.
 
+## Provider logins
+
+`src/server/providerLogin.ts` drives `ModelRuntime.login` from a route so a
+subscription can be connected from Settings rather than from a TUI over
+`docker exec` (spec 23). pi's login takes an `AuthInteraction`, which is two
+callbacks: `notify` for what the operator should see and `prompt` for what
+they must answer. The TUI is one implementation; this module is another.
+
+A session is a held promise. `login()` runs for the whole flow, and each
+`prompt()` parks on a promise the module resolves when the browser posts an
+answer, so at most one question is outstanding. Each prompt carries a fresh
+token, because an answer that arrives after the flow moved on must not resolve
+whatever replaced its question, and a prompt can be **withdrawn** rather than
+answered: on a host install the loopback callback can win the race against the
+paste box, and pi aborts the prompt it was offering.
+
+Read back by polling, not over the SSE bus, which every open tab receives and
+which must never carry an `auth_url` and its PKCE state. Sessions are
+in-memory, expire on their own, and are limited to one per provider, because
+the Anthropic flow binds a fixed callback port. Radulf never sees a token: pi
+writes and refreshes its own `auth.json`.
+
 ## Card export and import
 
 `src/server/cardTransfer.ts` moves a card between installs as a versioned

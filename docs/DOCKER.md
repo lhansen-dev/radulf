@@ -115,8 +115,15 @@ and a container install needs its repositories re-registered.
 
 ## Log in a provider
 
-The subscription providers need the same one-time interactive login as a host
-install, pointed at Radulf's own agent directory:
+Use the app: **Settings → Providers & keys**, then **Sign in**. Radulf drives
+pi's login itself (spec 23), so a container install needs no terminal for
+this. The flow expects the browser to be somewhere else, which under Docker it
+always is: Anthropic and Codex give you a link to open and a box to paste the
+resulting code or redirect URL into, and Copilot gives you a device code to
+enter on GitHub. Nothing extra needs publishing, because the authorizing
+happens in your own browser rather than against the container's loopback.
+
+A terminal still works, and is the only option with no browser to hand:
 
 ```bash
 docker compose exec -it radulf radulf-login
