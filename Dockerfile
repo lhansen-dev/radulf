@@ -60,8 +60,13 @@ RUN git config --system user.name Radulf \
 # so they land here too. HOME sits beside them so gh's login and any
 # ~/.gitconfig persist as well; data/ and $HOME are both denied to agent bash
 # by the sandbox, worktrees/ and plans/ are not, exactly as on a host install.
+# NEXT_MANUAL_SIG_HANDLE: without it `next start` installs its own SIGTERM
+# handler that exits as soon as open connections close, racing and usually
+# winning against Radulf's drain (src/server/shutdown.ts). Radulf handles the
+# signal itself.
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_MANUAL_SIG_HANDLE=1 \
     RADULF_DATA_DIR=/var/lib/radulf/data \
     HOME=/var/lib/radulf/home
 RUN mkdir -p /var/lib/radulf/data /var/lib/radulf/home \

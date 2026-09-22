@@ -60,8 +60,10 @@ dev: ## Run the dev server (loopback-only unless auth is configured); restarts i
 build: ## Production build
 	NODE_ENV=production $(BIN)/next build
 
+# NEXT_MANUAL_SIG_HANDLE: Next's own SIGTERM/SIGINT handler exits as soon as
+# open connections close and would pre-empt Radulf's drain (src/server/shutdown.ts).
 start: ## Serve the production build (loopback-only unless auth is configured)
-	$(BIN)/next start -H $(HOST)
+	NEXT_MANUAL_SIG_HANDLE=1 $(BIN)/next start -H $(HOST)
 
 lint: ## Lint
 	$(BIN)/eslint
