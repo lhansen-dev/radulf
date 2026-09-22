@@ -286,10 +286,51 @@ async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }
   return removed;
 }
 
+// mergeBranch operates on repoPath — the ONE shared parent working tree and
+// index, not a per-card worktree. Spec 20 lets different cards in the same
+// repo run concurrently, and each review's own claim only serializes that
+// card's merge against itself (reviewService.ts), so two cards' merges can
+// otherwise interleave on the same index: one's `--no-commit` merge can be
+// clobbered by the other's `status --porcelain` still reading clean before
+// the first commits. Chain merges per repoPath so only one runs against a
+// given repo at a time; a different repoPath gets its own chain, so
+// concurrent cards in different repos are unaffected. globalThis-backed for
+// the same reason as the orchestrator singleton and the event bus
+// (events.ts) — survive Next.js dev hot-reload, one map per process.
+const g = globalThis as unknown as { __radulfMergeLocks?: Map<string, Promise<void>> };
+const mergeLocks = (g.__radulfMergeLocks ??= new Map());
+
+/** Run `fn` after any merge already queued for `repoPath` has settled,
+ * whether it resolved or threw — a failed merge must not wedge every later
+ * merge queued behind it in this repo. The queued tail always resolves
+ * (rejections are swallowed there), only the caller's own `fn()` result can
+ * reject. */
+export async function withRepoMergeLock<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const prior = mergeLocks.get(repoPath) ?? Promise.resolve();
+  const result = prior.then(fn, fn);
+  mergeLocks.set(
+    repoPath,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 /** Merge the ralph branch into the repo's base branch. Always restores the
  * checkout the user's repo was on before the merge — merging must never
  * leave their working copy switched to the base branch. */
 export async function mergeBranch(
+  repoPath: string,
+  baseBranch: string,
+  branch: string,
+  message: string
+): Promise<{ ok: boolean; mergeCommit?: string; error?: string; conflict?: boolean }> {
+  return withRepoMergeLock(repoPath, () => mergeBranchLocked(repoPath, baseBranch, branch, message));
+}
+
+async function mergeBranchLocked(
   repoPath: string,
   baseBranch: string,
   branch: string,
