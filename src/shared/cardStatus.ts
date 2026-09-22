@@ -11,6 +11,11 @@ export const ACTIVE_STATUSES: readonly CardStatus[] = ["planning", "ready", "loo
 /** Waiting on a human decision. */
 export const ATTENTION_STATUSES: readonly CardStatus[] = ["review", "plan_review", "needs_attention"];
 
+/** A human may pull the card back to Backlog from these; a live run is cancelled. */
+export const PULLBACK_STATUSES: readonly CardStatus[] = [
+  "todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused",
+];
+
 export const STATUS_LABELS: Record<CardStatus, string> = {
   backlog: "Backlog",
   todo: "Queued",

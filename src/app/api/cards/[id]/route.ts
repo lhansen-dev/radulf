@@ -12,6 +12,7 @@ import { groupBy } from "@/server/queryGrouping";
 import { removeCardArtifacts } from "@/server/retention";
 import { listScopingMessages } from "@/server/scoping";
 import { getSettings } from "@/server/settings";
+import { RUNNING_STATUSES } from "@/shared/cardStatus";
 import { json, err, handle } from "../../_lib";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -108,7 +109,7 @@ export async function DELETE(_req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
     const card = requireCard(id);
-    if (["planning", "looping", "evaluating"].includes(card.status))
+    if (RUNNING_STATUSES.includes(card.status))
       return err("cannot delete a card with an active run — pull it back to Backlog first");
     // Clean up any leftover worktree before the rows cascade away.
     const runIds = db

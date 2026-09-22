@@ -52,6 +52,7 @@ import { ClientError } from "./clientError";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
+import { RUNNING_STATUSES } from "@/shared/cardStatus";
 import { addScopingMessage } from "./scoping";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
@@ -80,8 +81,6 @@ import {
 } from "./stage";
 
 type Run = typeof runs.$inferSelect;
-
-const HARNESS_STATUSES: CardStatus[] = ["planning", "looping", "evaluating"];
 
 /** How often to look for a card that has been waiting on a human (spec 18 §5).
  * Well under the smallest useful staleness setting — the setting decides when
@@ -340,7 +339,7 @@ export class Orchestrator {
     const orphans = db
       .select()
       .from(cards)
-      .where(inArray(cards.status, [...HARNESS_STATUSES, "reviewing"]))
+      .where(inArray(cards.status, [...RUNNING_STATUSES, "reviewing"]))
       .all();
     for (const card of orphans) {
       // A loop is checkpointed: the orchestrator commits every finished
@@ -656,15 +655,15 @@ export class Orchestrator {
   /** True while any repo has a run in flight — used by graceful shutdown.
    * Deliberately global, unlike pipelineBusy(repoId). */
   hasInFlightWork(): boolean {
-    return this.activeLoopCards.size > 0 || this.cardInStatus(HARNESS_STATUSES);
+    return this.activeLoopCards.size > 0 || this.cardInStatus(RUNNING_STATUSES);
   }
 
-  private cardInStatus(statuses: CardStatus[], repoId?: string): boolean {
+  private cardInStatus(statuses: readonly CardStatus[], repoId?: string): boolean {
     return (
       db
         .select({ id: cards.id })
         .from(cards)
-        .where(and(inArray(cards.status, statuses), repoId ? eq(cards.repoId, repoId) : undefined))
+        .where(and(inArray(cards.status, [...statuses]), repoId ? eq(cards.repoId, repoId) : undefined))
         .limit(1)
         .get() !== undefined
     );
@@ -681,7 +680,7 @@ export class Orchestrator {
       db
         .select({ id: cards.id })
         .from(cards)
-        .where(and(inArray(cards.status, HARNESS_STATUSES), eq(cards.repoId, repoId)))
+        .where(and(inArray(cards.status, [...RUNNING_STATUSES]), eq(cards.repoId, repoId)))
         .all()
         .map((c) => c.id),
     );

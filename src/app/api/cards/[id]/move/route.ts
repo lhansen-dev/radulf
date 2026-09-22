@@ -3,6 +3,7 @@ import { db, cards, now } from "@/db";
 import { requireCard } from "@/server/cards";
 import { getOrchestrator } from "@/server/orchestrator";
 import { record } from "@/server/requestValidation";
+import { PULLBACK_STATUSES } from "@/shared/cardStatus";
 import { json, err, handle } from "../../../_lib";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -45,7 +46,7 @@ export async function POST(req: Request, { params }: Ctx) {
     }
 
     if (to === "backlog") {
-      if (["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"].includes(card.status)) {
+      if (PULLBACK_STATUSES.includes(card.status)) {
         orch.cancelCard(id);
         return json({ ok: true });
       }
