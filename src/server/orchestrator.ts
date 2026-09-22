@@ -51,6 +51,7 @@ import { ReviewService } from "./reviewService";
 import { ClientError } from "./clientError";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
+import { parsePayload } from "@/shared/eventPayload";
 import { addScopingMessage } from "./scoping";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
@@ -86,16 +87,6 @@ const HARNESS_STATUSES: CardStatus[] = ["planning", "looping", "evaluating"];
  * Well under the smallest useful staleness setting — the setting decides when
  * to speak, this only decides how often to look. */
 const ATTENTION_SWEEP_MS = 60_000;
-
-/** An event payload, or an empty object when the row is unreadable. Corrupt
- * JSON in one event must never stop a sweep. */
-function parsePayload(payload: string): Record<string, unknown> {
-  try {
-    return JSON.parse(payload) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
 
 /** How many productive iterations a run must have before its own pace, rather
  * than the configured ceiling, bounds a single iteration. */
@@ -1030,7 +1021,7 @@ export class Orchestrator {
             n,
             transcriptPath: path.join(runTranscriptDir(runId), transcriptFile),
             taskNumber: task.taskNumber,
-            taskCount: parseChecklist(planMd)?.items.length ?? task.taskNumber,
+            taskCount: task.taskCount,
             taskText: task.item.text,
             startedAt: now(),
           })
