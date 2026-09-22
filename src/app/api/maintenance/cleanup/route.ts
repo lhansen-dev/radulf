@@ -5,6 +5,6 @@ import { record } from "@/server/requestValidation";
 export async function POST(req: Request) {
   return handle(async () => {
     const { olderThanDays } = record(await req.json(), "cleanup body");
-    return json(pruneRuntimeHistory(Number(olderThanDays)));
+    return json(await pruneRuntimeHistory(Number(olderThanDays)));
   });
 }

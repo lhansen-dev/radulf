@@ -2692,7 +2692,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(mocks.removeWorktree).not.toHaveBeenCalled();
     });
 
-    it("prunes aged terminal rows and orphan transcripts while preserving active history", () => {
+    it("prunes aged terminal rows and orphan transcripts while preserving active history", async () => {
       card("old-history", "done");
       plan("old-history");
       completedRun("old-history", "old-run", {
@@ -2737,7 +2737,7 @@ describe("Orchestrator cancellation lifecycle", () => {
         })
         .run();
 
-      const result = pruneRuntimeHistory(30);
+      const result = await pruneRuntimeHistory(30);
 
       expect(result).toEqual({
         runsDeleted: 1,
@@ -2761,7 +2761,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(worktreeRow.removedAt).not.toBeNull();
     });
 
-    it("keeps aged runs and worktrees of unfinished cards", () => {
+    it("keeps aged runs and worktrees of unfinished cards", async () => {
       const aged = { startedAt: "2020-01-01T00:00:00.000Z", endedAt: "2020-01-01T00:05:00.000Z" };
       // A card still waiting in review behind an old evaluation.
       card("aged-review", "review");
@@ -2789,7 +2789,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       completedRun("aged-abandoned", "aged-abandoned-run", aged);
       const abandonedWorktree = getRun("aged-abandoned").worktreePath;
 
-      const result = pruneRuntimeHistory(30);
+      const result = await pruneRuntimeHistory(30);
 
       expect(result.runsDeleted).toBe(2);
       expect(result.worktreesRemoved).toBe(1);
@@ -2805,7 +2805,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(fs.existsSync(abandonedWorktree)).toBe(false);
     });
 
-    it("keeps an unfinished card's aged events, which are state and not history", () => {
+    it("keeps an unfinished card's aged events, which are state and not history", async () => {
       const aged = "2020-01-01T00:00:00.000Z";
       // Parked on the install gate. The `install.gate` event holds the ONLY
       // copy of the scripts the operator has to read before approving them,
@@ -2825,7 +2825,7 @@ describe("Orchestrator cancellation lifecycle", () => {
         ])
         .run();
 
-      const result = pruneRuntimeHistory(30);
+      const result = await pruneRuntimeHistory(30);
 
       expect(result.eventsDeleted).toBe(2);
       expect(
@@ -2833,7 +2833,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       ).toEqual(["gated:card.moved", "gated:install.gate"]);
     });
 
-    it("is a no-op, not an error, when the worktree directory or row is already gone", () => {
+    it("is a no-op, not an error, when the worktree directory or row is already gone", async () => {
       card("old-history-2", "done");
       plan("old-history-2");
       completedRun("old-history-2", "old-run-2", {
@@ -2844,7 +2844,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       // Directory already removed by a prior sweep/crash cleanup; no worktrees row at all.
       fs.rmSync(oldRun.worktreePath, { recursive: true, force: true });
 
-      const result = pruneRuntimeHistory(30);
+      const result = await pruneRuntimeHistory(30);
 
       expect(result.runsDeleted).toBe(1);
       expect(result.worktreesRemoved).toBe(0);

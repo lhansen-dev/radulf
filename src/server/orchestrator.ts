@@ -1663,7 +1663,7 @@ export class Orchestrator {
       }
       removeBaseline(run.id);
     }
-    removeRunTranscripts(allRuns.map((run) => run.id));
+    await removeRunTranscripts(allRuns.map((run) => run.id));
 
     // Runs cascade to iterations + reviews.
     db.delete(runs).where(eq(runs.cardId, cardId)).run();

@@ -45,15 +45,15 @@ export async function register() {
     const RETENTION_DAYS = 30;
     const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
     const RETENTION_INITIAL_DELAY_MS = 60_000;
-    const runRetentionSweep = () => {
+    const runRetentionSweep = async () => {
       try {
-        const result = pruneRuntimeHistory(RETENTION_DAYS);
+        const result = await pruneRuntimeHistory(RETENTION_DAYS);
         console.log(`[radulf] retention sweep: ${JSON.stringify(result)}`);
       } catch (e) {
         console.error("[radulf] retention sweep failed:", e);
       }
     };
-    setTimeout(runRetentionSweep, RETENTION_INITIAL_DELAY_MS);
-    setInterval(runRetentionSweep, RETENTION_INTERVAL_MS);
+    setTimeout(() => void runRetentionSweep(), RETENTION_INITIAL_DELAY_MS);
+    setInterval(() => void runRetentionSweep(), RETENTION_INTERVAL_MS);
   }
 }
