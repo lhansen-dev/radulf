@@ -1,8 +1,8 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api } from "../../ui/api";
+import { api, useEventStream } from "../../ui/api";
 import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
@@ -10,6 +10,7 @@ import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
+import { diffHeaderPath } from "./diffHeader";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { hasSuspiciousChars, segmentSuspiciousChars, type DiffLineSegment } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
@@ -27,7 +28,7 @@ function parseDiff(diff: string): DiffFile[] {
   let current: DiffFile | null = null;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      current = { header: line.replace(/^diff --git a\/(.*) b\/.*$/, "$1"), lines: [] };
+      current = { header: diffHeaderPath(line), lines: [] };
       files.push(current);
     } else if (current) {
       current.lines.push({ text: line, segments: segmentSuspiciousChars(line) });
@@ -78,6 +79,24 @@ export default function ReviewPage() {
     api<DiffResponse>(`/api/cards/${id}/diff`).then(setDiff).catch((e) => setError(String(e)));
   }, [id]);
   useEffect(refetch, [refetch]);
+  const wasDisconnected = useRef(false);
+  useEventStream(
+    (event) => {
+      if (event.cardId === id) refetch();
+    },
+    (connected) => {
+      if (!connected) {
+        wasDisconnected.current = true;
+        return;
+      }
+      // Missed events aren't replayed: refetch on a genuine reconnect, not on
+      // the first open after mount, which the initial load already covers.
+      if (wasDisconnected.current) {
+        wasDisconnected.current = false;
+        refetch();
+      }
+    },
+  );
 
   const files = useMemo(() => (diff ? parseDiff(diff.diff) : []), [diff]);
   const evaluation = useMemo(() => (diff?.evaluation ? parseEvaluation(diff.evaluation) : null), [diff]);

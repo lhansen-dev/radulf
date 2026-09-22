@@ -1,12 +1,9 @@
-import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { ApprovedInstallScript } from "@/db";
 import { scriptKey } from "@/shared/installScripts";
-
-const execFileAsync = promisify(execFile);
+import { execBounded } from "./exec";
 
 /**
  * The install-script gate (spec 14) — a supply-chain AWARENESS control, not a
@@ -187,6 +184,14 @@ export function lockfileFingerprint(rootDir: string): string {
   return hash.digest("hex");
 }
 
+// This is the one exec path whose entire purpose is running lifecycle
+// scripts a human has just approved — a postinstall that hangs (stdin read,
+// dead network mount) must not be able to freeze the whole app, since the
+// orchestrator runs exactly one card at a time globally. A rebuild can
+// legitimately compile native code, so the bound is generous: minutes, not
+// seconds.
+const REBUILD_TIMEOUT_MS = 5 * 60_000;
+
 /**
  * Run `npm rebuild <pkg>` for the approved packages ONLY (per-package
  * granularity) — this executes the now-approved scripts. Trusted orchestrator
@@ -199,20 +204,23 @@ export async function rebuildPackages(
     args: string[],
     cwd: string,
   ) => Promise<{ ok: boolean; out: string }> = async (args, cwd) => {
-    try {
-      const { stdout, stderr } = await execFileAsync("npm", args, {
-        cwd,
-        encoding: "utf8",
-        maxBuffer: 16 * 1024 * 1024,
-      });
-      return { ok: true, out: (stdout + stderr).trim() };
-    } catch (e) {
-      const err = e as { stdout?: string; stderr?: string; message?: string };
-      return {
-        ok: false,
-        out: ((err.stdout ?? "") + (err.stderr ?? "") || err.message || "npm rebuild failed").trim(),
-      };
+    const { err, stdout, stderr, timedOut } = await execBounded("npm", args, {
+      cwd,
+      maxBuffer: 16 * 1024 * 1024,
+      timeoutMs: REBUILD_TIMEOUT_MS,
+    });
+    if (!err) return { ok: true, out: (stdout + stderr).trim() };
+    if (timedOut) {
+      // Name the timeout instead of surfacing an opaque "Command failed" —
+      // an operator seeing that with no reason is exactly the failure mode
+      // `timedOut` exists to prevent.
+      const msg = `npm ${args.join(" ")} timed out after ${REBUILD_TIMEOUT_MS}ms`;
+      return { ok: false, out: ((stdout + stderr).trim() ? `${(stdout + stderr).trim()}\n${msg}` : msg) };
     }
+    return {
+      ok: false,
+      out: ((stdout ?? "") + (stderr ?? "") || err.message || "npm rebuild failed").trim(),
+    };
   },
 ): Promise<{ ok: boolean; out: string }> {
   const outputs: string[] = [];

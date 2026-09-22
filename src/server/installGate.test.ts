@@ -122,4 +122,13 @@ describe("install-script gate (spec 14 1h)", () => {
     expect(failed.ok).toBe(false);
     expect(failed.out).toContain("gyp ERR!");
   });
+
+  it("surfaces a timed-out rebuild as ok:false naming the timeout", async () => {
+    const timedOut = await rebuildPackages("/wt", ["hangs"], async () => ({
+      ok: false,
+      out: "npm rebuild hangs timed out after 300000ms",
+    }));
+    expect(timedOut.ok).toBe(false);
+    expect(timedOut.out).toContain("timed out");
+  });
 });

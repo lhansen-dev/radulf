@@ -10,7 +10,9 @@ import {
   isRalphBranch,
   isValidBranchName,
   listBranches,
+  mergeBranch,
   offRunBranchReason,
+  withRepoMergeLock,
   worktreeIsDirty,
   worktreeDiff,
   worktreeDiffStat,
@@ -188,5 +190,243 @@ describe("review diff generation (worktreeDiff / worktreeDiffStat)", () => {
     expect(diff).toContain("+line3");
 
     git(tmpDir, "config", "--unset", "diff.evil.textconv");
+  });
+
+  it("core.quotePath=false keeps a non-ASCII path readable in the diff --git header", async () => {
+    // The review page prefix-matches these paths to decide whether to raise
+    // its sandbox/self-modifying banners, so a C-quoted header is a banner
+    // that never fires. See diffHeader.ts.
+    fs.mkdirSync(path.join(tmpDir, "src", "server", "sandbox"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "server", "sandbox", "café.ts"), "export {};\n");
+    git(tmpDir, "add", "-A");
+    git(tmpDir, "commit", "-m", "add a non-ascii path under the sandbox dir");
+
+    // Sanity check: git's default really does quote it.
+    const unhardened = execFileSync(
+      "git",
+      ["-C", tmpDir, "diff", defaultBranch, "HEAD", "--", "src/"],
+      { encoding: "utf8" },
+    );
+    expect(unhardened).toContain(String.raw`"a/src/server/sandbox/caf\303\251.ts"`);
+
+    const diff = await worktreeDiff(tmpDir, defaultBranch);
+    expect(diff).toContain("diff --git a/src/server/sandbox/café.ts b/src/server/sandbox/café.ts");
+    expect(diff).not.toContain(String.raw`caf\303\251`);
+  });
+});
+
+describe("withRepoMergeLock", () => {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("never lets two calls for the same key run at once, even when one throws", async () => {
+    const events: string[] = [];
+    let active = 0;
+    let sawOverlap = false;
+    const task = (label: string, ms: number, fail: boolean) => async () => {
+      active++;
+      if (active > 1) sawOverlap = true;
+      events.push(`${label}:enter`);
+      await wait(ms);
+      active--;
+      events.push(`${label}:exit`);
+      if (fail) throw new Error(`${label} failed`);
+      return label;
+    };
+
+    const first = withRepoMergeLock("repo-a", task("first", 20, true));
+    const second = withRepoMergeLock("repo-a", task("second", 5, false));
+
+    await expect(first).rejects.toThrow("first failed");
+    await expect(second).resolves.toBe("second");
+    expect(sawOverlap).toBe(false);
+    // "first" throwing must not skip "second" or reorder it ahead of "first".
+    expect(events).toEqual(["first:enter", "first:exit", "second:enter", "second:exit"]);
+  });
+
+  it("lets calls for different keys run concurrently", async () => {
+    const events: string[] = [];
+    const task = (label: string, ms: number) => async () => {
+      events.push(`${label}:enter`);
+      await wait(ms);
+      events.push(`${label}:exit`);
+    };
+
+    await Promise.all([
+      withRepoMergeLock("repo-b", task("b", 20)),
+      withRepoMergeLock("repo-c", task("c", 5)),
+    ]);
+
+    // Different repos don't wait on each other, so the shorter task ("c")
+    // exits before the longer one ("b") — a shared lock would force "b" to
+    // exit first since it was queued first.
+    expect(events).toEqual(["b:enter", "c:enter", "c:exit", "b:exit"]);
+  });
+
+  it("a repo whose lock is still held by a slow call does not block a fast call on another repo", async () => {
+    const start = Date.now();
+    let dTook = 0;
+    const slow = withRepoMergeLock("repo-slow", async () => wait(40));
+    const fast = withRepoMergeLock("repo-fast", async () => {
+      dTook = Date.now() - start;
+    });
+    await Promise.all([slow, fast]);
+    // "repo-fast" must not have waited behind "repo-slow"'s 40ms hold.
+    expect(dTook).toBeLessThan(30);
+  });
+});
+
+describe("mergeBranch concurrency (spec 20: different cards, same repo)", () => {
+  let tmpDir: string;
+  let defaultBranch: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-concurrency-"));
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@test.com");
+    git(tmpDir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "initial");
+    defaultBranch = execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    // Two feature branches touching different files, as two different cards'
+    // run branches would — nothing here should conflict on content.
+    git(tmpDir, "checkout", "-b", "ralph/card-a");
+    fs.writeFileSync(path.join(tmpDir, "a.txt"), "a\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "card a change");
+    git(tmpDir, "checkout", defaultBranch);
+
+    git(tmpDir, "checkout", "-b", "ralph/card-b");
+    fs.writeFileSync(path.join(tmpDir, "b.txt"), "b\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "card b change");
+    git(tmpDir, "checkout", defaultBranch);
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("two cards' merges against the same shared repo checkout don't clobber each other", async () => {
+    // Without the per-repo lock, these interleave on the same index the way
+    // the bug describes: one's `--no-commit` merge can be clobbered by the
+    // other's `status --porcelain` still reading clean before the first
+    // commits. Firing them together via Promise.all is the reproduction.
+    const [resultA, resultB] = await Promise.all([
+      mergeBranch(tmpDir, defaultBranch, "ralph/card-a", "ralph: merge card a"),
+      mergeBranch(tmpDir, defaultBranch, "ralph/card-b", "ralph: merge card b"),
+    ]);
+
+    expect(resultA.ok).toBe(true);
+    expect(resultB.ok).toBe(true);
+    expect(resultA.mergeCommit).not.toBe(resultB.mergeCommit);
+
+    // Both changes landed, and each merge produced its own commit — the
+    // interleaved-index failure mode either drops one card's diff or merges
+    // both under one commit message.
+    expect(fs.existsSync(path.join(tmpDir, "a.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "b.txt"))).toBe(true);
+    const log = execFileSync("git", ["-C", tmpDir, "log", "--oneline", defaultBranch], {
+      encoding: "utf8",
+    });
+    expect(log).toContain("ralph: merge card a");
+    expect(log).toContain("ralph: merge card b");
+
+    expect(await hasCommits(tmpDir)).toBe(true);
+    expect(execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim()).toBe(defaultBranch);
+  });
+});
+
+describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window)", () => {
+  let tmpDir: string;
+  let defaultBranch: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-callback-"));
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@test.com");
+    git(tmpDir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "initial");
+    defaultBranch = execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    git(tmpDir, "checkout", "-b", "ralph/card-c");
+    fs.writeFileSync(path.join(tmpDir, "c.txt"), "c\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "card c change");
+
+    // Leave the repo's checkout on a third branch — not the base, not the run
+    // branch — so mergeBranch's restore() has somewhere real to return to,
+    // and "still on the base branch" at callback time is a meaningful check.
+    git(tmpDir, "checkout", "-b", "operator-branch", defaultBranch);
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const headBranch = () =>
+    execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+  it("fires after the commit but before the post-merge checkout restore", async () => {
+    let branchAtCallback: string | undefined;
+
+    const result = await mergeBranch(
+      tmpDir,
+      defaultBranch,
+      "ralph/card-c",
+      "ralph: merge card c",
+      () => {
+        branchAtCallback = headBranch();
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    // mergeBranchLocked commits, then calls onCommitted, then restores the
+    // operator's original checkout — at callback time HEAD is still on the
+    // base branch, not yet moved back to operator-branch.
+    expect(branchAtCallback).toBe(defaultBranch);
+    // By the time mergeBranch resolves, the checkout has been restored.
+    expect(headBranch()).toBe("operator-branch");
+  });
+
+  it("does not fire on a conflicted merge", async () => {
+    git(tmpDir, "checkout", "-b", "ralph/card-conflict", defaultBranch);
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "conflicting change\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "conflicting change");
+    git(tmpDir, "checkout", "operator-branch");
+
+    // Diverge the base branch on the same file so the merge conflicts.
+    git(tmpDir, "checkout", defaultBranch);
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base changed differently\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "diverge base");
+    git(tmpDir, "checkout", "operator-branch");
+
+    let called = false;
+    const result = await mergeBranch(
+      tmpDir,
+      defaultBranch,
+      "ralph/card-conflict",
+      "ralph: merge conflicting card",
+      () => {
+        called = true;
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe(true);
+    expect(called).toBe(false);
   });
 });

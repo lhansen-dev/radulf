@@ -257,7 +257,22 @@ export async function captureIterationState(
 function statusWithoutSignal(status: string): string {
   return status
     .split("\n")
-    .filter((line) => line.trim() && !line.includes("ITERATION_DONE"))
+    .filter((line) => {
+      if (!line.trim()) return false;
+      // Porcelain format is "XY <path>", or "XY <old> -> <new>" for a
+      // rename — a two-character status field, a space, then the path
+      // (the destination path for a rename). Compare that path's own file
+      // name, not a substring of the whole line, so a file whose name
+      // merely CONTAINS "ITERATION_DONE" (e.g. a doc or a test fixture)
+      // still counts as work — only the signal file itself is dropped. An
+      // exotic/quoted path simply won't match, which is the safe
+      // direction: it counts as work rather than being silently dropped.
+      const filePath = line.slice(3);
+      const destPath = filePath.includes(" -> ")
+        ? filePath.slice(filePath.lastIndexOf(" -> ") + " -> ".length)
+        : filePath;
+      return path.posix.basename(destPath) !== "ITERATION_DONE";
+    })
     .join("\n");
 }
 

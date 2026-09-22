@@ -140,6 +140,16 @@ export const SETTING_DEFAULTS = {
   // means nowhere, which is the default. A bare webhook on purpose — ntfy,
   // Slack, Discord and a handler of your own all take the same POST.
   alertWebhookUrl: "",
+  // Which other events that webhook announces. The stale sweep above is
+  // unconditional — it is the alert spec 18 §5 was written for — but waiting
+  // for a card to go stale is the wrong signal for the moment it first needs a
+  // human: a diff cleared by the evaluator reaches an operator today only
+  // through the browser Notification API, which requires a tab already open on
+  // the right machine. Default on, and every one of them is a no-op until
+  // `alertWebhookUrl` is set.
+  alertOnReviewReady: true,
+  alertOnNeedsAttention: true,
+  alertOnImprovementRunFinished: true,
   soundEnabled: false,
   theme: "default",
   ...PROMPT_TEMPLATE_DEFAULTS,
@@ -181,6 +191,9 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "sandboxWeakerIsolationForGoTls",
   "autoApprove",
   "openPr",
+  "alertOnReviewReady",
+  "alertOnNeedsAttention",
+  "alertOnImprovementRunFinished",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   // Upper bound is a guard rail, not a capability claim: past a handful of
