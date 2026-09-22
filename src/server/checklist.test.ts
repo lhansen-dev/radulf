@@ -73,6 +73,15 @@ describe("markChecked", () => {
   });
 
   it.each([
+    // The marker regex tolerates any amount of whitespace between "-" and "[";
+    // markChecked must flip whatever it accepted, byte-for-byte.
+    ["no space before [", md("## Tasks", "-[ ] First", "- [ ] Second"), "-[x] First\n- [ ] Second"],
+    ["two spaces before [", md("## Tasks", "-  [ ] First", "- [ ] Second"), "-  [x] First\n- [ ] Second"],
+  ])("flips a tolerant marker (%s) and preserves the rest of the line", (_label, plan, expectedTasksBody) => {
+    expect(markChecked(plan, 1)).toBe(md("## Tasks", expectedTasksBody));
+  });
+
+  it.each([
     [md("## Tasks", "- [ ] Only one"), 2, "taskNumber 2 is out of range"],
     [md("## Tasks", "- [ ] Only one"), 0, "taskNumber 0 is out of range"],
     [md("## Tasks", "- [x] Done", "- [ ] Next"), 1, "item 1 is already checked"],
