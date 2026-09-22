@@ -159,9 +159,6 @@ export async function createImprovementRun(
 ): Promise<ImprovementRun> {
   const repo = getRepo(input.repoId);
   if (!repo) throw new ClientError("repoId does not exist");
-  if (activeRunForRepo(input.repoId)) {
-    throw new ClientError("an improvement run is already active for this repo");
-  }
   // The same rule card creation applies (spec 19): a run cut off one of
   // Radulf's own branches would accumulate onto another run's or card's work.
   if (isRalphBranch(input.baseBranch)) {
@@ -170,31 +167,51 @@ export async function createImprovementRun(
   await assertBranchExists(repo.path, input.baseBranch, "baseBranch");
 
   const featureBranch = `ralph/improve-${Date.now()}`;
-  await git(repo.path, "branch", featureBranch, input.baseBranch);
+  // Claim the repo's single slot and write the row without an `await`
+  // between the two. The check used to sit above the branch-existence
+  // check and the `git branch` call, so two POSTs arriving together both
+  // saw no active run, both got a run row, and decision 6's one-active-per-
+  // repo rule held only for requests far enough apart. Nothing can
+  // interleave inside a synchronous block, and better-sqlite3 is
+  // synchronous, so this is the whole fix.
+  const row = db.transaction((tx) => {
+    if (activeRunForRepo(input.repoId)) {
+      throw new ClientError("an improvement run is already active for this repo");
+    }
+    return tx
+      .insert(improvementRuns)
+      .values({
+        id: nanoid(),
+        repoId: input.repoId,
+        status: "running",
+        featureBranch,
+        baseBranch: input.baseBranch,
+        focusPrompt: input.focusPrompt ?? null,
+        plannerModel: input.plannerModel ?? null,
+        loopModel: input.loopModel ?? null,
+        evaluatorModel: input.evaluatorModel ?? null,
+        plannerReasoning: input.plannerReasoning ?? null,
+        loopReasoning: input.loopReasoning ?? null,
+        evaluatorReasoning: input.evaluatorReasoning ?? null,
+        maxIterations: input.maxIterations ?? null,
+        timeoutMinutes: input.timeoutMinutes ?? null,
+        deadlineAt: new Date(Date.now() + input.budgetMinutes * 60_000).toISOString(),
+        createdAt: now(),
+        updatedAt: now(),
+      })
+      .returning()
+      .get();
+  });
 
-  const row = db
-    .insert(improvementRuns)
-    .values({
-      id: nanoid(),
-      repoId: input.repoId,
-      status: "running",
-      featureBranch,
-      baseBranch: input.baseBranch,
-      focusPrompt: input.focusPrompt ?? null,
-      plannerModel: input.plannerModel ?? null,
-      loopModel: input.loopModel ?? null,
-      evaluatorModel: input.evaluatorModel ?? null,
-      plannerReasoning: input.plannerReasoning ?? null,
-      loopReasoning: input.loopReasoning ?? null,
-      evaluatorReasoning: input.evaluatorReasoning ?? null,
-      maxIterations: input.maxIterations ?? null,
-      timeoutMinutes: input.timeoutMinutes ?? null,
-      deadlineAt: new Date(Date.now() + input.budgetMinutes * 60_000).toISOString(),
-      createdAt: now(),
-      updatedAt: now(),
-    })
-    .returning()
-    .get();
+  // Cutting the branch after the claim, rather than before it, means a
+  // rejected second request leaves no stray `ralph/improve-*` behind. A
+  // failure here does, so give the slot back.
+  try {
+    await git(repo.path, "branch", featureBranch, input.baseBranch);
+  } catch (cause) {
+    db.delete(improvementRuns).where(eq(improvementRuns.id, row.id)).run();
+    throw cause;
+  }
 
   emitEvent("improvement.started", { payload: { runId: row.id, featureBranch } });
   void driveRun(row.id);
