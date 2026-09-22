@@ -135,7 +135,7 @@ const evaluator: Script = ({ step }) => {
 
 /** Scoping and the improvement proposer (read-only, no pipeline role).
  * One reply serves both: prose for scoping, a JSON proposal for the
- * proposer (pm.ts parseProposals). */
+ * proposer (improvementProposer.ts parseProposals). */
 const readOnly: Script = () => [
   say(
     "Mock reply — no model was called.\n\n```json\n" +

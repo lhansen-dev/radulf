@@ -36,7 +36,7 @@ export type TranscriptPush = {
 };
 
 // globalThis-backed for the same reason as the orchestrator singleton
-// (src/server/orchestrator.ts:1128): survive Next.js dev hot-reload, one bus
+// (getOrchestrator in src/server/orchestrator.ts): survive Next.js dev hot-reload, one bus
 // per process. Same hazard applies to anything crossing this bus — a custom
 // class `instanceof` check is unreliable if the checking module and the
 // throwing/emitting module ended up in different bundler module graphs.
