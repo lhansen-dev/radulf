@@ -91,7 +91,8 @@ export default function WorkPage() {
     restartRequired,
     restarting,
     setRestarting,
-    refetch,
+    refetchCards,
+    refetchImprovementRuns,
   } = useWorkData();
   const [repoFilter, setRepoFilter] = useState("");
   const [view, setView] = useState<View>("overview");
@@ -170,7 +171,7 @@ export default function WorkPage() {
     setError("");
     try {
       await fn();
-      refetch();
+      refetchCards();
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -191,10 +192,10 @@ export default function WorkPage() {
     setNotice(`${card.title} moved to position ${target + 1} of ${queue.length}.`);
     try {
       await api(`/api/cards/${card.id}/move`, { json: { to: "todo", position } });
-      refetch();
+      refetchCards();
     } catch (e) {
       setError(errorMessage(e));
-      refetch();
+      refetchCards();
     }
   }
 
@@ -394,8 +395,8 @@ export default function WorkPage() {
         )}
       </main>
 
-      {showNew && <NewTaskDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refetch(); }} />}
-      {showImprovementRun && <ImprovementRunDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowImprovementRun(false)} onCreated={() => { setShowImprovementRun(false); refetch(); }} />}
+      {showNew && <NewTaskDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refetchCards(); }} />}
+      {showImprovementRun && <ImprovementRunDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowImprovementRun(false)} onCreated={() => { setShowImprovementRun(false); refetchImprovementRuns(); }} />}
     </AppShell>
   );
 }

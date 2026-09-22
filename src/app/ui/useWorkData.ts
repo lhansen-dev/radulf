@@ -196,6 +196,7 @@ export function useWorkData() {
     restartRequired,
     restarting,
     setRestarting,
-    refetch,
+    refetchCards,
+    refetchImprovementRuns,
   };
 }
