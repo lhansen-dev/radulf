@@ -43,7 +43,7 @@ afterAll(() => {
 });
 
 // Build the guarded tools exactly as createRalphSession does for a role.
-function toolFor(role: AgentRole, name: string): ToolDefinition {
+function toolFor(role: AgentRole | undefined, name: string): ToolDefinition {
   const { readRoots, writeRoots } = pathRootsForRole(role, wt);
   const t = createGuardedFsTools(wt, readRoots, writeRoots).find((d) => d.name === name);
   if (!t) throw new Error(`no guarded tool ${name}`);
@@ -152,6 +152,29 @@ describe.each(["loop", "evaluator"] as const)(
     });
   },
 );
+
+describe("L2 acceptance — read-only session (scoping, proposer: read the checkout, write nothing)", () => {
+  it("allows reading, grepping, and listing inside the checkout", async () => {
+    await expect(run(toolFor(undefined, "read"), { path: "src/app.ts" })).resolves.toBeDefined();
+    await expect(run(toolFor(undefined, "grep"), { pattern: "x", path: "src" })).resolves.toBeDefined();
+    await expect(run(toolFor(undefined, "ls"), {})).resolves.toBeDefined();
+  });
+  it("blocks reading an outside path, a symlink to it, and ~/.ssh keys", async () => {
+    await expect(run(toolFor(undefined, "read"), { path: secret })).rejects.toThrow(BOUNDARY);
+    await expect(run(toolFor(undefined, "read"), { path: "escape-link" })).rejects.toThrow(BOUNDARY);
+    await expect(run(toolFor(undefined, "read"), { path: "~/.ssh/id_ed25519" })).rejects.toThrow(BOUNDARY);
+    await expect(run(toolFor(undefined, "grep"), { pattern: "KEY", path: tmp })).rejects.toThrow(BOUNDARY);
+  });
+  it("blocks every write, even inside the checkout (no write root at all)", async () => {
+    await expect(
+      run(toolFor(undefined, "write"), { path: "src/app.ts", content: "pwn" }),
+    ).rejects.toThrow(BOUNDARY);
+    await expect(
+      run(toolFor(undefined, "edit"), { path: "src/app.ts", edits: [{ oldText: "1", newText: "2" }] }),
+    ).rejects.toThrow(BOUNDARY);
+    expect(fs.readFileSync(path.join(wt, "src", "app.ts"), "utf8")).toContain("const x = 1");
+  });
+});
 
 it("the outside secret is never mutated by any blocked write across the whole run", () => {
   expect(fs.readFileSync(secret, "utf8")).toBe("API_KEY=supersecret");

@@ -198,13 +198,21 @@ srt cannot reach the pi tools that run *inside* the server process. The same
   | Planner | repo checkout (worktree) | `<worktree>/.ralph` only |
   | Loop | worktree | worktree |
   | Evaluator | worktree | worktree (net changes constrained to docs + `.ralph/` by the post-run integrity check, not L2) |
+  | Scoping, improvement proposer (no role) | the checkout they run against | none |
 
-Mutating tools are root-only with no exceptions (not even `.git` — commits go
-via bash under L1). Read-side tools are root-only too; the escape hatch for
+Mutating tools are root-only, and `<worktree>/.git` is carved out of every
+write root: in a linked worktree it is the file naming the gitdir, and a
+rewritten pointer would hand every host-side git call an agent-populated
+config (L1 denies the same path to bash). Commits go via the orchestrator,
+never the agent. Read-side tools are root-only too; the escape hatch for
 legitimate outside reads is bash, where the kernel decides. The planner has no
 bash and therefore no escape hatch — correct, since a planner needing outside
 reads is being manipulated. Its containment is L2 + L3 only, acceptable because
-it cannot spawn a process that would escape a JS-level guard.
+it cannot spawn a process that would escape a JS-level guard. The read-only
+sessions are the same shape with no write root at all: they hold `web_search`,
+so an unguarded `read` there would be host-wide read and egress in one session.
+Residual: scoping runs against the operator's real checkout, so untracked files
+in it (a `.env`, say) are readable and reach the model provider.
 
 ---
 
@@ -317,13 +325,15 @@ Three roles, each the narrowest tool set for its job (`toolsForRole` in
 
 | Role | bash | `web_search` | filesystem |
 |------|------|--------------|------------|
-| 🧭 Planner | ✗ | ✓ (only role) | repo checkout read-only; `<worktree>/.ralph/` write-only |
+| 🧭 Planner | ✗ | ✓ | repo checkout read-only; `<worktree>/.ralph/` write-only |
 | 🔁 Loop | ✓ | ✗ | worktree read-write |
 | 🔎 Evaluator | ✓ | ✗ | worktree read-write; net changes outside `.ralph/` limited to the doc allowlist by the post-run integrity check |
+| 💬 Scoping, improvement proposer | ✗ | ✓ | the checkout they run against, read-only |
 
 The split is the point: the planner can reach the network but not execute
 commands; the loop can execute commands but reach the network only through the
-L1 registry allowlist. Neither holds both halves of an exfiltration chain.
+L1 registry allowlist. Neither holds both halves of an exfiltration chain. The
+read-only sessions sit on the planner's side of it, with the same L2 confinement.
 `web_search` ([`webSearch.ts`](../src/server/harness/webSearch.ts)) is query-only
 (no agent-supplied URL), ≤ 256 chars, ≤ 8 calls per planner run, every query in
 the transcript. The summarizer role was dropped; the evaluator absorbed its
