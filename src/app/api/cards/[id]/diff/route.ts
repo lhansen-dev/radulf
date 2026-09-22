@@ -21,11 +21,16 @@ export async function GET(_req: Request, { params }: Ctx) {
     if (!run) return err("no worktree found for this card", 404);
     const donePath = doneFilePath(path.join(run.worktreePath, ".ralph"));
     const evaluationPath = path.join(run.worktreePath, ".ralph", "EVALUATION.md");
+    const baseBranch = run.baseBranch ?? repo.defaultBranch;
+    const [diff, stat] = await Promise.all([
+      worktreeDiff(run.worktreePath, baseBranch),
+      worktreeDiffStat(run.worktreePath, baseBranch),
+    ]);
     return json({
       runId: run.id,
       branch: run.branch,
-      diff: await worktreeDiff(run.worktreePath, run.baseBranch ?? repo.defaultBranch),
-      stat: await worktreeDiffStat(run.worktreePath, run.baseBranch ?? repo.defaultBranch),
+      diff,
+      stat,
       done: donePath ? fs.readFileSync(donePath, "utf8") : null,
       evaluation: fs.existsSync(evaluationPath) ? fs.readFileSync(evaluationPath, "utf8") : null,
     });
