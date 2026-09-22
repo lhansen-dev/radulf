@@ -1,11 +1,11 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "../../ui/api";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
-import { dialogInputCls } from "../../ui/taskDialog";
+import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { segmentSuspiciousChars } from "@/shared/diffSafety";
@@ -82,7 +82,6 @@ export default function ReviewPage() {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
-  const rejectRef = useRef<HTMLDivElement>(null);
 
   const refetch = useCallback(() => {
     api<Detail>(`/api/cards/${id}`).then(setDetail).catch((e) => setError(String(e)));
@@ -119,24 +118,6 @@ export default function ReviewPage() {
       setBusy(false);
     }
   }
-
-  useEffect(() => {
-    if (!rejecting) return;
-    const previous = document.activeElement as HTMLElement;
-    const oldOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    rejectRef.current?.querySelector<HTMLElement>("textarea")?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) setRejecting(false);
-      if (event.key !== "Tab") return;
-      const items = Array.from(rejectRef.current?.querySelectorAll<HTMLElement>('textarea, button:not([disabled])') ?? []);
-      if (!items.length) return;
-      if (event.shiftKey && document.activeElement === items[0]) { event.preventDefault(); items.at(-1)?.focus(); }
-      if (!event.shiftKey && document.activeElement === items.at(-1)) { event.preventDefault(); items[0].focus(); }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => { document.body.style.overflow = oldOverflow; document.removeEventListener("keydown", onKey); previous?.focus(); };
-  }, [rejecting, busy]);
 
   if (!detail) return <div className="p-8 text-foreground/50">{error || "Loading…"}</div>;
 
@@ -272,48 +253,30 @@ export default function ReviewPage() {
       </footer>
 
       {rejecting && (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4"
-          onMouseDown={(event) => event.target === event.currentTarget && !busy && setRejecting(false)}
+        <DialogShell
+          titleId="reject-title"
+          title="Reject with feedback"
+          closeLabel="Close reject with feedback"
+          onRequestClose={() => { if (!busy) setRejecting(false); }}
+          footer={<>
+            <button type="button" onClick={() => setRejecting(false)} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+            <button type="button" disabled={!feedback.trim() || busy} onClick={() => decide("rejected")} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">Reject &amp; re-plan</button>
+          </>}
         >
-          <div
-            ref={rejectRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="reject-title"
-            className="w-full rounded-t-2xl border border-foreground/10 bg-surface p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:max-w-lg sm:rounded-2xl"
-          >
-            <h3 id="reject-title" className="font-medium mb-2">Reject with feedback</h3>
-            <p className="text-xs text-foreground/50 mb-2">
-              The planner re-plans this task with your feedback, on top of the work already done — be
-              concrete about what to change.
-            </p>
-            <textarea
-              autoFocus
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-              rows={5}
-              required
-              aria-required="true"
-              className="w-full bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm font-mono"
-            />
-            <div className="flex gap-2 justify-end mt-3">
-              <button
-                onClick={() => setRejecting(false)}
-                className="px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground"
-              >
-                Cancel
-              </button>
-              <button
-                disabled={!feedback.trim() || busy}
-                onClick={() => decide("rejected")}
-                className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-on-accent font-medium rounded px-3 py-1.5 text-sm"
-              >
-                Reject &amp; re-plan
-              </button>
-            </div>
-          </div>
-        </div>
+          <p className="text-xs text-foreground/50">
+            The planner re-plans this task with your feedback, on top of the work already done — be
+            concrete about what to change.
+          </p>
+          <textarea
+            autoFocus
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            rows={5}
+            required
+            aria-required="true"
+            className="w-full bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm font-mono"
+          />
+        </DialogShell>
       )}
     </div>
   );

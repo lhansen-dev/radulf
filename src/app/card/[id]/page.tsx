@@ -12,6 +12,7 @@ import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
+import { DialogShell } from "../../ui/taskDialog";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
@@ -922,45 +923,35 @@ function EditCardModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="edit-task-title"
-        className="bg-surface border border-foreground/10 rounded-lg p-4 w-[32rem] max-w-[90vw]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 id="edit-task-title" className="font-medium mb-3">Edit task</h3>
-        <div className="flex flex-col gap-3">
-          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className={fieldCls} />
-          {ROLES.map(({ key, label }) => (
-            <select key={key} value={models[key]} onChange={(e) => setModels({ ...models, [key]: e.target.value })} className={fieldCls}>
-              <option value="">{label} model: Default (from settings)</option>
-              {options[key].map((m) => (
-                <option key={m.value} value={m.value}>{label} model: {m.displayName}</option>
-              ))}
-            </select>
-          ))}
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Description — include a definition of done. The planner only sees this."
-            rows={6}
-            className={`${fieldCls} font-mono`}
-          />
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-          <div className="flex gap-2 justify-end">
-            <button onClick={onClose} className="px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground">Cancel</button>
-            <button
-              onClick={save}
-              disabled={busy || !title.trim()}
-              className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-on-accent font-medium rounded px-3 py-1.5 text-sm"
-            >
-              Save
-            </button>
-          </div>
-        </div>
+    <DialogShell
+      titleId="edit-task-title"
+      title="Edit task"
+      closeLabel="Close edit task"
+      onRequestClose={onClose}
+      footer={<>
+        <button type="button" onClick={onClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+        <button type="button" onClick={save} disabled={busy || !title.trim()} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">Save</button>
+      </>}
+    >
+      <div className="flex flex-col gap-3">
+        <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className={fieldCls} />
+        {ROLES.map(({ key, label }) => (
+          <select key={key} value={models[key]} onChange={(e) => setModels({ ...models, [key]: e.target.value })} className={fieldCls}>
+            <option value="">{label} model: Default (from settings)</option>
+            {options[key].map((m) => (
+              <option key={m.value} value={m.value}>{label} model: {m.displayName}</option>
+            ))}
+          </select>
+        ))}
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Description — include a definition of done. The planner only sees this."
+          rows={6}
+          className={`${fieldCls} font-mono`}
+        />
+        {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>
-    </div>
+    </DialogShell>
   );
 }
