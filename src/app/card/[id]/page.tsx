@@ -16,6 +16,7 @@ import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
+import { RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
 
 const TABS = ["Task", "Activity"] as const;
 
@@ -182,7 +183,7 @@ export default function CardDetail() {
       label: "Move to backlog",
       when: ["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"],
       run: () => {
-        if (!["planning", "looping", "evaluating"].includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
+        if (!(RUNNING_STATUSES as readonly string[]).includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
           post("move", { to: "backlog" });
         }
       },
@@ -537,7 +538,7 @@ function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; w
 }
 
 function plainStatus(status: string): string {
-  return ({ backlog: "Backlog", todo: "Queued in Todo", planning: "Planning", plan_review: "Plan ready for review", ready: "Ready to run", looping: "Running", evaluating: "Evaluating", paused: "Paused", review: "Ready for review", reviewing: "Applying review", needs_attention: "Needs attention", done: "Completed", abandoned: "Abandoned" } as Record<string, string>)[status] ?? status;
+  return (STATUS_LABELS as Record<string, string>)[status] ?? status;
 }
 
 function ActionButton({ children, onClick, primary }: { children: React.ReactNode; onClick: () => void; primary?: boolean }) {

@@ -10,6 +10,7 @@ import {
   type Repo,
 } from "./api";
 import { refreshTargetsForEvent } from "./eventRefresh";
+import { ATTENTION_STATUSES } from "@/shared/cardStatus";
 import { notificationsAvailable, playAlertSound, showCardNotification } from "./notify";
 
 export type ImprovementRunAlert = {
@@ -43,7 +44,7 @@ export function useWorkData() {
         if (
           previous &&
           previous !== card.status &&
-          ["review", "plan_review", "needs_attention"].includes(card.status)
+          ATTENTION_STATUSES.includes(card.status)
         ) {
           if (notifyPrefs.current.notifications) {
             showCardNotification("Task needs you", card.title);

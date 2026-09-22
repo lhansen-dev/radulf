@@ -1,20 +1,8 @@
 "use client";
 import { useEffect, useRef } from "react";
 
-export type CardStatus =
-  | "backlog"
-  | "todo"
-  | "planning"
-  | "ready"
-  | "looping"
-  | "evaluating"
-  | "paused"
-  | "review"
-  | "reviewing"
-  | "plan_review"
-  | "needs_attention"
-  | "done"
-  | "abandoned";
+export type { CardStatus } from "@/shared/cardStatus";
+import type { CardStatus } from "@/shared/cardStatus";
 
 export type BoardCard = {
   id: string;
