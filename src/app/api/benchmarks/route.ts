@@ -9,6 +9,7 @@ import {
   listReports,
 } from "@/server/benchmarks";
 import type { ActiveBenchmark, BenchmarkFixture, BenchmarkReport } from "@/server/benchmarks";
+import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../_lib";
 
 export const dynamic = "force-dynamic";
@@ -51,7 +52,7 @@ export async function GET() {
 
 export async function POST(req: Request) {
   return handle(async () => {
-    const body = await req.json();
+    const body = record(await req.json(), "benchmark body");
     const cookie = req.headers.get("cookie") ?? "";
     if (!cookie) return err("missing session cookie");
 

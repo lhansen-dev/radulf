@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db, cards, now } from "@/db";
 import { requireCard } from "@/server/cards";
 import { getOrchestrator } from "@/server/orchestrator";
+import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../../../_lib";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,7 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function POST(req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const body = await req.json();
+    const body = record(await req.json(), "move body");
     const to = String(body.to ?? "");
     const card = requireCard(id);
     const orch = getOrchestrator();

@@ -2,6 +2,7 @@ import { asc } from "drizzle-orm";
 import { db, repos } from "@/db";
 import { hasCommits, isGitRepo, listBranches, tryGit } from "@/server/git";
 import { registerRepo } from "@/server/repos";
+import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../_lib";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +13,7 @@ export async function GET() {
 
 export async function POST(req: Request) {
   return handle(async () => {
-    const body = await req.json();
+    const body = record(await req.json(), "repo body");
     const path = String(body.path ?? "").trim();
     const name = String(body.name ?? "").trim();
     if (!name || !path) return err("name and path are required");
