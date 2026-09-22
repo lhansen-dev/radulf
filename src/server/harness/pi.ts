@@ -15,7 +15,7 @@ import {
 
 import { DATA_DIR } from "@/db";
 import { listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
-import type { ProviderId } from "../providers";
+import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
@@ -683,15 +683,7 @@ export function harnessPackageVersion(): string {
 export async function listAuthedModels(
   provider: ProviderId,
   opts: { force?: boolean } = {},
-): Promise<
-  {
-    value: string;
-    displayName: string;
-    description: string;
-    costPerMillionInput?: number;
-    costPerMillionOutput?: number;
-  }[]
-> {
+): Promise<ProviderModel[]> {
   const runtime = await getModelRuntime();
   const pid = PI_PROVIDER[provider];
   await refreshProviderCatalog(runtime, pid, opts.force);

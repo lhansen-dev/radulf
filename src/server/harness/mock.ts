@@ -1,5 +1,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import type { ProviderModel } from "../providers";
+
 /**
  * The mock provider: a deterministic, scripted stand-in for the model, so the
  * whole pipeline (planner → loop → evaluator) can be exercised end to end for
@@ -238,7 +240,7 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
 export const DEFAULT_MOCK_SCENARIO = "happy-path";
 
 /** The scenarios, shaped for the provider model pickers. */
-export function mockProviderModels(): { value: string; displayName: string; description: string }[] {
+export function mockProviderModels(): ProviderModel[] {
   assertMockProviderEnabled();
   return Object.entries(MOCK_SCENARIOS).map(([id, s]) => ({
     value: id,
