@@ -1,9 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ClientError } from "./clientError";
-import { browsableRoot } from "./folderBrowser";
+import { assertInsideBrowsableRoot } from "./folderBrowser";
 import { tryGit } from "./git";
-import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
 import { errorMessage } from "@/shared/errorMessage";
 
 /** A folder name and nothing more: no separators, not hidden, and nothing git
@@ -35,9 +34,7 @@ export async function initRepository(
   configuredRoot: string,
 ): Promise<{ path: string; defaultBranch: string }> {
   assertRepoName(name);
-  const root = browsableRoot(configuredRoot);
-  const parent = realpathBestEffort(parentPath);
-  if (!isInsideOrEqual(parent, root)) throw new ClientError("that folder is outside the browsable root");
+  const parent = assertInsideBrowsableRoot(parentPath, configuredRoot);
   let parentStat: fs.Stats;
   try {
     parentStat = fs.statSync(parent);
