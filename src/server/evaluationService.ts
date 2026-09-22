@@ -127,7 +127,7 @@ export class EvaluationService {
     const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
     try {
       // The awaited sandbox and integrity setup above open a window where the
-      // user can cancel before this run row existed. cancelActiveRun found
+      // user can cancel before this run row existed. endActiveRun found
       // nothing to abort then, so check here and never start a harness for
       // a card that already left.
       if (deps.getCard(cardId)?.status !== "evaluating") {

@@ -449,6 +449,23 @@ describe("Orchestrator cancellation lifecycle", () => {
     expect(getRun("loop").status).toBe("cancelled");
   });
 
+  it("finalizes a loop run when the harness throws unexpectedly", async () => {
+    card("loop-throws");
+    plan("loop-throws");
+    mocks.runHarness.mockRejectedValueOnce(new Error("harness crashed"));
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.startCard("loop-throws");
+    await vi.waitFor(() => expect(getCard("loop-throws").status).toBe("needs_attention"));
+
+    const run = getRun("loop-throws");
+    expect(run.status).toBe("failed");
+    expect(run.exitReason).toContain("harness crashed");
+    const openIterations = db.select().from(iterations).all()
+      .filter((iteration) => iteration.runId === run.id && iteration.status !== "failed");
+    expect(openIterations).toHaveLength(0);
+  });
+
   it("pulls needs-attention back to Backlog", () => {
     card("attention", "needs_attention");
     const orchestrator = new Orchestrator({ autoStart: false });

@@ -505,8 +505,9 @@ export class Orchestrator {
     return rows.find((r) => fs.existsSync(/* turbopackIgnore: true */ r.worktreePath));
   }
 
-  /** Cancel the card's live run, if any, and abort its harness. */
-  private cancelActiveRun(cardId: string, reason: string) {
+  /** Finish the card's live run, if any, fail its open iterations, and abort
+   * its harness. */
+  private endActiveRun(cardId: string, status: FinishStatus, reason: string) {
     const active = db
       .select()
       .from(runs)
@@ -515,7 +516,7 @@ export class Orchestrator {
       .limit(1)
       .get();
     if (!active) return;
-    this.finishRun(active.id, "cancelled", reason);
+    this.finishRun(active.id, status, reason);
     this.failIterations(active.id, reason);
     this.controllers.get(active.id)?.abort();
   }
@@ -591,7 +592,7 @@ export class Orchestrator {
 
   cancelCard(cardId: string) {
     const card = requireCard(cardId);
-    this.cancelActiveRun(cardId, "cancelled by user");
+    this.endActiveRun(cardId, "cancelled", "cancelled by user");
     // Pulling work back must always land somewhere auto-mode cannot claim.
     // Clear the durable manual-start marker in the same write.
     db.update(cards)
@@ -786,8 +787,12 @@ export class Orchestrator {
           this.activeLoopCards.set(id, repoId);
           void this.runLoop(id)
             .catch((err) => {
+              const reason = String(err);
+              // A throw after startRunRow would otherwise leave the run row
+              // `running` until the next recover().
+              this.endActiveRun(id, "failed", reason);
               if (getCard(id)?.status === "looping") {
-                this.moveCard(id, "looping", "needs_attention", String(err));
+                this.moveCard(id, "looping", "needs_attention", reason);
               }
             })
             .finally(() => {
@@ -1515,7 +1520,7 @@ export class Orchestrator {
   async resetCard(cardId: string) {
     const card = requireCard(cardId);
     const repo = requireRepo(card.repoId);
-    this.cancelActiveRun(cardId, "reset by user");
+    this.endActiveRun(cardId, "cancelled", "reset by user");
 
     // Remove worktrees for ALL runs before deleting their rows.
     const allRuns = db.select().from(runs).where(eq(runs.cardId, cardId)).all();
