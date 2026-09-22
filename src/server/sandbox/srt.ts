@@ -63,6 +63,8 @@ export function credentialBackstopDenylist(): string[] {
     ".kube",
     ".config/gcloud",
     ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".local/share/keyrings",
     ".gnupg",
     "Library/Keychains",
     "Library/Application Support/Google/Chrome",
@@ -99,16 +101,28 @@ export function dropRootsThatWouldReopen(candidates: string[], protectedRoots: s
 /**
  * Best-effort toolchain read-allow derived from `PATH`: each entry and its
  * parent (so a `.../node/bin` PATH entry also opens `.../node`'s lib/include,
- * not just the bin dir). Deduplicated; empty/missing entries dropped. Does
- * **not** itself filter out dangerous entries (e.g. `/bin`'s parent is `/`)
- * — callers must run the result through `dropRootsThatWouldReopen`.
+ * not just the bin dir). Deduplicated; empty/missing entries dropped.
+ *
+ * A parent inside one of `protectedRoots` is skipped. `dropRootsThatWouldReopen`
+ * only rejects roots that CONTAIN a protected root, and a narrow re-allow
+ * inside `$HOME` is meant to pass it — but a developer PATH routinely holds
+ * `~/.cargo/bin`, `~/.local/bin` or `~/.local/share/pnpm`, whose parents
+ * would recursively re-open `~/.cargo` (credentials.toml), `~/.local` and
+ * `~/.local/share` (keyrings) against the blanket `$HOME` deny. The bin
+ * entry itself stays, so the toolchain still runs. Does **not** filter the
+ * ancestor case (`/bin`'s parent is `/`) — callers still run the result
+ * through `dropRootsThatWouldReopen`.
  */
-export function toolchainReadRootsFromPath(pathEnv = process.env.PATH ?? ""): string[] {
+export function toolchainReadRootsFromPath(
+  pathEnv = process.env.PATH ?? "",
+  protectedRoots: string[] = [],
+): string[] {
   const roots = new Set<string>();
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue;
     roots.add(dir);
-    roots.add(path.dirname(dir));
+    const parent = path.dirname(dir);
+    if (!protectedRoots.some((root) => isInsideOrEqual(parent, root))) roots.add(parent);
   }
   return [...roots];
 }
@@ -186,14 +200,15 @@ export function buildFilesystemConfig(opts: {
   tmpdir: string;
   cacheRoot: string;
 }): FilesystemConfig {
-  const denyRead = [HOME, DATA_DIR, WORKTREES_DIR, ...credentialBackstopDenylist()];
+  const protectedRoots = [HOME, DATA_DIR, WORKTREES_DIR];
+  const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
     opts.worktree,
     opts.tmpdir,
     opts.cacheRoot,
     opts.gitCommonDir,
     ...systemReadRoots(),
-    ...toolchainReadRootsFromPath(),
+    ...toolchainReadRootsFromPath(undefined, protectedRoots),
     ...toolchainHomeReAllows(),
     ...sandboxHelperReadRoots(),
   ];
@@ -205,7 +220,7 @@ export function buildFilesystemConfig(opts: {
     // (not just their listed backstop children) because an allow entry
     // doesn't need to name a deny target exactly to reopen it — containing
     // it is enough, per srt's recursive subpath matching.
-    allowRead: dropRootsThatWouldReopen(rawAllowRead, [HOME, DATA_DIR, WORKTREES_DIR]),
+    allowRead: dropRootsThatWouldReopen(rawAllowRead, protectedRoots),
     allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, opts.gitCommonDir],
     denyWrite: [
       // A linked worktree's `.git` is a FILE naming its gitdir, and it sits

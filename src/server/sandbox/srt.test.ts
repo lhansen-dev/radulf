@@ -39,6 +39,9 @@ describe("credentialBackstopDenylist", () => {
     expect(list).toContain(path.join(home, ".aws"));
     expect(list).toContain(path.join(home, ".npmrc"));
     expect(list).toContain(path.join(home, ".cargo", "credentials"));
+    // cargo's current spelling, and the desktop keyring store under ~/.local/share.
+    expect(list).toContain(path.join(home, ".cargo", "credentials.toml"));
+    expect(list).toContain(path.join(home, ".local", "share", "keyrings"));
     expect(list.every((p) => p.startsWith(home))).toBe(true);
   });
 });
@@ -58,6 +61,20 @@ describe("toolchainReadRootsFromPath", () => {
       expect.arrayContaining(["/usr/local/bin", "/usr/local", "/opt/homebrew/bin", "/opt/homebrew"]),
     );
     expect(roots).not.toContain("");
+  });
+
+  it("keeps a PATH entry under a protected root but not its parent", () => {
+    // `~/.cargo/bin` must stay readable for cargo to run at all, but its
+    // parent `~/.cargo` holds credentials.toml — a recursive re-allow there
+    // would beat the $HOME deny.
+    const roots = toolchainReadRootsFromPath("/home/u/.cargo/bin:/home/u/.local/share/pnpm:/usr/bin", [
+      "/home/u",
+    ]);
+    expect(roots).toEqual(
+      expect.arrayContaining(["/home/u/.cargo/bin", "/home/u/.local/share/pnpm", "/usr/bin", "/usr"]),
+    );
+    expect(roots).not.toContain("/home/u/.cargo");
+    expect(roots).not.toContain("/home/u/.local/share");
   });
 });
 
@@ -161,6 +178,30 @@ describe("buildFilesystemConfig", () => {
     const home = os.homedir();
     for (const root of cfg.allowRead ?? []) {
       expect(home === root || home.startsWith(root.endsWith("/") ? root : root + "/")).toBe(false);
+    }
+  });
+
+  it("regression: a PATH entry under $HOME does not re-open its parent", () => {
+    // Found on a real developer host: `~/.cargo/bin` and `~/.local/share/pnpm`
+    // on PATH made `~/.cargo` and `~/.local/share` recursive allow-read roots,
+    // and srt lets an allow inside a broader deny win — so credentials.toml
+    // and the keyring store were readable despite the $HOME deny.
+    const home = os.homedir();
+    vi.stubEnv("PATH", `${path.join(home, ".cargo", "bin")}:${path.join(home, ".local", "share", "pnpm")}:/usr/bin`);
+    try {
+      const withHomePath = buildFilesystemConfig({
+        worktree: "/data/worktrees/run-1",
+        gitCommonDir: "/data/repo/.git",
+        tmpdir: "/data/runtmp/run-1/tmp",
+        cacheRoot: "/data/runtmp/run-1/cache",
+      });
+      expect(withHomePath.allowRead).toContain(path.join(home, ".cargo", "bin"));
+      expect(withHomePath.allowRead).toContain(path.join(home, ".local", "share", "pnpm"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".cargo"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".local", "share"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".local"));
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });

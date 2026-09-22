@@ -116,14 +116,15 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 |--------|-------|
 | **write allow** | the worktree; the run's `$TMPDIR`; the run's cache root; the parent repo's shared `.git` (resolved via `git rev-parse --git-common-dir`, so a linked worktree's pointer file isn't mistaken for it) |
 | **write deny** | `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir. `<git>/refs`, `<git>/packed-refs`, `<git>/HEAD`, `<git>/worktrees/*/HEAD` — every ref and checkout pointer, so agent git cannot commit, move a branch, or check the worktree out onto another branch. The orchestrator makes every commit from the host. |
-| **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH`; three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
+| **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH` (each entry, plus its parent unless that parent is inside `$HOME` or a Radulf root — `~/.cargo/bin` stays readable, `~/.cargo` does not); three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
 | **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, plus a backstop credential denylist |
 
 **Backstop credential denylist** (`credentialBackstopDenylist`) is unioned into
 `denyRead` on every run even though `$HOME` is already denied: `~/.ssh`,
 `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`,
 `~/.docker/config.json`, `~/.kube`, `~/.config/gcloud`, `~/.cargo/credentials`,
-`~/.gnupg`, and the macOS keychain/browser/cookie paths. It is defense in depth
+`~/.cargo/credentials.toml`, `~/.local/share/keyrings`, `~/.gnupg`, and the
+macOS keychain/browser/cookie paths. It is defense in depth
 — if a future re-allow widens by mistake, the obvious targets stay closed. The
 excluded re-allows (`~/.pyenv`, `~/.cargo/credentials`, `~/Library/Caches`) are
 deliberate; adding one back requires a rationale in the spec.
