@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "../../ui/api";
+import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
@@ -275,16 +276,6 @@ export default function ReviewPage() {
           />
         </DialogShell>
       )}
-    </div>
-  );
-}
-
-function Banner({ tone, title, children }: { tone: "red" | "amber"; title: string; children: React.ReactNode }) {
-  const box = tone === "red" ? "bg-red-950/40 border-red-800/50" : "bg-amber-950/40 border-amber-800/50";
-  return (
-    <div className={`border rounded p-3 text-sm ${box}`}>
-      <span className={`font-medium ${tone === "red" ? "text-red-300" : "text-amber-300"}`}>{title}</span>
-      <div className="mt-1 space-y-1 text-foreground/80">{children}</div>
     </div>
   );
 }

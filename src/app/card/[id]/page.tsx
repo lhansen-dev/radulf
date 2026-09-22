@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { List, useDynamicRowHeight, useListRef, type RowComponentProps } from "react-window";
 import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
+import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
@@ -226,10 +227,7 @@ export default function CardDetail() {
       )}
       {error && <p className="text-red-400 text-sm">{error}</p>}
       {unretryableRun && (
-        <div className="border border-red-800/60 bg-red-950/30 rounded-lg p-3">
-          <h3 className="text-sm font-medium text-red-300 mb-1">
-            {unretryableRun.provider ?? "The provider"} rejected the request itself
-          </h3>
+        <Banner tone="red" title={`${unretryableRun.provider ?? "The provider"} rejected the request itself`}>
           <pre className="whitespace-pre-wrap text-sm text-red-100/80 font-sans">
             {unretryableRun.exitReason}
           </pre>
@@ -238,22 +236,18 @@ export default function CardDetail() {
             model for this card under Edit model overrides, or fix the provider
             configuration, then restart the task.
           </p>
-        </div>
+        </Banner>
       )}
       {misconfiguredStage && (
-        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
-          <h3 className="text-sm font-medium text-amber-300 mb-1">This stage keeps failing the same way</h3>
+        <Banner tone="amber" title="This stage keeps failing the same way">
           <p className="text-sm text-amber-100/80">{misconfiguredStage}</p>
           <p className="text-xs text-amber-400/70 mt-2">
             Retrying is still available — this is a reading of the pattern, not a block.
           </p>
-        </div>
+        </Banner>
       )}
       {plannerQuestions && (
-        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
-          <h3 className="text-sm font-medium text-amber-300 mb-1">
-            The planner needs more detail before it can plan this task
-          </h3>
+        <Banner tone="amber" title="The planner needs more detail before it can plan this task">
           {!questionsInThread && (
             <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">
               {plannerQuestions}
@@ -262,11 +256,10 @@ export default function CardDetail() {
           <p className="text-xs text-amber-400/70 mt-2">
             Answer its questions under Scoping below, then plan again. Editing the description works too.
           </p>
-        </div>
+        </Banner>
       )}
       {loopBlocker && (
-        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
-          <h3 className="text-sm font-medium text-amber-300 mb-1">The loop stopped on something it cannot resolve</h3>
+        <Banner tone="amber" title="The loop stopped on something it cannot resolve">
           {!blockerInThread && (
             <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">{loopBlocker}</pre>
           )}
@@ -274,16 +267,15 @@ export default function CardDetail() {
             Answer under Scoping below if the planner needs to know something, then plan again. The planner
             re-plans around the blocker on top of the work already on the branch.
           </p>
-        </div>
+        </Banner>
       )}
       {checklistExhausted && (
-        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
-          <h3 className="text-sm font-medium text-amber-300 mb-1">Every task is ticked, but the loop never signalled done</h3>
+        <Banner tone="amber" title="Every task is ticked, but the loop never signalled done">
           <p className="text-sm text-amber-100/80">
             The final task&rsquo;s own check did not pass. Retrying the loop would find nothing left to do, so plan
             again instead: the planner writes the remaining work on top of what is already on the branch.
           </p>
-        </div>
+        </Banner>
       )}
       {gatePackages.length > 0 && (
         <InstallGateBanner cardId={id} packages={gatePackages} onApproved={refetch} />
@@ -462,10 +454,7 @@ function InstallGateBanner({
   }
 
   return (
-    <div className="border border-red-700/60 bg-red-950/30 rounded-lg p-3">
-      <h3 className="text-sm font-medium text-red-300 mb-1">
-        This install wants to execute code from {packages.length === 1 ? "a package" : "packages"} you haven&rsquo;t approved
-      </h3>
+    <Banner tone="red" title={`This install wants to execute code from ${packages.length === 1 ? "a package" : "packages"} you haven’t approved`}>
       <p className="text-xs text-red-200/70 mb-2">
         The run is paused with its progress preserved. Review each package&rsquo;s install
         scripts below — approving runs them and resumes the task where it left off.
@@ -501,7 +490,7 @@ function InstallGateBanner({
       >
         {busy ? "Approving…" : `Approve ${selected.length} package${selected.length === 1 ? "" : "s"} and resume`}
       </button>
-    </div>
+    </Banner>
   );
 }
 
