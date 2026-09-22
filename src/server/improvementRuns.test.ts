@@ -8,12 +8,16 @@ const mocks = vi.hoisted(() => ({
   startCard: vi.fn(),
   proposeOneImprovement: vi.fn(),
   git: vi.fn(),
-  listBranches: vi.fn(),
+  assertBranchExists: vi.fn(),
 }));
 
 vi.mock("./orchestrator", () => ({ getOrchestrator: () => ({ startCard: mocks.startCard }) }));
 vi.mock("./improvementProposer", () => ({ proposeOneImprovement: mocks.proposeOneImprovement }));
-vi.mock("./git", () => ({ git: mocks.git, listBranches: mocks.listBranches }));
+vi.mock("./git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./git")>()),
+  git: mocks.git,
+  assertBranchExists: mocks.assertBranchExists,
+}));
 
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-improvement-runs-"));
 process.env.RADULF_DATA_DIR = testDataDir;
@@ -84,7 +88,7 @@ beforeEach(() => {
   db.delete(repos).run();
   db.delete(events).run();
   vi.clearAllMocks();
-  mocks.listBranches.mockResolvedValue(["main"]);
+  mocks.assertBranchExists.mockResolvedValue(undefined);
   mocks.git.mockResolvedValue("");
   insertRepo();
 });

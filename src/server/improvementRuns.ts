@@ -14,7 +14,7 @@ import { normalizeProvider } from "./providers";
 import { getOrchestrator } from "./orchestrator";
 import { proposeOneImprovement } from "./improvementProposer";
 import type { Proposal } from "./pm";
-import { git, listBranches } from "./git";
+import { assertBranchExists, git } from "./git";
 import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
@@ -149,9 +149,7 @@ export async function createImprovementRun(
   if (activeRunForRepo(input.repoId)) {
     throw new ClientError("an improvement run is already active for this repo");
   }
-  if (!(await listBranches(repo.path)).includes(input.baseBranch)) {
-    throw new ClientError("baseBranch does not exist in the repository");
-  }
+  await assertBranchExists(repo.path, input.baseBranch, "baseBranch");
 
   const featureBranch = `ralph/improve-${Date.now()}`;
   await git(repo.path, "branch", featureBranch, input.baseBranch);
@@ -233,6 +231,12 @@ function finishRun(
   });
 }
 
+/** The run ran out of time or work: "stopped" when an operator asked for
+ * it, "completed" when the deadline simply arrived. */
+function endRun(runId: string, reason: string): void {
+  finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", reason);
+}
+
 /** Record a just-finished task's outcome (decision 3): success resets the
  * consecutive-failure counter; a failure increments it and stops the run
  * once it hits 3 in a row. */
@@ -305,7 +309,7 @@ async function runDriverLoop(runId: string): Promise<void> {
 
       // Timer is a soft gate, checked only between tasks (decision/ruling 5).
       if (Date.now() >= Date.parse(run.deadlineAt)) {
-        finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", "deadline reached");
+        endRun(runId, "deadline reached");
         return;
       }
 
@@ -335,11 +339,7 @@ async function runDriverLoop(runId: string): Promise<void> {
       if (!proposal) {
         emptyStreak += 1;
         if (emptyStreak >= EMPTY_PROPOSAL_LIMIT) {
-          finishRun(
-            runId,
-            stopRequests().has(runId) ? "stopped" : "completed",
-            "proposer ran dry",
-          );
+          endRun(runId, "proposer ran dry");
           return;
         }
         await sleep(EMPTY_PROPOSAL_BACKOFF_MS);
@@ -355,7 +355,7 @@ async function runDriverLoop(runId: string): Promise<void> {
       const fresh = getRun(runId) ?? run;
       const remainingMinutes = Math.floor((Date.parse(fresh.deadlineAt) - Date.now()) / 60_000);
       if (remainingMinutes < 1) {
-        finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", "deadline reached");
+        endRun(runId, "deadline reached");
         return;
       }
       const timeoutMinutes = Math.min(
