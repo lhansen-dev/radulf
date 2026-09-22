@@ -92,11 +92,7 @@ and a container install needs its repositories re-registered.
 
 The container user is uid 1000. Repositories owned by another uid fail with
 git's `dubious ownership` error on the first merge. Either match the owner or
-add to the service in `compose.yaml`:
-
-```yaml
-    user: "1001:1001"
-```
+set `user:` in a per-host override, see [Per-host overrides](#per-host-overrides).
 
 ## Log in a provider
 
@@ -126,6 +122,34 @@ because its environment is an allowlist:
 - **A token.** Add `GH_TOKEN=...` to `.env.local`. Nothing is written to disk.
 - **An interactive login.** Run `docker compose exec -it radulf gh auth login`.
   The credential persists in `home/` on the volume.
+
+## Per-host overrides
+
+`compose.yaml` is the checked-in shape of the service. Anything specific to
+one host goes in `compose.override.yaml` beside it, which compose loads on its
+own and git ignores. Three overrides come up:
+
+```yaml
+services:
+  radulf:
+    # Split DNS. A provider or git host on a Tailscale tailnet or an internal
+    # domain resolves on the host through systemd-resolved, which containers
+    # never see: Docker hands them only the upstream servers. List that
+    # resolver first and the normal upstream second. glibc falls through to
+    # the second only when the first fails, so both kinds of name resolve.
+    dns:
+      - 100.100.100.100
+      - 192.168.1.1
+    # Repositories owned by a uid other than 1000.
+    user: "1001:1001"
+    # A hard bound on the whole container, since per-run cgroup limits do not
+    # apply inside it. Size for the server plus one run.
+    mem_limit: 12g
+    pids_limit: 4096
+```
+
+`docker compose config` prints the merged result, which is the quickest way to
+confirm an override took.
 
 ## Day to day
 
@@ -186,8 +210,8 @@ What that means in practice:
 - **Per-run memory and pid limits** are not applied. They come from a per-run
   cgroup that the `node` user cannot create inside the container, so runs are
   bounded by the disk watchdog and wall clocks instead, and the run row
-  records `watchdog`. For a hard bound on the whole container, add `mem_limit`
-  and `pids_limit` to the service. Size them for the server plus one run.
+  records `watchdog`. For a hard bound on the whole container, set `mem_limit`
+  and `pids_limit` in a [per-host override](#per-host-overrides).
 
 Turning the sandbox off in Settings to avoid the relaxed options is the wrong
 trade. It removes the layer that actually contains the agent.
@@ -201,4 +225,5 @@ trade. It removes the layer that actually contains the agent.
 | `fatal: detected dubious ownership in repository` | The repository is not owned by uid 1000. See [Repositories](#repositories). |
 | Login page never accepts the password | The hash in `.env.local` was not single-quoted and compose expanded its `$` segments. |
 | A local provider times out | Its base URL says `localhost`. Use `host.docker.internal` instead. |
+| A provider on a tailnet or internal domain fails with `Could not resolve host` | Containers only get the host's upstream resolvers, not its split-DNS routes. Add the `dns:` override from [Per-host overrides](#per-host-overrides). |
 | Port already in use | Set `RADULF_PORT` in `.env`. |

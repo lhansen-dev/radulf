@@ -64,3 +64,6 @@ next-env.d.ts
 .impeccable/review/
 .impeccable/critique/
 .impeccable/build/
+
+# Per-host compose tweaks (DNS, ports, user); docs/DOCKER.md explains when.
+/compose.override.yaml
