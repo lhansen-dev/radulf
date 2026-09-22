@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { List, useDynamicRowHeight, useListRef, type RowComponentProps } from "react-window";
@@ -17,6 +17,11 @@ import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, ROLES, ROLE_LABELS, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
+import {
+  filterTranscript,
+  transcriptToText,
+  type StreamLine as TranscriptStreamLine,
+} from "./transcriptSearch";
 import { isRenderableLine } from "./renderableLine";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
@@ -527,7 +532,9 @@ function MenuButton({ children, onClick, danger }: { children: React.ReactNode; 
   return <button type="button" onClick={onClick} className={`min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] ${danger ? "text-red-300" : ""}`}>{children}</button>;
 }
 
-type StreamLine = Record<string, unknown> & { t?: string };
+// Defined alongside the search/export helpers that have to agree with the
+// renderer below on what a line's text is.
+type StreamLine = TranscriptStreamLine;
 
 // Was 2_000 pre-virtualization, capped mainly to bound *render* cost — with
 // react-window only visible rows ever hit the DOM, so render cost no longer
@@ -543,8 +550,14 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
   // subscribe to.
   const live = target?.live ?? false;
   const [lines, setLines] = useState<StreamLine[]>([]);
+  const [filter, setFilter] = useState("");
+  const [copied, setCopied] = useState(false);
   const [showJump, setShowJump] = useState(false);
   const [historyTruncated, setHistoryTruncated] = useState(false);
+  // The rows the List actually renders. Everything downstream — the tail
+  // follow, "Jump to latest", the row-height cache — has to index into THIS
+  // array, not `lines`, or a filtered view scrolls to a row that isn't there.
+  const visibleLines = useMemo(() => filterTranscript(lines, filter), [lines, filter]);
   // Imperative handle onto react-window's List, replacing the old
   // bottomRef.current?.scrollIntoView(...) sentinel — the list no longer
   // renders every line as a real DOM node, so there's nothing to scroll a
@@ -557,9 +570,12 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
   // defaultRowHeight is only the pre-measurement estimate (single-line row).
   // Keyed by target so switching runs/iterations doesn't reuse a stale
   // height cache from a previous transcript's totally different content.
+  // The filter is part of the key: narrowing the list puts different content
+  // at every index, so a cache measured against the unfiltered rows would size
+  // the filtered ones wrong.
   const rowHeight = useDynamicRowHeight({
     defaultRowHeight: 28,
-    key: target ? `${target.runId}:${target.iteration}` : undefined,
+    key: target ? `${target.runId}:${target.iteration}:${filter.trim()}` : undefined,
   });
 
   // Cursor/in-flight bookkeeping lives in refs, not state — it's shared
@@ -594,9 +610,9 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
   // `RangeError: Invalid index specified` for the not-yet-rendered last row.
   const followTailRef = useRef(false);
   useEffect(() => {
-    if (!followTailRef.current || lines.length === 0) return;
-    listRef.current?.scrollToRow({ index: lines.length - 1, align: "end" });
-  }, [lines, listRef]);
+    if (!followTailRef.current || visibleLines.length === 0) return;
+    listRef.current?.scrollToRow({ index: visibleLines.length - 1, align: "end" });
+  }, [visibleLines, listRef]);
 
   const applyChunk = useCallback(
     (d: { lines?: StreamLine[]; cursor: number; truncated?: boolean; reset?: boolean }, replace: boolean) => {
@@ -742,18 +758,58 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
         {target.iteration ? `iteration ${target.iteration}` : "planning"}
         {live && <span className="text-amber-300"> · ● Live</span>}
       </p>
-      {showJump && <button type="button" onClick={() => { listRef.current?.scrollToRow({ index: lines.length - 1, align: "end", behavior: "smooth" }); setShowJump(false); }} className="ml-auto rounded-lg bg-amber-500/15 px-3 text-xs text-amber-200">Jump to latest</button>}
+      {showJump && <button type="button" onClick={() => { listRef.current?.scrollToRow({ index: visibleLines.length - 1, align: "end", behavior: "smooth" }); setShowJump(false); }} className="ml-auto rounded-lg bg-amber-500/15 px-3 text-xs text-amber-200">Jump to latest</button>}
       </div>
+
+      {lines.length > 0 && (
+        <div className="flex min-h-11 flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor="transcript-filter">Filter transcript</label>
+          <input
+            id="transcript-filter"
+            type="search"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Escape" && filter) { event.preventDefault(); setFilter(""); } }}
+            placeholder="Filter lines…"
+            className="min-h-11 min-w-0 grow rounded-lg border border-foreground/10 bg-foreground/[0.05] px-3 font-sans text-sm sm:max-w-xs"
+          />
+          <span aria-live="polite" className="tabular-nums text-foreground/45">
+            {filter.trim() ? `${visibleLines.length} of ${lines.length} lines` : `${lines.length} lines`}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(transcriptToText(visibleLines)).then(
+                () => { setCopied(true); setTimeout(() => setCopied(false), 2000); },
+                () => setCopied(false),
+              );
+            }}
+            className="ml-auto min-h-11 rounded-lg bg-foreground/[0.06] px-3 font-sans text-xs text-foreground/70 hover:bg-foreground/[0.10]"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <button
+            type="button"
+            onClick={() => downloadTranscript(target, visibleLines)}
+            className="min-h-11 rounded-lg bg-foreground/[0.06] px-3 font-sans text-xs text-foreground/70 hover:bg-foreground/[0.10]"
+          >
+            Download
+          </button>
+        </div>
+      )}
+
       {historyTruncated && <p className="text-foreground/40">Showing the latest transcript chunk.</p>}
       {lines.length === 0 ? (
         <p className="text-foreground/40">No transcript output yet…</p>
+      ) : visibleLines.length === 0 ? (
+        <p className="font-sans text-sm text-foreground/40">No lines match “{filter.trim()}”.</p>
       ) : (
         <List
           listRef={listRef}
           rowComponent={TranscriptRow}
-          rowCount={lines.length}
+          rowCount={visibleLines.length}
           rowHeight={rowHeight}
-          rowProps={{ lines }}
+          rowProps={{ lines: visibleLines }}
           defaultHeight={480}
           overscanCount={10}
           style={{ height: "70dvh" }}
@@ -762,6 +818,21 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
       )}
     </section>
   );
+}
+
+/** Save the transcript as a `.txt` beside whatever else is being collected for
+ * a bug report — named for the run and iteration it came from, since a loose
+ * `transcript.txt` in Downloads tells you nothing a week later. */
+function downloadTranscript(target: TranscriptTarget | null, lines: StreamLine[]) {
+  if (!target) return;
+  const suffix = target.iteration ? `iteration-${target.iteration}` : "planning";
+  const blob = new Blob([transcriptToText(lines)], { type: "text/plain;charset=utf-8" });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = `radulf-${target.runId}-${suffix}.txt`;
+  anchor.click();
+  URL.revokeObjectURL(href);
 }
 
 // react-window's row wrapper: the DOM node it renders becomes a *direct*
