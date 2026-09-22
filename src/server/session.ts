@@ -36,7 +36,19 @@ export async function verifySession(value: string): Promise<boolean> {
 
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
 
-  return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), base64urlDecode(sigB64));
+  // A cookie whose signature is not valid base64 is an invalid session, not a
+  // server error: `atob` throws on a stray character, and this runs inside the
+  // proxy on every request, so letting it escape turns any garbage cookie —
+  // truncated by a proxy, or simply sent by anyone who can reach the port —
+  // into a 500 on every route instead of a redirect to /login. Fail closed.
+  let signature: Uint8Array;
+  try {
+    signature = base64urlDecode(sigB64);
+  } catch {
+    return false;
+  }
+
+  return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), signature);
 }
 
 /**

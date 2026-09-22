@@ -38,6 +38,18 @@ describe("signSession / verifySession", () => {
       expect(await verifySession(bad)).toBe(false);
     }
   });
+
+  // Regression: these reach the base64 decode, where the expired and
+  // past-dated cases above return first. `atob` throws on a stray character,
+  // and verifySession runs inside the proxy on EVERY request — so throwing
+  // here turned any garbage cookie into a 500 on every route rather than a
+  // redirect to /login, unauthenticated and trivially reachable.
+  it("rejects, rather than throws on, a signature that is not valid base64", async () => {
+    const future = Date.now() + SESSION_MAX_AGE_MS;
+    for (const signature of ["not-valid-base64!!", "!!!!", "%%%%", "a b c", "\u0000"]) {
+      await expect(verifySession(`${future}.${signature}`)).resolves.toBe(false);
+    }
+  });
 });
 
 describe("isAllowedOrigin", () => {
