@@ -4,6 +4,7 @@ import { api, type Repo } from "../ui/api";
 import { FolderBrowser } from "../ui/folderBrowser";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
+import { ModelChips } from "../ui/taskDialog";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
 import { PROVIDERS, REASONING_LEVELS, providerLabel, type ProviderModel } from "@/shared/providers";
@@ -932,32 +933,21 @@ function AgentSection({
           {status}
         </p>
       )}
-      {models.length > 0 && models.length <= 30 && (
-        <details className="group border-t border-foreground/10 pt-3">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
-            Browse {models.length} available model{models.length === 1 ? "" : "s"}
-            <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
-          </summary>
-          <div className="flex flex-wrap gap-2 pt-2">
-            {models.map((m) => (
-              <button
-                key={m.value}
-                onClick={() => onModel(m.value)}
-                title={priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
-                className={`max-w-full rounded-lg border px-3 py-2 text-left text-xs break-words ${model === m.value
-                    ? "border-amber-500 text-amber-400"
-                    : "border-foreground/10 text-foreground/60 hover:text-foreground"
-                  }`}
-              >
-                {m.displayName}
-              </button>
-            ))}
-          </div>
-        </details>
-      )}
-      {models.length > 30 && (
-        <p className="text-xs text-foreground/40">Type in the model field to search the list.</p>
-      )}
+      <ModelChips
+        models={models}
+        value={model}
+        onPick={onModel}
+        titleFor={(m) => priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
+        wrap={(chips) => (
+          <details className="group border-t border-foreground/10 pt-3">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
+              Browse {models.length} available model{models.length === 1 ? "" : "s"}
+              <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
+            </summary>
+            {chips}
+          </details>
+        )}
+      />
     </section>
   );
 }

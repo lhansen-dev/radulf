@@ -108,21 +108,43 @@ function ModelSelect({ label, providerId, value, setValue, models, inputId, data
       <datalist id={datalistId}>
         {models.map((model) => <option key={model.value} value={model.value}>{model.displayName}</option>)}
       </datalist>
-      {models.length > 0 && models.length <= 30 && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {models.map((model) => (
-            <button
-              key={model.value}
-              type="button"
-              onClick={() => setValue(model.value)}
-              className={`text-xs rounded px-2 py-1 border ${value === model.value ? "border-amber-500 text-amber-400" : "border-foreground/10 text-foreground/60 hover:text-foreground"}`}
-            >
-              {model.displayName}
-            </button>
-          ))}
-        </div>
-      )}
-      {models.length > 30 && <p className="mt-1 text-xs text-foreground/40">Type in the model field to search the list.</p>}
+      <ModelChips models={models} value={value} onPick={setValue} dense />
+    </div>
+  );
+}
+
+const MODEL_CHIP_LIMIT = 30;
+
+/** Pick-a-model chips for a short list. Past MODEL_CHIP_LIMIT there are too
+ * many to browse, so a hint to type into the model field renders instead.
+ * `wrap` lets a caller fold the chips into its own container (settings puts
+ * them behind a <details>); the hint always renders bare. */
+export function ModelChips<M extends ModelOption>({ models, value, onPick, titleFor, dense = false, wrap = (chips) => chips }: {
+  models: M[];
+  value: string;
+  onPick: (value: string) => void;
+  titleFor?: (model: M) => string | undefined;
+  /** The compact variant the task dialogs use in their Advanced section. */
+  dense?: boolean;
+  wrap?: (chips: ReactNode) => ReactNode;
+}) {
+  if (models.length === 0) return null;
+  if (models.length > MODEL_CHIP_LIMIT) {
+    return <p className={`text-xs text-foreground/40 ${dense ? "mt-1" : ""}`}>Type in the model field to search the list.</p>;
+  }
+  return wrap(
+    <div className={`flex flex-wrap ${dense ? "mt-1 gap-1" : "gap-2 pt-2"}`}>
+      {models.map((model) => (
+        <button
+          key={model.value}
+          type="button"
+          onClick={() => onPick(model.value)}
+          title={titleFor?.(model)}
+          className={`border text-xs ${dense ? "rounded px-2 py-1" : "max-w-full rounded-lg px-3 py-2 text-left break-words"} ${value === model.value ? "border-amber-500 text-amber-400" : "border-foreground/10 text-foreground/60 hover:text-foreground"}`}
+        >
+          {model.displayName}
+        </button>
+      ))}
     </div>
   );
 }
