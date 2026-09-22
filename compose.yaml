@@ -3,7 +3,7 @@
 #
 # Two env files, two jobs:
 #   .env        read by compose for the ${...} references below
-#               (RADULF_REPOS_DIR, RADULF_BIND, RADULF_PORT)
+#               (RADULF_BIND, RADULF_PORT, RADULF_REPOS_DIR), all optional
 #   .env.local  handed to the app unchanged: the same file a host install
 #               uses, with the keys .env.example lists
 services:
@@ -38,11 +38,13 @@ services:
       HOME: /var/lib/radulf/home
     volumes:
       - radulf-state:/var/lib/radulf
-      # The repositories Radulf works on. Register each in the app as
-      # /repos/<name>, or point Settings -> Repositories -> Browsable root
-      # at /repos. Files must be writable by the container user (uid 1000,
-      # the image's `node` user); add `user: "<uid>:<gid>"` here if not.
-      - "${RADULF_REPOS_DIR:?set RADULF_REPOS_DIR (in .env or the shell) to the host directory that holds the git repos Radulf works on}:/repos"
+      # Optional: checkouts that already live on this host. Set
+      # RADULF_REPOS_DIR to that directory and register each as /repos/<name>.
+      # Unset, an empty named volume sits here instead and repositories are
+      # added by URL from the app (spec 21), cloned into the state volume.
+      # Bind-mounted files must be writable by the container user (uid 1000,
+      # the image's `node` user); set `user: "<uid>:<gid>"` in an override if not.
+      - "${RADULF_REPOS_DIR:-radulf-repos}:/repos"
     # Radulf's own sandbox (bubblewrap + seccomp, docs/SANDBOXING.md) needs
     # user namespaces, mount, and a fresh procfs, which Docker's default
     # seccomp profile, AppArmor profile, and masked /proc paths each block.
@@ -57,3 +59,4 @@ services:
       - ALL
 volumes:
   radulf-state:
+  radulf-repos:
