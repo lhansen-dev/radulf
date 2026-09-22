@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api } from "./api";
+import { api, type Repo } from "./api";
 import { providerLabel } from "@/shared/providers";
 
 export const ROLES = ["planner", "loop", "evaluator"] as const;
@@ -9,6 +9,7 @@ type ModelOption = { value: string; displayName: string };
 export type RoleModels = Record<Role, string>;
 export const EMPTY_ROLE_MODELS: RoleModels = { planner: "", loop: "", evaluator: "" };
 const ROLE_LABELS: Record<Role, string> = { planner: "Planner model", loop: "Loop model", evaluator: "Evaluator model" };
+export const dialogInputCls = "mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3";
 
 /** Each role's configured provider and the models it serves, for the pickers. */
 export function useRoleModelOptions() {
@@ -67,6 +68,30 @@ export function RoleModelSelects({ providers, models, values, onChange, idPrefix
   ));
 }
 
+/** The "Repository" picker both dialogs open with; `children` adds trailing options. */
+export function RepoSelect({ repos, value, onChange, children }: { repos: Repo[]; value: string; onChange: (repoId: string) => void; children?: ReactNode }) {
+  return (
+    <label className="block text-sm text-foreground/70">Repository<select value={value} onChange={(e) => onChange(e.target.value)} className={dialogInputCls}>{repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}{children}</select></label>
+  );
+}
+
+/** Iteration cap and timeout as typed; "" means the workspace default. */
+export function RunLimitInputs({ maxIterations, setMaxIterations, timeoutMinutes, setTimeoutMinutes, perTask = false }: {
+  maxIterations: string;
+  setMaxIterations: (value: string) => void;
+  timeoutMinutes: string;
+  setTimeoutMinutes: (value: string) => void;
+  /** An improvement run applies the limits to each task it spawns. */
+  perTask?: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <label className="text-sm text-foreground/70">{perTask ? "Per-task iteration cap" : "Iteration cap"}<input type="number" min="1" value={maxIterations} onChange={(e) => setMaxIterations(e.target.value)} placeholder="Default" className={dialogInputCls} /></label>
+      <label className="text-sm text-foreground/70">{perTask ? "Per-task timeout (min)" : "Timeout (min)"}<input type="number" min="1" value={timeoutMinutes} onChange={(e) => setTimeoutMinutes(e.target.value)} placeholder="Default" className={dialogInputCls} /></label>
+    </div>
+  );
+}
+
 function ModelSelect({ label, providerId, value, setValue, models, inputId, datalistId }: { label: string; providerId: string; value: string; setValue: (value: string) => void; models: ModelOption[]; inputId: string; datalistId: string }) {
   return (
     <div>
@@ -77,7 +102,7 @@ function ModelSelect({ label, providerId, value, setValue, models, inputId, data
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="Default from settings"
-        className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3"
+        className={dialogInputCls}
         list={datalistId}
       />
       <datalist id={datalistId}>

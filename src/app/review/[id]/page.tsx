@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { api } from "../../ui/api";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
+import { dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { segmentSuspiciousChars } from "@/shared/diffSafety";
@@ -197,7 +198,7 @@ export default function ReviewPage() {
       </div>
       {error && <p className="text-red-400 text-sm">{error}</p>}
 
-      {files.length > 0 && <label className="block text-sm text-foreground/60 lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3"><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
+      {files.length > 0 && <label className="block text-sm text-foreground/60 lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className={dialogInputCls}><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
 
       <div className="flex min-w-0 flex-col items-start gap-4 lg:flex-row">
         <main className="grow min-w-0 flex flex-col gap-2">
