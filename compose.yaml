@@ -1,0 +1,59 @@
+# Radulf in Docker. `docker compose up -d --build` builds the image from this
+# checkout and runs it; docs/DOCKER.md walks through first-run setup.
+#
+# Two env files, two jobs:
+#   .env        read by compose for the ${...} references below
+#               (RADULF_REPOS_DIR, RADULF_BIND, RADULF_PORT)
+#   .env.local  handed to the app unchanged: the same file a host install
+#               uses, with the keys .env.example lists
+services:
+  radulf:
+    build: .
+    image: radulf:local
+    # docker-init as PID 1 reaps what the orchestrator's children leave
+    # behind (git, gh, sandboxed bash); node on its own does not.
+    init: true
+    # POST /api/restart exits the process (code 77, src/app/api/restart);
+    # under this policy that becomes a real restart instead of a stop.
+    restart: unless-stopped
+    # Shutdown drains in-flight runs for up to 30s (src/server/shutdown.ts).
+    stop_grace_period: 45s
+    ports:
+      # Loopback unless RADULF_BIND says otherwise. Set RADULF_BIND=0.0.0.0
+      # only with RADULF_AUTH_PASSWORD_HASH set in .env.local, the same rule
+      # the Makefile applies to `make start` (SECURITY.md).
+      - "${RADULF_BIND:-127.0.0.1}:${RADULF_PORT:-3000}:3000"
+    # Lets a provider running on the Docker host (oMLX, LM Studio, vLLM) be
+    # reached from inside the container as http://host.docker.internal:<port>.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      # Pinned here so an empty `RADULF_DATA_DIR=` copied from .env.example
+      # cannot redirect state out of the volume; `environment` wins over
+      # env_file.
+      RADULF_DATA_DIR: /var/lib/radulf/data
+      HOME: /var/lib/radulf/home
+    volumes:
+      - radulf-state:/var/lib/radulf
+      # The repositories Radulf works on. Register each in the app as
+      # /repos/<name>, or point Settings -> Repositories -> Browsable root
+      # at /repos. Files must be writable by the container user (uid 1000,
+      # the image's `node` user); add `user: "<uid>:<gid>"` here if not.
+      - "${RADULF_REPOS_DIR:?set RADULF_REPOS_DIR (in .env or the shell) to the host directory that holds the git repos Radulf works on}:/repos"
+    # Radulf's own sandbox (bubblewrap + seccomp, docs/SANDBOXING.md) needs
+    # user namespaces, mount, and a fresh procfs, which Docker's default
+    # seccomp profile, AppArmor profile, and masked /proc paths each block.
+    # Relaxed so the agent sandbox can exist: the server is then confined no
+    # less than the same process under systemd on the host, and drops every
+    # capability besides.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    cap_drop:
+      - ALL
+volumes:
+  radulf-state:
