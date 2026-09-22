@@ -2,49 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, type Repo } from "../ui/api";
+import type { Settings } from "@/server/settings";
 
-export type Settings = {
-  plannerProvider: string;
-  plannerModel: string;
-  plannerReasoningLevel: string;
-  loopProvider: string;
-  loopModel: string;
-  loopReasoningLevel: string;
-  evaluatorProvider: string;
-  evaluatorModel: string;
-  evaluatorReasoningLevel: string;
-  scopingProvider: string;
-  scopingModel: string;
-  scopingReasoningLevel: string;
-  plannerTimeoutMinutes: number;
-  folderBrowserRoot: string;
-  omlxBaseUrl: string;
-  omlxApiKey: string;
-  omlxHeaders: string;
-  openrouterApiKey: string;
-  braveApiKey: string;
-  jiraBaseUrl: string;
-  jiraEmail: string;
-  jiraApiToken: string;
-  maxConcurrentCards: number;
-  defaultMaxIterations: number;
-  defaultTimeoutMinutes: number;
-  iterationHardTimeoutMinutes: number;
-  evaluatorTimeoutMinutes: number;
-  stallTimeoutSeconds: number;
-  minimalToolset: boolean;
-  sandboxEnabled: boolean;
-  sandboxNetworkAllowlist: string;
-  sandboxWeakerIsolationForGoTls: boolean;
-  notificationsEnabled: boolean;
-  attentionStaleMinutes: number;
-  alertWebhookUrl: string;
-  soundEnabled: boolean;
-  theme: string;
-  plannerPromptTemplate: string;
-  evaluatorPromptTemplate: string;
-  improvePromptTemplate: string;
-};
+export type { Settings };
 
 export type PromptTemplateSettings = Pick<
   Settings,

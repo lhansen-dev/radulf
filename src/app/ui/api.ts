@@ -35,37 +35,9 @@ export type BoardCard = {
   summary: string | null;
 };
 
-export type Repo = {
-  id: string;
-  name: string;
-  path: string;
-  defaultBranch: string;
-  createdAt: string;
-};
-
-export type ImprovementRunStatus = "running" | "completed" | "stopped" | "failed";
-
-export type ImprovementRun = {
-  id: string;
-  repoId: string;
-  status: ImprovementRunStatus;
-  featureBranch: string;
-  baseBranch: string;
-  focusPrompt: string | null;
-  plannerModel: string | null;
-  loopModel: string | null;
-  evaluatorModel: string | null;
-  maxIterations: number | null;
-  timeoutMinutes: number | null;
-  deadlineAt: string;
-  currentCardId: string | null;
-  tasksCreated: number;
-  tasksSucceeded: number;
-  consecutiveFailures: number;
-  createdAt: string;
-  updatedAt: string;
-  endedAt: string | null;
-};
+export type { Repo } from "@/server/repos";
+export type { ImprovementRunStatus } from "@/db/schema";
+export type { ImprovementRun } from "@/server/improvementRuns";
 
 export async function api<T = unknown>(
   url: string,
