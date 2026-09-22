@@ -6,8 +6,8 @@ import { modelTag } from "@/server/modelTag";
 import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo } from "@/server/repos";
 import { assertBranchExists, isRalphBranch } from "@/server/git";
-import { currentTaskFromFile } from "@/server/currentTask";
-import { planStatePath } from "@/server/bookkeeping";
+import { readPlanState } from "@/server/bookkeeping";
+import { firstUnchecked } from "@/server/checklist";
 import { parseCreateCard } from "@/server/cardValidation";
 import { emitEvent } from "@/server/events";
 import { json, err, handle } from "../_lib";
@@ -45,7 +45,7 @@ export async function GET() {
             exitReason: latestRun.exitReason,
             startedAt: latestRun.startedAt,
             currentTask: card.status === "looping"
-              ? currentTaskFromFile(planStatePath(card.id))
+              ? firstUnchecked(readPlanState(card.id) ?? "")?.item.text ?? null
               : null,
           }
         : null,
