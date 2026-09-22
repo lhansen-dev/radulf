@@ -247,6 +247,15 @@ export async function worktreeIsDirty(worktreePath: string): Promise<boolean> {
   return ok && out.trim().length > 0;
 }
 
+/** Drop `.ralph/` from the index and, once git has let go of it, from disk.
+ * Returns the `git rm` result. `mergeBranch` and `stripRalphForDelivery` have
+ * to agree on exactly this (see the latter's docstring), so both call here. */
+async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }> {
+  const removed = await tryGit(cwd, "rm", "-r", "-f", "-q", "--ignore-unmatch", ".ralph");
+  if (removed.ok) fs.rmSync(path.join(cwd, ".ralph"), { recursive: true, force: true });
+  return removed;
+}
+
 /** Merge the ralph branch into the repo's base branch. Always restores the
  * checkout the user's repo was on before the merge — merging must never
  * leave their working copy switched to the base branch. */
@@ -284,8 +293,7 @@ export async function mergeBranch(
     // tell a conflict apart from an unrecoverable failure.
     return { ok: false, conflict: true, error: `merge conflict — rebase needed: ${merge.out}` };
   }
-  await tryGit(repoPath, "rm", "-r", "-f", "-q", "--ignore-unmatch", ".ralph");
-  fs.rmSync(path.join(repoPath, ".ralph"), { recursive: true, force: true });
+  await removeRalphDir(repoPath);
   const commit = await tryGit(repoPath, "commit", "-m", message);
   if (!commit.ok) {
     await tryGit(repoPath, "merge", "--abort");
@@ -359,17 +367,8 @@ export async function stripRalphForDelivery(
   worktreePath: string,
   message: string
 ): Promise<{ ok: boolean; out: string }> {
-  const removed = await tryGit(
-    worktreePath,
-    "rm",
-    "-r",
-    "-f",
-    "-q",
-    "--ignore-unmatch",
-    ".ralph"
-  );
+  const removed = await removeRalphDir(worktreePath);
   if (!removed.ok) return removed;
-  fs.rmSync(path.join(worktreePath, ".ralph"), { recursive: true, force: true });
   const staged = await tryGit(worktreePath, "diff", "--cached", "--quiet");
   // `--quiet` exits non-zero when there *is* something staged.
   if (staged.ok) return { ok: true, out: "" };
