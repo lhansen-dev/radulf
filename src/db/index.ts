@@ -27,23 +27,32 @@ export const PLANS_DIR = process.env.RADULF_PLANS_DIR
 export const CLONES_DIR = path.join(path.dirname(DATA_DIR), "repos");
 export const TRANSCRIPTS_DIR = path.join(DATA_DIR, "transcripts");
 
+/** chmod 0600, or leave it alone when it is not ours to change. */
+function tighten(file: string): void {
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // absent, or owned by another uid
+  }
+}
+
 function createDb() {
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
   const dbFile = path.join(DATA_DIR, "radulf.db");
   const sqlite = new Database(dbFile);
-  // 0600 before the WAL exists: SQLite gives the -wal and -shm it creates the
-  // same mode as the database file, and this file holds every provider key
-  // (encrypted, but under a secret sitting beside it) and every card. A stock
-  // umask left it 0644. Never fatal — a file owned by another uid, as a
-  // container sharing the volume produces, is still usable.
-  try {
-    fs.chmodSync(dbFile, 0o600);
-  } catch {
-    // not ours to tighten
-  }
+  // The database holds every provider key (encrypted, but under a secret
+  // sitting beside it), every card and every plan, and a stock umask left it
+  // 0644. SQLite gives the -wal and -shm it creates the database file's mode,
+  // so tightening this before `journal_mode = WAL` covers a fresh install —
+  // but an install that already has a 0644 WAL keeps it, and the WAL is where
+  // the most recent writes live, so all three are named. Never fatal: a file
+  // owned by another uid, as a container sharing the volume produces, is
+  // still perfectly usable.
+  tighten(dbFile);
   sqlite.pragma("journal_mode = WAL");
+  for (const suffix of ["-wal", "-shm"]) tighten(dbFile + suffix);
   sqlite.pragma("foreign_keys = ON");
   const db = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });

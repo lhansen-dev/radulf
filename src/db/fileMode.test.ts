@@ -7,14 +7,18 @@ const testDataDir = setupTestDataDir("radulf-db-mode-");
 
 const { db, repos } = await import("./index");
 
-describe("the SQLite file", () => {
-  it("is readable only by its owner, along with the WAL it spawns", () => {
+const mode = (file: string) => fs.statSync(path.join(testDataDir, file)).mode & 0o777;
+
+describe("the SQLite files", () => {
+  it("are readable only by their owner, WAL and shared-memory included", () => {
     db.select().from(repos).all(); // opens the connection and writes the WAL
 
-    const mode = (file: string) => fs.statSync(path.join(testDataDir, file)).mode & 0o777;
+    // The main file is tightened before `journal_mode = WAL`, so SQLite
+    // copies 0600 onto what it creates; the -wal and -shm are then tightened
+    // by name as well, because an install that already had them at 0644 keeps
+    // them, and the WAL is where the most recent writes live.
     expect(mode("radulf.db")).toBe(0o600);
-    // SQLite copies the database file's mode onto the files it creates beside
-    // it, which is why the chmod has to land before journal_mode = WAL.
     expect(mode("radulf.db-wal")).toBe(0o600);
+    expect(mode("radulf.db-shm")).toBe(0o600);
   });
 });
