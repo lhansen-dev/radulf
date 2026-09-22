@@ -61,7 +61,11 @@ auth is enabled**. Radulf drives coding agents with
 `--dangerously-skip-permissions`, so a page the operator merely visits must not
 be able to blind-POST to their localhost instance — a cross-origin JSON `fetch`
 is stopped by preflight, but a `text/plain` body is a CORS *simple* request that
-would otherwise reach the handler unpreflighted. Requests carrying no `Origin`
+would otherwise reach the handler unpreflighted. The check is same-origin in
+the strict sense: the `Origin` must name the exact host and port the request was
+addressed to, or `RADULF_ALLOWED_ORIGIN`. A page on another `localhost` port is
+rejected, because browsers treat every localhost port as one site and would
+attach the session cookie to its requests. Requests carrying no `Origin`
 header at all (curl, scripts, the app itself) are unaffected.
 
 Provider API keys (OpenRouter, oMLX, Brave) are write-only over HTTP:

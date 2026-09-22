@@ -53,28 +53,32 @@ describe("signSession / verifySession", () => {
 });
 
 describe("isAllowedOrigin", () => {
-  it("accepts localhost and same-origin (null) requests, rejecting everything else by default", () => {
-    for (const origin of [
-      null,
-      "http://localhost:3000",
-      "http://localhost",
-      "https://localhost:3000",
-      "http://127.0.0.1:3000",
-      "http://127.0.0.1",
-    ]) {
-      expect(isAllowedOrigin(origin)).toBe(true);
+  it("accepts only the request's own host and port, or no Origin at all", () => {
+    for (const origin of [null, "http://localhost:3000", "https://localhost:3000"]) {
+      expect(isAllowedOrigin(origin, "localhost:3000")).toBe(true);
     }
+    expect(isAllowedOrigin("http://127.0.0.1:3000", "127.0.0.1:3000")).toBe(true);
+    expect(isAllowedOrigin("http://localhost", "localhost")).toBe(true);
     for (const origin of ["https://evil.com", "http://192.168.1.1", "https://radulf.example.com", "not-a-url"]) {
-      expect(isAllowedOrigin(origin)).toBe(false);
+      expect(isAllowedOrigin(origin, "localhost:3000")).toBe(false);
     }
   });
 
-  it("accepts the host named by RADULF_ALLOWED_ORIGIN", () => {
+  it("rejects another localhost port: browsers treat every localhost port as one site", () => {
+    // A page on any other local dev server gets the session cookie under
+    // SameSite=Lax and needs no preflight for a text/plain POST — so the
+    // Origin check is the only thing standing between it and the board.
+    expect(isAllowedOrigin("http://localhost:8080", "localhost:3000")).toBe(false);
+    expect(isAllowedOrigin("http://localhost", "localhost:3000")).toBe(false);
+    expect(isAllowedOrigin("http://127.0.0.1:3000", "localhost:3000")).toBe(false);
+  });
+
+  it("accepts the host named by RADULF_ALLOWED_ORIGIN, whatever Host the proxy rewrote to", () => {
     process.env.RADULF_ALLOWED_ORIGIN = "radulf.example.com";
     try {
-      expect(isAllowedOrigin("https://radulf.example.com")).toBe(true);
-      expect(isAllowedOrigin("https://radulf.example.com:443")).toBe(true);
-      expect(isAllowedOrigin("https://radulf.example.evil.com")).toBe(false);
+      expect(isAllowedOrigin("https://radulf.example.com", "127.0.0.1:3000")).toBe(true);
+      expect(isAllowedOrigin("https://radulf.example.com:443", "127.0.0.1:3000")).toBe(true);
+      expect(isAllowedOrigin("https://radulf.example.evil.com", "127.0.0.1:3000")).toBe(false);
     } finally {
       delete process.env.RADULF_ALLOWED_ORIGIN;
     }
@@ -98,9 +102,14 @@ describe("redirectBase", () => {
     }
   });
 
-  it("accepts a localhost origin", () => {
-    const base = redirectBase(req("http://localhost:3000"));
-    expect(new URL("/", base).href).toBe("http://localhost:3000/");
+  it("accepts the origin matching the Host the browser addressed", () => {
+    const request = new Request("http://0.0.0.0:3000/api/auth/login", {
+      method: "POST",
+      headers: { origin: "http://localhost:3000", host: "localhost:3000" },
+    });
+    expect(new URL("/", redirectBase(request)).href).toBe("http://localhost:3000/");
+    // A localhost origin on a different port is not this site.
+    expect(redirectBase(req("http://localhost:3000"))).toBe("http://0.0.0.0:3000/api/auth/login");
   });
 
   it("falls back to request.url when no Origin is sent (curl, scripts)", () => {
