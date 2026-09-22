@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { AppShell } from "./ui/appShell";
@@ -21,6 +22,7 @@ import { ImprovementRunDialog } from "./ui/improvementRunDialog";
 import { DetailsMenu } from "./ui/detailsMenu";
 import { useWorkData } from "./ui/useWorkData";
 import { useNow } from "./ui/useNow";
+import { cardMatches } from "./ui/cardSearch";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -96,6 +98,8 @@ export default function WorkPage() {
   } = useWorkData();
   const [repoFilter, setRepoFilter] = useState("");
   const [view, setView] = useState<View>("overview");
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [showNew, setShowNew] = useState(false);
   const [showImprovementRun, setShowImprovementRun] = useState(false);
   const [notice, setNotice] = useState("");
@@ -105,31 +109,52 @@ export default function WorkPage() {
 
   useEffect(() => {
     const readUrl = () => {
-      const query = new URLSearchParams(window.location.search);
-      const urlRepo = query.get("repo");
-      const urlView = query.get("view") as View | null;
+      const params = new URLSearchParams(window.location.search);
+      const urlRepo = params.get("repo");
+      const urlView = params.get("view") as View | null;
       setRepoFilter(urlRepo ?? localStorage.getItem("radulf.repo") ?? "");
       setView(views.some((item) => item.key === urlView) ? urlView! : "overview");
+      setQuery(params.get("q") ?? "");
     };
     readUrl();
     window.addEventListener("popstate", readUrl);
     return () => window.removeEventListener("popstate", readUrl);
   }, []);
 
-  const updateScope = useCallback((repo: string, nextView: View) => {
+  /** Repo, view, and search together are the page's scope, so they travel in
+   * the URL together — a filtered feed stays linkable and survives a reload.
+   * Typing replaces rather than pushes, or every keystroke would be a Back. */
+  const updateScope = useCallback((repo: string, nextView: View, nextQuery: string, push = true) => {
     setRepoFilter(repo);
     setView(nextView);
+    setQuery(nextQuery);
     localStorage.setItem("radulf.repo", repo);
-    const query = new URLSearchParams();
-    if (repo) query.set("repo", repo);
-    if (nextView !== "overview") query.set("view", nextView);
-    const href = query.size ? `/?${query}` : "/";
-    window.history.pushState({}, "", href);
+    const params = new URLSearchParams();
+    if (repo) params.set("repo", repo);
+    if (nextView !== "overview") params.set("view", nextView);
+    if (nextQuery.trim()) params.set("q", nextQuery);
+    const href = params.size ? `/?${params}` : "/";
+    window.history[push ? "pushState" : "replaceState"]({}, "", href);
+  }, []);
+
+  // "/" jumps to search the way it does in a forge, but only when the operator
+  // is not already typing somewhere.
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
+      if (active instanceof HTMLElement && active.isContentEditable) return;
+      event.preventDefault();
+      searchRef.current?.focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const scoped = useMemo(
-    () => (repoFilter ? cards.filter((card) => card.repoId === repoFilter) : cards),
-    [cards, repoFilter]
+    () => cards.filter((card) => (!repoFilter || card.repoId === repoFilter) && cardMatches(card, query)),
+    [cards, repoFilter, query]
   );
   const needs = useMemo(
     () => scoped.filter((card) => ATTENTION_STATUSES.includes(card.status)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
@@ -258,7 +283,10 @@ export default function WorkPage() {
 
   const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction };
   const showSection = (section: View) => view === "overview" || view === section;
-  const filteredEmpty = !loading && scoped.length > 0 && counts[view] === 0;
+  // Keyed off the unfiltered set, not `scoped`: a repo filter or a search that
+  // matches nothing leaves `scoped` empty too, and that is exactly when the
+  // operator most needs to be told why the feed is blank.
+  const filteredEmpty = !loading && cards.length > 0 && counts[view] === 0;
 
   return (
     <AppShell onNewTask={() => setShowNew(true)}>
@@ -272,7 +300,7 @@ export default function WorkPage() {
           <select
             id="repo-scope"
             value={repoFilter}
-            onChange={(event) => updateScope(event.target.value, view)}
+            onChange={(event) => updateScope(event.target.value, view, query)}
             className="max-w-44 rounded-lg border border-foreground/10 bg-foreground/[0.05] px-3 text-sm"
           >
             <option value="">All repos</option>
@@ -291,7 +319,21 @@ export default function WorkPage() {
           <button type="button" onClick={() => setShowNew(true)} className="hidden min-h-11 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-on-accent hover:bg-amber-500 lg:block">＋ New task</button>
         </header>
 
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-xs text-foreground/55">
+        <div className="mt-4">
+          <label className="sr-only" htmlFor="task-search">Search tasks</label>
+          <input
+            id="task-search"
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(event) => updateScope(repoFilter, view, event.target.value, false)}
+            onKeyDown={(event) => { if (event.key === "Escape" && query) { event.preventDefault(); updateScope(repoFilter, view, "", false); } }}
+            placeholder="Search tasks by title or description…"
+            className="min-h-11 w-full rounded-lg border border-foreground/10 bg-foreground/[0.05] px-3 text-sm"
+          />
+        </div>
+
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-xs text-foreground/55">
           <span className={`size-2 shrink-0 rounded-full ${autoMode ? "bg-green-400" : "bg-slate-500"}`} aria-hidden="true" />
           <span>Auto Mode {autoMode ? "is on · Todo tasks run automatically" : "is off"}</span>
           {autoApprove && <span className="text-amber-300">· Auto-approve is on · approved work merges without review</span>}
@@ -321,7 +363,7 @@ export default function WorkPage() {
               <button
                 type="button"
                 key={item.key}
-                onClick={() => updateScope(repoFilter, item.key)}
+                onClick={() => updateScope(repoFilter, item.key, query)}
                 aria-current={view === item.key ? "page" : undefined}
                 className={`min-h-11 whitespace-nowrap rounded-full border px-3.5 text-sm ${view === item.key ? "border-amber-500/60 bg-amber-500/12 text-amber-200" : "border-foreground/10 bg-foreground/[0.03] text-foreground/55"}`}
               >
@@ -338,9 +380,11 @@ export default function WorkPage() {
           <Onboarding repos={repos} onNew={() => setShowNew(true)} />
         ) : filteredEmpty ? (
           <div className="mt-8 rounded-xl border border-foreground/10 bg-foreground/[0.025] p-6 text-center">
-            <h2 className="font-medium">No tasks in this view</h2>
-            <p className="mt-1 text-sm text-foreground/50">Try another repository or return to the full feed.</p>
-            <button type="button" onClick={() => updateScope("", "overview")} className="mt-4 rounded-lg bg-foreground/10 px-4 text-sm">Clear filters</button>
+            <h2 className="font-medium">{query.trim() ? `No tasks match “${query.trim()}”` : "No tasks in this view"}</h2>
+            <p className="mt-1 text-sm text-foreground/50">
+              {query.trim() ? "Search covers task titles and descriptions." : "Try another repository or return to the full feed."}
+            </p>
+            <button type="button" onClick={() => updateScope("", "overview", "")} className="mt-4 rounded-lg bg-foreground/10 px-4 text-sm">Clear filters</button>
           </div>
         ) : (
           <div className="mt-3 flex flex-col gap-7">
@@ -377,13 +421,16 @@ export default function WorkPage() {
               </WorkSection>
             )}
             {showSection("done") && done.length > 0 && (
-              view === "overview" ? (
+              // A search is usually how you go looking for something already
+              // finished, so matches are listed in full rather than collapsed
+              // behind "Recently completed" and cut off at five.
+              view === "overview" && !query.trim() ? (
                 <details open={needs.length + active.length + queue.length + backlog.length === 0} className="group">
                   <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold uppercase tracking-[0.12em] text-green-300/80">
                     Recently completed <span className="text-foreground/35">{Math.min(5, done.length)}</span><span className="ml-auto normal-case tracking-normal text-foreground/40 group-open:hidden">Show</span>
                   </summary>
                   <div className="divide-y divide-white/[0.07] border-y border-foreground/[0.08]">{done.slice(0, 5).map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}</div>
-                  {done.length > 5 && <button type="button" onClick={() => updateScope(repoFilter, "done")} className="mt-2 min-h-11 text-sm text-foreground/55 underline">View all completed tasks</button>}
+                  {done.length > 5 && <button type="button" onClick={() => updateScope(repoFilter, "done", query)} className="mt-2 min-h-11 text-sm text-foreground/55 underline">View all completed tasks</button>}
                 </details>
               ) : (
                 <WorkSection title="Completed" count={done.length} tone="text-green-300">
