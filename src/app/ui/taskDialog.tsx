@@ -37,11 +37,8 @@ export function useBranches(repoId: string, onLoaded?: (branches: string[]) => v
   useEffect(() => {
     if (!repoId) return;
     const apply = (list: string[]) => { setBranches(list); onLoadedRef.current?.(list); };
-    fetch(`/api/repos/${repoId}/branches`)
-      .then(async (res) => {
-        const data = res.ok ? await res.json() : [];
-        apply(Array.isArray(data) ? (data as string[]) : []);
-      })
+    api<string[]>(`/api/repos/${repoId}/branches`)
+      .then((data) => apply(Array.isArray(data) ? data : []))
       .catch(() => apply([]));
   }, [repoId]);
   return [branches, setBranches] as const;
