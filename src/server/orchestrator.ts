@@ -942,13 +942,7 @@ export class Orchestrator {
     // Multi-GB allocation — skipped under test, fire-and-forget otherwise.
     if (process.env.NODE_ENV !== "test") void ensureBallast(this.ballastPath());
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
-    if (integrityBaseline) {
-      saveBaseline(runId, integrityBaseline);
-      // Spec 20: with more than one card in flight, another card's approved
-      // merge moves this run's base branch. Registering lets that merge record
-      // its own write here instead of this run reporting it as tampering.
-      registerRunBaseline(runId, repo.path, integrityBaseline);
-    }
+    if (integrityBaseline) saveBaseline(runId, integrityBaseline);
 
     startRunRow(
       { id: runId, cardId, planId: plan.id, kind: "loop", worktreePath, branch, baseBranch, provider, model: loopModel },
@@ -997,6 +991,14 @@ export class Orchestrator {
     });
 
     try {
+      // Registered here, inside the try whose finally releases it below, so
+      // every early return in this loop — present or future — releases the
+      // baseline instead of leaking a `liveBaselines` entry for the life of
+      // the process. Spec 20: with more than one card in flight, another
+      // card's approved merge moves this run's base branch. Registering lets
+      // that merge record its own write here instead of this run reporting
+      // it as tampering.
+      if (integrityBaseline) registerRunBaseline(runId, repo.path, integrityBaseline);
       if (offBranchAtStart) return fail(offBranchAtStart);
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);

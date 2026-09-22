@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
   startDiskWatchdog: vi.fn(),
+  registerRunBaseline: vi.fn(),
+  releaseRunBaseline: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
    * moving the defaults every other test relies on. */
@@ -43,6 +45,18 @@ vi.mock("./providers", () => ({
   normalizeProvider: (value: string) => value,
   preflightProvider: mocks.preflightProvider,
 }));
+// Real registerRunBaseline/releaseRunBaseline (wrapped so a test can assert
+// they stay paired), everything else in the module untouched.
+vi.mock("./integrity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./integrity")>();
+  mocks.registerRunBaseline.mockImplementation(actual.registerRunBaseline);
+  mocks.releaseRunBaseline.mockImplementation(actual.releaseRunBaseline);
+  return {
+    ...actual,
+    registerRunBaseline: mocks.registerRunBaseline,
+    releaseRunBaseline: mocks.releaseRunBaseline,
+  };
+});
 vi.mock("./settings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./settings")>()),
   getSettings: () =>
@@ -736,6 +750,42 @@ describe("Orchestrator cancellation lifecycle", () => {
       // Locked decision 5's reason is the machine's unified memory, so a local
       // provider owns it alone however high the operator set the cap.
       expect(getCard("local-second").status).toBe("ready");
+    });
+  });
+
+  describe("loop start CAS loss", () => {
+    it("releases the integrity baseline it registered when the card leaves the queue first", async () => {
+      card("cas-loss", "ready");
+      plan("cas-loss");
+      // A usable git-common-dir, so snapshotRepoIntegrity returns a real
+      // baseline instead of skipping it — otherwise there is nothing here to
+      // leak in the first place.
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) =>
+        args[0] === "rev-parse" && args[1] === "--git-common-dir"
+          ? { ok: true, out: ".git" }
+          : { ok: true, out: "" },
+      );
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+      // pump() runs runLoop synchronously up to its first await, so the card
+      // is still captured as "ready" in the loop's closure — flip the real
+      // row out from under it here to force the loop-start CAS to lose.
+      db.update(cards).set({ status: "backlog" }).where(eq(cards.id, "cas-loss")).run();
+
+      await vi.waitFor(() => {
+        expect(getRun("cas-loss")).toMatchObject({
+          status: "cancelled",
+          exitReason: "card left the queue before the loop started",
+        });
+      });
+      // A card left the queue before the try/finally that owns the baseline
+      // ever opens, so it must never have been registered either — proving
+      // the fix (moving the register call inside that try) rather than just
+      // its symptom. Whichever shape a future fix takes, every register must
+      // still be matched by a release.
+      expect(mocks.registerRunBaseline).not.toHaveBeenCalled();
+      expect(mocks.registerRunBaseline.mock.calls.length).toBe(mocks.releaseRunBaseline.mock.calls.length);
     });
   });
 
