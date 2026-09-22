@@ -7,7 +7,7 @@ import { emitEvent } from "./events";
 import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
 import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
 import { getSettings } from "./settings";
-import { planStatePath } from "./bookkeeping";
+import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
@@ -28,16 +28,7 @@ const RALPH_FILES = ["PLAN.md", "CRITERIA.md", "PROMPT.md"] as const;
 const PLANNER_FILES = ["QUESTIONS.md", ...RALPH_FILES] as const;
 
 function readRalphFile(worktreePath: string, name: string): string {
-  const p = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph", name);
-  return fs.existsSync(/* turbopackIgnore: true */ p)
-    ? fs.readFileSync(/* turbopackIgnore: true */ p, "utf8").trim()
-    : "";
-}
-
-function removeRalphFiles(worktreePath: string, names: readonly string[]) {
-  for (const name of names) {
-    fs.rmSync(path.join(/* turbopackIgnore: true */ worktreePath, ".ralph", name), { force: true });
-  }
+  return readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDirPath(worktreePath), name)).trim();
 }
 
 /** Planner retries intentionally reuse a worktree, but never another
@@ -187,7 +178,7 @@ export class PlanningService {
     clearPlannerArtifacts(worktreePath);
     // Spec 14 Phase 3: the planner's ONLY L2 write root is the worktree's
     // `.ralph/` — ensure it exists so the write root resolves.
-    fs.mkdirSync(path.join(/* turbopackIgnore: true */ worktreePath, ".ralph"), { recursive: true });
+    fs.mkdirSync(/* turbopackIgnore: true */ ralphDirPath(worktreePath), { recursive: true });
     const ctx = await createRunSandbox(runId);
     startRunRow(
       { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model },

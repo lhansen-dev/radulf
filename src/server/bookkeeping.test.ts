@@ -6,10 +6,14 @@ import {
   buildProgressState,
   captureIterationState,
   deterministicCommitMessage,
+  doneFilePath,
   hasIterationWorkProduct,
   performDoneBookkeeping,
   performIterationBookkeeping,
+  ralphDirPath,
+  readFileIfExists,
   readIterationDone,
+  removeRalphFiles,
   taskInjectionBlock,
 } from "./bookkeeping";
 import { tryGit } from "./git";
@@ -128,6 +132,29 @@ describe("readIterationDone", () => {
     expect(readIterationDone(dir)).toBeNull();
     fs.writeFileSync(signal, "  completed the task  ");
     expect(readIterationDone(dir)).toBe("completed the task");
+  });
+});
+
+describe("signal-file helpers", () => {
+  it("reads a file verbatim, or empty when it is missing", () => {
+    const dir = tmpDir();
+    const file = path.join(dir, "SUMMARY.md");
+    expect(readFileIfExists(file)).toBe("");
+    fs.writeFileSync(file, "  summary \n");
+    expect(readFileIfExists(file)).toBe("  summary \n");
+  });
+
+  it("finds either DONE spelling and removes the named files, missing ones included", () => {
+    const dir = tmpDir();
+    const ralphDir = ralphDirPath(dir);
+    fs.mkdirSync(ralphDir);
+    expect(doneFilePath(ralphDir)).toBeNull();
+    fs.writeFileSync(path.join(ralphDir, "DONE.md"), "done");
+    expect(doneFilePath(ralphDir)).toBe(path.join(ralphDir, "DONE.md"));
+    fs.writeFileSync(path.join(ralphDir, "DONE"), "done");
+    expect(doneFilePath(ralphDir)).toBe(path.join(ralphDir, "DONE"));
+    removeRalphFiles(dir, ["DONE", "DONE.md", "BLOCKED"]);
+    expect(fs.readdirSync(ralphDir)).toEqual([]);
   });
 });
 

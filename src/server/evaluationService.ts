@@ -1,10 +1,10 @@
-import fs from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
+import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
 import { parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { runTelemetry, type RunTelemetry } from "./harness";
@@ -34,8 +34,8 @@ import {
 const MAX_EVALUATOR_REVISIONS = 2;
 
 /** Evaluator attempts share a worktree, but never another attempt's verdict. */
-export function clearEvaluationArtifact(ralphDir: string) {
-  fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"), { force: true });
+export function clearEvaluationArtifact(worktreePath: string) {
+  removeRalphFiles(worktreePath, ["EVALUATION.md"]);
 }
 
 export function renderEvaluatorPrompt(
@@ -94,9 +94,9 @@ export class EvaluationService {
     const model = card.evaluatorModel || settings.evaluatorModel;
     const { worktreePath, branch } = loopRun;
     const baseBranch = loopRun.baseBranch ?? repo.defaultBranch;
-    const ralphDir = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+    const ralphDir = ralphDirPath(worktreePath);
     // A verdict left over from an earlier cycle must never be read as this run's.
-    clearEvaluationArtifact(ralphDir);
+    clearEvaluationArtifact(worktreePath);
 
     // Spec 14 L3: the evaluator holds bash, so it gets the same per-run
     // containment as the loop, including the parent-repo integrity check.
@@ -178,10 +178,8 @@ export class EvaluationService {
         return fail(`evaluator modified non-doc files (${illegalPaths.join(", ")}); verdict rejected`);
       }
 
-      const evaluationPath = path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md");
-      const evaluation = fs.existsSync(/* turbopackIgnore: true */ evaluationPath)
-        ? parseEvaluation(fs.readFileSync(/* turbopackIgnore: true */ evaluationPath, "utf8"))
-        : null;
+      const evaluationMd = readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"));
+      const evaluation = evaluationMd ? parseEvaluation(evaluationMd) : null;
       if (!evaluation) return fail("evaluator wrote no usable VERDICT in .ralph/EVALUATION.md");
 
       const hasCritical = evaluation.findings.some((f) => f.severity === "critical");
@@ -200,10 +198,7 @@ export class EvaluationService {
       // and its doc edits onto the review branch (`add -A`); `.ralph` is
       // stripped at merge, the docs stay. A missing summary is non-fatal.
       const advanceToReview = async (exitReason: string, moveReason: string) => {
-        const summaryPath = path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md");
-        const summary = fs.existsSync(/* turbopackIgnore: true */ summaryPath)
-          ? fs.readFileSync(/* turbopackIgnore: true */ summaryPath, "utf8").trim()
-          : "";
+        const summary = readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md")).trim();
         if (summary) {
           db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
           emitEvent("card.summarized", { cardId, runId });

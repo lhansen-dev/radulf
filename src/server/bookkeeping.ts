@@ -10,10 +10,11 @@
  *
  * Module layout:
  *
- *   0. Plan state        (planStatePath)
+ *   0. Plan state        (planStatePath, readPlanState)
  *   1. Prompt helpers    (taskInjectionBlock, buildLoopPrompt)
  *   2. Message helpers   (deterministicCommitMessage)
- *   3. Signal I/O        (iterationDonePath, readIterationDone)
+ *   3. Signal I/O        (ralphDirPath, readFileIfExists, removeRalphFiles,
+ *                         iterationDonePath, readIterationDone, doneFilePath)
  *   4. Progress helpers  (buildProgressState)
  *   5. Iteration flow    (performIterationBookkeeping)
  *   6. Done flow         (performDoneBookkeeping)
@@ -45,6 +46,11 @@ export function planStatePath(cardId: string): string {
     );
   }
   return path.join(process.cwd(), "data", "plans", `${cardId}.md`);
+}
+
+/** The card's private PLAN.md, or null when none is on disk. */
+export function readPlanState(cardId: string): string | null {
+  return readFileIfExists(planStatePath(cardId)) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +134,38 @@ export function deterministicCommitMessage(taskNumber: number, summary: string):
 // 3. Signal I/O
 // ---------------------------------------------------------------------------
 
+/** The worktree's `.ralph/` directory, where every signal file lives. */
+export function ralphDirPath(worktreePath: string): string {
+  return path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+}
+
+/** The file's contents, or `""` when it does not exist. */
+export function readFileIfExists(filePath: string): string {
+  return fs.existsSync(/* turbopackIgnore: true */ filePath)
+    ? fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf8")
+    : "";
+}
+
+/** Remove the named `.ralph/` files; missing ones are not an error. */
+export function removeRalphFiles(worktreePath: string, names: readonly string[]): void {
+  const dir = ralphDirPath(worktreePath);
+  for (const name of names) {
+    fs.rmSync(path.join(/* turbopackIgnore: true */ dir, name), { force: true });
+  }
+}
+
+/** Small models write DONE.md as often as DONE — accept both. */
+export const DONE_FILE_NAMES = ["DONE", "DONE.md"] as const;
+
+/** The DONE signal file present in `ralphDir`, or null when there is none. */
+export function doneFilePath(ralphDir: string): string | null {
+  for (const name of DONE_FILE_NAMES) {
+    const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
+    if (fs.existsSync(/* turbopackIgnore: true */ p)) return p;
+  }
+  return null;
+}
+
 /** Return the path to `.ralph/ITERATION_DONE` within `ralphDir`. */
 export function iterationDonePath(ralphDir: string): string {
   return path.join(/* turbopackIgnore: true */ ralphDir, "ITERATION_DONE");
@@ -167,9 +205,7 @@ export async function buildProgressState(
   planPath: string,
 ): Promise<string> {
   const head = (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
-  const checklist = fs.existsSync(/* turbopackIgnore: true */ planPath)
-    ? fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8")
-    : "";
+  const checklist = readFileIfExists(planPath);
   const status = (await tryGit(worktreePath, "status", "--porcelain")).out;
   const dirty = status ? `${status}\n${await dirtyContentHash(worktreePath)}` : "";
   return `${head}\n${dirty}\n${checklist}`;
@@ -362,16 +398,7 @@ export async function performDoneBookkeeping(opts: {
 }): Promise<{ taskNumber: number; summary: string } | null> {
   const { ralphDir, worktreePath, planPath } = opts;
 
-  // Find DONE or DONE.md
-  let donePath: string | null = null;
-  for (const name of ["DONE", "DONE.md"]) {
-    const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
-    if (fs.existsSync(/* turbopackIgnore: true */ p)) {
-      donePath = p;
-      break;
-    }
-  }
-
+  const donePath = doneFilePath(ralphDir);
   if (donePath === null) {
     return null;
   }

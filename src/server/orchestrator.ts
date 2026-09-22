@@ -18,12 +18,18 @@ import {
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import {
+  DONE_FILE_NAMES,
   buildLoopPrompt,
   buildProgressState,
   captureIterationState,
+  doneFilePath,
   performIterationBookkeeping,
   performDoneBookkeeping,
   planStatePath,
+  ralphDirPath,
+  readFileIfExists,
+  readPlanState,
+  removeRalphFiles,
 } from "./bookkeeping";
 import { appendTask, firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
@@ -87,15 +93,6 @@ function parsePayload(payload: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-/** Small models write DONE.md as often as DONE — accept both. */
-export function doneFilePath(ralphDir: string): string | null {
-  for (const name of ["DONE", "DONE.md"]) {
-    const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
-    if (fs.existsSync(/* turbopackIgnore: true */ p)) return p;
-  }
-  return null;
 }
 
 /** How many productive iterations a run must have before its own pace, rather
@@ -364,10 +361,8 @@ export class Orchestrator {
    * task ticked is finishing, not resuming, so it goes to a human too. */
   private loopIsResumable(cardId: string): boolean {
     if (!this.latestPlan(cardId)) return false;
-    const planPath = planStatePath(cardId);
-    if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return false;
-    const planMd = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
-    if (!firstUnchecked(planMd)) return false;
+    const planMd = readPlanState(cardId);
+    if (!planMd || !firstUnchecked(planMd)) return false;
     const worktreePath = this.latestWorktreeRun(cardId)?.worktreePath;
     return worktreePath !== undefined && fs.existsSync(/* turbopackIgnore: true */ worktreePath);
   }
@@ -834,7 +829,7 @@ export class Orchestrator {
       repo, card, runId, this.latestWorktreeRun(cardId),
     );
     // Ensure the worktree carries the current plan's artifacts.
-    const ralphDir = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+    const ralphDir = ralphDirPath(worktreePath);
     const ralphFile = (name: string) => path.join(/* turbopackIgnore: true */ ralphDir, name);
     fs.mkdirSync(/* turbopackIgnore: true */ ralphDir, { recursive: true });
     // The private PLAN.md holds the task checklist the orchestrator ticks off —
@@ -846,21 +841,14 @@ export class Orchestrator {
     const legacyPlanPath = ralphFile("PLAN.md");
     if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) {
       fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(planPath), { recursive: true });
-      fs.writeFileSync(
-        /* turbopackIgnore: true */ planPath,
-        fs.existsSync(/* turbopackIgnore: true */ legacyPlanPath)
-          ? fs.readFileSync(/* turbopackIgnore: true */ legacyPlanPath, "utf8")
-          : plan.planMd,
-      );
+      fs.writeFileSync(/* turbopackIgnore: true */ planPath, readFileIfExists(legacyPlanPath) || plan.planMd);
     }
     // CRITERIA.md is orchestrator-private like PLAN.md (the evaluator gets the
     // criteria injected into its prompt). Only PROMPT.md and the signal files
     // may remain in the worktree.
-    for (const name of ["PLAN.md", "CRITERIA.md", "DONE", "DONE.md"]) {
-      fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
-    }
+    removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md", ...DONE_FILE_NAMES]);
     fs.writeFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), plan.promptMd);
-    clearEvaluationArtifact(ralphDir);
+    clearEvaluationArtifact(worktreePath);
     // A reused worktree (retry, restart) may have been left on another branch
     // by an earlier run's agent. Commit nothing to it; the run fails below,
     // once it has a row to fail.
@@ -1137,11 +1125,7 @@ export class Orchestrator {
         // bookkeeping credit the NEXT task after ITERATION_DONE credits this one.
         // Remove both spellings before normal bookkeeping so neither is committed
         // or counted as work product. Valid task work still advances normally.
-        if (!task.isLastUnchecked) {
-          for (const name of ["DONE", "DONE.md"]) {
-            fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
-          }
-        }
+        if (!task.isLastUnchecked) removeRalphFiles(worktreePath, DONE_FILE_NAMES);
 
         // The loop's honest way out of a task it cannot do (see
         // taskInjectionBlock): a `.ralph/BLOCKED` note wins over any completion
@@ -1154,9 +1138,7 @@ export class Orchestrator {
           const blocker =
             fs.readFileSync(/* turbopackIgnore: true */ blockedPath, "utf8").trim() ||
             "(the loop reported a blocker without saying what it was)";
-          for (const name of ["BLOCKED", "ITERATION_DONE", "DONE", "DONE.md"]) {
-            fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
-          }
+          removeRalphFiles(worktreePath, ["BLOCKED", "ITERATION_DONE", ...DONE_FILE_NAMES]);
           db.update(runs).set({ feedback: blocker }).where(eq(runs.id, runId)).run();
           addScopingMessage(cardId, "loop", blocker);
           emitEvent("loop.blocked", {
@@ -1209,9 +1191,7 @@ export class Orchestrator {
               acceptanceRepairUsed = true;
               // Clear the signal, or the next iteration re-enters this branch
               // before doing the repair.
-              for (const name of ["DONE", "DONE.md"]) {
-                fs.rmSync(/* turbopackIgnore: true */ ralphFile(name), { force: true });
-              }
+              removeRalphFiles(worktreePath, DONE_FILE_NAMES);
               // Every iteration runs on an injected checklist task, so the
               // repair has to be one — a prompt preamble alone never runs.
               fs.writeFileSync(
@@ -1496,10 +1476,7 @@ export class Orchestrator {
 
     // Resume in place. A checklist with no unchecked task means the gate
     // fired on the DONE path — evaluation is next, not another loop run.
-    const planPath = planStatePath(cardId);
-    const planMd = fs.existsSync(/* turbopackIgnore: true */ planPath)
-      ? fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8")
-      : "";
+    const planMd = readPlanState(cardId);
     if (planMd && !firstUnchecked(planMd)) {
       if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
         this.startStage("evaluating", cardId);
