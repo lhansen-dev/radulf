@@ -34,7 +34,11 @@ export async function POST(req: Request, { params }: Ctx) {
 
     if (to === "todo") {
       if (card.status === "todo") {
-        if (typeof body.position !== "number") return err("position required for reorder");
+        // Must be finite: Infinity/NaN slip past typeof and, once persisted,
+        // poison every later queueCard position (max(position) + 1 stays Infinity forever).
+        if (typeof body.position !== "number" || !Number.isFinite(body.position)) {
+          return err("position must be a finite number");
+        }
         db.update(cards)
           .set({ position: body.position, updatedAt: now() })
           .where(eq(cards.id, id))
