@@ -6,7 +6,7 @@ import { scriptKey } from "@/shared/installScripts";
 import { errorMessage } from "@/shared/errorMessage";
 import { execBounded } from "./exec";
 import type { RunSandboxContext } from "./sandbox/context";
-import { wrapBashCommand } from "./sandbox/srt";
+import { runSandboxedCommand } from "./sandbox/srt";
 
 /**
  * The install-script gate (spec 14) — a supply-chain AWARENESS control, not a
@@ -222,24 +222,29 @@ export function sandboxedNpmRunner(ctx: RunSandboxContext): NpmRunner {
     // Same joining as the acceptance probe: the preamble's lines end in
     // `|| true`, so the command must start a line of its own.
     const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
-    let toRun = prefixed;
-    if (ctx.srtConfig) {
-      try {
-        toRun = await wrapBashCommand(prefixed, ctx.srtConfig);
-      } catch (e) {
-        // Could not contain it, so do not run it.
-        return { ok: false, out: `could not sandbox npm rebuild: ${errorMessage(e)}` };
-      }
-    }
     // execBounded rather than a bare exec: SIGTERM at the bound, SIGKILL
     // after, stdin closed — a postinstall that prompts or hangs fails instead
-    // of wedging the approval route.
-    const { err, stdout, stderr, timedOut } = await execBounded("/bin/sh", ["-c", toRun], {
-      cwd,
-      env: ctx.env,
-      timeoutMs: REBUILD_TIMEOUT_MS,
-      maxBuffer: REBUILD_MAX_BUFFER,
-    });
+    // of wedging the approval route. Run inside the sandbox claim, not after
+    // it: a rebuild is the network-heaviest thing Radulf runs, and the
+    // process-wide egress policy has to stay this run's for its duration.
+    const run = (toRun: string) =>
+      execBounded("/bin/sh", ["-c", toRun], {
+        cwd,
+        env: ctx.env,
+        timeoutMs: REBUILD_TIMEOUT_MS,
+        maxBuffer: REBUILD_MAX_BUFFER,
+      });
+    let outcome: Awaited<ReturnType<typeof run>>;
+    try {
+      // Only the wrap can throw here — execBounded reports failures in its
+      // result. Could not contain it, so do not run it.
+      outcome = ctx.srtConfig
+        ? await runSandboxedCommand(prefixed, ctx.srtConfig, run)
+        : await run(prefixed);
+    } catch (e) {
+      return { ok: false, out: `could not sandbox npm rebuild: ${errorMessage(e)}` };
+    }
+    const { err, stdout, stderr, timedOut } = outcome;
     const out = (stdout + stderr).trim();
     if (!err) return { ok: true, out };
     if (timedOut) {
