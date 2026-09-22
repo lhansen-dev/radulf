@@ -20,8 +20,18 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: () => {} }),
 }));
 
+/** jsdom has no EventSource, and the page subscribes to the event stream for
+ * live updates — same stand-in the card detail page's test uses. */
+class MockEventSource {
+  onopen: (() => void) | null = null;
+  onerror: ((e: Event) => void) | null = null;
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  close() {}
+}
+
 beforeEach(() => {
   cleanup();
+  globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
 
   const mockFetch = vi.fn((url: string) => {
     if (url === "/api/cards/c1") {

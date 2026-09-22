@@ -157,7 +157,13 @@ its `finally`; it threads into the pi session's bash spawn hook via
 ## Git
 
 `src/server/git.ts` wraps every git call. Each run gets a worktree on its own
-branch (`createWorktree`), so your checkout is untouched until a merge.
+branch (`createWorktree`), so your checkout is untouched until a merge. Every
+host-side call pins `core.hooksPath=/dev/null` and `core.fsmonitor=false`:
+these run unsandboxed in a worktree the agent has just written to, and a
+relative `core.hooksPath` (husky's) resolves against that worktree. Your own
+hooks therefore do not run on Radulf's merge commits; the reviewed diff is the
+gate. `offRunBranchReason` refuses to commit into a worktree that has left its
+run branch or whose `.git` pointer no longer leads to the repository.
 
 `mergeBranch` is the one write to the user's repo. It checks out the base
 branch, refuses a dirty tree, merges `--no-ff --no-commit` so `.ralph/` can be

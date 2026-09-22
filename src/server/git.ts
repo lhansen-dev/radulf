@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { db, now, worktrees, WORKTREES_DIR } from "@/db";
 import { ClientError } from "./clientError";
 import { execBounded } from "./exec";
+import { realpathBestEffort } from "./sandbox/pathGuard";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -20,6 +21,18 @@ const GIT_REMOTE_TIMEOUT_MS = 10 * 60_000;
 
 type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
 
+// Every git call in this module runs unsandboxed, as the server user, and
+// most of them run inside a worktree the agent has just been writing to. Git
+// executes hooks from `core.hooksPath` — which a repo may set to a RELATIVE
+// path (husky writes `core.hooksPath = .husky/_` into the shared config), and
+// git resolves that against the worktree root, so the agent's own worktree
+// supplies the script the host's `git commit` then runs. `core.fsmonitor`
+// names a command `git status` runs on every invocation. Pinning both here,
+// at highest precedence, means no host-side git ever executes anything a
+// repo or a worktree can name. The cost: the operator's own hooks do not run
+// on Radulf's merge commits either. The reviewed diff is the gate for those.
+const HOST_GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+
 /** Run `git -C cwd ...args` under `execBounded`'s two-signal timeout,
  * rejecting on any failure with the child's output attached to the error. */
 async function execGit(
@@ -28,7 +41,7 @@ async function execGit(
   options: ExecGitOptions = {}
 ): Promise<{ stdout: string; stderr: string }> {
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
-  const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...args], {
+  const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...HOST_GIT_CONFIG, ...args], {
     timeoutMs,
     maxBuffer: MAX_BUFFER,
     ...(options.env ? { env: options.env } : {}),
@@ -93,18 +106,37 @@ export async function currentBranch(repoPath: string, fallback: string): Promise
   return out;
 }
 
+/** The shared git dir a checkout at `cwd` reports, canonical, or null. */
+async function commonDirOf(cwd: string): Promise<string | null> {
+  const { ok, out } = await tryGit(cwd, "rev-parse", "--git-common-dir");
+  if (!ok || !out) return null;
+  return realpathBestEffort(path.isAbsolute(out) ? out : path.resolve(cwd, out));
+}
+
 /**
- * Null when `worktreePath` has `branch` checked out; otherwise why nothing
- * must be committed there. Every orchestrator commit is meant for the run's
- * own `ralph/` branch, and nothing else keeps the worktree on it: an agent
- * that runs `git checkout <base>` inside the worktree routes every commit
- * after it onto the base branch, where the run-end integrity check then
- * reads Radulf's own work as tampering (`integrity.ts`).
+ * Null when `worktreePath` still shares `repoPath`'s git dir and has `branch`
+ * checked out; otherwise why nothing must be committed there. Every
+ * orchestrator commit is meant for the run's own `ralph/` branch, and nothing
+ * else keeps the worktree on it: an agent that runs `git checkout <base>`
+ * inside the worktree routes every commit after it onto the base branch,
+ * where the run-end integrity check then reads Radulf's own work as
+ * tampering (`integrity.ts`).
+ *
+ * The git-dir check comes first because a linked worktree's `.git` is a file
+ * naming its gitdir, and a rewritten pointer hands every host-side git call
+ * here an agent-populated config. Both sandbox layers deny that write; this
+ * is the backstop for a run with the sandbox off, and it turns the failure
+ * into a named reason rather than a commit into the wrong repository.
  */
 export async function offRunBranchReason(
   worktreePath: string,
   branch: string,
+  repoPath: string,
 ): Promise<string | null> {
+  const [expected, actual] = await Promise.all([commonDirOf(repoPath), commonDirOf(worktreePath)]);
+  if (expected === null || actual !== expected) {
+    return `worktree no longer shares the repository's git dir: ${actual ?? "unreadable"}, expected ${expected ?? "unreadable"}`;
+  }
   const { ok, out } = await tryGit(worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD");
   const current = ok && out ? out : null;
   if (current === branch) return null;
@@ -220,6 +252,16 @@ export async function removeWorktree(
 const REVIEW_DIFF_FLAGS = [
   "-c",
   "core.excludesFile=/dev/null",
+  // Keep a non-ASCII path readable and, more to the point, PARSEABLE: git
+  // C-quotes the whole `diff --git` header when a path has a byte it will not
+  // print raw, and the review page prefix-matches those paths to decide
+  // whether to raise its sandbox/self-modifying banners. A header it cannot
+  // parse is a banner that does not fire, which is the same class of problem
+  // as the textconv and `-diff` hijacks the flags below shut down. This does
+  // not cover a `"`, a `\` or a control character in a path — git quotes
+  // those regardless — so `diffHeaderPath` unquotes on the client as well.
+  "-c",
+  "core.quotePath=false",
   "diff",
   "--no-ext-diff",
   "--no-textconv",
@@ -276,14 +318,62 @@ async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }
   return removed;
 }
 
+// mergeBranch operates on repoPath — the ONE shared parent working tree and
+// index, not a per-card worktree. Spec 20 lets different cards in the same
+// repo run concurrently, and each review's own claim only serializes that
+// card's merge against itself (reviewService.ts), so two cards' merges can
+// otherwise interleave on the same index: one's `--no-commit` merge can be
+// clobbered by the other's `status --porcelain` still reading clean before
+// the first commits. Chain merges per repoPath so only one runs against a
+// given repo at a time; a different repoPath gets its own chain, so
+// concurrent cards in different repos are unaffected. globalThis-backed for
+// the same reason as the orchestrator singleton and the event bus
+// (events.ts) — survive Next.js dev hot-reload, one map per process.
+const g = globalThis as unknown as { __radulfMergeLocks?: Map<string, Promise<void>> };
+const mergeLocks = (g.__radulfMergeLocks ??= new Map());
+
+/** Run `fn` after any merge already queued for `repoPath` has settled,
+ * whether it resolved or threw — a failed merge must not wedge every later
+ * merge queued behind it in this repo. The queued tail always resolves
+ * (rejections are swallowed there), only the caller's own `fn()` result can
+ * reject. */
+export async function withRepoMergeLock<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const prior = mergeLocks.get(repoPath) ?? Promise.resolve();
+  const result = prior.then(fn, fn);
+  mergeLocks.set(
+    repoPath,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 /** Merge the ralph branch into the repo's base branch. Always restores the
  * checkout the user's repo was on before the merge — merging must never
- * leave their working copy switched to the base branch. */
+ * leave their working copy switched to the base branch.
+ *
+ * `onCommitted`, if given, fires the instant the merge commit's oid is known
+ * — see `mergeBranchLocked` for why it exists and what it does not cover. */
 export async function mergeBranch(
   repoPath: string,
   baseBranch: string,
   branch: string,
-  message: string
+  message: string,
+  onCommitted?: (mergeCommit: string) => void
+): Promise<{ ok: boolean; mergeCommit?: string; error?: string; conflict?: boolean }> {
+  return withRepoMergeLock(repoPath, () =>
+    mergeBranchLocked(repoPath, baseBranch, branch, message, onCommitted)
+  );
+}
+
+async function mergeBranchLocked(
+  repoPath: string,
+  baseBranch: string,
+  branch: string,
+  message: string,
+  onCommitted?: (mergeCommit: string) => void
 ): Promise<{ ok: boolean; mergeCommit?: string; error?: string; conflict?: boolean }> {
   const original = await git(repoPath, "rev-parse", "--abbrev-ref", "HEAD");
   const restore = async () => {
@@ -322,6 +412,16 @@ export async function mergeBranch(
     return { ok: false, error: `merge commit failed: ${commit.out}` };
   }
   const mergeCommit = await git(repoPath, "rev-parse", "HEAD");
+  // Fire before `restore()`'s checkout, not after: the base ref already moved
+  // at the `commit` above, and `restore()` can be a slow checkout on a large
+  // repo. Every tick it takes is a tick where another card's stale baseline
+  // still thinks the old oid is current (spec 20's noteRadulfRefWrite). This
+  // narrows that window, it does not close it — the ref moved back at
+  // `commit`, before we could have read its new oid here, and that sliver is
+  // unavoidable without inspecting the ref inside the same git process that
+  // wrote it. git.ts stays free of integrity.ts; the caller supplies what to
+  // do with the oid.
+  onCommitted?.(mergeCommit);
   await restore();
   return { ok: true, mergeCommit };
 }

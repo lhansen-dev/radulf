@@ -25,10 +25,21 @@ function loginRequest(password: string, url = "http://localhost/api/auth/login")
   });
 }
 
+// bcryptjs slices its async compare over the REAL setImmediate it captured at
+// load, which fake timers neither replace nor advance. A login's failure stall
+// is scheduled only after the compare resolves, so let those macrotasks run
+// before advancing the fake clock, or the stall is created after the advance
+// and the response never settles.
+const realSetImmediate = setImmediate;
+async function settle(ms: number) {
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => realSetImmediate(resolve));
+  await vi.advanceTimersByTimeAsync(ms);
+}
+
 async function failedLogin(password = "wrong") {
   const response = login(loginRequest(password));
   // Enough to clear the escalating shared-bucket stall (capped at 15s).
-  await vi.advanceTimersByTimeAsync(20_000);
+  await settle(20_000);
   return response;
 }
 
@@ -81,7 +92,7 @@ describe("authentication routes", () => {
     // would slide attempts out of the 60s failure window before the 6th.
     const attempt = async (ip: string) => {
       const response = login(from(ip));
-      await vi.advanceTimersByTimeAsync(BASE_FAILURE_DELAY_MS);
+      await settle(BASE_FAILURE_DELAY_MS);
       return response;
     };
 
@@ -118,7 +129,25 @@ describe("authentication routes", () => {
     for (let i = 0; i < 8; i++) expect((await failedLogin()).status).toBe(401);
 
     const success = login(loginRequest(PASSWORD));
-    await vi.advanceTimersByTimeAsync(20_000);
+    await settle(20_000);
+    expect((await success).status).toBe(307);
+  });
+
+  it("caps concurrent password checks instead of letting a flood pin the CPU", async () => {
+    // Nine at once: eight are checked (and stalled as failures), the ninth is
+    // refused before any bcrypt work with a 503 and no stall. The compare is
+    // async, so the eight in flight yield to the loop while they run.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+
+    const attempts = Array.from({ length: 9 }, () => login(loginRequest("wrong")));
+    await settle(20_000);
+    const statuses = (await Promise.all(attempts)).map((r) => r.status).sort();
+    expect(statuses).toEqual([401, 401, 401, 401, 401, 401, 401, 401, 503]);
+
+    // The slots are released: the right password gets in afterwards.
+    const success = login(loginRequest(PASSWORD));
+    await settle(20_000);
     expect((await success).status).toBe(307);
   });
 
@@ -199,6 +228,14 @@ describe("authentication routes", () => {
       }),
     );
     expect(read.headers.get("x-middleware-next")).toBe("1");
+  });
+
+  it("lets the liveness check through without a session, so a container HEALTHCHECK works with auth on", async () => {
+    const health = await proxy(new NextRequest("http://localhost:3000/api/health", { method: "GET" }));
+    expect(health.headers.get("x-middleware-next")).toBe("1");
+    // Only the liveness GET: every other unauthenticated API call is still refused.
+    const cards = await proxy(new NextRequest("http://localhost:3000/api/cards", { method: "GET" }));
+    expect(cards.status).toBe(401);
   });
 
   it("origin-checks the login route itself, so a session cannot be forced", async () => {

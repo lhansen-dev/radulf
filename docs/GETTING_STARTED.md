@@ -31,6 +31,10 @@ gitignored. There is no migration step to remember.
 All tasks run through the [`Makefile`](../Makefile) — run `make` on its own for
 the full list. It is the single source of truth, and CI calls the same targets.
 
+Deploying to a server rather than your own machine? [Running in Docker](DOCKER.md)
+is the container route: the same build, one volume for state, restarts handled
+by Docker.
+
 ## Log in a provider
 
 Radulf needs at least one provider before it can run anything. For the

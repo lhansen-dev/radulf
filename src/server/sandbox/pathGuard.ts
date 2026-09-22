@@ -71,19 +71,29 @@ export function isInsideOrEqual(child: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+/** The error for a write inside a root that is nonetheless off limits. */
+export function deniedPathMessage(deniedRoots: string[]): string {
+  return `path is inside ${deniedRoots.join(", ")}, which this role may never write to`;
+}
+
 /**
  * Resolve `input` (after `~` expansion, relative to `cwd`) and assert its
- * realpath falls inside one of `allowedRoots`. Returns the resolved realpath
- * on success; throws the single L2 error shape on escape.
+ * realpath falls inside one of `allowedRoots` and none of `deniedRoots`.
+ * Returns the resolved realpath on success; throws the single L2 error shape
+ * on escape, or the denied-path shape for a carve-out inside a root.
  */
 export function guardPath(
   input: string,
   allowedRoots: string[],
   cwd: string,
+  deniedRoots: string[] = [],
 ): string {
   const expanded = expandTilde(input);
   const abs = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
   const real = realpathBestEffort(abs);
+  if (deniedRoots.some((root) => isInsideOrEqual(real, realpathBestEffort(root)))) {
+    throw new Error(deniedPathMessage(deniedRoots));
+  }
   for (const root of allowedRoots) {
     if (isInsideOrEqual(real, realpathBestEffort(root))) return real;
   }

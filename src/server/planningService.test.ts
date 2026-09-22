@@ -98,6 +98,9 @@ const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   createWorktree: vi.fn(),
   tryGit: vi.fn(),
+  // The fixture worktree is not a real checkout; the guard would otherwise
+  // report it as no longer sharing the repository's git dir.
+  offRunBranchReason: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("./harness", async (importOriginal) => ({
@@ -108,6 +111,7 @@ vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
   createWorktree: mocks.createWorktree,
   tryGit: mocks.tryGit,
+  offRunBranchReason: mocks.offRunBranchReason,
 }));
 vi.mock("./settings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./settings")>()),

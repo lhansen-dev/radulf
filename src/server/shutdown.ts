@@ -5,6 +5,12 @@ import { sleep } from "@/shared/sleep";
 // the DB on next boot exactly as it does for a hard crash today; the
 // value-add here is only the common case (idle, or between iterations)
 // exiting cleanly instead of relying on that crash-recovery path every time.
+//
+// Only effective with NEXT_MANUAL_SIG_HANDLE=1 in the environment (the
+// Makefile's `start` target and the Dockerfile set it): otherwise `next
+// start` installs its own SIGTERM/SIGINT handler that exits with 143/130 as
+// soon as open connections close, which is milliseconds when no browser tab
+// or SSE stream is attached, and this drain never gets to run.
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 const SHUTDOWN_POLL_MS = 500;
 

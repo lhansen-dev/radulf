@@ -511,6 +511,7 @@ export function toolsForRole(role: AgentRole | undefined, readOnly: boolean): st
  * | planner   | repo checkout   | `<worktree>/.ralph`|
  * | loop      | worktree        | worktree           |
  * | evaluator | worktree        | worktree           |
+ * | (none)    | cwd             | nothing            |
  *
  * `cwd` is the worktree (the repo checkout, for the planner). The planner may
  * read the whole checkout but write only its `.ralph/` artifacts — it cannot
@@ -519,11 +520,17 @@ export function toolsForRole(role: AgentRole | undefined, readOnly: boolean): st
  * planningService and the loop consume them; the write root is that subtree.)
  * The net doc/`.ralph`-only constraint on the evaluator is enforced by the
  * post-run integrity check (Phase 2a), not L2.
+ *
+ * No role is the read-only sessions (scoping, improvement proposer). They run
+ * against a real checkout, not a worktree, and hold `web_search` — so an
+ * unguarded `read` there was host-wide read and egress in one session, the
+ * pairing the role split exists to prevent. Confined to their cwd, no writes.
  */
 export function pathRootsForRole(
-  role: AgentRole,
+  role: AgentRole | undefined,
   cwd: string,
 ): { readRoots: string[]; writeRoots: string[] } {
+  if (role === undefined) return { readRoots: [cwd], writeRoots: [] };
   if (role === "planner") {
     return { readRoots: [cwd], writeRoots: [path.join(cwd, ".ralph")] };
   }
@@ -644,16 +651,14 @@ export async function createRalphSession(
   const customTools: ToolDefinition[] = [];
   if (tools.includes("bash")) customTools.push(scrubbedBash);
   if (tools.includes("web_search")) customTools.push(webSearch);
-  // Layer 2 path containment (spec 14 Phase 3): for the pipeline roles, the
-  // in-process file tools are replaced by guard-then-delegate wrappers bound
-  // to the role's roots. Human-interactive sessions (chat, improvement proposer — no role)
-  // keep pi's unguarded built-ins. Guarded tools override the built-ins by
-  // name, so only the ones the role's tool set names take effect.
-  if (opts.role) {
-    const { readRoots, writeRoots } = pathRootsForRole(opts.role, opts.cwd);
-    for (const guarded of createGuardedFsTools(opts.cwd, readRoots, writeRoots)) {
-      if (tools.includes(guarded.name)) customTools.push(guarded);
-    }
+  // Layer 2 path containment (spec 14 Phase 3): the in-process file tools are
+  // replaced by guard-then-delegate wrappers bound to the session's roots —
+  // the role's for a pipeline role, the cwd alone for a read-only session
+  // (see pathRootsForRole). Guarded tools override the built-ins by name, so
+  // only the ones the session's tool set names take effect.
+  const { readRoots, writeRoots } = pathRootsForRole(opts.role, opts.cwd);
+  for (const guarded of createGuardedFsTools(opts.cwd, readRoots, writeRoots)) {
+    if (tools.includes(guarded.name)) customTools.push(guarded);
   }
 
   const { session } = await createAgentSession({

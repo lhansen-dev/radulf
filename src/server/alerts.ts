@@ -4,10 +4,14 @@ import { errorMessage } from "@/shared/errorMessage";
 /**
  * Getting one event off this machine.
  *
- * Spec 18 §5. Radulf's only alerting is the browser Notification API raised
+ * Spec 18 §5. Radulf's other alerting is the browser Notification API raised
  * from `useWorkData.ts`, which reaches an operator exactly when a tab is
  * already open on the right machine. The card that prompted this sat in Needs
  * Attention for 86 minutes because nobody had one.
+ *
+ * Callers: the stale sweep this was written for, the two card statuses that
+ * wait on a human the moment they are reached, and an improvement run ending.
+ * Everything past the sweep is opt-out per type — see the `alertOn*` settings.
  *
  * Deliberately a bare webhook rather than an integration: one POST of the same
  * JSON the event stream already carries, which ntfy, Slack's incoming hooks,
@@ -19,11 +23,19 @@ const ALERT_TIMEOUT_MS = 5_000;
 
 export type Alert = {
   type: string;
-  cardId: string;
+  /** Absent on an alert that is not about one card — an improvement run ending
+   * is about its feature branch, and may have landed any number of cards. */
+  cardId?: string;
   title: string;
   message: string;
   url?: string;
 };
+
+/** Whether anything would be sent at all, so a caller can skip building an
+ * alert — and the title lookup behind it — when no webhook is configured. */
+export function alertWebhookConfigured(): boolean {
+  return getSettings().alertWebhookUrl.trim() !== "";
+}
 
 /**
  * Fire-and-forget. A failed alert is logged and dropped: the event is already

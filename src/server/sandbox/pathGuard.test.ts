@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
+  deniedPathMessage,
   guardPath,
   isInsideOrEqual,
   pathBoundaryMessage,
@@ -51,6 +52,19 @@ describe("guardPath — spec 14 Layer 2 containment", () => {
     ["a ~-expanded path under $HOME", "~/.ssh/id_ed25519"],
   ])("rejects %s", (_label, p) => {
     expect(() => guardPath(p, roots, worktree)).toThrow(pathBoundaryMessage(roots));
+  });
+
+  it("rejects a path inside a denied root even when it is inside an allowed one", () => {
+    // A linked worktree's `.git` is a file; a path "under" it still resolves
+    // through realpathBestEffort to the file plus a tail, and is denied too.
+    const dotGit = path.join(worktree, ".git");
+    fs.writeFileSync(dotGit, "gitdir: /somewhere/else");
+    const denied = [dotGit];
+    expect(() => guardPath(".git", roots, worktree, denied)).toThrow(deniedPathMessage(denied));
+    expect(() => guardPath(".git/config", roots, worktree, denied)).toThrow(deniedPathMessage(denied));
+    expect(guardPath("src/a.ts", roots, worktree, denied)).toBe(
+      path.join(fs.realpathSync(worktree), "src", "a.ts"),
+    );
   });
 });
 

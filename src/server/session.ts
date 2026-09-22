@@ -36,22 +36,48 @@ export async function verifySession(value: string): Promise<boolean> {
 
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
 
-  return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), base64urlDecode(sigB64));
+  // A cookie whose signature is not valid base64 is an invalid session, not a
+  // server error: `atob` throws on a stray character, and this runs inside the
+  // proxy on every request, so letting it escape turns any garbage cookie —
+  // truncated by a proxy, or simply sent by anyone who can reach the port —
+  // into a 500 on every route instead of a redirect to /login. Fail closed.
+  let signature: Uint8Array;
+  try {
+    signature = base64urlDecode(sigB64);
+  } catch {
+    return false;
+  }
+
+  return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), signature);
+}
+
+/**
+ * The host (with port) a request was addressed to: the Host header, or the
+ * request URL's when a client sent none. Node's HTTP server always passes the
+ * header through; the fallback is for in-process callers, such as tests.
+ */
+export function requestHost(request: Request): string {
+  return request.headers.get("host") ?? new URL(request.url).host;
 }
 
 /**
  * CSRF backstop: returns true for allowed origins.
  *
- * Accepts localhost origins (any scheme/port) and the deployment host named
- * by the RADULF_ALLOWED_ORIGIN env var (a bare hostname).
+ * Same-origin only: the Origin must name the exact host and port the request
+ * arrived at, or the deployment host named by RADULF_ALLOWED_ORIGIN (a bare
+ * hostname, for a reverse proxy that rewrites Host). This used to accept any
+ * localhost or 127.0.0.1 origin on any port. That is not a boundary: browsers
+ * treat every localhost port as ONE site, so SameSite=Lax still attaches the
+ * session cookie to a request from a page on localhost:8080, and a text/plain
+ * POST from it needs no preflight. Every other local dev server, and every
+ * XSS in one, could approve a review or register a repo.
  */
-export function isAllowedOrigin(origin: string | null): boolean {
+export function isAllowedOrigin(origin: string | null, host: string): boolean {
   if (!origin) return true; // browser won't send Origin for same-origin GET
   try {
     const url = new URL(origin);
     return (
-      url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
+      url.host === host ||
       (!!process.env.RADULF_ALLOWED_ORIGIN &&
         url.hostname === process.env.RADULF_ALLOWED_ORIGIN)
     );
@@ -74,7 +100,7 @@ export function isAllowedOrigin(origin: string | null): boolean {
  */
 export function redirectBase(request: Request): string {
   const origin = request.headers.get("origin");
-  return origin && isAllowedOrigin(origin) ? origin : request.url;
+  return origin && isAllowedOrigin(origin, requestHost(request)) ? origin : request.url;
 }
 
 // ---------------------------------------------------------------------------

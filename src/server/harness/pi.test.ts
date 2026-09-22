@@ -42,6 +42,10 @@ describe("pathRootsForRole — L2 roots (spec 14 Phase 3)", () => {
     expect(pathRootsForRole("planner", wt)).toEqual({ readRoots: [wt], writeRoots: [path.join(wt, ".ralph")] });
     expect(pathRootsForRole("loop", wt)).toEqual({ readRoots: [wt], writeRoots: [wt] });
     expect(pathRootsForRole("evaluator", wt)).toEqual({ readRoots: [wt], writeRoots: [wt] });
+    // Read-only sessions (scoping, proposer): the checkout they were pointed
+    // at, and nothing writable — they hold web_search, so an unguarded read
+    // would be exfiltration's other half.
+    expect(pathRootsForRole(undefined, wt)).toEqual({ readRoots: [wt], writeRoots: [] });
   });
 });
 

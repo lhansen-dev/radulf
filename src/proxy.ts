@@ -15,6 +15,7 @@ import {
   verifySession,
   SESSION_COOKIE,
   isAllowedOrigin,
+  requestHost,
 } from "@/server/session";
 
 // Match everything except Next.js internals and static assets.
@@ -41,10 +42,13 @@ export async function proxy(request: NextRequest) {
   //
   // Non-browser clients (curl, scripts) send no Origin at all and are
   // unaffected: isAllowedOrigin(null) is true. Only a foreign Origin is
-  // rejected, and only browsers attach one.
+  // rejected, and only browsers attach one. "Foreign" means anything but the
+  // host and port this request was addressed to (or RADULF_ALLOWED_ORIGIN):
+  // another localhost port counts, since browsers treat every localhost port
+  // as one site for cookies.
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
     const origin = request.headers.get("origin");
-    if (!isAllowedOrigin(origin)) {
+    if (!isAllowedOrigin(origin, requestHost(request))) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
   }
@@ -55,6 +59,12 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   if (pathname === "/login" || pathname === "/api/auth/login") {
+    return NextResponse.next();
+  }
+  // The liveness check answers a container HEALTHCHECK and a reverse proxy's
+  // probe, neither of which has a session. It reveals nothing but that the
+  // process is up and whether a restart is pending.
+  if (pathname === "/api/health" && request.method === "GET") {
     return NextResponse.next();
   }
 

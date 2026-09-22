@@ -24,8 +24,10 @@ is disabled and Radulf runs in its default no-auth mode.
 
 If you are serving Radulf on a public hostname, also set `RADULF_ALLOWED_ORIGIN`
 to that hostname — for example `RADULF_ALLOWED_ORIGIN=radulf.example.com`.
-Mutating requests are accepted only from localhost origins and, when set, this
-one.
+Mutating requests are accepted only from the page's own origin (the exact host
+and port the request was addressed to) and, when set, this one. A page on
+another `localhost` port is not the same origin, even though browsers send it
+the same cookies.
 
 ## How it behaves
 

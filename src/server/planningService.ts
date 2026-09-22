@@ -12,7 +12,7 @@ import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from 
 import { firstUnchecked } from "./checklist";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { tryGit } from "./git";
+import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import {
@@ -234,6 +234,12 @@ export class PlanningService {
       telemetry = runTelemetry(result);
       const failure = harnessFailure(result, provider, "planner");
       if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+
+      // Both commits below land in this worktree. The planner itself has no
+      // bash and writes only `.ralph/`, but a worktree reused from an earlier
+      // loop run may already have been moved off its branch or repointed.
+      const offBranch = await offRunBranchReason(worktreePath, branch, repo.path);
+      if (offBranch) return fail(offBranch);
 
       // The planner's follow-up questions escape hatch.
       const questions = readRalphFile(worktreePath, "QUESTIONS.md");

@@ -39,6 +39,9 @@ describe("credentialBackstopDenylist", () => {
     expect(list).toContain(path.join(home, ".aws"));
     expect(list).toContain(path.join(home, ".npmrc"));
     expect(list).toContain(path.join(home, ".cargo", "credentials"));
+    // cargo's current spelling, and the desktop keyring store under ~/.local/share.
+    expect(list).toContain(path.join(home, ".cargo", "credentials.toml"));
+    expect(list).toContain(path.join(home, ".local", "share", "keyrings"));
     expect(list.every((p) => p.startsWith(home))).toBe(true);
   });
 });
@@ -58,6 +61,20 @@ describe("toolchainReadRootsFromPath", () => {
       expect.arrayContaining(["/usr/local/bin", "/usr/local", "/opt/homebrew/bin", "/opt/homebrew"]),
     );
     expect(roots).not.toContain("");
+  });
+
+  it("keeps a PATH entry under a protected root but not its parent", () => {
+    // `~/.cargo/bin` must stay readable for cargo to run at all, but its
+    // parent `~/.cargo` holds credentials.toml — a recursive re-allow there
+    // would beat the $HOME deny.
+    const roots = toolchainReadRootsFromPath("/home/u/.cargo/bin:/home/u/.local/share/pnpm:/usr/bin", [
+      "/home/u",
+    ]);
+    expect(roots).toEqual(
+      expect.arrayContaining(["/home/u/.cargo/bin", "/home/u/.local/share/pnpm", "/usr/bin", "/usr"]),
+    );
+    expect(roots).not.toContain("/home/u/.cargo");
+    expect(roots).not.toContain("/home/u/.local/share");
   });
 });
 
@@ -131,6 +148,7 @@ describe("buildFilesystemConfig", () => {
   it("carves the hook/config and ref vectors out of the git-write allow", () => {
     // The `*` patterns are macOS-only. See gitWorktreeDenies.
     expect(cfg.denyWrite).toEqual([
+      "/data/worktrees/run-1/.git",
       "/data/repo/.git/hooks",
       "/data/repo/.git/config",
       "/data/repo/.git/refs",
@@ -160,6 +178,30 @@ describe("buildFilesystemConfig", () => {
     const home = os.homedir();
     for (const root of cfg.allowRead ?? []) {
       expect(home === root || home.startsWith(root.endsWith("/") ? root : root + "/")).toBe(false);
+    }
+  });
+
+  it("regression: a PATH entry under $HOME does not re-open its parent", () => {
+    // Found on a real developer host: `~/.cargo/bin` and `~/.local/share/pnpm`
+    // on PATH made `~/.cargo` and `~/.local/share` recursive allow-read roots,
+    // and srt lets an allow inside a broader deny win — so credentials.toml
+    // and the keyring store were readable despite the $HOME deny.
+    const home = os.homedir();
+    vi.stubEnv("PATH", `${path.join(home, ".cargo", "bin")}:${path.join(home, ".local", "share", "pnpm")}:/usr/bin`);
+    try {
+      const withHomePath = buildFilesystemConfig({
+        worktree: "/data/worktrees/run-1",
+        gitCommonDir: "/data/repo/.git",
+        tmpdir: "/data/runtmp/run-1/tmp",
+        cacheRoot: "/data/runtmp/run-1/cache",
+      });
+      expect(withHomePath.allowRead).toContain(path.join(home, ".cargo", "bin"));
+      expect(withHomePath.allowRead).toContain(path.join(home, ".local", "share", "pnpm"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".cargo"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".local", "share"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".local"));
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });
@@ -309,10 +351,17 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
   let worktree: string;
   let outside: string;
 
+  // What a real linked worktree always carries by the time a run config is
+  // built: `.git` as a pointer FILE. It is on the write-deny list, and bwrap
+  // stubs a missing deny path with a read-only placeholder that outlives the
+  // command, so it has to exist before the first sandboxed command runs.
+  const gitPointer = "gitdir: /repo/.git/worktrees/wt\n";
+
   beforeAll(async () => {
     await initializeSandboxRuntimeOnce();
     worktree = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-"));
     outside = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-outside-"));
+    fs.writeFileSync(path.join(worktree, ".git"), gitPointer);
   });
 
   afterAll(() => {
@@ -371,6 +420,22 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
     const denied = await wrapBashCommand(`echo hi > ${outside}/bad.txt`, config());
     await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
+  });
+
+  it("wrapBashCommand denies rewriting the worktree's .git pointer file, though the worktree is writable", async () => {
+    // A linked worktree's `.git` is a file naming its gitdir. Repointing it at
+    // an agent-populated gitdir would make every host-side git call in the
+    // worktree run that gitdir's fsmonitor and hooks (reproduced pre-fix).
+    const pointer = path.join(worktree, ".git");
+
+    const denied = await wrapBashCommand(`echo 'gitdir: ${worktree}/agent-owned' > ${pointer}`, config());
+    await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
+    expect(fs.readFileSync(pointer, "utf8")).toBe(gitPointer);
+
+    // Reads stay open: agent git has to follow the pointer.
+    const read = await wrapBashCommand(`cat ${pointer}`, config());
+    const { stdout } = await execFileAsync("/bin/sh", ["-c", read]);
+    expect(stdout).toBe(gitPointer);
   });
 
   it("serializes, rather than rejects, concurrent calls whose configs differ only in filesystem paths", async () => {

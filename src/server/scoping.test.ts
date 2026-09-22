@@ -142,6 +142,28 @@ describe("the scoping thread", () => {
     expect(opts.transcriptPath).toContain(path.join("transcripts", "scoping-c1-"));
   });
 
+  it("runs one turn per card at a time, so a burst of posts cannot fan out into parallel sessions", async () => {
+    let finish!: (value: ReturnType<typeof harnessReply>) => void;
+    mocks.runHarness.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const first = scopingTurn("c1", "first");
+    await expect(scopingTurn("c1", "second")).rejects.toMatchObject({
+      status: 409,
+      message: "a scoping turn is already running for this card",
+    });
+    await expect(proposeScopedCard("c1")).rejects.toMatchObject({ status: 409 });
+    // Recording an answer without a reply starts no session, so it is not held.
+    await scopingTurn("c1", "answer", { reply: false });
+
+    finish(harnessReply("Reply to the first."));
+    expect((await first).map((m) => m.content)).toEqual(["first", "answer", "Reply to the first."]);
+    expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+
+    // The turn released its claim on the way out.
+    mocks.runHarness.mockResolvedValue(harnessReply("Reply to the third."));
+    await expect(scopingTurn("c1", "third")).resolves.toBeDefined();
+  });
+
   it("records an answer without a reply when asked, so the planner still sees it", async () => {
     const thread = await scopingTurn("c1", "Per account.", { reply: false });
 

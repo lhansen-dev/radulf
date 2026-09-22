@@ -37,7 +37,7 @@ import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
 import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
 import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
-import { postAlert } from "./alerts";
+import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, removeWorktree, tryGit } from "./git";
@@ -68,6 +68,7 @@ import {
   collectLifecycleScripts,
   lockfileFingerprint,
   rebuildPackages,
+  sandboxedNpmRunner,
   unapprovedScripts,
 } from "./installGate";
 import {
@@ -205,6 +206,14 @@ export class Orchestrator {
   /** Card ID → repoId for every async loop currently running in the
    * background, so pipelineBusy(repoId) needs no extra DB round-trip. */
   private activeLoopCards = new Map<string, string>();
+  /** Card IDs whose install gate cleared into a finished checklist while
+   * their repo was at its concurrency cap (spec 20) — evaluation is owed to
+   * them, not another loop pass, so pump() starts it once a slot frees
+   * rather than approveInstallScripts starting it over the cap. Like
+   * activeLoopCards, this is memory only; a restart loses the queue and
+   * leaves the card in needs_attention for a human, same as any other
+   * interrupted stage. */
+  private pendingEvaluations = new Map<string, string>();
   /** Card IDs that have requested a pause on next iteration boundary. */
   private pausedCards = new Set<string>();
   /** Set on graceful shutdown: pump() starts no new runs, and a running loop
@@ -245,7 +254,17 @@ export class Orchestrator {
     if (options.autoStart !== false) {
       this.recover();
       this.pump();
-      this.attentionTimer = setInterval(() => this.sweepStaleAttention(), ATTENTION_SWEEP_MS);
+      // Guarded: a throw from a timer callback is an uncaught exception, and
+      // nothing above this registers a handler for those, so a busy SQLite
+      // (a VACUUM INTO backup holding the lock past the 5s busy timeout, say)
+      // would take the whole server down once a minute instead of once.
+      this.attentionTimer = setInterval(() => {
+        try {
+          this.sweepStaleAttention();
+        } catch (e) {
+          console.error("[radulf] attention sweep failed:", e);
+        }
+      }, ATTENTION_SWEEP_MS);
       // Never hold the process open for a sweep (same reasoning as the disk
       // watchdog): this is a reminder, not work.
       this.attentionTimer.unref?.();
@@ -379,7 +398,45 @@ export class Orchestrator {
       .run();
     if (result.changes !== 1) return false;
     emitEvent("card.moved", { cardId, payload: { from, to, ...(reason ? { reason } : {}) } });
+    this.alertOnArrival(cardId, to, reason);
     return true;
+  }
+
+  /**
+   * Announce a card the moment it reaches a gate that waits on a human.
+   *
+   * `sweepStaleAttention` only speaks up once a card has already been ignored
+   * for `attentionStaleMinutes`, and it only watches Needs Attention — a diff
+   * cleared into In Review is the thing an operator is most likely to be
+   * waiting for, and it had no way off this machine at all. Every transition
+   * routes through `moveCard`, including the ones `evaluationService` and
+   * `reviewService` drive through `deps`, so this is the one place that sees
+   * them all.
+   */
+  private alertOnArrival(cardId: string, to: CardStatus, reason?: string) {
+    if (to !== "review" && to !== "needs_attention") return;
+    const settings = getSettings();
+    if (!alertWebhookConfigured()) return;
+    if (!(to === "review" ? settings.alertOnReviewReady : settings.alertOnNeedsAttention)) return;
+    const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
+    if (!card) return;
+    void postAlert(
+      to === "review"
+        ? {
+            type: "card.review_ready",
+            cardId,
+            title: `${card.title} is ready for review`,
+            message: reason || "The evaluator cleared the diff.",
+            url: `/review/${cardId}`,
+          }
+        : {
+            type: "card.needs_attention",
+            cardId,
+            title: `${card.title} needs your attention`,
+            message: reason || "The card needs a decision before the pipeline can continue.",
+            url: `/card/${cardId}`,
+          },
+    );
   }
 
   private failIterations(runId: string, summary: string) {
@@ -766,24 +823,48 @@ export class Orchestrator {
     const autoMode = settings.autoMode;
     const limit = this.concurrencyLimit(settings);
     const eligibleTodoRepoIds = planningCandidates(todoCards, autoMode).map((c) => c.repoId);
-    const repoIds = [...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds])];
+    const repoIds = [
+      ...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds, ...this.pendingEvaluations.values()]),
+    ];
 
     for (const repoId of repoIds) {
       const repoReady = readyCards.filter((c) => c.repoId === repoId);
+      // Cards approveInstallScripts queued for evaluating while this repo
+      // was at its cap — oldest queued first, same tie-break as the others.
+      const repoPendingEvaluations = [...this.pendingEvaluations].filter(([, r]) => r === repoId).map(([id]) => id);
       /** Todo cards already handed to startCard in this pass. A planned card
        * that has a plan goes back to Ready rather than consuming a slot, and
        * startCard pumps again, so without this the loop would re-pick it from
        * the stale list forever. */
       const planned = new Set<string>();
       let nextReady = 0;
+      let nextPendingEvaluation = 0;
       // Spec 20: fill every free slot this repo has rather than one card per
       // pump. pipelineLoad is re-read each pass, so a card started by a
       // nested pump() is counted before the next start decision.
       while (this.pipelineLoad(repoId) < limit) {
+        const pendingEvaluationId = repoPendingEvaluations[nextPendingEvaluation++];
+        if (pendingEvaluationId) {
+          this.pendingEvaluations.delete(pendingEvaluationId);
+          // Still needs_attention and unclaimed — a human may have restarted
+          // or cancelled it while it waited.
+          if (getCard(pendingEvaluationId)?.status !== "needs_attention") continue;
+          if (this.moveCard(pendingEvaluationId, "needs_attention", "evaluating", "install scripts approved")) {
+            this.startStage("evaluating", pendingEvaluationId);
+          }
+          continue;
+        }
         const readyCard = repoReady[nextReady++];
         if (readyCard) {
-          // A nested pump may have claimed it since the list was read.
-          if (getCard(readyCard.id)?.status !== "ready") continue;
+          // A nested pump may have claimed it since the list was read — or a
+          // loop may already be starting it: the ready→looping claim comes
+          // after runLoop's awaited worktree and sandbox setup, so the card
+          // still reads as Ready for those seconds, and with a cap above 1 a
+          // pump from any other event in that window would start it twice.
+          // activeLoopCards is set synchronously below, so it is the guard.
+          if (getCard(readyCard.id)?.status !== "ready" || this.activeLoopCards.has(readyCard.id)) {
+            continue;
+          }
           const id = readyCard.id;
           this.activeLoopCards.set(id, repoId);
           void this.runLoop(id)
@@ -866,7 +947,7 @@ export class Orchestrator {
     // A reused worktree (retry, restart) may have been left on another branch
     // by an earlier run's agent. Commit nothing to it; the run fails below,
     // once it has a row to fail.
-    const offBranchAtStart = await offRunBranchReason(worktreePath, branch);
+    const offBranchAtStart = await offRunBranchReason(worktreePath, branch, repo.path);
     if (!offBranchAtStart) {
       await tryGit(worktreePath, "add", ".ralph");
       await tryGit(worktreePath, "commit", "-m", `ralph: sync plan v${plan.version}`);
@@ -879,13 +960,7 @@ export class Orchestrator {
     // Multi-GB allocation — skipped under test, fire-and-forget otherwise.
     if (process.env.NODE_ENV !== "test") void ensureBallast(this.ballastPath());
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
-    if (integrityBaseline) {
-      saveBaseline(runId, integrityBaseline);
-      // Spec 20: with more than one card in flight, another card's approved
-      // merge moves this run's base branch. Registering lets that merge record
-      // its own write here instead of this run reporting it as tampering.
-      registerRunBaseline(runId, repo.path, integrityBaseline);
-    }
+    if (integrityBaseline) saveBaseline(runId, integrityBaseline);
 
     startRunRow(
       { id: runId, cardId, planId: plan.id, kind: "loop", worktreePath, branch, baseBranch, provider, model: loopModel },
@@ -913,7 +988,11 @@ export class Orchestrator {
     this.controllers.set(runId, controller);
     const active = () => this.isRunActive(runId, cardId, controller.signal);
     const fail = (reason: string, status: FinishStatus = "failed") => {
-      this.finishRun(runId, status, reason);
+      // finishRun is false when something else already finalized this run
+      // and moved the card: a cancel, a reset, a disk-watchdog trip. A stale
+      // continuation must not then push a card that was re-queued — or is
+      // running a NEW loop by now — into Needs Attention.
+      if (!this.finishRun(runId, status, reason)) return;
       this.moveCard(cardId, "looping", "needs_attention", reason);
     };
 
@@ -924,6 +1003,9 @@ export class Orchestrator {
       ballastPath: this.ballastPath(),
       onTrip: (reason) => {
         if (this.finishRun(runId, "failed", reason)) {
+          // Parity with endActiveRun: an open iteration row must not outlive
+          // the run it belongs to.
+          this.failIterations(runId, reason);
           this.moveCard(cardId, "looping", "needs_attention", reason);
         }
         controller.abort();
@@ -931,6 +1013,14 @@ export class Orchestrator {
     });
 
     try {
+      // Registered here, inside the try whose finally releases it below, so
+      // every early return in this loop — present or future — releases the
+      // baseline instead of leaking a `liveBaselines` entry for the life of
+      // the process. Spec 20: with more than one card in flight, another
+      // card's approved merge moves this run's base branch. Registering lets
+      // that merge record its own write here instead of this run reporting
+      // it as tampering.
+      if (integrityBaseline) registerRunBaseline(runId, repo.path, integrityBaseline);
       if (offBranchAtStart) return fail(offBranchAtStart);
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
@@ -1064,7 +1154,9 @@ export class Orchestrator {
           clearTimeout(slowTimer);
         }
 
-        if (controller.signal.aborted) return; // cancelCard already finalized
+        // cancelCard already finalized, or the card moved on: nothing below
+        // may touch a run that is no longer the live loop.
+        if (!active()) return;
 
         const failed = Boolean(result.error) || result.code !== 0;
         db.update(iterations)
@@ -1090,7 +1182,7 @@ export class Orchestrator {
         // one command away, and the run-end integrity check would then read
         // the orchestrator's own commits on the base branch as tampering. Stop
         // here, before anything is committed.
-        const offBranch = await offRunBranchReason(worktreePath, branch);
+        const offBranch = await offRunBranchReason(worktreePath, branch, repo.path);
         if (offBranch) return fail(offBranch);
 
         /**
@@ -1216,11 +1308,13 @@ export class Orchestrator {
               continue;
             }
           }
-          this.finishRun(runId, "completed", "done-signal");
+          // Both gated: a cancel or reset that landed during the awaited
+          // bookkeeping above has already finalized this run and moved the
+          // card, and must not be followed by an evaluator run for it.
+          if (!this.finishRun(runId, "completed", "done-signal")) return;
           // Phase 3: every DONE goes through the evaluator before a human
           // sees it. An evaluator crash is a loud failure, not a pass-through.
-          this.moveCard(cardId, "looping", "evaluating");
-          this.startStage("evaluating", cardId);
+          if (this.moveCard(cardId, "looping", "evaluating")) this.startStage("evaluating", cardId);
           return;
         }
         if (result.timedOut) {
@@ -1454,7 +1548,24 @@ export class Orchestrator {
       );
     }
 
-    const rebuild = await rebuildPackages(run.worktreePath, [...new Set(present.map((p) => p.name))]);
+    // The rebuild runs the approved scripts inside the same containment the
+    // agent had, not on the host: the worktree's `.npmrc` and the rest of the
+    // tree are agent-authored. Same fail-loud rule as a run: never fall back
+    // to an unsandboxed rebuild because the runtime is broken.
+    const settings = getSettings();
+    const sandboxError = await sandboxUnavailableReason(settings);
+    if (sandboxError) throw new ClientError(sandboxError);
+    const ctx = await createRunSandbox(`${run.id}-rebuild`, { cwd: run.worktreePath, s: settings });
+    let rebuild: { ok: boolean; out: string };
+    try {
+      rebuild = await rebuildPackages(
+        run.worktreePath,
+        [...new Set(present.map((p) => p.name))],
+        sandboxedNpmRunner(ctx),
+      );
+    } finally {
+      await ctx.cleanup();
+    }
     if (!rebuild.ok) throw new ClientError(`npm rebuild failed: ${rebuild.out.slice(0, 500)}`);
 
     // Transaction, and re-read inside it: with more than one card in flight
@@ -1479,14 +1590,27 @@ export class Orchestrator {
     emitEvent("install.approved", {
       cardId,
       runId: run.id,
-      payload: { packages: present.map((p) => `${p.name}@${p.version}`) },
+      payload: {
+        packages: present.map((p) => `${p.name}@${p.version}`),
+        // Same stamp a run row carries, so "did the approved scripts run
+        // contained" is answerable from the card's history.
+        sandboxed: ctx.srtConfig !== undefined,
+      },
     });
 
     // Resume in place. A checklist with no unchecked task means the gate
     // fired on the DONE path — evaluation is next, not another loop run.
     const planMd = readPlanState(cardId);
     if (planMd && !firstUnchecked(planMd)) {
-      if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
+      // Needs_attention carries no pipeline load (RUNNING_STATUSES doesn't
+      // include it), so this card can queue up behind another one already
+      // holding the repo's only slot. Starting evaluating straight away
+      // would push the repo over its cap (spec 20) — queue it the same way
+      // the ready branch below does, but for evaluating: pump() resumes it,
+      // still skipping the loop, once a slot is free.
+      if (this.pipelineBusy(card.repoId)) {
+        this.pendingEvaluations.set(cardId, card.repoId);
+      } else if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
         this.startStage("evaluating", cardId);
       }
     } else {
@@ -1520,6 +1644,14 @@ export class Orchestrator {
 
   async resetCard(cardId: string) {
     const card = requireCard(cardId);
+    // The UI offers a reset from exactly these; hold the route to the same
+    // rule. A reset mid-run deletes the run rows and plan under a loop whose
+    // awaited continuation is still writing to them, and a reset during the
+    // `reviewing` claim deletes the run row the merge is about to record its
+    // review against, after the merge has already landed on the base branch.
+    if (!["needs_attention", "review", "plan_review"].includes(card.status)) {
+      throw new ClientError(`cannot reset card in status ${card.status}`, 409);
+    }
     const repo = requireRepo(card.repoId);
     this.endActiveRun(cardId, "cancelled", "reset by user");
 

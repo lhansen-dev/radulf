@@ -144,15 +144,18 @@ export function harnessFailure(
   return null;
 }
 
-/** Spec 14 run-end ordering: reap surviving processes before drawing any
- * integrity conclusion, then verify the parent repo. */
+/** Spec 14 run-end ordering: reap surviving processes and verify the group is
+ * empty before drawing any integrity conclusion, then verify the parent repo. */
 export async function integrityViolationReason(
   ctx: RunSandboxContext,
   repoPath: string,
   baseline: RepoIntegrityBaseline | null,
   runBranch: string,
 ): Promise<string | null> {
-  await ctx.reap();
+  const leftover = await ctx.reap();
+  if (leftover.length > 0) {
+    return `surviving process group(s) after reap: ${leftover.join(", ")}`;
+  }
   if (!baseline) return null;
   const violations = await checkRepoIntegrity(repoPath, baseline, { runBranch, checkRefs: true });
   return violations.length > 0 ? `repo integrity violation: ${violations.join("; ")}` : null;

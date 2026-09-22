@@ -70,7 +70,7 @@ function getRunRow(id: string) {
   return db.select().from(improvementRuns).where(eq(improvementRuns.id, id)).get()!;
 }
 
-function resolveCardAs(cardId: string, status: "done" | "needs_attention") {
+function resolveCardAs(cardId: string, status: "done" | "needs_attention" | "backlog") {
   db.update(cards).set({ status, updatedAt: now() }).where(eq(cards.id, cardId)).run();
   emitEvent("card.moved", { cardId, payload: { to: status } });
 }
@@ -92,6 +92,23 @@ describe("awaitCardTerminal", () => {
     const pending = awaitCardTerminal("term-card", 50);
     resolveCardAs("term-card", "done");
     await expect(pending).resolves.toBe("done");
+  });
+
+  it("resolves once the card is cancelled back to backlog", async () => {
+    insertCard("cancelled-card", "todo");
+    const pending = awaitCardTerminal("cancelled-card", 50);
+    resolveCardAs("cancelled-card", "backlog");
+    await expect(pending).resolves.toBe("backlog");
+  });
+
+  // Card deletion (the API route's DELETE handler) emits no bus event, so
+  // only the periodic poll can notice the card is gone — this is the case
+  // the `pollMs` parameter exists to exercise.
+  it("resolves with null once the card is deleted", async () => {
+    insertCard("deleted-card", "todo");
+    const pending = awaitCardTerminal("deleted-card", 50);
+    db.delete(cards).where(eq(cards.id, "deleted-card")).run();
+    await expect(pending).resolves.toBeNull();
   });
 });
 
@@ -162,6 +179,59 @@ describe("driveRun", () => {
     expect(run.tasksCreated).toBe(6);
     expect(run.tasksSucceeded).toBe(1);
     expect(run.consecutiveFailures).toBe(3);
+  });
+
+  // Regression: cancelling a card (orchestrator.cancelCard) parks it in
+  // "backlog", which wasn't a terminal status — the driver awaited it forever,
+  // wedging the run and blocking Stop, which only moves the deadline the
+  // (unreachable) top of the loop would need to check.
+  it("proceeds past a card cancelled to backlog, recorded as not-succeeded", async () => {
+    const runId = insertRun({ id: "run-cancelled" });
+    mocks.proposeOneImprovement.mockResolvedValue({
+      title: "Improvement",
+      description: "d",
+      rationale: "r",
+    });
+    mocks.startCard.mockImplementation((cardId: string) => {
+      resolveCardAs(cardId, "backlog");
+      // Stand in for the deadline having elapsed by the time the loop comes
+      // back around, so the run ends after this one card instead of looping
+      // forever on the mocked proposer.
+      stopImprovementRun(runId);
+    });
+
+    await driveRun(runId);
+
+    expect(mocks.startCard).toHaveBeenCalledTimes(1);
+    const run = getRunRow(runId);
+    expect(run.tasksCreated).toBe(1);
+    expect(run.tasksSucceeded).toBe(0);
+    expect(run.consecutiveFailures).toBe(1);
+    expect(run.status).toBe("stopped");
+  });
+
+  // Regression: same wedge as above, but for a card deleted out from under
+  // the driver instead of cancelled.
+  it("proceeds past a card deleted mid-flight, recorded as not-succeeded", async () => {
+    const runId = insertRun({ id: "run-deleted" });
+    mocks.proposeOneImprovement.mockResolvedValue({
+      title: "Improvement",
+      description: "d",
+      rationale: "r",
+    });
+    mocks.startCard.mockImplementation((cardId: string) => {
+      db.delete(cards).where(eq(cards.id, cardId)).run();
+      stopImprovementRun(runId);
+    });
+
+    await driveRun(runId);
+
+    expect(mocks.startCard).toHaveBeenCalledTimes(1);
+    const run = getRunRow(runId);
+    expect(run.tasksCreated).toBe(1);
+    expect(run.tasksSucceeded).toBe(0);
+    expect(run.consecutiveFailures).toBe(1);
+    expect(run.status).toBe("stopped");
   });
 
   it("reconciles an interrupted in-flight card as a failure on resume", async () => {

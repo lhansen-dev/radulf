@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 import type { Settings } from "./settings";
 
@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   tryGit: vi.fn(),
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
+  startDiskWatchdog: vi.fn(),
+  registerRunBaseline: vi.fn(),
+  releaseRunBaseline: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
    * moving the defaults every other test relies on. */
@@ -30,11 +33,30 @@ vi.mock("./installGate", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./installGate")>()),
   rebuildPackages: mocks.rebuildPackages,
 }));
+// Real ensureBallast (guarded off in test by NODE_ENV), mocked startDiskWatchdog
+// so a test can trip it deterministically instead of waiting on real du/statfs
+// polling.
+vi.mock("./sandbox/diskWatchdog", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./sandbox/diskWatchdog")>()),
+  startDiskWatchdog: mocks.startDiskWatchdog,
+}));
 vi.mock("./providers", () => ({
   listProviderModels: mocks.listProviderModels,
   normalizeProvider: (value: string) => value,
   preflightProvider: mocks.preflightProvider,
 }));
+// Real registerRunBaseline/releaseRunBaseline (wrapped so a test can assert
+// they stay paired), everything else in the module untouched.
+vi.mock("./integrity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./integrity")>();
+  mocks.registerRunBaseline.mockImplementation(actual.registerRunBaseline);
+  mocks.releaseRunBaseline.mockImplementation(actual.releaseRunBaseline);
+  return {
+    ...actual,
+    registerRunBaseline: mocks.registerRunBaseline,
+    releaseRunBaseline: mocks.releaseRunBaseline,
+  };
+});
 vi.mock("./settings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./settings")>()),
   getSettings: () =>
@@ -291,6 +313,7 @@ describe("Orchestrator cancellation lifecycle", () => {
     mocks.preflightProvider.mockResolvedValue(undefined);
     mocks.tryGit.mockImplementation(async () => ({ ok: true, out: "" }));
     mocks.offRunBranchReason.mockResolvedValue(null);
+    mocks.startDiskWatchdog.mockImplementation(() => ({ stop: vi.fn() }));
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "no verdict written in test" });
     delete (globalThis as typeof globalThis & {
@@ -335,6 +358,67 @@ describe("Orchestrator cancellation lifecycle", () => {
       nextIteration.reject(new Error("child exited after abort"));
       await settle();
     }
+  });
+
+  it("starts a Ready card once even when a second pump runs before the loop has claimed it", async () => {
+    // With a cap above 1 there is a free slot, and the ready→looping claim
+    // happens only after runLoop's awaited worktree and sandbox setup. A pump
+    // from any other event in that window (an approval, a planner finishing,
+    // a cancel) saw the card still Ready and started a second loop for it:
+    // two run rows, two worktrees, and the loser's empty worktree became the
+    // card's latest.
+    mocks.settings.maxConcurrentCards = 2;
+    card("twice", "ready");
+    plan("twice");
+    const worktree = deferred<{ worktreePath: string; branch: string }>();
+    mocks.createWorktree.mockImplementation(() => worktree.promise);
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.pump();
+    orchestrator.pump();
+
+    const worktreePath = path.join(testDataDir, "worktrees", "twice");
+    fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+    worktree.resolve({ worktreePath, branch: "ralph/twice" });
+    // The default harness result is a failure, so the one loop that runs
+    // ends in Needs Attention; by then any second loop would have its row.
+    await vi.waitFor(() => expect(getCard("twice").status).toBe("needs_attention"));
+    await settle();
+
+    expect(mocks.createWorktree).toHaveBeenCalledTimes(1);
+    expect(db.select().from(runs).all().filter((run) => run.cardId === "twice")).toHaveLength(1);
+  });
+
+  it("starts no evaluator for a card cancelled after its DONE but before the loop's bookkeeping finished", async () => {
+    // After the harness returns, the loop awaits the branch guard, the
+    // bookkeeping commits, the integrity check, the install gate and the
+    // acceptance probe. A cancel landing in that window finalizes the run and
+    // sends the card to Backlog; the loop's continuation then reached the
+    // DONE handling and started an evaluator run for the Backlog card anyway,
+    // because neither compare-and-swap result was checked.
+    card("late-cancel");
+    plan("late-cancel");
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      writeDone(cwd);
+      return successfulHarnessResult;
+    });
+    const orchestrator = new Orchestrator({ autoStart: false });
+    // The first call is the at-start check; the second is the post-harness
+    // one, the first await of the window — cancel from inside it.
+    mocks.offRunBranchReason.mockResolvedValueOnce(null).mockImplementationOnce(async () => {
+      orchestrator.cancelCard("late-cancel");
+      return null;
+    });
+
+    orchestrator.startCard("late-cancel");
+    await vi.waitFor(() => expect(getRun("late-cancel").status).toBe("cancelled"));
+    // Long enough for a continuation that ignored the cancel to have opened
+    // an evaluator run; nothing here is waiting on a timer.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "late-cancel");
+    expect(cardRuns.map((run) => run.kind)).toEqual(["loop"]);
+    expect(getCard("late-cancel").status).toBe("backlog");
   });
 
   it("moves a Backlog card to the end of Todo without starting it when auto-mode is off", () => {
@@ -445,6 +529,34 @@ describe("Orchestrator cancellation lifecycle", () => {
     expect(run.exitReason).toContain("harness crashed");
     const openIterations = db.select().from(iterations).all()
       .filter((iteration) => iteration.runId === run.id && iteration.status !== "failed");
+    expect(openIterations).toHaveLength(0);
+  });
+
+  it("fails the open iteration when the disk watchdog trips a running loop", async () => {
+    card("watchdog-trip");
+    plan("watchdog-trip");
+    const harness = deferred<never>();
+    mocks.runHarness.mockReturnValueOnce(harness.promise);
+    let trip: ((reason: string) => void) | undefined;
+    mocks.startDiskWatchdog.mockImplementationOnce((opts: { onTrip: (reason: string) => void }) => {
+      trip = opts.onTrip;
+      return { stop: vi.fn() };
+    });
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.startCard("watchdog-trip");
+    await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+    trip!("disk pressure: worktree exceeded 16 GiB");
+    harness.reject(new Error("child exited after abort"));
+    await settle();
+
+    expect(getCard("watchdog-trip").status).toBe("needs_attention");
+    const run = getRun("watchdog-trip");
+    expect(run.status).toBe("failed");
+    expect(run.exitReason).toBe("disk pressure: worktree exceeded 16 GiB");
+    const openIterations = db.select().from(iterations).all()
+      .filter((iteration) => iteration.runId === run.id && iteration.status === "running");
     expect(openIterations).toHaveLength(0);
   });
 
@@ -699,6 +811,42 @@ describe("Orchestrator cancellation lifecycle", () => {
       // Locked decision 5's reason is the machine's unified memory, so a local
       // provider owns it alone however high the operator set the cap.
       expect(getCard("local-second").status).toBe("ready");
+    });
+  });
+
+  describe("loop start CAS loss", () => {
+    it("releases the integrity baseline it registered when the card leaves the queue first", async () => {
+      card("cas-loss", "ready");
+      plan("cas-loss");
+      // A usable git-common-dir, so snapshotRepoIntegrity returns a real
+      // baseline instead of skipping it — otherwise there is nothing here to
+      // leak in the first place.
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) =>
+        args[0] === "rev-parse" && args[1] === "--git-common-dir"
+          ? { ok: true, out: ".git" }
+          : { ok: true, out: "" },
+      );
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+      // pump() runs runLoop synchronously up to its first await, so the card
+      // is still captured as "ready" in the loop's closure — flip the real
+      // row out from under it here to force the loop-start CAS to lose.
+      db.update(cards).set({ status: "backlog" }).where(eq(cards.id, "cas-loss")).run();
+
+      await vi.waitFor(() => {
+        expect(getRun("cas-loss")).toMatchObject({
+          status: "cancelled",
+          exitReason: "card left the queue before the loop started",
+        });
+      });
+      // A card left the queue before the try/finally that owns the baseline
+      // ever opens, so it must never have been registered either — proving
+      // the fix (moving the register call inside that try) rather than just
+      // its symptom. Whichever shape a future fix takes, every register must
+      // still be matched by a release.
+      expect(mocks.registerRunBaseline).not.toHaveBeenCalled();
+      expect(mocks.registerRunBaseline.mock.calls.length).toBe(mocks.releaseRunBaseline.mock.calls.length);
     });
   });
 
@@ -1178,6 +1326,74 @@ describe("Orchestrator cancellation lifecycle", () => {
       orchestrator.sweepStaleAttention();
 
       expect(staleEvents("again")).toHaveLength(2);
+    });
+  });
+
+  describe("alerting a gate the moment it is reached", () => {
+    /** Drive a card through a clean loop and an approving evaluator, which is
+     * the transition into In Review — the one an operator waits on and the one
+     * the stale sweep above never sees, because the sweep only watches Needs
+     * Attention and only after `attentionStaleMinutes`. */
+    async function clearIntoReview(cardId: string) {
+      card(cardId);
+      plan(cardId);
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: approve\n\nAll criteria passed independently.");
+          return successfulHarnessResult;
+        });
+      routeOrchestrator().startCard(cardId);
+      await vi.waitFor(() => expect(getCard(cardId).status).toBe("review"));
+    }
+
+    function stubFetch() {
+      const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("posts a review-ready alert when the evaluator clears a diff", async () => {
+      mocks.settings.alertWebhookUrl = "https://ntfy.example/radulf";
+      const fetchMock = stubFetch();
+
+      await clearIntoReview("alert-review");
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("https://ntfy.example/radulf");
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        type: "card.review_ready",
+        cardId: "alert-review",
+        url: "/review/alert-review",
+      });
+    });
+
+    it("stays quiet when the operator turned that event off", async () => {
+      mocks.settings.alertWebhookUrl = "https://ntfy.example/radulf";
+      mocks.settings.alertOnReviewReady = false;
+      const fetchMock = stubFetch();
+
+      await clearIntoReview("alert-muted");
+      await settle();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("stays quiet when no webhook is configured", async () => {
+      const fetchMock = stubFetch();
+
+      await clearIntoReview("alert-no-hook");
+      await settle();
+
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 
@@ -2095,7 +2311,11 @@ describe("Orchestrator cancellation lifecycle", () => {
       // straight to evaluation — never back to Todo, never a restart.
       await vi.waitFor(() => expect(getCard("gate-approve").status).toBe("review"));
 
-      expect(mocks.rebuildPackages).toHaveBeenCalledWith(expect.any(String), ["native-dep"]);
+      expect(mocks.rebuildPackages).toHaveBeenCalledWith(
+        expect.any(String),
+        ["native-dep"],
+        expect.any(Function),
+      );
       const repoRow = db.select().from(repos).all().find((row) => row.id === "repo-1")!;
       expect(JSON.parse(repoRow.approvedInstallScripts)).toEqual([
         { name: "native-dep", version: "1.2.3", scriptHash: packages[0].scriptHash },
@@ -2144,6 +2364,64 @@ describe("Orchestrator cancellation lifecycle", () => {
           (event) => event.type === "install.gate" && event.cardId === "gate-remembered",
         ),
       ).toBe(false);
+    });
+
+    it("does not exceed the repo's concurrency cap when the gate resumes into evaluating", async () => {
+      mocks.settings.maxConcurrentCards = 1;
+      mocks.rebuildPackages.mockResolvedValue({ ok: true, out: "rebuilt" });
+      // Card A holds repo-1's only slot.
+      card("cap-gate-a", "looping", 0, 0, "repo-1");
+      plan("cap-gate-a");
+      // Card B is parked on the install gate with its checklist already
+      // complete — the state approveInstallScripts sees once a human
+      // approves it: the loop is over, only evaluation is owed to it.
+      card("cap-gate-b", "needs_attention", 0, 0, "repo-1");
+      plan("cap-gate-b");
+      fs.mkdirSync(path.dirname(planStatePath("cap-gate-b")), { recursive: true });
+      fs.writeFileSync(planStatePath("cap-gate-b"), "## Tasks\n- [x] implement the task\n");
+      completedRun("cap-gate-b", "cap-gate-b-run", { exitReason: "install-script gate" });
+      const worktreePath = getRun("cap-gate-b").worktreePath;
+      installEvilPackage(worktreePath);
+      const { scriptHashFor } = await import("./installGate");
+      const scriptHash = scriptHashFor({ postinstall: "node-gyp rebuild" });
+      const orchestrator = routeOrchestrator();
+
+      await orchestrator.approveInstallScripts("cap-gate-b", [
+        { name: "native-dep", version: "1.2.3", scriptHash },
+      ]);
+      await settle();
+
+      // The approval is recorded, but the repo has no free slot — B must not
+      // start a second concurrent harness run alongside A.
+      const repoRow = db.select().from(repos).all().find((row) => row.id === "repo-1")!;
+      expect(JSON.parse(repoRow.approvedInstallScripts)).toEqual([
+        { name: "native-dep", version: "1.2.3", scriptHash },
+      ]);
+      expect(getCard("cap-gate-b").status).toBe("needs_attention");
+      expect(mocks.runHarness).not.toHaveBeenCalled();
+
+      // A finishes and frees the slot. B must resume straight into
+      // evaluating — not a second loop pass, since its checklist was
+      // already complete when it queued.
+      mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        writeEvaluation(cwd, "VERDICT: approve\n\nCriteria pass.");
+        fs.writeFileSync(path.join(cwd, ".ralph", "SUMMARY.md"), "Summary.");
+        return successfulHarnessResult;
+      });
+      db.update(cards).set({ status: "done" }).where(eq(cards.id, "cap-gate-a")).run();
+      orchestrator.pump();
+
+      await vi.waitFor(() => expect(getCard("cap-gate-b").status).toBe("review"));
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
+      const kinds = db
+        .select()
+        .from(runs)
+        .all()
+        .filter((run) => run.cardId === "cap-gate-b")
+        .map((run) => run.kind)
+        .sort();
+      expect(kinds).toEqual(["evaluate", "loop"]);
     });
   });
 
@@ -2396,6 +2674,24 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(runs).all()).toHaveLength(0);
     });
 
+    it("refuses to reset a card that is running or holds the review claim", async () => {
+      // The route accepted any status, so a reset could race a loop's
+      // continuation or the merge inside approveClaimedRun.
+      card("reset-running", "looping");
+      plan("reset-running");
+      completedRun("reset-running", "reset-running-run", { status: "running" });
+      card("reset-claimed", "reviewing");
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      await expect(orchestrator.resetCard("reset-running")).rejects.toMatchObject({
+        status: 409,
+        message: "cannot reset card in status looping",
+      });
+      await expect(orchestrator.resetCard("reset-claimed")).rejects.toMatchObject({ status: 409 });
+      expect(getRun("reset-running").status).toBe("running");
+      expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    });
+
     it("prunes aged terminal rows and orphan transcripts while preserving active history", () => {
       card("old-history", "done");
       plan("old-history");
@@ -2507,6 +2803,34 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(fs.existsSync(sharedWorktree)).toBe(true);
       expect(fs.existsSync(doneSharedWorktree)).toBe(true);
       expect(fs.existsSync(abandonedWorktree)).toBe(false);
+    });
+
+    it("keeps an unfinished card's aged events, which are state and not history", () => {
+      const aged = "2020-01-01T00:00:00.000Z";
+      // Parked on the install gate. The `install.gate` event holds the ONLY
+      // copy of the scripts the operator has to read before approving them,
+      // and the `card.moved` is what sweepStaleAttention anchors on to decide
+      // the card is waiting — lose either and the card cannot be resolved or
+      // announced. A card parked long enough to age past the cutoff is exactly
+      // the one this used to delete.
+      card("gated", "needs_attention");
+      card("finished", "done");
+      db.insert(events)
+        .values([
+          { cardId: "gated", type: "install.gate", payload: JSON.stringify({ packages: [{ name: "left-pad" }] }), createdAt: aged },
+          { cardId: "gated", type: "card.moved", payload: JSON.stringify({ to: "needs_attention" }), createdAt: aged },
+          { cardId: "finished", type: "card.moved", payload: "{}", createdAt: aged },
+          // Card-less lifecycle noise still ages out on the cutoff alone.
+          { cardId: null, type: "improvement.completed", payload: "{}", createdAt: aged },
+        ])
+        .run();
+
+      const result = pruneRuntimeHistory(30);
+
+      expect(result.eventsDeleted).toBe(2);
+      expect(
+        db.select().from(events).all().map((event) => `${event.cardId}:${event.type}`).sort(),
+      ).toEqual(["gated:card.moved", "gated:install.gate"]);
     });
 
     it("is a no-op, not an error, when the worktree directory or row is already gone", () => {

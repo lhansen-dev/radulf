@@ -1,0 +1,25 @@
+# Trims the build context. The runtime stage copies from the build stage,
+# never from the context, so nothing here affects what ships in the image.
+.git
+node_modules
+.next
+coverage
+*.tsbuildinfo
+
+# Runtime state and secrets: never part of an image.
+data
+worktrees
+plans
+runtmp
+.env*
+
+# Agent, design-tool, and CI scaffolding the build does not read.
+.agents
+.claude
+.impeccable
+.github
+PLAN.md
+
+Dockerfile
+compose.yaml
+.dockerignore

@@ -336,12 +336,21 @@ export class ReviewService {
       return this.deliverPullRequest(card, run, repo, baseBranch, expectedStatus, approvedBy);
     }
 
+    // Spec 20: Radulf just moved the base branch. Tell the runs still open on
+    // this repo, or each one reports our own merge as tampering at its run-end
+    // integrity check. The base branch is deliberately outside the managed
+    // namespace (spec 19), so nothing else would excuse this. Passed as a
+    // callback rather than called after `mergeBranch` returns, so it fires the
+    // instant the new oid is known instead of after mergeBranch's own
+    // post-commit checkout restore — see mergeBranchLocked's comment for the
+    // residual window this still leaves.
     const result = await this.restoreOnThrow(card.id, expectedStatus, () =>
       mergeBranch(
         repo.path,
         baseBranch,
         run.branch,
         `ralph: merge "${card.title}" (card ${card.id})`,
+        (mergeCommit) => noteRadulfRefWrite(repo.path, `refs/heads/${baseBranch}`, mergeCommit),
       ),
     );
     if (!result.ok) {
@@ -354,11 +363,6 @@ export class ReviewService {
       return { ok: false, error: result.error };
     }
 
-    // Spec 20: Radulf just moved the base branch. Tell the runs still open on
-    // this repo, or each one reports our own merge as tampering at its run-end
-    // integrity check. The base branch is deliberately outside the managed
-    // namespace (spec 19), so nothing else would excuse this.
-    noteRadulfRefWrite(repo.path, `refs/heads/${baseBranch}`, result.mergeCommit!);
     await this.completeApproval(card, run, repo, { mergeCommit: result.mergeCommit }, result.mergeCommit);
     return { ok: true };
   }
