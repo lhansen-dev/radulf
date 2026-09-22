@@ -6,6 +6,8 @@
  * cannot import `providers.ts` back.
  */
 
+import { sleep } from "@/shared/sleep";
+
 // Transient network hiccups and provider-side overload (5xx/429) are worth a
 // short retry; a bad API key or other 4xx would just fail the same way three
 // times slower, so those are not retried.
@@ -41,7 +43,7 @@ export async function fetchJson(
       err = new Error(`cannot reach ${who}: ${e instanceof Error ? e.message : e}`);
     }
     if (retryable && attempt < FETCH_RETRY_DELAYS_MS.length) {
-      await new Promise((r) => setTimeout(r, FETCH_RETRY_DELAYS_MS[attempt]));
+      await sleep(FETCH_RETRY_DELAYS_MS[attempt]);
       continue;
     }
     throw err;

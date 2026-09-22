@@ -18,6 +18,7 @@ import { git, listBranches } from "./git";
 import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
+import { sleep } from "@/shared/sleep";
 
 export type ImprovementRun = typeof improvementRuns.$inferSelect;
 
@@ -48,13 +49,6 @@ function isTerminalCardStatus(status: CardStatus): boolean {
 // planner) end the run rather than spinning until the deadline.
 const EMPTY_PROPOSAL_LIMIT = 3;
 const EMPTY_PROPOSAL_BACKOFF_MS = 15_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    t.unref?.();
-  });
-}
 
 function getRun(runId: string): ImprovementRun | undefined {
   return db.select().from(improvementRuns).where(eq(improvementRuns.id, runId)).get();

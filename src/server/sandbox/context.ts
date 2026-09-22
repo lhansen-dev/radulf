@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { DATA_DIR, type DiskLimitMechanism } from "@/db";
+import { sleep } from "@/shared/sleep";
 import type { Settings } from "../settings";
 import { agentEnv } from "../harness/types";
 import { setupRunCgroup, killRunCgroup, type RunCgroup } from "./cgroup";
@@ -59,8 +60,6 @@ export type RunSandboxContext = {
 
 const REAP_RETRIES = 10;
 const REAP_RETRY_MS = 100;
-
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 /** True while any process remains in the group. */
 function groupAlive(pgid: number): boolean {
