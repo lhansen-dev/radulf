@@ -4,6 +4,7 @@ import { ClientError } from "./clientError";
 import { browsableRoot } from "./folderBrowser";
 import { tryGit } from "./git";
 import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
+import { errorMessage } from "@/shared/errorMessage";
 
 /** A folder name and nothing more: no separators, not hidden, and nothing git
  * or a shell would read as an option. */
@@ -50,7 +51,7 @@ export async function initRepository(
   try {
     fs.mkdirSync(target);
   } catch (cause) {
-    throw new ClientError(`could not create ${target}: ${cause instanceof Error ? cause.message : cause}`);
+    throw new ClientError(`could not create ${target}: ${errorMessage(cause)}`);
   }
   try {
     await step(target, "init", ["init"]);

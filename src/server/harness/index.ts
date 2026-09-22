@@ -15,6 +15,7 @@ import {
 import { StuckDetector } from "./stuckDetector";
 import { withStreamLiveness } from "./streamLiveness";
 import type { TranscriptEvent, HarnessId } from "./types";
+import { errorMessage } from "@/shared/errorMessage";
 
 /**
  * The slice of the pi AgentSession that runHarness drives. AgentSession
@@ -275,7 +276,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
         });
   } catch (err) {
     await closeTranscript();
-    totals.error = String(err instanceof Error ? err.message : err);
+    totals.error = errorMessage(err);
     return result(1);
   }
 
@@ -353,7 +354,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   try {
     await Promise.race([
       withStreamLiveness(noteActivity, () => session.prompt(opts.prompt)).catch((err) => {
-        promptError = String(err instanceof Error ? err.message : err);
+        promptError = errorMessage(err);
       }),
       watchdog,
     ]);

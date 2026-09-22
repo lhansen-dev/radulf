@@ -14,6 +14,7 @@ import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sa
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR, WORKTREES_DIR } from "@/db";
+import { errorMessage } from "@/shared/errorMessage";
 import { git } from "../git";
 import { isInsideOrEqual } from "./pathGuard";
 
@@ -363,7 +364,7 @@ export function initializeSandboxRuntimeOnce(): Promise<SandboxPreflightResult> 
       } catch (e) {
         return {
           ok: false,
-          errors: [...preflight.errors, `sandbox startup failed: ${e instanceof Error ? e.message : String(e)}`],
+          errors: [...preflight.errors, `sandbox startup failed: ${errorMessage(e)}`],
           warnings: preflight.warnings,
         };
       } finally {

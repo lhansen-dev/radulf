@@ -6,6 +6,7 @@ import { db, now, plans, runs, reviews, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
 import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
 import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
+import { errorMessage } from "@/shared/errorMessage";
 import { getSettings } from "./settings";
 import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
@@ -292,7 +293,7 @@ export class PlanningService {
       deps.moveCard(cardId, "planning", planningDestination(card));
     } catch (error) {
       if (!controller.signal.aborted) {
-        const reason = `planner failed: ${error instanceof Error ? error.message : String(error)}`;
+        const reason = `planner failed: ${errorMessage(error)}`;
         deps.finishRun(runId, "failed", reason.slice(0, 500), telemetry);
         if (deps.getCard(cardId)?.status === "planning") {
           deps.moveCard(cardId, "planning", "needs_attention", reason);

@@ -6,6 +6,7 @@ import { invalid, record } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
 import { parseHeaderLines } from "./localEndpoint";
 import { REASONING_LEVELS } from "@/shared/providers";
+import { errorMessage } from "@/shared/errorMessage";
 
 function readBuiltInPromptTemplate(fileName: string): string {
   return fs.readFileSync(
@@ -305,7 +306,7 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         try {
           parseHeaderLines(settingValue);
         } catch (e) {
-          invalid(`omlxHeaders: ${e instanceof Error ? e.message : e}`);
+          invalid(`omlxHeaders: ${errorMessage(e)}`);
         }
       }
     } else if (PROMPT_TEMPLATE_SETTINGS.has(key)) {

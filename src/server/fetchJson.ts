@@ -7,6 +7,7 @@
  */
 
 import { sleep } from "@/shared/sleep";
+import { errorMessage } from "@/shared/errorMessage";
 
 // Transient network hiccups and provider-side overload (5xx/429) are worth a
 // short retry; a bad API key or other 4xx would just fail the same way three
@@ -40,7 +41,7 @@ export async function fetchJson(
       retryable = isRetryableStatus(res.status);
       err = new Error(`${who} responded ${res.status}: ${(await res.text()).slice(0, 300)}`);
     } catch (e) {
-      err = new Error(`cannot reach ${who}: ${e instanceof Error ? e.message : e}`);
+      err = new Error(`cannot reach ${who}: ${errorMessage(e)}`);
     }
     if (retryable && attempt < FETCH_RETRY_DELAYS_MS.length) {
       await sleep(FETCH_RETRY_DELAYS_MS[attempt]);

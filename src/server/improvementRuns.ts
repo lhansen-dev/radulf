@@ -18,6 +18,7 @@ import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
 import { sleep } from "@/shared/sleep";
+import { errorMessage } from "@/shared/errorMessage";
 
 export type ImprovementRun = typeof improvementRuns.$inferSelect;
 
@@ -401,6 +402,6 @@ async function runDriverLoop(runId: string): Promise<void> {
       recordCardOutcome(runId, (await awaitCardTerminal(cardId)) === "done");
     }
   } catch (e) {
-    finishRun(runId, "failed", `improvement run crashed: ${e instanceof Error ? e.message : String(e)}`);
+    finishRun(runId, "failed", `improvement run crashed: ${errorMessage(e)}`);
   }
 }

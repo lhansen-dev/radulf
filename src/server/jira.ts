@@ -1,5 +1,6 @@
 import { ClientError } from "./clientError";
 import type { Settings } from "./settings";
+import { errorMessage } from "@/shared/errorMessage";
 
 /**
  * Read-only Jira access for the New Task dialog: fetch one issue and shape it
@@ -59,7 +60,7 @@ export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<Jira
       cache: "no-store",
     });
   } catch (e) {
-    throw new ClientError(`cannot reach Jira at ${base}: ${e instanceof Error ? e.message : e}`);
+    throw new ClientError(`cannot reach Jira at ${base}: ${errorMessage(e)}`);
   }
   if (res.status === 401) throw new ClientError("Jira rejected the account email or API token in Settings");
   if (res.status === 403) throw new ClientError(`Jira refused this account access to ${key}`);

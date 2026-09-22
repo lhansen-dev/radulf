@@ -7,6 +7,7 @@ import { getSettings } from "./settings";
 import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
 import { EVALUATOR_CLEARED_EXITS, parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
+import { errorMessage } from "@/shared/errorMessage";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
@@ -272,7 +273,7 @@ export class EvaluationService {
       }
     } catch (error) {
       if (!controller.signal.aborted) {
-        const reason = `evaluator failed: ${error instanceof Error ? error.message : String(error)}`;
+        const reason = `evaluator failed: ${errorMessage(error)}`;
         deps.finishRun(runId, "failed", reason.slice(0, 500));
         if (deps.getCard(cardId)?.status === "evaluating") {
           deps.moveCard(cardId, "evaluating", "needs_attention", reason);

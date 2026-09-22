@@ -53,6 +53,7 @@ import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
 import { RUNNING_STATUSES } from "@/shared/cardStatus";
+import { errorMessage } from "@/shared/errorMessage";
 import { addScopingMessage } from "./scoping";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
@@ -941,7 +942,7 @@ export class Orchestrator {
         if (!active()) return;
       } catch (e) {
         if (!active()) return;
-        return fail(`loop provider unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        return fail(`loop provider unreachable: ${errorMessage(e)}`);
       }
 
       const sandboxError = await sandboxUnavailableReason(settings);
@@ -960,7 +961,7 @@ export class Orchestrator {
           model = models[0].value;
         } catch (e) {
           if (!active()) return;
-          return fail(`failed to resolve oMLX model: ${e instanceof Error ? e.message : String(e)}`);
+          return fail(`failed to resolve oMLX model: ${errorMessage(e)}`);
         }
       }
 

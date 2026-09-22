@@ -1,5 +1,6 @@
 import { isProviderId, listProviderModels } from "@/server/providers";
 import { json, err, handle } from "../../../_lib";
+import { errorMessage } from "@/shared/errorMessage";
 
 type Ctx = { params: Promise<{ provider: string }> };
 
@@ -15,7 +16,7 @@ export async function GET(req: Request, { params }: Ctx) {
     try {
       return json({ models: await listProviderModels(provider, undefined, { force }) });
     } catch (e) {
-      return err(e instanceof Error ? e.message : String(e), 502);
+      return err(errorMessage(e), 502);
     }
   });
 }
