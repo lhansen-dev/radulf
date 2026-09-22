@@ -64,18 +64,41 @@ describe("repository inspection", () => {
     const wt = path.join(os.tmpdir(), `ralph-offbranch-wt-${process.pid}`);
     git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-1");
     try {
-      expect(await offRunBranchReason(wt, "ralph/run-1")).toBeNull();
+      expect(await offRunBranchReason(wt, "ralph/run-1", repo)).toBeNull();
       // The incident shape: the agent checks out a branch nothing else has.
       git(wt, "checkout", "-q", "feature-x");
-      expect(await offRunBranchReason(wt, "ralph/run-1")).toBe(
+      expect(await offRunBranchReason(wt, "ralph/run-1", repo)).toBe(
         "worktree left its run branch: on feature-x, expected ralph/run-1",
       );
       git(wt, "checkout", "-q", "--detach");
-      expect(await offRunBranchReason(wt, "ralph/run-1")).toBe(
+      expect(await offRunBranchReason(wt, "ralph/run-1", repo)).toBe(
         "worktree left its run branch: on a detached HEAD, expected ralph/run-1",
       );
     } finally {
       git(repo, "worktree", "remove", "--force", wt);
+    }
+  });
+
+  it("offRunBranchReason names a worktree whose .git pointer no longer leads to the repository", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-gitdir-wt-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-2");
+    const pointer = path.join(wt, ".git");
+    const original = fs.readFileSync(pointer, "utf8");
+    try {
+      expect(await offRunBranchReason(wt, "ralph/run-2", repo)).toBeNull();
+      // The escape shape: an agent-populated gitdir inside the worktree,
+      // wired up as this checkout's metadata by rewriting the pointer file.
+      const fake = path.join(wt, ".agent-gitdir");
+      git(wt, "init", "-q", fake);
+      execFileSync("git", ["--git-dir", path.join(fake, ".git"), "config", "core.worktree", wt]);
+      fs.writeFileSync(pointer, `gitdir: ${path.join(fake, ".git")}\n`);
+      const reason = await offRunBranchReason(wt, "ralph/run-2", repo);
+      expect(reason).toMatch(/^worktree no longer shares the repository's git dir: /);
+      expect(reason).toContain(fs.realpathSync(path.join(repo, ".git")));
+    } finally {
+      fs.writeFileSync(pointer, original);
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-2");
     }
   });
 

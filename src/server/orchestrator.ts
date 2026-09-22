@@ -929,7 +929,7 @@ export class Orchestrator {
     // A reused worktree (retry, restart) may have been left on another branch
     // by an earlier run's agent. Commit nothing to it; the run fails below,
     // once it has a row to fail.
-    const offBranchAtStart = await offRunBranchReason(worktreePath, branch);
+    const offBranchAtStart = await offRunBranchReason(worktreePath, branch, repo.path);
     if (!offBranchAtStart) {
       await tryGit(worktreePath, "add", ".ralph");
       await tryGit(worktreePath, "commit", "-m", `ralph: sync plan v${plan.version}`);
@@ -1158,7 +1158,7 @@ export class Orchestrator {
         // one command away, and the run-end integrity check would then read
         // the orchestrator's own commits on the base branch as tampering. Stop
         // here, before anything is committed.
-        const offBranch = await offRunBranchReason(worktreePath, branch);
+        const offBranch = await offRunBranchReason(worktreePath, branch, repo.path);
         if (offBranch) return fail(offBranch);
 
         /**

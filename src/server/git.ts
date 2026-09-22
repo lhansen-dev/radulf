@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { db, now, worktrees, WORKTREES_DIR } from "@/db";
 import { ClientError } from "./clientError";
 import { execBounded } from "./exec";
+import { realpathBestEffort } from "./sandbox/pathGuard";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -105,18 +106,37 @@ export async function currentBranch(repoPath: string, fallback: string): Promise
   return out;
 }
 
+/** The shared git dir a checkout at `cwd` reports, canonical, or null. */
+async function commonDirOf(cwd: string): Promise<string | null> {
+  const { ok, out } = await tryGit(cwd, "rev-parse", "--git-common-dir");
+  if (!ok || !out) return null;
+  return realpathBestEffort(path.isAbsolute(out) ? out : path.resolve(cwd, out));
+}
+
 /**
- * Null when `worktreePath` has `branch` checked out; otherwise why nothing
- * must be committed there. Every orchestrator commit is meant for the run's
- * own `ralph/` branch, and nothing else keeps the worktree on it: an agent
- * that runs `git checkout <base>` inside the worktree routes every commit
- * after it onto the base branch, where the run-end integrity check then
- * reads Radulf's own work as tampering (`integrity.ts`).
+ * Null when `worktreePath` still shares `repoPath`'s git dir and has `branch`
+ * checked out; otherwise why nothing must be committed there. Every
+ * orchestrator commit is meant for the run's own `ralph/` branch, and nothing
+ * else keeps the worktree on it: an agent that runs `git checkout <base>`
+ * inside the worktree routes every commit after it onto the base branch,
+ * where the run-end integrity check then reads Radulf's own work as
+ * tampering (`integrity.ts`).
+ *
+ * The git-dir check comes first because a linked worktree's `.git` is a file
+ * naming its gitdir, and a rewritten pointer hands every host-side git call
+ * here an agent-populated config. Both sandbox layers deny that write; this
+ * is the backstop for a run with the sandbox off, and it turns the failure
+ * into a named reason rather than a commit into the wrong repository.
  */
 export async function offRunBranchReason(
   worktreePath: string,
   branch: string,
+  repoPath: string,
 ): Promise<string | null> {
+  const [expected, actual] = await Promise.all([commonDirOf(repoPath), commonDirOf(worktreePath)]);
+  if (expected === null || actual !== expected) {
+    return `worktree no longer shares the repository's git dir: ${actual ?? "unreadable"}, expected ${expected ?? "unreadable"}`;
+  }
   const { ok, out } = await tryGit(worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD");
   const current = ok && out ? out : null;
   if (current === branch) return null;

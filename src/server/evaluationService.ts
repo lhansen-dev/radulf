@@ -171,7 +171,7 @@ export class EvaluationService {
       if (violation) return fail(violation);
 
       // The verdict commit below must land on the run branch and nowhere else.
-      const offBranch = await offRunBranchReason(worktreePath, branch);
+      const offBranch = await offRunBranchReason(worktreePath, branch, repo.path);
       if (offBranch) return fail(offBranch);
 
       // Spec 14: the judge provably cannot edit the implementation it judged.
