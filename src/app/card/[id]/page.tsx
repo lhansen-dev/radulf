@@ -19,7 +19,7 @@ import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
-import { RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
 import { parsePayload } from "@/shared/eventPayload";
 import { errorMessage } from "@/shared/errorMessage";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
@@ -170,11 +170,11 @@ export default function CardDetail() {
     { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
   ];
   const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
-  const menuActions: { label: string; when: string[]; danger?: boolean; run: () => void }[] = [
+  const menuActions: { label: string; when: readonly string[]; danger?: boolean; run: () => void }[] = [
     { label: "Edit task", when: ["backlog", "todo"], run: () => setShowEdit(true) },
     {
       label: "Move to backlog",
-      when: ["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"],
+      when: PULLBACK_STATUSES,
       run: () => {
         if (!(RUNNING_STATUSES as readonly string[]).includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
           post("move", { to: "backlog" });

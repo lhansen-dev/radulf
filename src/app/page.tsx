@@ -21,7 +21,7 @@ import { ImprovementRunDialog } from "./ui/improvementRunDialog";
 import { DetailsMenu } from "./ui/detailsMenu";
 import { useWorkData } from "./ui/useWorkData";
 import { useNow } from "./ui/useNow";
-import { ACTIVE_STATUSES, ATTENTION_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { ACTIVE_STATUSES, ATTENTION_STATUSES, PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
 
 type View = "overview" | "needs" | "active" | "queue" | "backlog" | "done";
@@ -507,7 +507,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
             </>}
             <DetailsMenu detailsClassName="relative ml-auto" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-md text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground" menuClassName="absolute bottom-10 right-0 z-20 w-52 rounded-lg border border-foreground/10 bg-surface p-1 shadow-xl" ariaLabel={`More actions for ${card.title}`} summary="•••">
                 <Link href={`/card/${card.id}`} className="flex min-h-11 items-center rounded-md px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-                {["todo", "planning", "ready", "looping", "evaluating", "paused", "review", "plan_review", "needs_attention"].includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
+                {PULLBACK_STATUSES.includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
                 {["backlog", "todo", "done"].includes(card.status) && <button type="button" onClick={remove} className="w-full rounded-md px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Delete task</button>}
             </DetailsMenu>
           </div>
