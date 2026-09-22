@@ -333,6 +333,7 @@ export default function CardDetail() {
               on={Boolean(card.reviewPlanBeforeImplementation)}
               label="Review plan before implementation"
             />
+            <WorkflowFlag on={Boolean(card.grillMe)} label="Grill me while scoping" />
             <WorkflowFlag
               on={Boolean(card.autoApprove)}
               label="Auto-approve on evaluator pass"
@@ -924,6 +925,7 @@ function EditCardModal({
     loop: detail.card.loopModel ?? "",
     evaluator: detail.card.evaluatorModel ?? "",
   });
+  const [grillMe, setGrillMe] = useState(Boolean(detail.card.grillMe));
   const { providers, models } = useRoleModelOptions();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -941,6 +943,7 @@ function EditCardModal({
           plannerModel: roleModels.planner || null,
           loopModel: roleModels.loop || null,
           evaluatorModel: roleModels.evaluator || null,
+          grillMe,
         },
       });
       onSaved();
@@ -971,6 +974,15 @@ function EditCardModal({
           rows={6}
           className={`${fieldCls} font-mono`}
         />
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          <input
+            type="checkbox"
+            checked={grillMe}
+            onChange={(e) => setGrillMe(e.target.checked)}
+            className="size-4 accent-amber-600"
+          />
+          Grill me while scoping
+        </label>
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>
     </DialogShell>

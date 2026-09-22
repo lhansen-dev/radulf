@@ -1,0 +1,1 @@
+ALTER TABLE `cards` ADD `grill_me` integer DEFAULT 0 NOT NULL;

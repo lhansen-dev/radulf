@@ -165,6 +165,7 @@ describe("card request validation", () => {
       reviewPlanBeforeImplementation: true,
       autoApprove: false,
       openPr: false,
+      grillMe: false,
       baseBranch: "feature/base",
     });
   });

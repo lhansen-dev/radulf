@@ -68,6 +68,14 @@ export const cards = sqliteTable(
     reviewPlanBeforeImplementation: integer("review_plan_before_implementation")
       .notNull()
       .default(0),
+    // Upstream issue 33: run this card's scoping session (spec 17) as a
+    // relentless interview rather than a few questions a turn. The session
+    // maps the card as a design tree and asks each settled frontier in one
+    // numbered round, following the `grilling` skill in mattpocock/skills.
+    // Per-card opt-in with no global counterpart: it buys a much longer
+    // conversation, which is the point on a vague card and pure cost on a
+    // clear one.
+    grillMe: integer("grill_me").notNull().default(0),
     // When set, an evaluator `approve` verdict skips the human In Review gate
     // and merges straight through the same load-bearing review path. Trusts the
     // evaluator. A per-card opt-in that holds even when the global `autoApprove`

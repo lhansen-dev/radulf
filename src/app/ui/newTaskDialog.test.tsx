@@ -302,6 +302,7 @@ describe("NewTaskDialog", () => {
         maxIterations: "",
         timeoutMinutes: "",
         reviewPlanBeforeImplementation: false,
+        grillMe: false,
         autoApprove: false,
         openPr: false,
         baseBranch: null,

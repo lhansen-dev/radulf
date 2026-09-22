@@ -36,6 +36,7 @@ export type CardDetailData = {
     loopModel: string | null;
     evaluatorModel: string | null;
     reviewPlanBeforeImplementation: number;
+    grillMe: number;
     autoApprove: number;
     summary: string | null;
     startedAt: string | null;

@@ -56,6 +56,21 @@ describe("renderScopingPrompt", () => {
     expect(prompt).toContain("DESCRIPTION:\n");
     expect(prompt).toContain("## Acceptance criteria");
   });
+
+  it("paces the interview conversationally unless the card asks to be grilled", () => {
+    expect(renderScopingPrompt(card, [], "reply")).toContain("one to three high-value questions");
+
+    const grilled = renderScopingPrompt({ ...card, grillMe: 1 }, [], "reply");
+
+    // Upstream issue 33: the grilling protocol, not a few questions a turn.
+    expect(grilled).not.toContain("one to three high-value questions");
+    expect(grilled).toContain("DESIGN TREE");
+    expect(grilled).toContain("FRONTIER");
+    expect(grilled).toContain("**Q1**");
+    // Still the same session: repo-grounded, and it still ends with a card.
+    expect(grilled).toContain("read-only tools");
+    expect(grilled).toContain("offer to write the scoped card");
+  });
 });
 
 describe("parseScopedCardProposal", () => {

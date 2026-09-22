@@ -42,15 +42,50 @@ const SPEAKER: Record<ScopingRole, string> = {
   loop: "Implementation loop",
 };
 
+/** Default pacing: a few questions a turn, conversationally. */
+const PACE_CONVERSATIONAL =
+  "- Ask one to three high-value questions per turn, then stop and wait. Offer plausible " +
+  "options when useful, recommend one, and say its tradeoff.";
+
+/**
+ * Grill-me pacing (upstream issue 33), following the `grilling` skill in
+ * mattpocock/skills: a design tree worked in rounds, each round asking every
+ * question whose prerequisites are settled, rather than a few questions a
+ * turn. Opt-in per card via `cards.grillMe`, because what it buys is a much
+ * longer conversation.
+ */
+const PACE_GRILLING = [
+  "- Grill the operator. Map this card as a DESIGN TREE: every decision branches into the",
+  "  decisions that hang off it. Work the tree in ROUNDS. The FRONTIER is every decision whose",
+  "  prerequisites are already settled, so you can ask about it now without guessing at an",
+  "  answer you have not heard yet. Ask the WHOLE frontier in one round, then stop and wait. A",
+  "  question whose answer depends on another question still open in this round belongs to a",
+  "  later round, not this one.",
+  "- Number the questions and give each one your recommended answer. Format a round exactly",
+  "  like this, with a `---` line between questions:",
+  "",
+  "  ❓ **Q1** - **<question title>**: <question body, which may include options>",
+  "",
+  "  ➡️ <your recommended answer>",
+  "",
+  "- Finding FACTS is your job, never the operator's: read the repository for anything you",
+  "  could look up yourself. The DECISIONS are theirs, so put each one to them and wait.",
+  "- Every answer reshapes the tree: settled decisions push the frontier outward and unblock",
+  "  questions that depended on them. Recompute the frontier and ask the next round. You are",
+  "  finished when the frontier is empty and nothing is left silently assumed. Say so then,",
+  "  and offer to write the scoped card.",
+].join("\n");
+
 /**
  * The scoping session's prompt (spec 17). Each turn re-sends the whole thread
  * as one prompt: the session is a fresh read-only harness invocation against
  * the card's repository, so the thread in the database is the only memory.
  * `request` picks the tail — the next message to the operator, or the scoped
- * card the thread has been working towards.
+ * card the thread has been working towards. The card's `grillMe` flag picks
+ * the pacing.
  */
 export function renderScopingPrompt(
-  card: { title: string; description: string },
+  card: { title: string; description: string; grillMe?: number },
   messages: Pick<ScopingMessage, "role" | "content">[],
   request: "reply" | "proposal",
 ): string {
@@ -74,8 +109,7 @@ export function renderScopingPrompt(
       "result, the smallest useful scope and what it excludes, observable acceptance criteria " +
       "with a feasible way to verify each, and the constraints that matter. Challenge vague words " +
       "such as \"better\", \"clean up\", or \"support X\" with concrete scenarios.\n" +
-      "- Ask one to three high-value questions per turn, then stop and wait. Offer plausible " +
-      "options when useful, recommend one, and say its tradeoff.\n" +
+      `${card.grillMe ? PACE_GRILLING : PACE_CONVERSATIONAL}\n` +
       "- Ask about product decisions; leave ordinary implementation choices to the planner.\n" +
       "- Briefly reflect the settled decisions when they change. Never repeat an answered " +
       "question, and never treat silence as agreement.\n" +
