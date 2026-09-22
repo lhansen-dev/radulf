@@ -45,10 +45,7 @@ export async function proxy(request: NextRequest) {
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
     const origin = request.headers.get("origin");
     if (!isAllowedOrigin(origin)) {
-      return new NextResponse(JSON.stringify({ error: "Forbidden" }), {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      });
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
   }
 
@@ -65,10 +62,7 @@ export async function proxy(request: NextRequest) {
   const valid = sessionValue ? await verifySession(sessionValue) : false;
   if (!valid) {
     if (pathname.startsWith("/api/")) {
-      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     return NextResponse.redirect(new URL("/login", request.url));
   }
