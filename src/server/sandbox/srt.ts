@@ -15,6 +15,7 @@ import { createLocalBashOperations, type BashOperations } from "@earendil-works/
 
 import { DATA_DIR, WORKTREES_DIR } from "@/db";
 import { git } from "../git";
+import { isInsideOrEqual } from "./pathGuard";
 
 /**
  * Layer 1 — OS sandbox on agent bash (spec 14 Phase 6), via
@@ -78,29 +79,19 @@ export function systemReadRoots(): string[] {
 }
 
 /**
- * True when `candidate` is `target` itself or a proper ancestor directory of
- * it. srt's read-allow is a *recursive* subpath match, so an `allowRead`
- * entry that is an ancestor of a supposedly-denied root re-opens that whole
- * root — this is the check that stops that from happening by accident.
- */
-function isAncestorOrSelf(candidate: string, target: string): boolean {
-  if (candidate === target) return true;
-  const prefix = candidate.endsWith(path.sep) ? candidate : candidate + path.sep;
-  return target.startsWith(prefix);
-}
-
-/**
  * Drop any candidate read-allow root that would, by containing one of
  * `protectedRoots` (or being `/` itself), silently re-open it — e.g. a PATH
  * entry of `/bin` naively contributing `/` (its `dirname`) as an "allow"
  * would recursively re-open the entire filesystem, defeating `$HOME`'s
- * deny outright. Narrow re-allows genuinely *inside* a protected root
+ * deny outright. srt's read-allow is a *recursive* subpath match, so an
+ * `allowRead` entry that is an ancestor of a supposedly-denied root re-opens
+ * that whole root. Narrow re-allows genuinely *inside* a protected root
  * (`~/.nvm` inside `$HOME`) are unaffected — this only rejects candidates
  * that are the protected root or broader.
  */
 export function dropRootsThatWouldReopen(candidates: string[], protectedRoots: string[]): string[] {
   return candidates.filter(
-    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isAncestorOrSelf(c, protectedRoot)),
+    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isInsideOrEqual(protectedRoot, c)),
   );
 }
 
