@@ -372,11 +372,7 @@ export default function CardDetail() {
           >
             ← Back to runs
           </button>
-          <TranscriptView
-            fallback={null}
-            selected={transcript}
-            live={card.status === "looping" || card.status === "evaluating" || card.status === "planning" || card.status === "plan_review"}
-          />
+          <TranscriptView target={transcript} />
         </section>
       ) : (
         <section className="flex flex-col gap-4">
@@ -539,16 +535,11 @@ type StreamLine = Record<string, unknown> & { t?: string };
 // accumulate lines indefinitely, so this is now purely a memory backstop.
 const MAX_TRANSCRIPT_LINES = 20_000;
 
-function TranscriptView({
-  selected,
-  fallback,
-  live,
-}: {
-  selected: TranscriptTarget | null;
-  fallback: TranscriptTarget | null;
-  live: boolean;
-}) {
-  const target = selected ?? fallback;
+function TranscriptView({ target }: { target: TranscriptTarget | null }) {
+  // Live is the run's state, not the card's: a finished planning run's
+  // transcript never changes while the loop runs, so it has nothing to
+  // subscribe to.
+  const live = target?.live ?? false;
   const [lines, setLines] = useState<StreamLine[]>([]);
   const [showJump, setShowJump] = useState(false);
   const [historyTruncated, setHistoryTruncated] = useState(false);

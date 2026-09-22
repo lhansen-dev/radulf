@@ -289,6 +289,7 @@ describe("RunsTable", () => {
       {
         runId: "r-plan",
         iteration: 0,
+        live: false,
         provider: "anthropic",
         model: "opus",
         reasoningLevel: "high",

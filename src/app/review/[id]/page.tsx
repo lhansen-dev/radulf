@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "../../ui/api";
+import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
 import { parseEvaluation } from "@/shared/evaluation";
@@ -87,10 +88,7 @@ export default function ReviewPage() {
   const loopRun = detail?.runs.find((r) => r.kind === "loop" && r.status === "completed");
   const plan = detail?.plans[0];
   const planTag = detail ? plannerModelTag(detail.runs) : null;
-  const wallTime =
-    loopRun?.endedAt && loopRun.startedAt
-      ? Math.round((new Date(loopRun.endedAt).getTime() - new Date(loopRun.startedAt).getTime()) / 60000)
-      : null;
+  const wallTime = loopRun?.endedAt ? formatDuration(loopRun.startedAt, loopRun.endedAt) : null;
 
   async function decide(decision: "approved" | "rejected") {
     if (!loopRun) return;
@@ -157,7 +155,7 @@ export default function ReviewPage() {
       )}
       <div className="text-sm text-foreground/60">
         {loopRun ? `${loopRun.iterationsDone} iterations` : "no completed loop run"}
-        {wallTime !== null && ` · ${wallTime} min wall time`}
+        {wallTime && ` · ${wallTime} wall time`}
         {diff && ` · ${diff.stat.trim() || "no source changes"} · branch ${diff.branch}`}
       </div>
       {error && <p className="text-red-400 text-sm">{error}</p>}

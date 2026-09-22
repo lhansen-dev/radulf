@@ -14,6 +14,8 @@ import { useNow } from "../../ui/useNow";
 export type TranscriptTarget = {
   runId: string;
   iteration: number;
+  /** Whether the run is still executing, so the view should follow pushes. */
+  live: boolean;
   provider?: string | null;
   model?: string | null;
   reasoningLevel?: string | null;
@@ -241,6 +243,7 @@ function RunDetail({
     onOpenTranscript({
       runId: run.id,
       iteration,
+      live: run.status === "running",
       provider: run.provider,
       model: run.model,
       reasoningLevel,
