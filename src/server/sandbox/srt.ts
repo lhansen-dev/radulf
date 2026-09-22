@@ -387,9 +387,10 @@ export function resetSandboxRuntimeForTests(): void {
  * wrap-and-`updateConfig` step one at a time, in arrival order, without
  * rejecting any of them. `queueDepth`/`queuedConfig` exist only for the
  * narrower safety check kept below: don't delete either without first
- * making network policy genuinely per-call (today it's always derived from
- * global settings, so it can never actually differ across calls — see the
- * check itself for why that's still verified at runtime, not assumed).
+ * making network policy genuinely per-call (today it's derived from the
+ * Settings snapshot each run takes at start, so it differs across calls
+ * only when the allowlist setting changes between two overlapping runs —
+ * see the check itself).
  */
 let sandboxQueueTail: Promise<void> = Promise.resolve();
 let queueDepth = 0;
@@ -469,13 +470,14 @@ export async function wrapBashCommand(
   command: string,
   runConfig: SandboxRuntimeConfig,
 ): Promise<string> {
-  // Real (not hardcoded-"always equal") safety check: today every caller's
-  // config is derived from the same global settings, so this never actually
-  // trips — but if per-run network policy is ever added, two genuinely
-  // different concurrent configs must still fail loudly rather than one
-  // silently overwriting the other's `updateConfig()` call. Compares only
-  // the network-policy slice (PLAN.md Phase 19.1) — the per-run filesystem
-  // config is expected to differ on every call and must never factor in.
+  // Real (not hardcoded-"always equal") safety check. Every run derives its
+  // network policy from the Settings snapshot taken at its start
+  // (context.ts), so two overlapping runs differ only when an operator edits
+  // `sandboxNetworkAllowlist` between their starts — and then this trips for
+  // the later run rather than letting its `updateConfig()` silently overwrite
+  // the earlier run's policy. Compares only the network-policy slice
+  // (PLAN.md Phase 19.1) — the per-run filesystem config is expected to
+  // differ on every call and must never factor in.
   const incomingPolicy = networkPolicySlice(runConfig);
   if (queueDepth > 0 && queuedConfig !== null && !sandboxConfigsEqual(queuedConfig, incomingPolicy)) {
     throw new Error(
