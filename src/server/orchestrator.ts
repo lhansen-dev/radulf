@@ -205,6 +205,14 @@ export class Orchestrator {
   /** Card ID → repoId for every async loop currently running in the
    * background, so pipelineBusy(repoId) needs no extra DB round-trip. */
   private activeLoopCards = new Map<string, string>();
+  /** Card IDs whose install gate cleared into a finished checklist while
+   * their repo was at its concurrency cap (spec 20) — evaluation is owed to
+   * them, not another loop pass, so pump() starts it once a slot frees
+   * rather than approveInstallScripts starting it over the cap. Like
+   * activeLoopCards, this is memory only; a restart loses the queue and
+   * leaves the card in needs_attention for a human, same as any other
+   * interrupted stage. */
+  private pendingEvaluations = new Map<string, string>();
   /** Card IDs that have requested a pause on next iteration boundary. */
   private pausedCards = new Set<string>();
   /** Set on graceful shutdown: pump() starts no new runs, and a running loop
@@ -804,20 +812,37 @@ export class Orchestrator {
     const autoMode = settings.autoMode;
     const limit = this.concurrencyLimit(settings);
     const eligibleTodoRepoIds = planningCandidates(todoCards, autoMode).map((c) => c.repoId);
-    const repoIds = [...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds])];
+    const repoIds = [
+      ...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds, ...this.pendingEvaluations.values()]),
+    ];
 
     for (const repoId of repoIds) {
       const repoReady = readyCards.filter((c) => c.repoId === repoId);
+      // Cards approveInstallScripts queued for evaluating while this repo
+      // was at its cap — oldest queued first, same tie-break as the others.
+      const repoPendingEvaluations = [...this.pendingEvaluations].filter(([, r]) => r === repoId).map(([id]) => id);
       /** Todo cards already handed to startCard in this pass. A planned card
        * that has a plan goes back to Ready rather than consuming a slot, and
        * startCard pumps again, so without this the loop would re-pick it from
        * the stale list forever. */
       const planned = new Set<string>();
       let nextReady = 0;
+      let nextPendingEvaluation = 0;
       // Spec 20: fill every free slot this repo has rather than one card per
       // pump. pipelineLoad is re-read each pass, so a card started by a
       // nested pump() is counted before the next start decision.
       while (this.pipelineLoad(repoId) < limit) {
+        const pendingEvaluationId = repoPendingEvaluations[nextPendingEvaluation++];
+        if (pendingEvaluationId) {
+          this.pendingEvaluations.delete(pendingEvaluationId);
+          // Still needs_attention and unclaimed — a human may have restarted
+          // or cancelled it while it waited.
+          if (getCard(pendingEvaluationId)?.status !== "needs_attention") continue;
+          if (this.moveCard(pendingEvaluationId, "needs_attention", "evaluating", "install scripts approved")) {
+            this.startStage("evaluating", pendingEvaluationId);
+          }
+          continue;
+        }
         const readyCard = repoReady[nextReady++];
         if (readyCard) {
           // A nested pump may have claimed it since the list was read.
@@ -1527,7 +1552,15 @@ export class Orchestrator {
     // fired on the DONE path — evaluation is next, not another loop run.
     const planMd = readPlanState(cardId);
     if (planMd && !firstUnchecked(planMd)) {
-      if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
+      // Needs_attention carries no pipeline load (RUNNING_STATUSES doesn't
+      // include it), so this card can queue up behind another one already
+      // holding the repo's only slot. Starting evaluating straight away
+      // would push the repo over its cap (spec 20) — queue it the same way
+      // the ready branch below does, but for evaluating: pump() resumes it,
+      // still skipping the loop, once a slot is free.
+      if (this.pipelineBusy(card.repoId)) {
+        this.pendingEvaluations.set(cardId, card.repoId);
+      } else if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
         this.startStage("evaluating", cardId);
       }
     } else {

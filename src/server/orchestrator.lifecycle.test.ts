@@ -2250,6 +2250,64 @@ describe("Orchestrator cancellation lifecycle", () => {
         ),
       ).toBe(false);
     });
+
+    it("does not exceed the repo's concurrency cap when the gate resumes into evaluating", async () => {
+      mocks.settings.maxConcurrentCards = 1;
+      mocks.rebuildPackages.mockResolvedValue({ ok: true, out: "rebuilt" });
+      // Card A holds repo-1's only slot.
+      card("cap-gate-a", "looping", 0, 0, "repo-1");
+      plan("cap-gate-a");
+      // Card B is parked on the install gate with its checklist already
+      // complete — the state approveInstallScripts sees once a human
+      // approves it: the loop is over, only evaluation is owed to it.
+      card("cap-gate-b", "needs_attention", 0, 0, "repo-1");
+      plan("cap-gate-b");
+      fs.mkdirSync(path.dirname(planStatePath("cap-gate-b")), { recursive: true });
+      fs.writeFileSync(planStatePath("cap-gate-b"), "## Tasks\n- [x] implement the task\n");
+      completedRun("cap-gate-b", "cap-gate-b-run", { exitReason: "install-script gate" });
+      const worktreePath = getRun("cap-gate-b").worktreePath;
+      installEvilPackage(worktreePath);
+      const { scriptHashFor } = await import("./installGate");
+      const scriptHash = scriptHashFor({ postinstall: "node-gyp rebuild" });
+      const orchestrator = routeOrchestrator();
+
+      await orchestrator.approveInstallScripts("cap-gate-b", [
+        { name: "native-dep", version: "1.2.3", scriptHash },
+      ]);
+      await settle();
+
+      // The approval is recorded, but the repo has no free slot — B must not
+      // start a second concurrent harness run alongside A.
+      const repoRow = db.select().from(repos).all().find((row) => row.id === "repo-1")!;
+      expect(JSON.parse(repoRow.approvedInstallScripts)).toEqual([
+        { name: "native-dep", version: "1.2.3", scriptHash },
+      ]);
+      expect(getCard("cap-gate-b").status).toBe("needs_attention");
+      expect(mocks.runHarness).not.toHaveBeenCalled();
+
+      // A finishes and frees the slot. B must resume straight into
+      // evaluating — not a second loop pass, since its checklist was
+      // already complete when it queued.
+      mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+        writeEvaluation(cwd, "VERDICT: approve\n\nCriteria pass.");
+        fs.writeFileSync(path.join(cwd, ".ralph", "SUMMARY.md"), "Summary.");
+        return successfulHarnessResult;
+      });
+      db.update(cards).set({ status: "done" }).where(eq(cards.id, "cap-gate-a")).run();
+      orchestrator.pump();
+
+      await vi.waitFor(() => expect(getCard("cap-gate-b").status).toBe("review"));
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
+      const kinds = db
+        .select()
+        .from(runs)
+        .all()
+        .filter((run) => run.cardId === "cap-gate-b")
+        .map((run) => run.kind)
+        .sort();
+      expect(kinds).toEqual(["evaluate", "loop"]);
+    });
   });
 
   describe("review and abandon routes", () => {
