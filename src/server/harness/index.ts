@@ -316,19 +316,27 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     opts.stallTimeoutMs === undefined
       ? Math.max(30_000, s().stallTimeoutSeconds * 1000)
       : opts.stallTimeoutMs;
-  let stallTimer: NodeJS.Timeout | undefined;
-  const resetStallTimer = () => {
-    if (stallTimeoutMs <= 0) return;
-    clearTimeout(stallTimer);
-    stallTimer = setTimeout(() => trip(() => (stalled = true)), stallTimeoutMs);
+  // Activity is a timestamp, not a timer reset: every session event and every
+  // SSE chunk notes it, and one timer, re-armed only when it fires, checks it.
+  let lastActivityMs = Date.now();
+  const noteActivity = () => {
+    lastActivityMs = Date.now();
   };
-  resetStallTimer();
+  let stallTimer: NodeJS.Timeout | undefined;
+  const armStallTimer = (delayMs: number) => {
+    stallTimer = setTimeout(() => {
+      const idleMs = Date.now() - lastActivityMs;
+      if (idleMs >= stallTimeoutMs) trip(() => (stalled = true));
+      else armStallTimer(stallTimeoutMs - idleMs);
+    }, delayMs);
+  };
+  if (stallTimeoutMs > 0) armStallTimer(stallTimeoutMs);
 
   const onAbort = () => trip(() => {});
   opts.signal?.addEventListener("abort", onAbort, { once: true });
 
   const unsubscribe = session.subscribe((evt) => {
-    resetStallTimer();
+    noteActivity();
     // Reply-size guard: counted from the streaming deltas so the session is
     // aborted before an oversized reply lands in the context window.
     if (evt.type === "message_start" || evt.type === "message_end") {
@@ -361,7 +369,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   let promptError = "";
   try {
     await Promise.race([
-      withStreamLiveness(resetStallTimer, () => session.prompt(opts.prompt)).catch((err) => {
+      withStreamLiveness(noteActivity, () => session.prompt(opts.prompt)).catch((err) => {
         promptError = String(err instanceof Error ? err.message : err);
       }),
       watchdog,

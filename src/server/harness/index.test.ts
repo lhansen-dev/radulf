@@ -206,9 +206,10 @@ describe("runHarness watchdogs", () => {
   }
 
   /** Like `run`, on fake timers advanced by `ms` so time-based watchdogs trip
-   * without the test waiting on a real clock. */
+   * without the test waiting on a real clock. Date is faked too: the stall
+   * watchdog compares Date.now() against its last-activity timestamp. */
   async function runFor(ms: number, script: Script, opts: Parameters<typeof run>[1] = {}) {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const pending = run(script, opts);
     await vi.advanceTimersByTimeAsync(ms);
     return pending;
