@@ -14,6 +14,7 @@ import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sa
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR, WORKTREES_DIR } from "@/db";
+import { git } from "../git";
 
 /**
  * Layer 1 — OS sandbox on agent bash (spec 14 Phase 6), via
@@ -142,10 +143,8 @@ export function toolchainHomeReAllows(): string[] {
  * write access here (objects, the worktree's own index) except for the
  * hook/config and ref vectors carved out below.
  */
-export function resolveGitCommonDir(worktree: string): string {
-  const out = execFileSync("git", ["-C", worktree, "rev-parse", "--git-common-dir"], {
-    encoding: "utf8",
-  }).trim();
+export async function resolveGitCommonDir(worktree: string): Promise<string> {
+  const out = await git(worktree, "rev-parse", "--git-common-dir");
   return path.isAbsolute(out) ? out : path.resolve(worktree, out);
 }
 

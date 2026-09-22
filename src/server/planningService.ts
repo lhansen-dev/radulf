@@ -188,7 +188,7 @@ export class PlanningService {
     // Spec 14 Phase 3: the planner's ONLY L2 write root is the worktree's
     // `.ralph/` — ensure it exists so the write root resolves.
     fs.mkdirSync(path.join(/* turbopackIgnore: true */ worktreePath, ".ralph"), { recursive: true });
-    const ctx = createRunSandbox(runId);
+    const ctx = await createRunSandbox(runId);
     startRunRow(
       { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model },
       ctx,

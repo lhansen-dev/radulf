@@ -100,7 +100,7 @@ export class EvaluationService {
 
     // Spec 14 L3: the evaluator holds bash, so it gets the same per-run
     // containment as the loop, including the parent-repo integrity check.
-    const ctx = createRunSandbox(runId, { cwd: worktreePath, s: settings });
+    const ctx = await createRunSandbox(runId, { cwd: worktreePath, s: settings });
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
     // Spec 20: an evaluation runs long enough that another card's merge can
     // move this repo's base branch under it. Registering lets that merge

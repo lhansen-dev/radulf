@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -110,18 +110,18 @@ export function mechanismFromDiskutilPlist(xml: string): DiskLimitMechanism {
  * anything unparseable falls back to `watchdog`, which is never wrong (the
  * watchdog runs regardless).
  */
-export function detectMacDiskMechanism(dirPath: string): DiskLimitMechanism {
+export async function detectMacDiskMechanism(dirPath: string): Promise<DiskLimitMechanism> {
   if (process.platform !== "darwin") return "watchdog";
   // Hermetic + fast under test: no per-run diskutil shell-out. The pure
   // parser above carries the detection logic under test; live behavior is
   // verified out of band (checklist #9).
   if (process.env.NODE_ENV === "test") return "watchdog";
   try {
-    const xml = execFileSync("diskutil", ["info", "-plist", dirPath], {
+    const { stdout } = await execFileAsync("diskutil", ["info", "-plist", dirPath], {
       encoding: "utf8",
       timeout: 5_000,
     });
-    return mechanismFromDiskutilPlist(xml);
+    return mechanismFromDiskutilPlist(stdout);
   } catch {
     // No diskutil, not APFS, or an unreadable path — the watchdog still bounds it.
     return "watchdog";

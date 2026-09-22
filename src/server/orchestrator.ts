@@ -873,7 +873,7 @@ export class Orchestrator {
     // Spec 14 L3: per-run sandbox context and the parent-repo integrity
     // baseline. The baseline persists to disk because the pre-merge re-check
     // may run long after this process is gone.
-    const ctx = createRunSandbox(runId, { cwd: worktreePath, s: settings });
+    const ctx = await createRunSandbox(runId, { cwd: worktreePath, s: settings });
     // Multi-GB allocation — skipped under test, fire-and-forget otherwise.
     if (process.env.NODE_ENV !== "test") void ensureBallast(this.ballastPath());
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);

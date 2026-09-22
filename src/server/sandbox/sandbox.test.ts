@@ -140,7 +140,7 @@ describe("createRunSandbox", () => {
   });
 
   it("creates the run-private TMPDIR and cache root, and cleanup removes them idempotently", async () => {
-    const ctx = createRunSandbox("test-run-1");
+    const ctx = await createRunSandbox("test-run-1");
     expect(fs.existsSync(ctx.tmpdir)).toBe(true);
     expect(fs.existsSync(ctx.cacheRoot)).toBe(true);
     expect(ctx.env.TMPDIR).toBe(ctx.tmpdir);
@@ -170,7 +170,7 @@ describe("createRunSandbox", () => {
   // `events.run_id` is a real FK (emitting here once crashed run start).
   it("builds a real srtConfig, and warns once for weaker isolation, when sandboxing a cwd", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const ctx = createRunSandbox("test-run-srt-1", {
+    const ctx = await createRunSandbox("test-run-srt-1", {
       cwd: repoDir,
       s: testSettings({ sandboxEnabled: true, sandboxWeakerIsolationForGoTls: true }),
     });
@@ -191,7 +191,7 @@ describe("createRunSandbox", () => {
     ["sandboxing is off", { cwd: true, sandboxEnabled: false, weaker: true }, false],
     ["no cwd is given", { cwd: false, sandboxEnabled: true, weaker: true }, false],
   ])("applies no weaker isolation when %s", async (_label, o, hasConfig) => {
-    const ctx = createRunSandbox("test-run-srt-2", {
+    const ctx = await createRunSandbox("test-run-srt-2", {
       cwd: o.cwd ? repoDir : undefined,
       s: testSettings({ sandboxEnabled: o.sandboxEnabled, sandboxWeakerIsolationForGoTls: o.weaker }),
     });
