@@ -360,6 +360,35 @@ describe("Orchestrator cancellation lifecycle", () => {
     }
   });
 
+  it("starts a Ready card once even when a second pump runs before the loop has claimed it", async () => {
+    // With a cap above 1 there is a free slot, and the ready→looping claim
+    // happens only after runLoop's awaited worktree and sandbox setup. A pump
+    // from any other event in that window (an approval, a planner finishing,
+    // a cancel) saw the card still Ready and started a second loop for it:
+    // two run rows, two worktrees, and the loser's empty worktree became the
+    // card's latest.
+    mocks.settings.maxConcurrentCards = 2;
+    card("twice", "ready");
+    plan("twice");
+    const worktree = deferred<{ worktreePath: string; branch: string }>();
+    mocks.createWorktree.mockImplementation(() => worktree.promise);
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.pump();
+    orchestrator.pump();
+
+    const worktreePath = path.join(testDataDir, "worktrees", "twice");
+    fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+    worktree.resolve({ worktreePath, branch: "ralph/twice" });
+    // The default harness result is a failure, so the one loop that runs
+    // ends in Needs Attention; by then any second loop would have its row.
+    await vi.waitFor(() => expect(getCard("twice").status).toBe("needs_attention"));
+    await settle();
+
+    expect(mocks.createWorktree).toHaveBeenCalledTimes(1);
+    expect(db.select().from(runs).all().filter((run) => run.cardId === "twice")).toHaveLength(1);
+  });
+
   it("moves a Backlog card to the end of Todo without starting it when auto-mode is off", () => {
     card("queued-before", "todo");
     db.update(cards).set({ position: 4 }).where(eq(cards.id, "queued-before")).run();

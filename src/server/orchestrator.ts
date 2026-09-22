@@ -856,8 +856,15 @@ export class Orchestrator {
         }
         const readyCard = repoReady[nextReady++];
         if (readyCard) {
-          // A nested pump may have claimed it since the list was read.
-          if (getCard(readyCard.id)?.status !== "ready") continue;
+          // A nested pump may have claimed it since the list was read — or a
+          // loop may already be starting it: the ready→looping claim comes
+          // after runLoop's awaited worktree and sandbox setup, so the card
+          // still reads as Ready for those seconds, and with a cap above 1 a
+          // pump from any other event in that window would start it twice.
+          // activeLoopCards is set synchronously below, so it is the guard.
+          if (getCard(readyCard.id)?.status !== "ready" || this.activeLoopCards.has(readyCard.id)) {
+            continue;
+          }
           const id = readyCard.id;
           this.activeLoopCards.set(id, repoId);
           void this.runLoop(id)
