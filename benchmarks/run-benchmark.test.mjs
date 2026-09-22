@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { selectReviewRun, aggregateTokens } from "./run-benchmark.mjs";
+import { selectReviewRun, aggregateTokens, percentile } from "./run-benchmark.mjs";
 
 // A card is a plan run plus one or more loop → evaluate cycles. `card.latestRun`
 // is whichever run finished last, which after a normal pipeline (or a
@@ -121,5 +121,16 @@ describe("aggregateTokens", () => {
     expect(agg.sumPromptTokens).toBe(30);
     expect(agg.sumCompletionTokens).toBe(15);
     expect(agg.sumCostUsd).toBeCloseTo(0.03, 10);
+  });
+});
+
+describe("percentile", () => {
+  it("uses nearest rank, like the analytics tab, rather than interpolating", () => {
+    // Interpolation would report 2.5 and 9.1 here; nearest rank returns an
+    // observed value, and the analytics tab computes the same one.
+    expect(percentile([1, 2, 3, 4], 50)).toBe(2);
+    expect(percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 90)).toBe(9);
+    expect(percentile([7], 90)).toBe(7);
+    expect(percentile([], 50)).toBe(0);
   });
 });

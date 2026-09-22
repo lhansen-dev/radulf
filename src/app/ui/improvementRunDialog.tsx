@@ -3,7 +3,8 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import type { CreateImprovementRunRequest } from "@/shared/improvementRunRequests";
 import { api, type Repo } from "./api";
-import { DialogShell, EMPTY_ROLE_MODELS, RoleModelSelects, useBranches, useRoleModelOptions } from "./taskDialog";
+import { DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
+import { errorMessage } from "@/shared/errorMessage";
 
 type BudgetUnit = "minutes" | "hours";
 
@@ -48,7 +49,7 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
       };
       await api("/api/improvement-runs", { json: request });
       onCreated();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
+    } catch (e) { setError(errorMessage(e)); setBusy(false); }
   }
 
   const budgetValid = Number.isFinite(Number(budgetAmount)) && Number(budgetAmount) > 0;
@@ -66,19 +67,19 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
     >
           {repos.length === 0 ? <p className="text-sm text-foreground/60">Register a repository in <Link href="/settings" className="text-amber-300 underline">Settings</Link> first.</p> : <>
             <p className="text-sm text-foreground/60">Ralph will repeatedly propose one improvement, drive it through the pipeline with auto-approve, and accumulate every approved change on a new feature branch — until the time budget runs out or three tasks fail in a row.</p>
-            <label className="block text-sm text-foreground/70">Repository<select value={repoId} onChange={(e) => { setRepoId(e.target.value); setBranches([]); }} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3">{repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}</select></label>
-            {repoId && <label className="block text-sm text-foreground/70">Base branch<select value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3">{branches.length === 0 && <option value="">Loading…</option>}{branches.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
+            <RepoSelect repos={repos} value={repoId} onChange={(value) => { setRepoId(value); setBranches([]); }} />
+            {repoId && <label className="block text-sm text-foreground/70">Base branch<select value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} className={dialogInputCls}>{branches.length === 0 && <option value="">Loading…</option>}{branches.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
             <p className="text-xs text-foreground/40">A new branch is cut off the base branch (<code>ralph/improve-&lt;timestamp&gt;</code>) — every task in this run merges into it, never into the base branch directly.</p>
-            <label className="block text-sm text-foreground/70">Focus (optional)<textarea value={focusPrompt} onChange={(e) => setFocusPrompt(e.target.value)} rows={4} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm" placeholder="Steer what Ralph should focus on, e.g. 'improve test coverage' or 'clean up the API layer'. Leave blank to let Ralph decide." /></label>
+            <label className="block text-sm text-foreground/70">Focus (optional)<textarea value={focusPrompt} onChange={(e) => setFocusPrompt(e.target.value)} rows={4} className={`${dialogInputCls} py-2 text-sm`} placeholder="Steer what Ralph should focus on, e.g. 'improve test coverage' or 'clean up the API layer'. Leave blank to let Ralph decide." /></label>
             <div className="grid grid-cols-[1fr_auto] gap-3">
-              <label className="text-sm text-foreground/70">Time budget<input type="number" min="1" value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label>
-              <label className="text-sm text-foreground/70">Unit<select value={budgetUnit} onChange={(e) => setBudgetUnit(e.target.value as BudgetUnit)} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3"><option value="minutes">Minutes</option><option value="hours">Hours</option></select></label>
+              <label className="text-sm text-foreground/70">Time budget<input type="number" min="1" value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} className={dialogInputCls} /></label>
+              <label className="text-sm text-foreground/70">Unit<select value={budgetUnit} onChange={(e) => setBudgetUnit(e.target.value as BudgetUnit)} className={dialogInputCls}><option value="minutes">Minutes</option><option value="hours">Hours</option></select></label>
             </div>
             <details className="rounded-lg border border-foreground/10 bg-foreground/[0.02]">
               <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium">Advanced</summary>
               <div className="space-y-3 border-t border-foreground/10 p-3">
                 <RoleModelSelects providers={providers} models={models} values={roleModels} onChange={setRoleModels} idPrefix="improve-" />
-                <div className="grid grid-cols-2 gap-3"><label className="text-sm text-foreground/70">Per-task iteration cap<input type="number" min="1" value={maxIterations} onChange={(e) => setMaxIterations(e.target.value)} placeholder="Default" className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label><label className="text-sm text-foreground/70">Per-task timeout (min)<input type="number" min="1" value={timeoutMinutes} onChange={(e) => setTimeoutMinutes(e.target.value)} placeholder="Default" className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3" /></label></div>
+                <RunLimitInputs perTask maxIterations={maxIterations} setMaxIterations={setMaxIterations} timeoutMinutes={timeoutMinutes} setTimeoutMinutes={setTimeoutMinutes} />
                 <p className="text-xs text-foreground/40">Each task&rsquo;s timeout is additionally capped at whatever time budget remains in the run.</p>
               </div>
             </details>

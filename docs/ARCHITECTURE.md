@@ -37,11 +37,12 @@ improvement-run drivers.
 `src/server/orchestrator.ts` is the single scheduler. Everything else in the
 pipeline is a service it owns.
 
-`pump()` advances one ticket. There is exactly one pipeline slot:
-`pipelineBusy()` returns true while any card is `planning`, `looping`, or
-`evaluating`, and `pump()` returns immediately if so. A `ready` card loops
-before any fresh `todo` card is planned — in-flight work finishes ahead of new
-work. Backlog is never queried.
+`pump()` fills a repo's free pipeline slots. `pipelineLoad()` counts that
+repo's cards currently `planning`, `looping` or `evaluating`, and
+`concurrencyLimit()` is the `maxConcurrentCards` setting, held at 1 while the
+loop provider is local (spec 20). A `ready` card loops before any fresh `todo`
+card is planned — in-flight work finishes ahead of new work. Backlog is never
+queried.
 
 State transitions go through `moveCard(cardId, from, to, reason)`, which is
 compare-and-swap on the current status: it returns false if the card moved
@@ -56,21 +57,28 @@ the mapping to the five board columns is in the comment above the list.
 `reviewing` renders as nothing at all, because it is a short-lived atomic claim
 on a review decision rather than a state a card rests in.
 
-## The three roles
+## The four roles
 
 Each role is a service with one entry point, and each constructs its own pi
 session. The role is what decides the tool set — see the capability split below.
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
+| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)` | 5 min per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
 | Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
 
-The loop is not a separate service — it is the orchestrator's own method,
-because it is the thing the single pipeline slot exists to serialize.
+Scoping is not a pipeline stage (spec 17): it runs on demand from the card's
+API route, outside the orchestrator's slots, as a read-only session against the
+repository checkout. Its thread lives in `scoping_messages` and is rendered
+into the planner's prompt; a planner run that raises `QUESTIONS.md` appends
+them to the same thread.
 
-`src/server/reviewService.ts` is the fourth service but not an agent role: it
+The loop is not a separate service — it is the orchestrator's own method,
+because it is the thing the pipeline slots exist to meter.
+
+`src/server/reviewService.ts` is a service too but not an agent role: it
 owns `approve`, `retryMerge`, and `abandon` — the human decisions.
 
 ### What one loop iteration does
@@ -96,6 +104,10 @@ On a DONE signal the run-end ordering matters and is deliberate: reap the
 process group first (a surviving process could plant hooks after a check that
 already passed), then verify parent-repo integrity, then force the install-script
 gate, and only then hand to the evaluator.
+
+A DONE signal is accepted only when the iteration was assigned the final
+unchecked task. Earlier signals are removed; normal iteration bookkeeping
+still credits completed task work and the loop continues with the next task.
 
 ## The harness boundary
 
@@ -156,9 +168,10 @@ an unrecoverable failure.
 
 ## Persistence
 
-`src/db/schema.ts`, Drizzle over SQLite, created on first run with no migration
-step. Nine tables: `repos`, `cards`, `plans`, `runs`, `iterations`, `reviews`,
-`events`, `improvementRuns`, `settings`.
+`src/db/schema.ts`, Drizzle over SQLite, created on first run with no manual
+migration step. Eleven tables: `repos`, `cards`, `plans`, `scopingMessages`,
+`runs`, `iterations`, `reviews`, `events`, `improvementRuns`, `settings`,
+`worktrees`.
 
 Transcripts are **not** in the database — they are JSONL files on disk, read in
 chunks by `src/server/transcript.ts` (`TRANSCRIPT_CHUNK_BYTES`, 512 KB). A long

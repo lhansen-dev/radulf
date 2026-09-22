@@ -4,7 +4,8 @@ import { emitEvent } from "./events";
 import type { Settings } from "./settings";
 import { runHarness, type RunnerResult, type RunTelemetry } from "./harness";
 import type { ProviderId } from "./providers";
-import { CONN_ERROR_PATTERN, isProviderOpen, recordProviderOutcome } from "./circuitBreaker";
+import { providerBreakerStatus, recordProviderOutcome } from "./circuitBreaker";
+import { recordProviderFailure } from "./providerRateLimit";
 import { createWorktree, currentBranch, recordWorktree } from "./git";
 import { runTranscriptDir } from "./retention";
 import { startTranscriptPush } from "./transcript";
@@ -19,7 +20,19 @@ type Run = typeof runs.$inferSelect;
 type Repo = typeof repos.$inferSelect;
 type Plan = typeof plans.$inferSelect;
 
-export type FinishStatus = "completed" | "failed" | "timeout" | "cancelled";
+/** The run statuses a stage may set. "interrupted" is the restart
+ * pair: recover() writes it for a run the process died under, and a drained
+ * loop writes it when it stops itself on an iteration boundary. "paused" is
+ * the only one that is not an ending — the operator stopped the run and can
+ * resume the card, so spec 18 §6 keeps it out of the success rate rather than
+ * scoring it either way. */
+export type FinishStatus =
+  | "completed"
+  | "failed"
+  | "timeout"
+  | "cancelled"
+  | "interrupted"
+  | "paused";
 
 /** Reuse the card's existing worktree (retry, reject, restart) or make a fresh
  * one. `created` tells the caller to record it once its run row exists —
@@ -66,9 +79,12 @@ export function startRunRow(
 
 /** Fail fast on a provider whose circuit breaker is open. */
 export function circuitOpenReason(provider: ProviderId): string | null {
-  return isProviderOpen(provider)
-    ? `provider ${provider} circuit breaker open — recent connection failures, will retry automatically after cooldown`
-    : null;
+  const status = providerBreakerStatus(provider);
+  if (status.state !== "open") return null;
+  const until = status.openUntil ? `, retrying after ${status.openUntil}` : ", will retry after cooldown";
+  return status.reason === "limit"
+    ? `provider ${provider} circuit breaker open: usage limit reached${until}`
+    : `provider ${provider} circuit breaker open: recent connection failures${until}`;
 }
 
 /** Spec 14 Phase 6: never fall back to an unsandboxed run silently. */
@@ -117,7 +133,7 @@ export function harnessFailure(
     };
   }
   if (result.error) {
-    if (CONN_ERROR_PATTERN.test(result.error)) recordProviderOutcome(provider, false);
+    recordProviderFailure(provider, result.error);
     return {
       status: "failed",
       exitReason: `${label} failed: ${result.error.slice(0, 500)}`,

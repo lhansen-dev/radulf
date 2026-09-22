@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 
 import {
   SandboxManager,
@@ -9,9 +10,13 @@ import {
   type FilesystemConfig,
   type NetworkConfig,
 } from "@anthropic-ai/sandbox-runtime";
+import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR, WORKTREES_DIR } from "@/db";
+import { errorMessage } from "@/shared/errorMessage";
+import { git } from "../git";
+import { isInsideOrEqual } from "./pathGuard";
 
 /**
  * Layer 1 — OS sandbox on agent bash (spec 14 Phase 6), via
@@ -27,6 +32,16 @@ import { DATA_DIR, WORKTREES_DIR } from "@/db";
  */
 
 const HOME = os.homedir();
+const execFileAsync = promisify(execFile);
+
+/** Use srt's own resolver so the executable allowed here is the one it invokes. */
+function sandboxHelperReadRoots(): string[] {
+  if (process.platform !== "linux") return [];
+  const helper = getApplySeccompBinaryPath();
+  if (!helper) throw new Error("sandbox apply-seccomp helper is missing; reinstall dependencies");
+  // Only this executable, never the surrounding application or node_modules.
+  return [helper];
+}
 
 /**
  * Backstop credential denylist (spec §L1). `$HOME` is already denied in
@@ -65,29 +80,19 @@ export function systemReadRoots(): string[] {
 }
 
 /**
- * True when `candidate` is `target` itself or a proper ancestor directory of
- * it. srt's read-allow is a *recursive* subpath match, so an `allowRead`
- * entry that is an ancestor of a supposedly-denied root re-opens that whole
- * root — this is the check that stops that from happening by accident.
- */
-function isAncestorOrSelf(candidate: string, target: string): boolean {
-  if (candidate === target) return true;
-  const prefix = candidate.endsWith(path.sep) ? candidate : candidate + path.sep;
-  return target.startsWith(prefix);
-}
-
-/**
  * Drop any candidate read-allow root that would, by containing one of
  * `protectedRoots` (or being `/` itself), silently re-open it — e.g. a PATH
  * entry of `/bin` naively contributing `/` (its `dirname`) as an "allow"
  * would recursively re-open the entire filesystem, defeating `$HOME`'s
- * deny outright. Narrow re-allows genuinely *inside* a protected root
+ * deny outright. srt's read-allow is a *recursive* subpath match, so an
+ * `allowRead` entry that is an ancestor of a supposedly-denied root re-opens
+ * that whole root. Narrow re-allows genuinely *inside* a protected root
  * (`~/.nvm` inside `$HOME`) are unaffected — this only rejects candidates
  * that are the protected root or broader.
  */
 export function dropRootsThatWouldReopen(candidates: string[], protectedRoots: string[]): string[] {
   return candidates.filter(
-    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isAncestorOrSelf(c, protectedRoot)),
+    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isInsideOrEqual(protectedRoot, c)),
   );
 }
 
@@ -127,13 +132,11 @@ export function toolchainHomeReAllows(): string[] {
  * Resolve the shared `.git` dir for a worktree (`git rev-parse
  * --git-common-dir`) — the parent repo's real git metadata, which a linked
  * worktree's own `.git` file only points at. The agent's git commands need
- * write access here (refs, objects, the worktree's own HEAD/index) except
- * for the hook/config vectors carved out below.
+ * write access here (objects, the worktree's own index) except for the
+ * hook/config and ref vectors carved out below.
  */
-export function resolveGitCommonDir(worktree: string): string {
-  const out = execFileSync("git", ["-C", worktree, "rev-parse", "--git-common-dir"], {
-    encoding: "utf8",
-  }).trim();
+export async function resolveGitCommonDir(worktree: string): Promise<string> {
+  const out = await git(worktree, "rev-parse", "--git-common-dir");
   return path.isAbsolute(out) ? out : path.resolve(worktree, out);
 }
 
@@ -146,19 +149,25 @@ export function resolveGitCommonDir(worktree: string): string {
  * worktree, run-private TMPDIR/cache, and the parent repo's shared `.git`
  * except the hook/config vectors.
  */
+/** The per-worktree files agent git must not write: `config` is the
+ * `core.hooksPath` code-execution vector, `HEAD` is the checkout pointer. */
+const WORKTREE_DENY_FILES = ["config", "HEAD"];
+
 /**
- * Concrete `<gitCommonDir>/worktrees/<name>/config` paths for every linked
- * worktree registered right now.
+ * Concrete `<gitCommonDir>/worktrees/<name>/{config,HEAD}` paths for every
+ * linked worktree registered right now.
  *
  * srt glob-expands only its OWN mandatory deny list (via ripgrep `--iglob`).
  * A caller-supplied `denyWrite` entry is taken as a literal path: Seatbelt
  * still matches `*` as a pattern, but bwrap has no pattern support and would
  * mount over a path whose component is literally `*`, protecting nothing. So
- * the pattern form alone left this write vector — `core.hooksPath` in a
- * per-worktree config is arbitrary code execution on the next git
- * command — open on Linux. Enumerating gives both platforms a real deny.
+ * the pattern form alone left these write vectors open on Linux:
+ * `core.hooksPath` in a per-worktree config is arbitrary code execution on
+ * the next git command, and a rewritten per-worktree `HEAD` is
+ * `git checkout` onto another branch. Enumerating gives both platforms a
+ * real deny.
  */
-export function gitWorktreeConfigDenies(gitCommonDir: string): string[] {
+export function gitWorktreeDenies(gitCommonDir: string): string[] {
   const worktreesDir = path.join(gitCommonDir, "worktrees");
   let entries;
   try {
@@ -168,7 +177,7 @@ export function gitWorktreeConfigDenies(gitCommonDir: string): string[] {
   }
   return entries
     .filter((e) => e.isDirectory())
-    .map((e) => path.join(worktreesDir, e.name, "config"));
+    .flatMap((e) => WORKTREE_DENY_FILES.map((name) => path.join(worktreesDir, e.name, name)));
 }
 
 export function buildFilesystemConfig(opts: {
@@ -186,6 +195,7 @@ export function buildFilesystemConfig(opts: {
     ...systemReadRoots(),
     ...toolchainReadRootsFromPath(),
     ...toolchainHomeReAllows(),
+    ...sandboxHelperReadRoots(),
   ];
   return {
     denyRead,
@@ -200,13 +210,23 @@ export function buildFilesystemConfig(opts: {
     denyWrite: [
       path.join(opts.gitCommonDir, "hooks"),
       path.join(opts.gitCommonDir, "config"),
-      ...gitWorktreeConfigDenies(opts.gitCommonDir),
+      // Every ref and checkout pointer. The orchestrator makes each commit
+      // from the host, so agent git has no legitimate ref write: this stops
+      // `git checkout <base>` inside the worktree, `git commit`,
+      // `git branch -f`, `git reset` and `git update-ref` at the kernel, with
+      // the orchestrator's run-branch guard as the backstop for unsandboxed
+      // runs. `packed-refs` need not exist yet; srt then binds a read-only
+      // stub in its place for the command's duration.
+      path.join(opts.gitCommonDir, "refs"),
+      path.join(opts.gitCommonDir, "packed-refs"),
+      path.join(opts.gitCommonDir, "HEAD"),
+      ...gitWorktreeDenies(opts.gitCommonDir),
       // Kept on macOS only: Seatbelt honours the pattern, which also covers a
       // worktree registered after this config was built — something the
       // snapshot above cannot. On Linux the same entry is inert at best, so
       // there it would only add a bogus literal-`*` mount.
       ...(process.platform === "darwin"
-        ? [path.join(opts.gitCommonDir, "worktrees", "*", "config")]
+        ? WORKTREE_DENY_FILES.map((name) => path.join(opts.gitCommonDir, "worktrees", "*", name))
         : []),
     ],
   };
@@ -322,18 +342,33 @@ export function initializeSandboxRuntimeOnce(): Promise<SandboxPreflightResult> 
     readyPromise = (async () => {
       const preflight = sandboxPreflight();
       if (!preflight.ok) return preflight;
+      let probeDir: string | undefined;
       try {
         await SandboxManager.initialize({
           filesystem: { denyRead: [HOME], allowWrite: [], denyWrite: [] },
           network: { allowedDomains: [], deniedDomains: [] },
         });
+        // Dependency presence on the host does not prove that the sandbox can
+        // start: denyRead can hide srt's own executable under $HOME.
+        probeDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-preflight-"));
+        const wrapped = await SandboxManager.wrapWithSandbox("true", "/bin/bash", {
+          filesystem: buildFilesystemConfig({
+            worktree: probeDir,
+            gitCommonDir: probeDir,
+            tmpdir: probeDir,
+            cacheRoot: probeDir,
+          }),
+        });
+        await execFileAsync("/bin/bash", ["-c", wrapped], { cwd: probeDir, timeout: 10_000 });
         return preflight;
       } catch (e) {
         return {
           ok: false,
-          errors: [...preflight.errors, e instanceof Error ? e.message : String(e)],
+          errors: [...preflight.errors, `sandbox startup failed: ${errorMessage(e)}`],
           warnings: preflight.warnings,
         };
+      } finally {
+        if (probeDir) fs.rmSync(probeDir, { recursive: true, force: true });
       }
     })();
   }
@@ -353,9 +388,10 @@ export function resetSandboxRuntimeForTests(): void {
  * wrap-and-`updateConfig` step one at a time, in arrival order, without
  * rejecting any of them. `queueDepth`/`queuedConfig` exist only for the
  * narrower safety check kept below: don't delete either without first
- * making network policy genuinely per-call (today it's always derived from
- * global settings, so it can never actually differ across calls — see the
- * check itself for why that's still verified at runtime, not assumed).
+ * making network policy genuinely per-call (today it's derived from the
+ * Settings snapshot each run takes at start, so it differs across calls
+ * only when the allowlist setting changes between two overlapping runs —
+ * see the check itself).
  */
 let sandboxQueueTail: Promise<void> = Promise.resolve();
 let queueDepth = 0;
@@ -435,13 +471,14 @@ export async function wrapBashCommand(
   command: string,
   runConfig: SandboxRuntimeConfig,
 ): Promise<string> {
-  // Real (not hardcoded-"always equal") safety check: today every caller's
-  // config is derived from the same global settings, so this never actually
-  // trips — but if per-run network policy is ever added, two genuinely
-  // different concurrent configs must still fail loudly rather than one
-  // silently overwriting the other's `updateConfig()` call. Compares only
-  // the network-policy slice (PLAN.md Phase 19.1) — the per-run filesystem
-  // config is expected to differ on every call and must never factor in.
+  // Real (not hardcoded-"always equal") safety check. Every run derives its
+  // network policy from the Settings snapshot taken at its start
+  // (context.ts), so two overlapping runs differ only when an operator edits
+  // `sandboxNetworkAllowlist` between their starts — and then this trips for
+  // the later run rather than letting its `updateConfig()` silently overwrite
+  // the earlier run's policy. Compares only the network-policy slice
+  // (PLAN.md Phase 19.1) — the per-run filesystem config is expected to
+  // differ on every call and must never factor in.
   const incomingPolicy = networkPolicySlice(runConfig);
   if (queueDepth > 0 && queuedConfig !== null && !sandboxConfigsEqual(queuedConfig, incomingPolicy)) {
     throw new Error(
@@ -453,10 +490,8 @@ export async function wrapBashCommand(
   queuedConfig = incomingPolicy;
   queueDepth++;
   const myTurn = sandboxQueueTail;
-  let releaseMyTurn!: () => void;
-  sandboxQueueTail = new Promise<void>((resolve) => {
-    releaseMyTurn = resolve;
-  });
+  const { promise: myDone, resolve: releaseMyTurn } = Promise.withResolvers<void>();
+  sandboxQueueTail = myDone;
   await myTurn;
   try {
     SandboxManager.updateConfig(runConfig);

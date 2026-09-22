@@ -21,6 +21,8 @@ import { ImprovementRunDialog } from "./ui/improvementRunDialog";
 import { DetailsMenu } from "./ui/detailsMenu";
 import { useWorkData } from "./ui/useWorkData";
 import { useNow } from "./ui/useNow";
+import { ACTIVE_STATUSES, ATTENTION_STATUSES, PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { errorMessage } from "@/shared/errorMessage";
 
 type View = "overview" | "needs" | "active" | "queue" | "backlog" | "done";
 
@@ -33,36 +35,38 @@ const views: { key: View; label: string }[] = [
   { key: "done", label: "Done" },
 ];
 
-const activeStatuses: CardStatus[] = ["planning", "ready", "looping", "evaluating", "paused", "reviewing"];
-
 function statusDetails(card: BoardCard): { mark: string; label: string; detail: string; tone: string } {
+  return { label: STATUS_LABELS[card.status], ...statusMark(card) };
+}
+
+function statusMark(card: BoardCard): { mark: string; detail: string; tone: string } {
   switch (card.status) {
     case "backlog":
-      return { mark: "○", label: "Backlog", detail: "Not scheduled", tone: "text-foreground/45" };
+      return { mark: "○", detail: "Not scheduled", tone: "text-foreground/45" };
     case "todo":
-      return { mark: "◎", label: "Queued", detail: "Waiting for auto-mode", tone: "text-slate-300" };
+      return { mark: "◎", detail: "Waiting for auto-mode", tone: "text-slate-300" };
     case "planning":
-      return { mark: "◔", label: "Planning", detail: `${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
+      return { mark: "◔", detail: `${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
     case "ready":
-      return { mark: "◇", label: "Ready", detail: "Queued for loop", tone: "text-amber-200" };
+      return { mark: "◇", detail: "Queued for loop", tone: "text-amber-200" };
     case "looping":
-      return { mark: "●", label: "Running", detail: `Iteration ${card.latestRun?.iterationsDone ?? 0}/${card.maxIterationsResolved} · ${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
+      return { mark: "●", detail: `Iteration ${card.latestRun?.iterationsDone ?? 0}/${card.maxIterationsResolved} · ${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
     case "evaluating":
-      return { mark: "🔎", label: "Evaluating", detail: "Evaluator reviewing the loop's work", tone: "text-amber-300" };
+      return { mark: "🔎", detail: "Evaluator reviewing the loop's work", tone: "text-amber-300" };
     case "paused":
-      return { mark: "⏸", label: "Paused", detail: "Paused after iteration " + (card.latestRun?.iterationsDone ?? 0), tone: "text-sky-300" };
+      return { mark: "⏸", detail: "Paused after iteration " + (card.latestRun?.iterationsDone ?? 0), tone: "text-sky-300" };
     case "plan_review":
-      return { mark: "◉", label: "Plan ready for review", detail: "Plan generated — approve to implement", tone: "text-cyan-300" };
+      return { mark: "◉", detail: "Plan generated — approve to implement", tone: "text-cyan-300" };
     case "review":
-      return { mark: "◆", label: "Ready for review", detail: "Diff ready", tone: "text-violet-300" };
+      return { mark: "◆", detail: "Diff ready", tone: "text-violet-300" };
     case "reviewing":
-      return { mark: "◌", label: "Applying review", detail: "Finalizing the decision", tone: "text-violet-300" };
+      return { mark: "◌", detail: "Finalizing the decision", tone: "text-violet-300" };
     case "needs_attention":
-      return { mark: "!", label: "Needs attention", detail: card.latestRun?.exitReason || "Run needs a decision", tone: "text-red-300" };
+      return { mark: "!", detail: card.latestRun?.exitReason || "Run needs a decision", tone: "text-red-300" };
     case "done":
-      return { mark: "✓", label: "Completed", detail: `${timeAgo(card.updatedAt)} ago`, tone: "text-green-300" };
+      return { mark: "✓", detail: `${timeAgo(card.updatedAt)} ago`, tone: "text-green-300" };
     default:
-      return { mark: "—", label: "Abandoned", detail: "No longer active", tone: "text-foreground/35" };
+      return { mark: "—", detail: "No longer active", tone: "text-foreground/35" };
   }
 }
 
@@ -87,13 +91,17 @@ export default function WorkPage() {
     restartRequired,
     restarting,
     setRestarting,
-    refetch,
+    refetchCards,
+    refetchImprovementRuns,
   } = useWorkData();
   const [repoFilter, setRepoFilter] = useState("");
   const [view, setView] = useState<View>("overview");
   const [showNew, setShowNew] = useState(false);
   const [showImprovementRun, setShowImprovementRun] = useState(false);
   const [notice, setNotice] = useState("");
+  // Row details such as "3m elapsed" read Date.now() at render, so a tick here
+  // is what keeps them current; the card list itself does not change.
+  useNow(true, 30_000);
 
   useEffect(() => {
     const readUrl = () => {
@@ -124,11 +132,11 @@ export default function WorkPage() {
     [cards, repoFilter]
   );
   const needs = useMemo(
-    () => scoped.filter((card) => ["review", "plan_review", "needs_attention"].includes(card.status)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
+    () => scoped.filter((card) => ATTENTION_STATUSES.includes(card.status)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
     [scoped]
   );
   const active = useMemo(
-    () => scoped.filter((card) => activeStatuses.includes(card.status)).sort((a, b) => {
+    () => scoped.filter((card) => ACTIVE_STATUSES.includes(card.status)).sort((a, b) => {
       const rank = (status: CardStatus) => status === "looping" ? 0 : status === "planning" ? 1 : 2;
       return rank(a.status) - rank(b.status) || a.position - b.position;
     }),
@@ -163,9 +171,9 @@ export default function WorkPage() {
     setError("");
     try {
       await fn();
-      refetch();
+      refetchCards();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -184,10 +192,10 @@ export default function WorkPage() {
     setNotice(`${card.title} moved to position ${target + 1} of ${queue.length}.`);
     try {
       await api(`/api/cards/${card.id}/move`, { json: { to: "todo", position } });
-      refetch();
+      refetchCards();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      refetch();
+      setError(errorMessage(e));
+      refetchCards();
     }
   }
 
@@ -206,7 +214,7 @@ export default function WorkPage() {
       await api("/api/settings", { method: "PATCH", json: { [key]: !current } });
     } catch (e) {
       setValue(current);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
   const workspaceToggles = [
@@ -232,7 +240,7 @@ export default function WorkPage() {
   }
 
   async function restartServer() {
-    const inProgress = cards.filter((card) => activeStatuses.includes(card.status)).length;
+    const inProgress = cards.filter((card) => ACTIVE_STATUSES.includes(card.status)).length;
     if (!confirm(`Restart the server?${inProgress ? ` ${inProgress} active task${inProgress === 1 ? "" : "s"} will return to the backlog.` : ""}`)) return;
     setRestarting(true);
     await api("/api/restart", { method: "POST" }).catch(() => {});
@@ -387,8 +395,8 @@ export default function WorkPage() {
         )}
       </main>
 
-      {showNew && <NewTaskDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refetch(); }} />}
-      {showImprovementRun && <ImprovementRunDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowImprovementRun(false)} onCreated={() => { setShowImprovementRun(false); refetch(); }} />}
+      {showNew && <NewTaskDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refetchCards(); }} />}
+      {showImprovementRun && <ImprovementRunDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowImprovementRun(false)} onCreated={() => { setShowImprovementRun(false); refetchImprovementRuns(); }} />}
     </AppShell>
   );
 }
@@ -452,7 +460,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
   const href = card.status === "review" ? `/review/${card.id}` : `/card/${card.id}`;
   const pullBack = () => {
-    const active = ["planning", "looping", "evaluating"].includes(card.status);
+    const active = RUNNING_STATUSES.includes(card.status);
     if (active && !confirm(`Cancel the active run for “${card.title}” and return it to the backlog?`)) return;
     void onAction(() => api(`/api/cards/${card.id}/move`, { json: { to: "backlog" } }));
   };
@@ -483,7 +491,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {card.status === "needs_attention" && <Link href={`/card/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-red-500/15 px-3 text-sm font-medium text-red-200">Resolve</Link>}
           {card.status === "looping" && <button type="button" onClick={() => { if (!confirm(`Pause “${card.title}” after the current iteration finishes?`)) return; void onAction(() => api(`/api/cards/${card.id}/pause`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 hover:bg-foreground/[0.10]">⏸ Pause</button>}
           {card.status === "paused" && <button type="button" onClick={() => { void onAction(() => api(`/api/cards/${card.id}/resume`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-sky-500/15 px-3 text-sm font-medium text-sky-200 hover:bg-sky-500/25">▶ Continue</button>}
-          {activeStatuses.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
+          {ACTIVE_STATUSES.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
           <span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span> · {position ? `Queue position ${position}` : state.detail}
@@ -499,7 +507,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
             </>}
             <DetailsMenu detailsClassName="relative ml-auto" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-md text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground" menuClassName="absolute bottom-10 right-0 z-20 w-52 rounded-lg border border-foreground/10 bg-surface p-1 shadow-xl" ariaLabel={`More actions for ${card.title}`} summary="•••">
                 <Link href={`/card/${card.id}`} className="flex min-h-11 items-center rounded-md px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-                {["todo", "planning", "ready", "looping", "evaluating", "paused", "review", "plan_review", "needs_attention"].includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
+                {PULLBACK_STATUSES.includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
                 {["backlog", "todo", "done"].includes(card.status) && <button type="button" onClick={remove} className="w-full rounded-md px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Delete task</button>}
             </DetailsMenu>
           </div>

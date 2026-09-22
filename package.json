@@ -31,7 +31,7 @@
   "scripts": {},
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.73",
-    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.86.1",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^13.0.2",
     "drizzle-orm": "^0.45.2",

@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { desc, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 // Direct unit tests for ReviewService. `appendFeedbackTask` (private) is
 // exercised only through its public call site's observable effect —
@@ -23,8 +23,7 @@ vi.mock("./git", async (importOriginal) => ({
   removeWorktree: mocks.removeWorktree,
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-reviewService-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-reviewService-");
 
 const { db, cards, plans, runs, repos, reviews, now } = await import("@/db");
 const { ReviewService } = await import("./reviewService");
@@ -125,11 +124,6 @@ describe("ReviewService — feedback re-entry", () => {
     db.delete(repos).run();
     vi.clearAllMocks();
     seedRepo();
-  });
-
-  afterAll(() => {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    delete process.env.RADULF_DATA_DIR;
   });
 
   it("reject() sends the card back to the planner with the feedback pending", async () => {

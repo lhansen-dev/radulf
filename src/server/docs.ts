@@ -175,7 +175,7 @@ export async function readDoc(slug: string): Promise<{ meta: DocMeta; content: s
  * - Absolute http(s)/mailto links pass through as external.
  * - Any other scheme (javascript:, data:, …) is neutralized to `#` — this
  *   markdown is trusted repo content, but treating unknown schemes as inert
- *   matches the safety posture of `renderInlineMarkdown` and costs nothing.
+ *   matches react-markdown's default `urlTransform` and costs nothing.
  * - Relative links are resolved against the current doc's directory. If they
  *   land on another registered doc, they become an in-wiki `/docs/<slug>` link;
  *   otherwise they point at the file on GitHub so nothing dead-ends in the app.

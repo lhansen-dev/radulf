@@ -1,5 +1,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import type { ProviderModel } from "../providers";
+
 /**
  * The mock provider: a deterministic, scripted stand-in for the model, so the
  * whole pipeline (planner → loop → evaluator) can be exercised end to end for
@@ -17,7 +19,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
  * sessions can't interfere.
  */
 
-export function mockProviderEnabled(): boolean {
+function mockProviderEnabled(): boolean {
   return process.env.RADULF_MOCK_LLM === "1";
 }
 
@@ -39,6 +41,7 @@ type EventStream = ReturnType<StreamSimple>;
 type AssistantMessage = Awaited<ReturnType<EventStream["result"]>>;
 type AssistantEvent = EventStream extends AsyncIterable<infer E> ? E : never;
 type Block = AssistantMessage["content"][number];
+type ToolArgs = Extract<Block, { type: "toolCall" }>["arguments"];
 
 type MockRole = "planner" | "loop" | "evaluator" | "readOnly";
 
@@ -60,7 +63,7 @@ type Script = (turn: Turn) => Reply;
 let toolCallSeq = 0;
 const say = (text: string): Block => ({ type: "text", text });
 const think = (thinking: string): Block => ({ type: "thinking", thinking });
-const call = (name: string, args: Record<string, unknown>): Block => ({
+const call = (name: string, args: ToolArgs): Block => ({
   type: "toolCall",
   id: `mock-call-${++toolCallSeq}`,
   name,
@@ -130,9 +133,9 @@ const evaluator: Script = ({ step }) => {
   return [say("Evaluation written.")];
 };
 
-/** Planner chat and the improvement proposer (read-only, no pipeline role).
- * One reply serves both: prose for the chat, a JSON proposal for the
- * proposer (pm.ts parseProposals). */
+/** Scoping and the improvement proposer (read-only, no pipeline role).
+ * One reply serves both: prose for scoping, a JSON proposal for the
+ * proposer (improvementProposer.ts parseProposals). */
 const readOnly: Script = () => [
   say(
     "Mock reply — no model was called.\n\n```json\n" +
@@ -206,12 +209,38 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
     description: "The stream never produces output, until the stall watchdog aborts it.",
     scripts: everyRole(() => "hang"),
   },
+  "loop-blocked": {
+    description: "Loop reports a blocker outside its control instead of completing its task.",
+    scripts: {
+      loop: ({ step }) =>
+        step === 0
+          ? [write(".ralph/BLOCKED", "Mock blocker: the sandbox has no credentials for the live service.\n")]
+          : [say("Blocked; reported, not faked.")],
+    },
+  },
+  "off-branch": {
+    description: "Loop checks the worktree out onto another branch before signalling; the orchestrator refuses to commit.",
+    scripts: {
+      loop: ({ step }) => {
+        switch (step) {
+          case 0:
+            return [bash("git checkout -q -b escaped")];
+          case 1:
+            return [write("mock-output/escaped.md", `written off the run branch ${Date.now()}\n`)];
+          case 2:
+            return [write(".ralph/ITERATION_DONE", "Done, on the wrong branch.\n")];
+          default:
+            return [say("Done.")];
+        }
+      },
+    },
+  },
 };
 
 export const DEFAULT_MOCK_SCENARIO = "happy-path";
 
 /** The scenarios, shaped for the provider model pickers. */
-export function mockProviderModels(): { value: string; displayName: string; description: string }[] {
+export function mockProviderModels(): ProviderModel[] {
   assertMockProviderEnabled();
   return Object.entries(MOCK_SCENARIOS).map(([id, s]) => ({
     value: id,
@@ -232,10 +261,23 @@ function messageText(content: unknown): string {
     .join("\n");
 }
 
+/** The tool set the transcript declares. pi folds `Context.tools` into the
+ * leading system message before a provider sees it, so the names arrive as
+ * `toolsAdded`/`toolsRemoved` deltas rather than a field on the context. */
+function declaredTools(ctx: Context): Set<string> {
+  const names = new Set<string>();
+  for (const message of ctx.messages) {
+    if (message.role !== "system") continue;
+    for (const tool of message.toolsRemoved ?? []) names.delete(tool.name);
+    for (const tool of message.toolsAdded ?? []) names.add(tool.name);
+  }
+  return names;
+}
+
 /** Role from the tool set toolsForRole() bound (pi.ts): only loop and
  * evaluator hold bash, only the planner writes without it. */
 function roleOf(ctx: Context, prompt: string): MockRole {
-  const tools = new Set((ctx.tools ?? []).map((t) => t.name));
+  const tools = declaredTools(ctx);
   if (tools.has("bash")) return /^LAST_TASK=/m.test(prompt) ? "loop" : "evaluator";
   if (tools.has("write")) return "planner";
   return "readOnly";
@@ -319,8 +361,7 @@ function untilAborted(signal: AbortSignal | undefined): Promise<void> {
 }
 
 const streamSimple: StreamSimple = (model, ctx, options) => {
-  let resolveResult!: (message: AssistantMessage) => void;
-  const result = new Promise<AssistantMessage>((resolve) => (resolveResult = resolve));
+  const { promise: result, resolve: resolveResult } = Promise.withResolvers<AssistantMessage>();
 
   async function* events(): AsyncGenerator<AssistantEvent> {
     const scripted = reply(model, ctx);

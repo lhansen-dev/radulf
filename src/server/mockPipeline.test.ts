@@ -21,11 +21,11 @@ process.env.RADULF_MOCK_LLM = "1";
 // No pi.dev model-catalog fetch: the mock needs no catalog.
 process.env.PI_OFFLINE = "1";
 
-const { db, cards, runs, plans, repos, now } = await import("@/db");
+const { db, cards, runs, plans, repos, events, now } = await import("@/db");
 const { patchSettings, getSettings } = await import("./settings");
 const { Orchestrator } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
-const { plannerChat } = await import("./chat");
+const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
 
 const TERMINAL = new Set(["review", "needs_attention", "done", "plan_review"]);
 
@@ -36,6 +36,7 @@ beforeAll(() => {
     plannerProvider: "mock",
     loopProvider: "mock",
     evaluatorProvider: "mock",
+    scopingProvider: "mock",
     plannerModel: "",
     loopModel: "",
     evaluatorModel: "",
@@ -163,6 +164,27 @@ describe("mock provider — full pipeline", () => {
     ]);
   }, 30_000);
 
+  it("loop-blocked: hands the card back with the blocker in its thread, and plans again around it", async () => {
+    const { cardId } = await runScenario("loop-blocked");
+    expect(cardStatus(cardId)).toBe("needs_attention");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "failed", exitReason: "loop blocked", iterationsDone: 1 });
+    expect(loop.feedback).toContain("Mock blocker");
+    // The blocked task was not ticked, and the blocker is where the operator answers it.
+    expect(listScopingMessages(cardId).map((m) => [m.role, m.content.split(":")[0]])).toEqual([["loop", "Mock blocker"]]);
+    expect(
+      db.select().from(events).where(eq(events.cardId, cardId)).all().filter((e) => e.type === "stage.misconfigured"),
+    ).toHaveLength(0);
+
+    // Plan again re-plans on top of the branch with the blocker as feedback,
+    // rather than re-running the loop.
+    orch.restartCard(cardId);
+    await waitFor(() => TERMINAL.has(cardStatus(cardId)) && !orch.hasInFlightWork());
+    expect(cardRuns(cardId, "plan")).toHaveLength(2);
+    const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+    expect(replan?.feedback).toContain("Mock blocker");
+  }, 30_000);
+
   it("provider-error: the planner fails with the provider's message", async () => {
     const { cardId } = await runScenario("provider-error");
     expect(cardStatus(cardId)).toBe("needs_attention");
@@ -184,6 +206,18 @@ describe("mock provider — full pipeline", () => {
     expect(cardStatus(cardId)).toBe("needs_attention");
     expect(cardRuns(cardId, "loop")[0]).toMatchObject({ exitReason: "stalled", iterationsDone: 3 });
   }, 30_000);
+
+  it("off-branch: an agent that checks out another branch fails the run before anything is committed", async () => {
+    const { cardId, repo } = await runScenario("off-branch");
+    expect(cardStatus(cardId)).toBe("needs_attention");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "failed", iterationsDone: 1 });
+    expect(loop.exitReason).toBe(`worktree left its run branch: on escaped, expected ${loop.branch}`);
+    // The branch the agent switched to still sits where it was created: no
+    // task commit followed the checkout, and the run branch is untouched.
+    expect(gitIn(repo.repoPath, "rev-parse", "escaped")).toBe(gitIn(repo.repoPath, "rev-parse", loop.branch));
+    expect(gitIn(repo.repoPath, "log", "--format=%s", "-1", loop.branch)).toBe("ralph: sync plan v1");
+  }, 30_000);
 });
 
 describe("mock provider — outside the pipeline", () => {
@@ -204,9 +238,26 @@ describe("mock provider — outside the pipeline", () => {
     expect(result).toMatchObject({ stalled: true, code: 1 });
   });
 
-  it("answers the read-only planner chat", async () => {
-    await expect(plannerChat([{ role: "user", content: "hi" }])).resolves.toMatch(/^Mock reply/);
-  });
+  it("scopes a card read-only against its own repository and proposes a card from the thread", async () => {
+    const repo = seedRepo("scoping");
+    db.insert(cards)
+      .values({
+        id: "card-scoping", repoId: repo.id, title: "Rough ask", description: "Do a thing.",
+        status: "backlog", position: 1, createdAt: now(), updatedAt: now(),
+      })
+      .run();
+
+    const thread = await scopingTurn("card-scoping", "What would this touch?");
+    expect(thread.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(thread[1].content).toMatch(/^Mock reply/);
+
+    // The mock's reply has no TITLE line, so the card keeps its title and the
+    // whole reply becomes the description — and stays in the thread.
+    const proposal = await proposeScopedCard("card-scoping");
+    expect(proposal.title).toBe("Rough ask");
+    expect(proposal.description).toMatch(/^Mock reply/);
+    expect(proposal.messages).toHaveLength(3);
+  }, 30_000);
 
   it("without RADULF_MOCK_LLM=1, refuses to run rather than fall back to a paid provider", async () => {
     process.env.RADULF_MOCK_LLM = "0";
@@ -215,9 +266,7 @@ describe("mock provider — outside the pipeline", () => {
       // anthropic default)…
       expect(getSettings().plannerProvider).toBe("mock");
       // …and the run fails loudly instead of reaching a real model.
-      await expect(plannerChat([{ role: "user", content: "hi" }])).rejects.toThrow(
-        /mock provider is disabled/,
-      );
+      await expect(scopingTurn("card-scoping", "hi")).rejects.toThrow(/mock provider is disabled/);
     } finally {
       process.env.RADULF_MOCK_LLM = "1";
     }

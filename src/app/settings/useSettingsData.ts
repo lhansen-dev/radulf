@@ -2,38 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, type Repo } from "../ui/api";
+import type { Settings } from "@/server/settings";
+import { errorMessage } from "@/shared/errorMessage";
 
-export type Settings = {
-  plannerProvider: string;
-  plannerModel: string;
-  plannerReasoningLevel: string;
-  loopProvider: string;
-  loopModel: string;
-  loopReasoningLevel: string;
-  evaluatorProvider: string;
-  evaluatorModel: string;
-  evaluatorReasoningLevel: string;
-  plannerTimeoutMinutes: number;
-  omlxBaseUrl: string;
-  omlxApiKey: string;
-  openrouterApiKey: string;
-  braveApiKey: string;
-  defaultMaxIterations: number;
-  defaultTimeoutMinutes: number;
-  iterationHardTimeoutMinutes: number;
-  evaluatorTimeoutMinutes: number;
-  stallTimeoutSeconds: number;
-  minimalToolset: boolean;
-  sandboxEnabled: boolean;
-  sandboxNetworkAllowlist: string;
-  sandboxWeakerIsolationForGoTls: boolean;
-  notificationsEnabled: boolean;
-  soundEnabled: boolean;
-  theme: string;
-  plannerPromptTemplate: string;
-  evaluatorPromptTemplate: string;
-  improvePromptTemplate: string;
-};
+export type { Settings };
 
 export type PromptTemplateSettings = Pick<
   Settings,
@@ -88,7 +60,7 @@ export function useSettingsData() {
       setSaved(true);
       setTimeout(() => setSaved(false), 5000);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
       throw cause;
     } finally {
       setSaving(false);

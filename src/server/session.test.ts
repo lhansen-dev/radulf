@@ -5,6 +5,7 @@ import {
   signSession,
   verifySession,
   isAllowedOrigin,
+  redirectBase,
 } from "./session";
 
 const TEST_SECRET = "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
@@ -65,5 +66,38 @@ describe("isAllowedOrigin", () => {
     } finally {
       delete process.env.RADULF_ALLOWED_ORIGIN;
     }
+  });
+});
+
+describe("redirectBase", () => {
+  const req = (origin: string | null) =>
+    new Request("http://0.0.0.0:3000/api/auth/login", {
+      method: "POST",
+      headers: origin ? { origin } : {},
+    });
+
+  it("redirects to the origin the browser actually used, not the bind address", () => {
+    process.env.RADULF_ALLOWED_ORIGIN = "192.168.100.68";
+    try {
+      const base = redirectBase(req("http://192.168.100.68:3000"));
+      expect(new URL("/", base).href).toBe("http://192.168.100.68:3000/");
+    } finally {
+      delete process.env.RADULF_ALLOWED_ORIGIN;
+    }
+  });
+
+  it("accepts a localhost origin", () => {
+    const base = redirectBase(req("http://localhost:3000"));
+    expect(new URL("/", base).href).toBe("http://localhost:3000/");
+  });
+
+  it("falls back to request.url when no Origin is sent (curl, scripts)", () => {
+    expect(redirectBase(req(null))).toBe("http://0.0.0.0:3000/api/auth/login");
+  });
+
+  it("ignores a foreign Origin rather than redirecting to it", () => {
+    expect(redirectBase(req("https://evil.example.com"))).toBe(
+      "http://0.0.0.0:3000/api/auth/login",
+    );
   });
 });

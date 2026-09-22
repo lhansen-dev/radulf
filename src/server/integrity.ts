@@ -58,6 +58,20 @@ function snapshotHooks(hooksDir: string): Record<string, string> {
   return hooks;
 }
 
+/** The hook and config half of a baseline: what the pre-merge check re-reads
+ * on its own, refs aside. */
+function snapshotHooksAndConfig(
+  commonDir: string,
+): Pick<RepoIntegrityBaseline, "hooks" | "configHash"> {
+  let configHash = "";
+  try {
+    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
+  } catch {
+    // No config file — "" stands in, on both sides of the comparison.
+  }
+  return { hooks: snapshotHooks(path.join(commonDir, "hooks")), configHash };
+}
+
 async function snapshotRefs(repoPath: string): Promise<Record<string, string>> {
   const { ok, out } = await tryGit(
     repoPath,
@@ -81,25 +95,35 @@ export async function snapshotRepoIntegrity(
 ): Promise<RepoIntegrityBaseline | null> {
   const commonDir = await gitCommonDir(repoPath);
   if (commonDir === null) return null;
-  let configHash = "";
-  try {
-    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
-  } catch {
-    // No config file — "" is the baseline.
-  }
-  return {
-    hooks: snapshotHooks(path.join(commonDir, "hooks")),
-    configHash,
-    refs: await snapshotRefs(repoPath),
-  };
+  return { ...snapshotHooksAndConfig(commonDir), refs: await snapshotRefs(repoPath) };
+}
+
+/**
+ * Refs Radulf writes on its own behalf, by name. Local branches under
+ * `ralph/`: a card's run branch (`ralph/<slug>-<runId>`, `git.ts`) and an
+ * improvement run's feature branch (`ralph/improve-<ts>`,
+ * `improvementRuns.ts`). Plus their remote-tracking counterparts, which spec
+ * 15 delivery creates when it pushes a branch to open a pull request (spec
+ * 20). Nothing else in the server writes a ref by name.
+ */
+function isManagedRef(ref: string): boolean {
+  return ref.startsWith("refs/heads/ralph/") || /^refs\/remotes\/[^/]+\/ralph\//.test(ref);
 }
 
 /**
  * Compare the repo against a baseline. Returns human-readable violations —
- * empty means intact. `runBranch` (e.g. "ralph/slug-runid") is the one ref
- * the run may legitimately move or create; with `checkRefs: false` only the
- * hook/config portion runs (the pre-merge check, where the base branch and
- * other refs may have moved legitimately since run end).
+ * empty means intact. `runBranch` (e.g. "ralph/slug-runid") is the run's own
+ * branch; with `checkRefs: false` only the hook/config portion runs (the
+ * pre-merge check, where the base branch and other refs may have moved
+ * legitimately since run end).
+ *
+ * Spec 19: the refs portion skips the whole `refs/heads/ralph/` namespace,
+ * not just `runBranch`. Every worktree shares one `.git`, so a sibling card's
+ * commit, a worktree cleanup and an improvement run's new branch all land in
+ * this run's ref snapshot, where they read as tampering even though Radulf
+ * wrote them itself. Refs outside that namespace (base branches, `main`,
+ * tags, remotes) are still compared, and hooks and `.git/config` are
+ * untouched by this.
  */
 export async function checkRepoIntegrity(
   repoPath: string,
@@ -112,7 +136,7 @@ export async function checkRepoIntegrity(
     return [`repo at ${repoPath} is no longer a usable git repository`];
   }
 
-  const hooksNow = snapshotHooks(path.join(commonDir, "hooks"));
+  const { hooks: hooksNow, configHash } = snapshotHooksAndConfig(commonDir);
   for (const [name, hash] of Object.entries(hooksNow)) {
     if (!(name in baseline.hooks)) violations.push(`hook appeared: .git/hooks/${name}`);
     else if (baseline.hooks[name] !== hash) violations.push(`hook changed: .git/hooks/${name}`);
@@ -121,26 +145,21 @@ export async function checkRepoIntegrity(
     if (!(name in hooksNow)) violations.push(`hook removed: .git/hooks/${name}`);
   }
 
-  let configHash = "";
-  try {
-    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
-  } catch {
-    // Missing now — compares against baseline "" below.
-  }
   if (configHash !== baseline.configHash) violations.push(".git/config changed");
 
   if (opts.checkRefs) {
     const allowed = `refs/heads/${opts.runBranch}`;
+    const managed = (ref: string) => ref === allowed || isManagedRef(ref);
     const refsNow = await snapshotRefs(repoPath);
     for (const [ref, oid] of Object.entries(refsNow)) {
-      if (ref === allowed) continue;
+      if (managed(ref)) continue;
       if (!(ref in baseline.refs)) violations.push(`ref appeared: ${ref}`);
       else if (baseline.refs[ref] !== oid) {
         violations.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
       }
     }
     for (const ref of Object.keys(baseline.refs)) {
-      if (ref !== allowed && !(ref in refsNow)) violations.push(`ref deleted: ${ref}`);
+      if (!managed(ref) && !(ref in refsNow)) violations.push(`ref deleted: ${ref}`);
     }
   }
 
@@ -156,7 +175,7 @@ function baselineDir(): string {
   return path.join(DATA_DIR, "integrity");
 }
 
-export function baselinePath(runId: string): string {
+function baselinePath(runId: string): string {
   return path.join(baselineDir(), `${runId}.json`);
 }
 
@@ -175,4 +194,49 @@ export function loadBaseline(runId: string): RepoIntegrityBaseline | null {
 
 export function removeBaseline(runId: string): void {
   fs.rmSync(baselinePath(runId), { force: true });
+}
+
+// ---------------------------------------------------------------------------
+// Live baselines (spec 20) — the in-memory copy a run is actually checked
+// against, so Radulf can record a ref it moved itself while the run is open.
+// ---------------------------------------------------------------------------
+
+/** runId -> the repo it watches and the baseline it will be checked against. */
+const liveBaselines = new Map<string, { repoPath: string; baseline: RepoIntegrityBaseline }>();
+
+/** Register a run's baseline for the duration of the run. The entry holds the
+ * caller's own object rather than a copy, so a `noteRadulfRefWrite` reaches
+ * the baseline the run is checked against without the run re-reading it.
+ * Always paired with `releaseRunBaseline` in a finally, or a long-lived server
+ * leaks one entry per run. */
+export function registerRunBaseline(
+  runId: string,
+  repoPath: string,
+  baseline: RepoIntegrityBaseline,
+): void {
+  liveBaselines.set(runId, { repoPath, baseline });
+}
+
+export function releaseRunBaseline(runId: string): void {
+  liveBaselines.delete(runId);
+}
+
+/**
+ * Record a ref Radulf itself just wrote, so the runs open against that repo do
+ * not report the server's own work as tampering (spec 20).
+ *
+ * Used for the base branch after an approved merge: every other card looping
+ * in that repo holds a baseline that still has the pre-merge oid, and the base
+ * branch is deliberately NOT in the managed namespace, because a human reviews
+ * a run branch against its base and tampering with base is invisible to that
+ * review. Telling the baselines what moved keeps the check's teeth while
+ * removing the false positive.
+ *
+ * `repoPath` is matched exactly, as the repo record stores it, which is also
+ * what every caller passes to `snapshotRepoIntegrity`.
+ */
+export function noteRadulfRefWrite(repoPath: string, ref: string, oid: string): void {
+  for (const entry of liveBaselines.values()) {
+    if (entry.repoPath === repoPath) entry.baseline.refs[ref] = oid;
+  }
 }

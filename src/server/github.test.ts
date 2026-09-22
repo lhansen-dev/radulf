@@ -10,12 +10,14 @@ vi.mock("node:child_process", () => ({ execFile: mocks.execFile }));
 
 const { githubStatus } = await import("./github");
 
-/** Stand in for execFile: resolve `gh <args>` with the given stdout/stderr. */
-function ghReturns(handler: (args: string[]) => { fail?: boolean; out?: string }) {
+/** Stand in for execFile: resolve `gh auth status` with the given stderr, or
+ * fail it — with `code` set the way execFile reports a spawn failure. */
+function ghReturns(handler: () => { fail?: boolean; code?: string | number; out?: string }) {
   mocks.execFile.mockImplementation(
-    (_cmd: string, args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
-      const { fail, out = "" } = handler(args);
-      queueMicrotask(() => cb(fail ? new Error("exit 1") : null, "", out));
+    (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
+      const { fail, code, out = "" } = handler();
+      const err = fail ? Object.assign(new Error("exit 1"), code ? { code } : {}) : null;
+      queueMicrotask(() => cb(err, "", out));
       return { stdin: { end: () => {} }, kill: () => {} };
     },
   );
@@ -25,18 +27,14 @@ describe("githubStatus", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("reads the account name out of gh's real auth-status wording", async () => {
-    ghReturns((args) =>
-      args[0] === "--version"
-        ? { out: "gh version 2.96.0 (2026-07-02)" }
-        : {
-            out: [
-              "github.com",
-              "  ✓ Logged in to github.com account lhansen-dev (keyring)",
-              "  - Active account: true",
-              "  - Git operations protocol: https",
-            ].join("\n"),
-          },
-    );
+    ghReturns(() => ({
+      out: [
+        "github.com",
+        "  ✓ Logged in to github.com account lhansen-dev (keyring)",
+        "  - Active account: true",
+        "  - Git operations protocol: https",
+      ].join("\n"),
+    }));
 
     // `refresh` because the module caches for 30s and these cases share it.
     const status = await githubStatus({ refresh: true });
@@ -45,18 +43,22 @@ describe("githubStatus", () => {
   });
 
   it("stays ok, just unnamed, when the account cannot be parsed", async () => {
-    ghReturns((args) =>
-      args[0] === "--version" ? { out: "gh version 3.0.0" } : { out: "some future wording" },
-    );
+    ghReturns(() => ({ out: "some future wording" }));
 
     expect(await githubStatus({ refresh: true })).toEqual({ ok: true });
   });
 
   it("distinguishes a missing gh from a logged-out one", async () => {
-    ghReturns(() => ({ fail: true }));
+    // No `gh` on PATH: execFile cannot spawn it and reports ENOENT.
+    ghReturns(() => ({ fail: true, code: "ENOENT" }));
     expect(await githubStatus({ refresh: true })).toMatchObject({ ok: false, reason: "missing" });
 
-    ghReturns((args) => (args[0] === "--version" ? { out: "gh version 2.96.0" } : { fail: true }));
+    // A `gh` that exists but is not executable also fails at spawn, as EACCES.
+    ghReturns(() => ({ fail: true, code: "EACCES" }));
+    expect(await githubStatus({ refresh: true })).toMatchObject({ ok: false, reason: "missing" });
+
+    // `gh` runs but `auth status` exits non-zero: a numeric exit status.
+    ghReturns(() => ({ fail: true, code: 1 }));
     expect(await githubStatus({ refresh: true })).toMatchObject({
       ok: false,
       reason: "unauthenticated",
@@ -64,9 +66,7 @@ describe("githubStatus", () => {
   });
 
   it("caches, and refresh bypasses the cache", async () => {
-    ghReturns((args) =>
-      args[0] === "--version" ? { out: "gh version 2.96.0" } : { out: "account alice" },
-    );
+    ghReturns(() => ({ out: "account alice" }));
     await githubStatus({ refresh: true });
     const callsAfterFirst = mocks.execFile.mock.calls.length;
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { listLocalModels, v1Root } from "./localEndpoint";
+import { listLocalModels, parseHeaderLines, v1Root } from "./localEndpoint";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status });
@@ -23,6 +23,27 @@ describe("v1Root", () => {
   it("ignores surrounding whitespace, which a pasted URL carries", () => {
     expect(v1Root("  http://localhost:8000  ")).toBe("http://localhost:8000/v1");
   });
+});
+
+describe("parseHeaderLines", () => {
+  it("reads one Name: value per line, trimming and skipping blank lines", () => {
+    expect(parseHeaderLines("kong-api-key: abc123\n\n  X-Tenant :  lab  \n")).toEqual({
+      "kong-api-key": "abc123",
+      "X-Tenant": "lab",
+    });
+    expect(parseHeaderLines("")).toEqual({});
+  });
+
+  it("keeps a colon inside the value, since tokens and URLs carry them", () => {
+    expect(parseHeaderLines("Authorization: Bearer a:b")).toEqual({ Authorization: "Bearer a:b" });
+  });
+
+  it.each(["no-colon", "kong api key: v", ": v", "name:"])(
+    "rejects %j and names the line",
+    (line) => {
+      expect(() => parseHeaderLines(`ok: yes\n${line}`)).toThrow('line 2 must look like "Name: value"');
+    },
+  );
 });
 
 describe("listLocalModels", () => {
@@ -66,6 +87,25 @@ describe("listLocalModels", () => {
       { id: "a", contextWindow: 8_192 },
       { id: "b" },
     ]);
+  });
+
+  it("sends extra headers alongside the bearer token", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listLocalModels("http://localhost:8000", "key", { "kong-api-key": "abc123" });
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      Authorization: "Bearer key",
+      "kong-api-key": "abc123",
+    });
+  });
+
+  it("lets an Authorization header replace the bearer token instead of doubling it", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listLocalModels("http://localhost:8000", "", { authorization: "Basic xyz" });
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ authorization: "Basic xyz" });
   });
 
   it("names the URL it could not reach, so a wrong base URL is obvious", async () => {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { DATA_DIR, type DiskLimitMechanism } from "@/db";
+import { sleep } from "@/shared/sleep";
 import type { Settings } from "../settings";
 import { agentEnv } from "../harness/types";
 import { setupRunCgroup, killRunCgroup, type RunCgroup } from "./cgroup";
@@ -59,8 +60,6 @@ export type RunSandboxContext = {
 
 const REAP_RETRIES = 10;
 const REAP_RETRY_MS = 100;
-
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 /** True while any process remains in the group. */
 function groupAlive(pgid: number): boolean {
@@ -136,10 +135,10 @@ export function buildCommandPrefix(pgidFile: string, cgroup: RunCgroup | null): 
   return lines.join("\n");
 }
 
-export function createRunSandbox(
+export async function createRunSandbox(
   runId: string,
   opts?: { cwd?: string; s?: Settings },
-): RunSandboxContext {
+): Promise<RunSandboxContext> {
   const root = path.join(runScratchRoot(), runId);
   const tmpdir = path.join(root, "tmp");
   const cacheRoot = path.join(root, "cache");
@@ -159,8 +158,8 @@ export function createRunSandbox(
 
   // Layer 1 (spec 14 Phase 6): built here (not in pi.ts) because it needs
   // the worktree's shared .git dir, which requires a git call this
-  // constructor is already the synchronous, run-start place for. Only
-  // built when sandboxing is on — an operator who turned it off should not
+  // constructor is already the run-start place for. Only built when
+  // sandboxing is on — an operator who turned it off should not
   // pay for the git call, and pi.ts's absence-means-unsandboxed contract
   // depends on this being genuinely absent rather than unused.
   const sandboxEnabled = opts?.s?.sandboxEnabled ?? true;
@@ -169,7 +168,7 @@ export function createRunSandbox(
     opts?.cwd && sandboxEnabled
       ? buildRunSandboxConfig({
           worktree: opts.cwd,
-          gitCommonDir: resolveGitCommonDir(opts.cwd),
+          gitCommonDir: await resolveGitCommonDir(opts.cwd),
           tmpdir,
           cacheRoot,
           networkAllowlistText: opts.s?.sandboxNetworkAllowlist ?? "",
@@ -197,7 +196,7 @@ export function createRunSandbox(
   // worktree — where the agent's writes land — not the run's scratch root.
   const diskLimitMechanism: DiskLimitMechanism = cgroup
     ? "cgroup"
-    : detectMacDiskMechanism(opts?.cwd ?? root);
+    : await detectMacDiskMechanism(opts?.cwd ?? root);
 
   const reap = () => reapProcessGroups(pgidFile);
   return {

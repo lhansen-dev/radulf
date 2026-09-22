@@ -25,10 +25,6 @@ const fetchMock = vi.fn((url: string) => {
   if (url === "/api/cards/c1") {
     return jsonResponse({ card: { id: "c1", status: cardStatus }, repo: null, plans: [], runs: [], events: [] });
   }
-  if (url === "/api/settings") {
-    return jsonResponse({ plannerProvider: "anthropic", loopProvider: "anthropic", evaluatorProvider: "anthropic" });
-  }
-  if (url.startsWith("/api/providers/")) return jsonResponse({ models: [] });
   return Promise.reject(new Error(`unexpected fetch: ${url}`));
 });
 const detailFetches = () => fetchMock.mock.calls.filter(([url]) => url === "/api/cards/c1").length;

@@ -153,7 +153,7 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
   if (!/^[a-z0-9][a-z0-9-]*$/.test(opts.fixture)) {
     throw new ClientError("invalid fixture name");
   }
-  if (!listFixtures().some((f) => f.name === opts.fixture)) {
+  if (!existsSync(path.join(BENCH_DIR, opts.fixture, "TASK.md"))) {
     throw new ClientError(`unknown fixture: ${opts.fixture}`);
   }
   if (!opts.repoId) throw new ClientError("repoId is required");

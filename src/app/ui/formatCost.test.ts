@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatCostUsd, sumCostUsd } from "./formatCost";
+import { formatCostUsd, sumReported } from "./formatCost";
 
 describe("formatCostUsd", () => {
   it("always shows four decimals, so sub-cent costs stay visible", () => {
@@ -18,11 +18,11 @@ describe("formatCostUsd", () => {
   });
 });
 
-describe("sumCostUsd", () => {
+describe("sumReported", () => {
   it("sums only reported costs, returning null when nothing was reported", () => {
-    expect(sumCostUsd([0.5, null, 0.25, undefined])).toBeCloseTo(0.75);
-    expect(sumCostUsd([0, null])).toBe(0);
-    expect(sumCostUsd([])).toBeNull();
-    expect(sumCostUsd([null, undefined])).toBeNull();
+    expect(sumReported([0.5, null, 0.25, undefined])).toBeCloseTo(0.75);
+    expect(sumReported([0, null])).toBe(0);
+    expect(sumReported([])).toBeNull();
+    expect(sumReported([null, undefined])).toBeNull();
   });
 });

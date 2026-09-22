@@ -96,9 +96,17 @@ restrictive floor (`denyRead: [$HOME]`, `allowedDomains: []`). Filesystem policy
 *is* rebuilt per call from `wrapWithSandbox`'s `customConfig`, but **network
 policy is not** — the egress proxy filters against the *session-level* config.
 So `wrapBashCommand` calls `SandboxManager.updateConfig(runConfig)` immediately
-before `wrapWithSandbox`. This is safe **only because Radulf's pipeline is
-strictly serial** (one card at a time, spec 02); it is documented as a hard
-invariant a future concurrency change must not break.
+before `wrapWithSandbox`. The pipeline is **not** strictly serial: cards in
+different repos have always run at the same time, and spec 20 allows more than
+one card per repo. What keeps this safe is narrower than a serial pipeline. The
+wrap-and-`updateConfig` window is serialized by a promise-chain mutex, and a
+runtime check refuses a call whose network-policy slice differs from the one
+already queued, rather than letting it silently clobber the other run's
+allowlist. Today nothing trips that check, because network policy comes from
+global settings with nothing per-card or per-role in it. **Making network
+policy genuinely per-run is what must not be done casually**: it would turn
+that check from dead code into a hard failure, and needs a per-run sandbox
+session instead.
 
 ### Filesystem policy (`buildFilesystemConfig`)
 
@@ -107,7 +115,7 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 | Access | Paths |
 |--------|-------|
 | **write allow** | the worktree; the run's `$TMPDIR`; the run's cache root; the parent repo's shared `.git` (resolved via `git rev-parse --git-common-dir`, so a linked worktree's pointer file isn't mistaken for it) |
-| **write deny** | `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir |
+| **write deny** | `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir. `<git>/refs`, `<git>/packed-refs`, `<git>/HEAD`, `<git>/worktrees/*/HEAD` — every ref and checkout pointer, so agent git cannot commit, move a branch, or check the worktree out onto another branch. The orchestrator makes every commit from the host. |
 | **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH`; three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
 | **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, plus a backstop credential denylist |
 
@@ -119,6 +127,11 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 — if a future re-allow widens by mistake, the obvious targets stay closed. The
 excluded re-allows (`~/.pyenv`, `~/.cargo/credentials`, `~/Library/Caches`) are
 deliberate; adding one back requires a rationale in the spec.
+
+On Linux, the exact `apply-seccomp` executable resolved by srt is also
+read-allowed. It runs inside bubblewrap, so denying `$HOME` otherwise hides
+the sandbox's own helper when Radulf is installed there. This exemption opens
+only the executable, not its parent directory or Radulf's application data.
 
 **`dropRootsThatWouldReopen` — the total-bypass guard.** `PATH`-derived read
 roots are untrusted input: a shallow entry like `/bin` has `dirname` `/`, which
@@ -275,6 +288,13 @@ before merge** in `approveClaimedRun`, however long the card sat in In Review.
 The pre-merge check is the load-bearing one; a violation halts the card to Needs
 Attention with the diff of what moved.
 
+The run-end ref comparison skips everything under `refs/heads/ralph/`, which is
+the namespace Radulf writes itself: card run branches and improvement-run
+feature branches. Every worktree shares one `.git`, so without that a sibling
+card's ordinary commit shows up as tampering in this run's snapshot and throws
+away a finished run (spec 19). Base branches, `main`, tags and remotes are
+still compared, as are hooks and `.git/config`.
+
 ### Install-script gate
 
 After an install, the orchestrator enumerates every `preinstall`/`install`/
@@ -339,6 +359,10 @@ There is **no** automatic "sandbox unavailable, run unsandboxed" fallback.
   dependency check, and (Linux) the Ubuntu 24.04+ AppArmor
   `kernel.apparmor_restrict_unprivileged_userns` gate — each with a specific
   remediation message. Cached via `initializeSandboxRuntimeOnce`.
+- After initialization, a timed sandboxed `true` command verifies that the
+  runtime can actually start under the run filesystem policy. A missing or
+  hidden helper therefore fails startup before an agent spends tokens retrying
+  commands that cannot execute.
 - Before its first iteration, a run with `sandboxEnabled` awaits that cached
   result; if not `ok`, the run fails and the card moves to Needs Attention with
   the verbatim error — never proceeds unsandboxed.

@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
 import { cards, db, events, runs, TRANSCRIPTS_DIR } from "@/db";
+import { planStatePath } from "./bookkeeping";
 import { ClientError } from "./clientError";
-import { markWorktreeRemoved } from "./git";
+import { markWorktreeRemoved, removeWorktree } from "./git";
 
 export type CleanupResult = {
   runsDeleted: number;
@@ -27,6 +28,24 @@ export function removeRunTranscripts(runIds: string[]): number {
     removed += 1;
   }
   return removed;
+}
+
+/** What a card leaves on disk: the run whose worktree still exists, if any
+ * (latestWorktreeRun), the ids of every run for its transcripts, and the
+ * orchestrator-private plan checklist. */
+export type CardArtifacts = {
+  cardId: string;
+  worktreeRun: { worktreePath: string; branch: string } | undefined;
+  runIds: string[];
+};
+
+/** The disk half of deleting a card. Callers gather the artifacts themselves,
+ * because deleting a repo has to do so before its cards' rows cascade away. */
+export async function removeCardArtifacts(repoPath: string, artifacts: CardArtifacts): Promise<void> {
+  const { cardId, worktreeRun, runIds } = artifacts;
+  if (worktreeRun) await removeWorktree(repoPath, worktreeRun.worktreePath, worktreeRun.branch);
+  removeRunTranscripts(runIds);
+  fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
 }
 
 /** Delete terminal run history/events older than the requested window and

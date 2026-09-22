@@ -14,6 +14,16 @@ export type Plan = {
   createdAt: string;
 };
 
+/** One entry in the card's scoping thread (spec 17). `planner` is a set of
+ * blocking questions a planning run raised, `loop` a blocker the loop hit
+ * while carrying the card out; both wait on the operator. */
+export type ScopingMessage = {
+  id: number;
+  role: "user" | "assistant" | "planner" | "loop";
+  content: string;
+  createdAt: string;
+};
+
 export type CardDetailData = {
   card: {
     id: string;
@@ -56,39 +66,14 @@ export type CardDetailData = {
     loop: { provider: string; model: string | null; reasoningLevel: string };
     evaluator: { provider: string; model: string | null; reasoningLevel: string };
   };
+  /** The card's scoping thread, oldest first. Absent on older cached responses. */
+  scoping?: ScopingMessage[];
 };
 
-type ModelOption = { value: string; displayName: string };
-
-/** Card detail data, provider model options, and card-scoped live refresh. */
+/** Card detail data and card-scoped live refresh. */
 export function useCardDetail(cardId: string) {
   const [detail, setDetail] = useState<CardDetailData | null>(null);
   const [error, setError] = useState("");
-  const [plannerModels, setPlannerModels] = useState<ModelOption[]>([]);
-  const [loopModels, setLoopModels] = useState<ModelOption[]>([]);
-  const [evaluatorModels, setEvaluatorModels] = useState<ModelOption[]>([]);
-
-  useEffect(() => {
-    api<{
-      plannerProvider: string;
-      loopProvider: string;
-      evaluatorProvider: string;
-    }>("/api/settings")
-      .then(async (settings) => {
-        const loadModels = (provider: string) =>
-          api<{ models: ModelOption[] }>(`/api/providers/${provider}/models`)
-            .catch(() => ({ models: [] }));
-        const [planner, loop, evaluator] = await Promise.all([
-          loadModels(settings.plannerProvider),
-          loadModels(settings.loopProvider),
-          loadModels(settings.evaluatorProvider),
-        ]);
-        setPlannerModels(planner.models);
-        setLoopModels(loop.models);
-        setEvaluatorModels(evaluator.models);
-      })
-      .catch(() => {});
-  }, []);
 
   const refetch = useCallback(() => {
     api<CardDetailData>(`/api/cards/${cardId}`)
@@ -115,13 +100,5 @@ export function useCardDetail(cardId: string) {
     },
   );
 
-  return {
-    detail,
-    error,
-    setError,
-    plannerModels,
-    loopModels,
-    evaluatorModels,
-    refetch,
-  };
+  return { detail, error, setError, refetch };
 }

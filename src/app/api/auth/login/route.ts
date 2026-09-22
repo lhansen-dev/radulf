@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { signSession, SESSION_COOKIE, SESSION_MAX_AGE_MS } from "@/server/session";
+import {
+  signSession,
+  redirectBase,
+  SESSION_COOKIE,
+  SESSION_MAX_AGE_MS,
+} from "@/server/session";
 import {
   BASE_FAILURE_DELAY_MS,
   clearLoginFailures,
@@ -59,7 +64,7 @@ export async function POST(request: Request) {
   const expiresAtMs = Date.now() + SESSION_MAX_AGE_MS;
   const value = await signSession(expiresAtMs);
 
-  const response = NextResponse.redirect(new URL("/", request.url));
+  const response = NextResponse.redirect(new URL("/", redirectBase(request)));
   response.cookies.set(SESSION_COOKIE, value, {
     httpOnly: true,
     secure: new URL(request.url).protocol === "https:",

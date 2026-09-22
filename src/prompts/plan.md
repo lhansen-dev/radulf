@@ -12,7 +12,21 @@ THE CARD
 Title: {{TITLE}}
 
 {{DESCRIPTION}}
+{{SCOPING_SECTION}}
 {{FEEDBACK_SECTION}}
+
+WHERE THE WORK RUNS
+===================
+The loop and the evaluator run inside a sandbox: no network except package
+registries, no access to the operator's home directory, credentials, or
+logged-in sessions, no browser, and nobody to answer a question mid-task. A
+task that needs an authenticated external service, a live system, or a human
+decision cannot be a checklist item — the loop will stop on it and the card
+comes back to the operator. Plan only what can be built and verified offline,
+and list anything that needs the operator in a `## Operator steps` section of
+PLAN.md, outside `## Tasks`. Acceptance criteria must be runnable in the same
+sandbox. If nothing useful can be built without live access, use the escape
+hatch below instead of writing a plan.
 
 YOUR TASK
 =========
@@ -77,9 +91,10 @@ covering what changed, why, and key files) and stop. Whole-card acceptance
 testing is the evaluator's job, not yours. Never write `.ralph/DONE` if the
 task-specific check failed or when LAST_TASK=false.
 
-Rules: never run `git add`, `git commit`, `git push`, or any other git
-command that changes state — the orchestrator commits for you (read-only
-commands like `git status` and `git diff` are fine); never modify
+Rules: never run `git add`, `git commit`, `git checkout`, `git switch`,
+`git push`, or any other git command that changes state. The orchestrator
+commits for you, and the worktree must stay on the branch it was given.
+Read-only commands like `git status` and `git diff` are fine. Never modify
 `.ralph/PROMPT.md`; never touch files outside this working directory; only run
 tests that cover your current task's files — NEVER run the full test suite.
 Your assigned task is the ONLY task: never create or update any harness

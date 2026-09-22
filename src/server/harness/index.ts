@@ -15,6 +15,7 @@ import {
 import { StuckDetector } from "./stuckDetector";
 import { withStreamLiveness } from "./streamLiveness";
 import type { TranscriptEvent, HarnessId } from "./types";
+import { errorMessage } from "@/shared/errorMessage";
 
 /**
  * The slice of the pi AgentSession that runHarness drives. AgentSession
@@ -41,13 +42,10 @@ export {
 export type { AgentRole } from "./pi";
 
 /**
- * Result of one runner invocation — spec 11 Phase 0 telemetry.
- *
- * Token fields sum per-model-turn usage events; a field is null when the
- * harness never reported it (unavailable stays unavailable — never coerced
- * to zero).
+ * Result of one runner invocation — spec 11 Phase 0 telemetry: the folded
+ * transcript totals plus the watchdog verdicts and harness identity.
  */
-export type RunnerResult = {
+export type RunnerResult = TranscriptTotals & {
   code: number | null;
   timedOut: boolean;
   /** True when the invocation was killed by the stall watchdog: the harness
@@ -57,26 +55,6 @@ export type RunnerResult = {
   /** True when the invocation was killed for repeating the exact same tool
    * call over and over within this iteration (see StuckDetector). */
   stuck: boolean;
-  /** Last assistant text seen in the stream — used as the iteration summary. */
-  lastText: string;
-  /** Error text from the result event, if any. */
-  error: string;
-  /** UNCACHED cumulative input tokens summed across every model turn — kept
-   * under the historical name for migration compatibility. Not a context
-   * size, and cache reads are excluded. */
-  promptTokens: number;
-  /** Completion tokens summed across every model turn. */
-  completionTokens: number;
-  cachedInputTokens: number | null;
-  cacheWriteTokens: number | null;
-  reasoningTokens: number | null;
-  costUsd: number | null;
-  /** Count of per-turn usage events (a cumulative-only harness yields 1),
-   * overridden by a harness-reported turn count on the result event. */
-  modelTurns: number | null;
-  toolCalls: number;
-  /** Summed harness-reported tool execution time; null when never reported. */
-  toolDurationMs: number | null;
   /** Wall-clock ms from session start to the first normalized (non-raw) event. */
   firstTokenMs: number | null;
   harness: HarnessId;
@@ -112,18 +90,31 @@ export function runTelemetry(result: RunnerResult): RunTelemetry {
  * Streaming accumulator for normalized transcript events — the single place
  * that turns per-turn usage/tool events into invocation totals, exported so
  * unit tests can drive it with pinned fixtures.
+ *
+ * Token fields sum per-model-turn usage events; a field is null when the
+ * harness never reported it (unavailable stays unavailable — never coerced
+ * to zero).
  */
 export type TranscriptTotals = {
+  /** Last assistant text seen in the stream — used as the iteration summary. */
   lastText: string;
+  /** Error text from the result event, if any. */
   error: string;
+  /** UNCACHED cumulative input tokens summed across every model turn — kept
+   * under the historical name for migration compatibility. Not a context
+   * size, and cache reads are excluded. */
   promptTokens: number;
+  /** Completion tokens summed across every model turn. */
   completionTokens: number;
   cachedInputTokens: number | null;
   cacheWriteTokens: number | null;
   reasoningTokens: number | null;
   costUsd: number | null;
+  /** Count of per-turn usage events (a cumulative-only harness yields 1),
+   * overridden by a harness-reported turn count on the result event. */
   modelTurns: number | null;
   toolCalls: number;
+  /** Summed harness-reported tool execution time; null when never reported. */
   toolDurationMs: number | null;
 };
 
@@ -143,32 +134,28 @@ export function createTranscriptTotals(): TranscriptTotals {
   };
 }
 
+/** Add a value the harness reported to a total that stays null until the
+ * first report; an unreported value leaves the total untouched. */
+function addReported(total: number | null, reported: number | undefined): number | null {
+  return reported === undefined ? total : (total ?? 0) + reported;
+}
+
 export function foldTranscriptEvent(totals: TranscriptTotals, event: TranscriptEvent): void {
   if (event.t === "text") {
     totals.lastText = event.content;
   } else if (event.t === "tool") {
     totals.toolCalls += 1;
-    if (event.durationMs !== undefined) {
-      totals.toolDurationMs = (totals.toolDurationMs ?? 0) + event.durationMs;
-    }
+    totals.toolDurationMs = addReported(totals.toolDurationMs, event.durationMs);
   } else if (event.t === "usage") {
     // Every usage event is one model turn (pi emits one assistant message_end
     // per turn) — counting them can never double-count.
     totals.modelTurns = (totals.modelTurns ?? 0) + 1;
     totals.promptTokens += event.inputTokens;
     totals.completionTokens += event.outputTokens;
-    if (event.cachedInputTokens !== undefined) {
-      totals.cachedInputTokens = (totals.cachedInputTokens ?? 0) + event.cachedInputTokens;
-    }
-    if (event.cacheWriteTokens !== undefined) {
-      totals.cacheWriteTokens = (totals.cacheWriteTokens ?? 0) + event.cacheWriteTokens;
-    }
-    if (event.reasoningTokens !== undefined) {
-      totals.reasoningTokens = (totals.reasoningTokens ?? 0) + event.reasoningTokens;
-    }
-    if (event.costUsd !== undefined) {
-      totals.costUsd = (totals.costUsd ?? 0) + event.costUsd;
-    }
+    totals.cachedInputTokens = addReported(totals.cachedInputTokens, event.cachedInputTokens);
+    totals.cacheWriteTokens = addReported(totals.cacheWriteTokens, event.cacheWriteTokens);
+    totals.reasoningTokens = addReported(totals.reasoningTokens, event.reasoningTokens);
+    totals.costUsd = addReported(totals.costUsd, event.costUsd);
   } else if (event.t === "result") {
     if (event.exit === "failed") {
       totals.error = event.detail ?? "unknown error";
@@ -192,6 +179,10 @@ export function foldTranscriptEvent(totals: TranscriptTotals, event: TranscriptE
  * overflowed a 1M-token context on the next request.
  */
 export const MAX_REPLY_CHARS = 1024 * 1024;
+
+/** Why a watchdog aborted the session. The first cause to fire is the one
+ * reported; a later one finds the session already aborting. */
+type TripCause = "timeout" | "stalled" | "stuck" | "oversized" | "aborted";
 
 type RunHarnessOpts = {
   provider: ProviderId;
@@ -236,10 +227,9 @@ type RunHarnessOpts = {
 export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   const totals = createTranscriptTotals();
   let firstTokenMs: number | null = null;
-  let timedOut = false;
-  let stalled = false;
-  let stuck = false;
-  let oversized = false;
+  // `as`: assigned from closures and read after them; a bare `= null` would
+  // narrow it to null for the rest of the function.
+  let tripped = null as TripCause | null;
   let replyChars = 0;
   const stuckDetector = new StuckDetector();
   const startedAtMs = Date.now();
@@ -253,9 +243,9 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
 
   const result = (code: number | null): RunnerResult => ({
     code,
-    timedOut,
-    stalled,
-    stuck,
+    timedOut: tripped === "timeout",
+    stalled: tripped === "stalled",
+    stuck: tripped === "stuck",
     ...totals,
     firstTokenMs,
     harness: "pi",
@@ -286,22 +276,20 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
         });
   } catch (err) {
     await closeTranscript();
-    totals.error = String(err instanceof Error ? err.message : err);
+    totals.error = errorMessage(err);
     return result(1);
   }
 
   // Watchdog race: any of the three triggers aborts the session and unblocks.
-  let releaseWatchdog: () => void = () => {};
-  const watchdog = new Promise<void>((res) => {
-    releaseWatchdog = res;
-  });
-  const trip = (mark: () => void) => {
-    mark();
+  const { promise: watchdog, resolve: releaseWatchdog } = Promise.withResolvers<void>();
+  const trip = (cause: TripCause) => {
+    if (tripped !== null) return;
+    tripped = cause;
     void session.abort().catch(() => {});
     releaseWatchdog();
   };
 
-  const hardTimer = setTimeout(() => trip(() => (timedOut = true)), opts.timeoutMs);
+  const hardTimer = setTimeout(() => trip("timeout"), opts.timeoutMs);
 
   // Stall watchdog: any streamed event resets it — including the
   // `message_update` deltas piNormalize drops, so a model that is merely slow
@@ -316,19 +304,27 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     opts.stallTimeoutMs === undefined
       ? Math.max(30_000, s().stallTimeoutSeconds * 1000)
       : opts.stallTimeoutMs;
-  let stallTimer: NodeJS.Timeout | undefined;
-  const resetStallTimer = () => {
-    if (stallTimeoutMs <= 0) return;
-    clearTimeout(stallTimer);
-    stallTimer = setTimeout(() => trip(() => (stalled = true)), stallTimeoutMs);
+  // Activity is a timestamp, not a timer reset: every session event and every
+  // SSE chunk notes it, and one timer, re-armed only when it fires, checks it.
+  let lastActivityMs = Date.now();
+  const noteActivity = () => {
+    lastActivityMs = Date.now();
   };
-  resetStallTimer();
+  let stallTimer: NodeJS.Timeout | undefined;
+  const armStallTimer = (delayMs: number) => {
+    stallTimer = setTimeout(() => {
+      const idleMs = Date.now() - lastActivityMs;
+      if (idleMs >= stallTimeoutMs) trip("stalled");
+      else armStallTimer(stallTimeoutMs - idleMs);
+    }, delayMs);
+  };
+  if (stallTimeoutMs > 0) armStallTimer(stallTimeoutMs);
 
-  const onAbort = () => trip(() => {});
+  const onAbort = () => trip("aborted");
   opts.signal?.addEventListener("abort", onAbort, { once: true });
 
   const unsubscribe = session.subscribe((evt) => {
-    resetStallTimer();
+    noteActivity();
     // Reply-size guard: counted from the streaming deltas so the session is
     // aborted before an oversized reply lands in the context window.
     if (evt.type === "message_start" || evt.type === "message_end") {
@@ -341,9 +337,7 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
         update.type === "toolcall_delta"
       ) {
         replyChars += update.delta.length;
-        if (replyChars > MAX_REPLY_CHARS && !oversized) {
-          trip(() => (oversized = true));
-        }
+        if (replyChars > MAX_REPLY_CHARS) trip("oversized");
       }
     }
     for (const e of piNormalize(evt)) {
@@ -352,17 +346,15 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
         firstTokenMs = Date.now() - startedAtMs;
       }
       foldTranscriptEvent(totals, e);
-      if (e.t === "tool" && stuckDetector.record(e.name, e.input)) {
-        trip(() => (stuck = true));
-      }
+      if (e.t === "tool" && stuckDetector.record(e.name, e.input)) trip("stuck");
     }
   });
 
   let promptError = "";
   try {
     await Promise.race([
-      withStreamLiveness(resetStallTimer, () => session.prompt(opts.prompt)).catch((err) => {
-        promptError = String(err instanceof Error ? err.message : err);
+      withStreamLiveness(noteActivity, () => session.prompt(opts.prompt)).catch((err) => {
+        promptError = errorMessage(err);
       }),
       watchdog,
     ]);
@@ -379,16 +371,21 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
     await closeTranscript();
   }
 
-  if (stalled) {
-    totals.error = `harness emitted no output for ${Math.round(stallTimeoutMs / 1000)}s — stream hung (network drop or machine sleep?)`;
-  } else if (stuck) {
-    totals.error = "harness repeated the same tool call 4 times in a row — likely stuck";
-  } else if (oversized) {
-    totals.error = `assistant reply exceeded ${MAX_REPLY_CHARS / (1024 * 1024)} MiB in a single turn — likely a corrupted stream (duplicated deltas or leaked tool-call markup)`;
+  // The watchdogs whose verdict overrides whatever the stream reported. A
+  // timeout or external abort has no message of its own.
+  const TRIP_ERRORS: Partial<Record<TripCause, string>> = {
+    stalled: `harness emitted no output for ${Math.round(stallTimeoutMs / 1000)}s — stream hung (network drop or machine sleep?)`,
+    stuck: "harness repeated the same tool call 4 times in a row — likely stuck",
+    oversized: `assistant reply exceeded ${MAX_REPLY_CHARS / (1024 * 1024)} MiB in a single turn — likely a corrupted stream (duplicated deltas or leaked tool-call markup)`,
+  };
+  const tripError = tripped === null ? undefined : TRIP_ERRORS[tripped];
+  if (tripError) {
+    totals.error = tripError;
   } else if (!totals.error && promptError) {
     totals.error = promptError;
   }
 
-  const failed = Boolean(totals.error) || timedOut || stalled || stuck || oversized;
+  // An external abort is the caller's decision, not a failure of the run.
+  const failed = Boolean(totals.error) || (tripped !== null && tripped !== "aborted");
   return result(failed ? 1 : 0);
 }

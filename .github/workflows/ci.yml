@@ -20,7 +20,7 @@ jobs:
       - uses: ./.github/actions/linux-sandbox-deps
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - run: make install
       - run: make check

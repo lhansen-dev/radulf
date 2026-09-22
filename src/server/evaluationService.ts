@@ -1,17 +1,23 @@
-import fs from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, cards, runs, repos } from "@/db";
+import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
-import { parseEvaluation } from "@/shared/evaluation";
+import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
+import { EVALUATOR_CLEARED_EXITS, parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
+import { errorMessage } from "@/shared/errorMessage";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { tryGit } from "./git";
+import { offRunBranchReason, tryGit } from "./git";
+import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
-import { snapshotRepoIntegrity } from "./integrity";
+import {
+  registerRunBaseline,
+  releaseRunBaseline,
+  snapshotRepoIntegrity,
+} from "./integrity";
 import {
   circuitOpenReason,
   harnessFailure,
@@ -28,9 +34,11 @@ import {
  * an evaluator and a struggling loop must not ping-pong forever. */
 const MAX_EVALUATOR_REVISIONS = 2;
 
+const [APPROVED_EXIT, REVISION_LIMIT_EXIT] = EVALUATOR_CLEARED_EXITS;
+
 /** Evaluator attempts share a worktree, but never another attempt's verdict. */
-export function clearEvaluationArtifact(ralphDir: string) {
-  fs.rmSync(path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"), { force: true });
+export function clearEvaluationArtifact(worktreePath: string) {
+  removeRalphFiles(worktreePath, ["EVALUATION.md"]);
 }
 
 export function renderEvaluatorPrompt(
@@ -48,6 +56,10 @@ export function renderEvaluatorPrompt(
 }
 
 export type EvaluationServiceDependencies = StageDependencies & {
+  /** Advance the repo's queue once this evaluation releases its slot. Every
+   * other stage already did this; without it a repo with cards waiting sits
+   * idle until an unrelated event pumps (spec 20). */
+  pump(): void;
   /** Run the planner on a card already moved to `planning` — a revise verdict
    * re-plans rather than re-entering the loop. */
   replan(cardId: string): void;
@@ -72,7 +84,7 @@ export class EvaluationService {
   async runEvaluator(cardId: string) {
     const deps = this.deps;
     const card = deps.getCard(cardId)!;
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new Error("repo not found");
     const plan = deps.latestPlan(cardId);
     if (!plan) throw new Error("card has no plan");
@@ -85,14 +97,18 @@ export class EvaluationService {
     const model = card.evaluatorModel || settings.evaluatorModel;
     const { worktreePath, branch } = loopRun;
     const baseBranch = loopRun.baseBranch ?? repo.defaultBranch;
-    const ralphDir = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+    const ralphDir = ralphDirPath(worktreePath);
     // A verdict left over from an earlier cycle must never be read as this run's.
-    clearEvaluationArtifact(ralphDir);
+    clearEvaluationArtifact(worktreePath);
 
     // Spec 14 L3: the evaluator holds bash, so it gets the same per-run
     // containment as the loop, including the parent-repo integrity check.
-    const ctx = createRunSandbox(runId, { cwd: worktreePath, s: settings });
+    const ctx = await createRunSandbox(runId, { cwd: worktreePath, s: settings });
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
+    // Spec 20: an evaluation runs long enough that another card's merge can
+    // move this repo's base branch under it. Registering lets that merge
+    // record its own write rather than this run reporting it as tampering.
+    if (integrityBaseline) registerRunBaseline(runId, repo.path, integrityBaseline);
     startRunRow(
       { id: runId, cardId, planId: plan.id, kind: "evaluate", worktreePath, branch, baseBranch, provider, model },
       ctx,
@@ -111,14 +127,21 @@ export class EvaluationService {
       (await tryGit(worktreePath, "status", "--porcelain", "--", ".", ":(exclude).ralph")).out;
     const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
     try {
+      // The awaited sandbox and integrity setup above open a window where the
+      // user can cancel before this run row existed. endActiveRun found
+      // nothing to abort then, so check here and never start a harness for
+      // a card that already left.
+      if (deps.getCard(cardId)?.status !== "evaluating") {
+        deps.finishRun(runId, "cancelled", "card left evaluating before the run started");
+        return;
+      }
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
       const sandboxError = await sandboxUnavailableReason(settings);
       if (controller.signal.aborted) return; // cancelCard already finalized
       if (sandboxError) return fail(sandboxError);
 
-      const headBefore = await head();
-      const sourceStatusBefore = await sourceStatus();
+      const [headBefore, sourceStatusBefore] = await Promise.all([head(), sourceStatus()]);
       const result = await runWithTranscript({
         runId,
         file: "evaluate.jsonl",
@@ -147,24 +170,27 @@ export class EvaluationService {
       const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
       if (violation) return fail(violation);
 
+      // The verdict commit below must land on the run branch and nowhere else.
+      const offBranch = await offRunBranchReason(worktreePath, branch);
+      if (offBranch) return fail(offBranch);
+
       // Spec 14: the judge provably cannot edit the implementation it judged.
       // It never commits (the orchestrator does, below), and its uncommitted
       // changes are narrowed to the doc allowlist.
-      if ((await head()) !== headBefore) {
+      const [headAfter, sourceStatusAfter] = await Promise.all([head(), sourceStatus()]);
+      if (headAfter !== headBefore) {
         return fail("evaluator committed to Git history; verdict rejected");
       }
       const changedBefore = new Set(changedPaths(sourceStatusBefore));
-      const illegalPaths = changedPaths(await sourceStatus()).filter(
+      const illegalPaths = changedPaths(sourceStatusAfter).filter(
         (p) => !changedBefore.has(p) && !isDocPath(p),
       );
       if (illegalPaths.length > 0) {
         return fail(`evaluator modified non-doc files (${illegalPaths.join(", ")}); verdict rejected`);
       }
 
-      const evaluationPath = path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md");
-      const evaluation = fs.existsSync(/* turbopackIgnore: true */ evaluationPath)
-        ? parseEvaluation(fs.readFileSync(/* turbopackIgnore: true */ evaluationPath, "utf8"))
-        : null;
+      const evaluationMd = readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"));
+      const evaluation = evaluationMd ? parseEvaluation(evaluationMd) : null;
       if (!evaluation) return fail("evaluator wrote no usable VERDICT in .ralph/EVALUATION.md");
 
       const hasCritical = evaluation.findings.some((f) => f.severity === "critical");
@@ -182,11 +208,11 @@ export class EvaluationService {
       // hit the limit) carry the evaluator's `.ralph/SUMMARY.md` onto the card
       // and its doc edits onto the review branch (`add -A`); `.ralph` is
       // stripped at merge, the docs stay. A missing summary is non-fatal.
-      const advanceToReview = async (exitReason: string, moveReason: string) => {
-        const summaryPath = path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md");
-        const summary = fs.existsSync(/* turbopackIgnore: true */ summaryPath)
-          ? fs.readFileSync(/* turbopackIgnore: true */ summaryPath, "utf8").trim()
-          : "";
+      const advanceToReview = async (
+        exitReason: (typeof EVALUATOR_CLEARED_EXITS)[number],
+        moveReason: string,
+      ) => {
+        const summary = readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md")).trim();
         if (summary) {
           db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
           emitEvent("card.summarized", { cardId, runId });
@@ -198,7 +224,7 @@ export class EvaluationService {
       };
 
       if (evaluation.verdict === "approve") {
-        await advanceToReview("approve", "evaluator approved");
+        await advanceToReview(APPROVED_EXIT, "evaluator approved");
         // Auto-approve: merge straight through the same review path, granted
         // by the card's own flag or the global setting (a live override read
         // at verdict time; `source` records which one, since the global may
@@ -221,13 +247,13 @@ export class EvaluationService {
       }
 
       const priorRevisions = db
-        .select()
+        .select({ id: runs.id })
         .from(runs)
         .where(and(eq(runs.cardId, cardId), eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")))
         .all().length;
       if (priorRevisions >= MAX_EVALUATOR_REVISIONS) {
         await advanceToReview(
-          "revise — revision limit reached",
+          REVISION_LIMIT_EXIT,
           "evaluator revision limit — escalated to human review",
         );
         return;
@@ -247,7 +273,7 @@ export class EvaluationService {
       }
     } catch (error) {
       if (!controller.signal.aborted) {
-        const reason = `evaluator failed: ${error instanceof Error ? error.message : String(error)}`;
+        const reason = `evaluator failed: ${errorMessage(error)}`;
         deps.finishRun(runId, "failed", reason.slice(0, 500));
         if (deps.getCard(cardId)?.status === "evaluating") {
           deps.moveCard(cardId, "evaluating", "needs_attention", reason);
@@ -255,7 +281,11 @@ export class EvaluationService {
       }
     } finally {
       deps.releaseController(runId);
+      releaseRunBaseline(runId);
       await ctx.cleanup();
+      // Last, and on every exit path: the card has already landed wherever
+      // this evaluation sent it, so the slot this run held is free.
+      deps.pump();
     }
   }
 }

@@ -4,8 +4,6 @@ import { db, runs, iterations, TRANSCRIPTS_DIR } from "@/db";
 import { json, err, handle } from "../../_lib";
 import { readTranscriptChunk } from "@/server/transcript";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 /**

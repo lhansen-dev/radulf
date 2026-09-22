@@ -33,15 +33,13 @@ const fsAccess = access;
 
 // ── Pure helpers (exported for tests) ──────────────────────────
 
-/** Compute percentile (0-100) from sorted array using linear interpolation. */
+/** Nearest-rank percentile (0-100) over an ascending-sorted array: the same
+ * rule as `percentile` in src/server/analytics.ts, so a report's p50/p90
+ * match the analytics tab for the same durations. */
 export function percentile(sorted, p) {
   if (sorted.length === 0) return 0;
-  if (sorted.length === 1) return sorted[0];
-  const idx = (p / 100) * (sorted.length - 1);
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  if (lo === hi) return sorted[lo];
-  return sorted[lo] + (idx - lo) * (sorted[hi] - sorted[lo]);
+  const rank = Math.ceil((p / 100) * sorted.length);
+  return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1];
 }
 
 /** Median = p50 */

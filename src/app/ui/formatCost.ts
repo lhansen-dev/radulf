@@ -15,10 +15,11 @@ export function formatCostUsd(usd: number | null | undefined): string {
 }
 
 /**
- * Sum the costs that were actually reported, returning null when none were —
- * the same "don't invent a zero" rule the formatter applies, hoisted to totals.
+ * Sum the values that were actually reported, returning null when none were —
+ * the same "don't invent a zero" rule the formatter applies, hoisted to totals
+ * of cost, tokens and durations alike.
  */
-export function sumCostUsd(values: (number | null | undefined)[]): number | null {
+export function sumReported(values: (number | null | undefined)[]): number | null {
   const reported = values.filter((v): v is number => v != null && Number.isFinite(v));
   return reported.length > 0 ? reported.reduce((sum, v) => sum + v, 0) : null;
 }

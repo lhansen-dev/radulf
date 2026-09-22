@@ -5,24 +5,27 @@ import { useParams, useRouter } from "next/navigation";
 import { List, useDynamicRowHeight, useListRef, type RowComponentProps } from "react-window";
 import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
+import { Banner } from "../../ui/banner";
+import { DetailsMenu } from "../../ui/detailsMenu";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
-import { describeToolCall } from "../../ui/toolDescription";
+import { ScopingPanel } from "./scopingPanel";
+import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
+import { DialogShell, ROLES, ROLE_LABELS, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
-import { retryableFailedStep } from "@/shared/failedStep";
+import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
+import { PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { parsePayload } from "@/shared/eventPayload";
+import { errorMessage } from "@/shared/errorMessage";
+import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
+import { scriptKey } from "@/shared/installScripts";
 
 const TABS = ["Task", "Activity"] as const;
-
-const ROLES = [
-  { key: "planner", label: "Planner" },
-  { key: "loop", label: "Loop" },
-  { key: "evaluator", label: "Evaluator" },
-] as const;
 
 /** Tab names this page used to have, so old links and bookmarks still land
  * somewhere sensible: the plan moved into Task, the transcript became a
@@ -36,15 +39,7 @@ const RETIRED_TABS: Record<string, (typeof TABS)[number]> = {
 export default function CardDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const {
-    detail,
-    error,
-    setError,
-    plannerModels,
-    loopModels,
-    evaluatorModels,
-    refetch,
-  } = useCardDetail(id);
+  const { detail, error, setError, refetch } = useCardDetail(id);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Task");
   const [transcript, setTranscript] = useState<TranscriptTarget | null>(null);
   const [showEdit, setShowEdit] = useState(false);
@@ -80,10 +75,22 @@ export default function CardDetail() {
   const evaluatorCleared =
     !latestEvaluatorRun ||
     (latestEvaluatorRun.status === "completed" &&
-      ["approve", "revise — revision limit reached"].includes(latestEvaluatorRun.exitReason ?? ""));
+      (EVALUATOR_CLEARED_EXITS as readonly string[]).includes(latestEvaluatorRun.exitReason ?? ""));
   const canRetryMerge = latestLoopRun?.status === "completed" && evaluatorCleared;
   const failedStep = retryableFailedStep(runs);
   const canRetryFailedStep = Boolean(failedStep && card.status === "needs_attention");
+  // Spec 18 §3: the provider rejected the request itself, so retrying the same
+  // step is the one thing that cannot help. Say so, and say what would.
+  const unretryableRun =
+    card.status === "needs_attention" && runs[0]?.failureKind === "config" ? runs[0] : null;
+  // Spec 18 §4: the newest reading of "this role keeps failing on this model".
+  let misconfiguredStage = "";
+  if (card.status === "needs_attention") {
+    const latest = detail.events.filter((e) => e.type === "stage.misconfigured").at(-1);
+    if (latest) {
+      misconfiguredStage = (parsePayload(latest.payload) as { message?: string }).message ?? "";
+    }
+  }
   const latestPlanRun = runs.find((r) => r.kind === "plan");
   // Phase 15 (weaker network isolation surfacing): which runs actually built
   // their sandbox with `sandboxWeakerIsolationForGoTls` on, per the
@@ -96,8 +103,24 @@ export default function CardDetail() {
   const questionsEvent = latestPlanRun && detail.events.find((e) => e.type === "plan.questions" && e.runId === latestPlanRun.id);
   let plannerQuestions = "";
   if (card.status === "needs_attention" && questionsEvent) {
-    try { plannerQuestions = JSON.parse(questionsEvent.payload).questions ?? ""; } catch {}
+    plannerQuestions = (parsePayload(questionsEvent.payload) as { questions?: string }).questions ?? "";
   }
+  // Spec 17: the questions live in the scoping thread, where they are
+  // answered. Cards parked before that existed still show them here.
+  const scoping = detail.scoping ?? [];
+  const questionsInThread = scoping.some((m) => m.role === "planner");
+  // The loop stopped for the planner, not for a retry: a blocker outside its
+  // control, or a checklist ticked off without DONE. "Plan again" re-plans on
+  // top of the branch either way (pendingReplanFeedback).
+  const newestRun = runs[0];
+  const loopBlocker =
+    card.status === "needs_attention" && newestRun?.kind === "loop" && newestRun.exitReason === LOOP_BLOCKED_EXIT
+      ? newestRun.feedback || "(no detail recorded)"
+      : "";
+  const checklistExhausted =
+    card.status === "needs_attention" && newestRun?.kind === "loop" && newestRun.exitReason === CHECKLIST_EXHAUSTED_EXIT;
+  const blockerInThread = scoping.some((m) => m.role === "loop");
+  const planAgain = Boolean(plannerQuestions || loopBlocker || checklistExhausted);
   // Install-script gate (spec 14): a loop halted on unapproved lifecycle
   // scripts — show the packages with their VERBATIM script bodies.
   let gatePackages: GatePackage[] = [];
@@ -109,7 +132,7 @@ export default function CardDetail() {
       (e) => e.type === "install.gate" && e.runId === latestLoopRun.id,
     );
     if (gateEvent) {
-      try { gatePackages = JSON.parse(gateEvent.payload).packages ?? []; } catch {}
+      gatePackages = (parsePayload(gateEvent.payload) as { packages?: GatePackage[] }).packages ?? [];
     }
   }
 
@@ -119,7 +142,7 @@ export default function CardDetail() {
       await fn();
       refetch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
   const post = (path: string, json: object = {}) => action(() => api(`/api/cards/${id}/${path}`, { json }));
@@ -131,7 +154,7 @@ export default function CardDetail() {
       ? { label: "Retry merge", run: () => post("retry-merge") }
       : canRetryFailedStep
         ? { label: "Retry failed step", run: () => post("retry-failed-step") }
-        : { label: "Restart task", run: () => post("restart") },
+        : { label: planAgain ? "Plan again" : "Restart task", run: () => post("restart") },
     review: { label: "Review changes", run: () => router.push(`/review/${id}`) },
     plan_review: { label: "Approve plan and implement", run: () => post("approve-plan") },
     paused: { label: "Continue", run: () => post("resume") },
@@ -147,13 +170,13 @@ export default function CardDetail() {
     { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
   ];
   const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
-  const menuActions: { label: string; when: string[]; danger?: boolean; run: () => void }[] = [
+  const menuActions: { label: string; when: readonly string[]; danger?: boolean; run: () => void }[] = [
     { label: "Edit task", when: ["backlog", "todo"], run: () => setShowEdit(true) },
     {
       label: "Move to backlog",
-      when: ["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"],
+      when: PULLBACK_STATUSES,
       run: () => {
-        if (!["planning", "looping", "evaluating"].includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
+        if (!(RUNNING_STATUSES as readonly string[]).includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
           post("move", { to: "backlog" });
         }
       },
@@ -190,39 +213,71 @@ export default function CardDetail() {
         {headerActions.filter((a) => a.show).map((a) => (
           <ActionButton key={a.label} primary={a.primary} onClick={a.run}>{a.label}</ActionButton>
         ))}
-        <details className="relative">
-          <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" aria-label="More task actions">•••</summary>
-          <div className="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl">
-            {menuActions.filter((m) => m.when.includes(card.status)).map((m) => (
-              <MenuButton key={m.label} danger={m.danger} onClick={m.run}>{m.label}</MenuButton>
-            ))}
-          </div>
-        </details>
+        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="More task actions" summary="•••">
+          {menuActions.filter((m) => m.when.includes(card.status)).map((m) => (
+            <MenuButton key={m.label} danger={m.danger} onClick={m.run}>{m.label}</MenuButton>
+          ))}
+        </DetailsMenu>
         </div>
       </section>
       {showEdit && (
         <EditCardModal
           detail={detail}
-          plannerModels={plannerModels}
-          loopModels={loopModels}
-          evaluatorModels={evaluatorModels}
           onClose={() => setShowEdit(false)}
           onSaved={() => { setShowEdit(false); refetch(); }}
         />
       )}
       {error && <p className="text-red-400 text-sm">{error}</p>}
-      {plannerQuestions && (
-        <div className="border border-amber-700/60 bg-amber-950/30 rounded-lg p-3">
-          <h3 className="text-sm font-medium text-amber-300 mb-1">
-            The planner needs more detail before it can plan this task
-          </h3>
-          <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">
-            {plannerQuestions}
+      {unretryableRun && (
+        <Banner tone="red" title={`${unretryableRun.provider ?? "The provider"} rejected the request itself`}>
+          <pre className="whitespace-pre-wrap text-sm text-red-100/80 font-sans">
+            {unretryableRun.exitReason}
           </pre>
-          <p className="text-xs text-amber-400/70 mt-2">
-            Edit the task description with more detail, then restart the task.
+          <p className="text-xs text-red-400/70 mt-2">
+            Retrying sends the same request, so it will fail the same way. Change the
+            model for this card under Edit model overrides, or fix the provider
+            configuration, then restart the task.
           </p>
-        </div>
+        </Banner>
+      )}
+      {misconfiguredStage && (
+        <Banner tone="amber" title="This stage keeps failing the same way">
+          <p className="text-sm text-amber-100/80">{misconfiguredStage}</p>
+          <p className="text-xs text-amber-400/70 mt-2">
+            Retrying is still available — this is a reading of the pattern, not a block.
+          </p>
+        </Banner>
+      )}
+      {plannerQuestions && (
+        <Banner tone="amber" title="The planner needs more detail before it can plan this task">
+          {!questionsInThread && (
+            <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">
+              {plannerQuestions}
+            </pre>
+          )}
+          <p className="text-xs text-amber-400/70 mt-2">
+            Answer its questions under Scoping below, then plan again. Editing the description works too.
+          </p>
+        </Banner>
+      )}
+      {loopBlocker && (
+        <Banner tone="amber" title="The loop stopped on something it cannot resolve">
+          {!blockerInThread && (
+            <pre className="whitespace-pre-wrap text-sm text-amber-100/80 font-sans">{loopBlocker}</pre>
+          )}
+          <p className="text-xs text-amber-400/70 mt-2">
+            Answer under Scoping below if the planner needs to know something, then plan again. The planner
+            re-plans around the blocker on top of the work already on the branch.
+          </p>
+        </Banner>
+      )}
+      {checklistExhausted && (
+        <Banner tone="amber" title="Every task is ticked, but the loop never signalled done">
+          <p className="text-sm text-amber-100/80">
+            The final task&rsquo;s own check did not pass. Retrying the loop would find nothing left to do, so plan
+            again instead: the planner writes the remaining work on top of what is already on the branch.
+          </p>
+        </Banner>
       )}
       {gatePackages.length > 0 && (
         <InstallGateBanner cardId={id} packages={gatePackages} onApproved={refetch} />
@@ -255,15 +310,16 @@ export default function CardDetail() {
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
             {card.description || "(no description)"}
           </pre>
+          <ScopingPanel cardId={id} status={card.status} messages={scoping} onChanged={refetch} />
           <div className="text-sm text-foreground/60">
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes
           </div>
           {detail.models && (
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-foreground/60">
-              {ROLES.map(({ key, label }) => {
-                const m = detail.models![key];
-                return <span key={key}>{label}: <span className="font-mono text-foreground/80">{formatProviderModel(m.provider, m.model, m.reasoningLevel)}</span></span>;
+              {ROLES.map((role) => {
+                const m = detail.models![role];
+                return <span key={role}>{ROLE_LABELS[role]}: <span className="font-mono text-foreground/80">{formatProviderModel(m.provider, m.model, m.reasoningLevel)}</span></span>;
               })}
             </div>
           )}
@@ -318,11 +374,7 @@ export default function CardDetail() {
           >
             ← Back to runs
           </button>
-          <TranscriptView
-            fallback={null}
-            selected={transcript}
-            live={card.status === "looping" || card.status === "evaluating" || card.status === "planning" || card.status === "plan_review"}
-          />
+          <TranscriptView target={transcript} />
         </section>
       ) : (
         <section className="flex flex-col gap-4">
@@ -376,11 +428,11 @@ function InstallGateBanner({
   onApproved: () => void;
 }) {
   const [checked, setChecked] = useState<Record<string, boolean>>(
-    Object.fromEntries(packages.map((p) => [`${p.name}@${p.version}#${p.scriptHash}`, true])),
+    Object.fromEntries(packages.map((p) => [scriptKey(p), true])),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const selected = packages.filter((p) => checked[`${p.name}@${p.version}#${p.scriptHash}`]);
+  const selected = packages.filter((p) => checked[scriptKey(p)]);
 
   async function approve() {
     setBusy(true);
@@ -393,24 +445,21 @@ function InstallGateBanner({
       });
       onApproved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="border border-red-700/60 bg-red-950/30 rounded-lg p-3">
-      <h3 className="text-sm font-medium text-red-300 mb-1">
-        This install wants to execute code from {packages.length === 1 ? "a package" : "packages"} you haven&rsquo;t approved
-      </h3>
+    <Banner tone="red" title={`This install wants to execute code from ${packages.length === 1 ? "a package" : "packages"} you haven’t approved`}>
       <p className="text-xs text-red-200/70 mb-2">
         The run is paused with its progress preserved. Review each package&rsquo;s install
         scripts below — approving runs them and resumes the task where it left off.
       </p>
       <div className="flex flex-col gap-2">
         {packages.map((p) => {
-          const key = `${p.name}@${p.version}#${p.scriptHash}`;
+          const key = scriptKey(p);
           return (
             <label key={key} className="flex items-start gap-2 text-sm">
               <input
@@ -439,7 +488,7 @@ function InstallGateBanner({
       >
         {busy ? "Approving…" : `Approve ${selected.length} package${selected.length === 1 ? "" : "s"} and resume`}
       </button>
-    </div>
+    </Banner>
   );
 }
 
@@ -460,7 +509,7 @@ function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; w
 }
 
 function plainStatus(status: string): string {
-  return ({ backlog: "Backlog", todo: "Queued in Todo", planning: "Planning", plan_review: "Plan ready for review", ready: "Ready to run", looping: "Running", evaluating: "Evaluating", paused: "Paused", review: "Ready for review", reviewing: "Applying review", needs_attention: "Needs attention", done: "Completed", abandoned: "Abandoned" } as Record<string, string>)[status] ?? status;
+  return (STATUS_LABELS as Record<string, string>)[status] ?? status;
 }
 
 function ActionButton({ children, onClick, primary }: { children: React.ReactNode; onClick: () => void; primary?: boolean }) {
@@ -488,16 +537,11 @@ type StreamLine = Record<string, unknown> & { t?: string };
 // accumulate lines indefinitely, so this is now purely a memory backstop.
 const MAX_TRANSCRIPT_LINES = 20_000;
 
-function TranscriptView({
-  selected,
-  fallback,
-  live,
-}: {
-  selected: TranscriptTarget | null;
-  fallback: TranscriptTarget | null;
-  live: boolean;
-}) {
-  const target = selected ?? fallback;
+function TranscriptView({ target }: { target: TranscriptTarget | null }) {
+  // Live is the run's state, not the card's: a finished planning run's
+  // transcript never changes while the loop runs, so it has nothing to
+  // subscribe to.
+  const live = target?.live ?? false;
   const [lines, setLines] = useState<StreamLine[]>([]);
   const [showJump, setShowJump] = useState(false);
   const [historyTruncated, setHistoryTruncated] = useState(false);
@@ -523,6 +567,9 @@ function TranscriptView({
   // should re-run/re-subscribe just because a byte offset changed.
   const cursorRef = useRef(0);
   const firstRef = useRef(true);
+  // True until some chunk has put rows on screen for the current target —
+  // the "previous.length > 0" the scroll decision needs, kept outside state.
+  const firstChunkRef = useRef(true);
   const inFlightRef = useRef(false);
   const stopRef = useRef(false);
   const catchUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -537,6 +584,19 @@ function TranscriptView({
   // dropped connection may have missed pushes written during the gap.
   const needsResyncRef = useRef(true);
   const wasDisconnectedRef = useRef(false);
+  // Whether the view is following the tail: re-decided by every appended
+  // chunk from where the reader is, and acted on by the effect below after
+  // each commit, for the row count the List actually has. The scroll used to
+  // fire from a requestAnimationFrame inside the setLines updater with the
+  // updater's own length, which raced the commit two ways: chunks arriving
+  // faster than React renders meant the frame could run against a List whose
+  // rowCount was still the old one, and react-window threw
+  // `RangeError: Invalid index specified` for the not-yet-rendered last row.
+  const followTailRef = useRef(false);
+  useEffect(() => {
+    if (!followTailRef.current || lines.length === 0) return;
+    listRef.current?.scrollToRow({ index: lines.length - 1, align: "end" });
+  }, [lines, listRef]);
 
   const applyChunk = useCallback(
     (d: { lines?: StreamLine[]; cursor: number; truncated?: boolean; reset?: boolean }, replace: boolean) => {
@@ -552,14 +612,19 @@ function TranscriptView({
       // renderableLine.ts) — a chunk that is nothing but raw framing must not
       // grow the list, move the scroll anchor, or raise "Jump to latest".
       const incoming = (d.lines ?? []).filter(isRenderableLine);
+      // An append to a view that already has rows either follows the tail or
+      // raises "Jump to latest". Decided here, outside the updater, which
+      // must stay pure: the scroll itself waits for the commit (see
+      // followTailRef), and the very first chunk has nothing to follow.
+      const appending = !replace && !d.reset && incoming.length > 0 && !firstChunkRef.current;
+      if (appending) {
+        followTailRef.current = nearBottom;
+        if (!nearBottom) setShowJump(true);
+      }
+      if (incoming.length > 0) firstChunkRef.current = false;
       setLines((previous) => {
         const merged = replace || d.reset ? incoming : [...previous, ...incoming];
-        const next = merged.slice(-MAX_TRANSCRIPT_LINES);
-        if (!replace && previous.length > 0 && incoming.length > 0) {
-          if (nearBottom) requestAnimationFrame(() => listRef.current?.scrollToRow({ index: next.length - 1, align: "end" }));
-          else setShowJump(true);
-        }
-        return next;
+        return merged.slice(-MAX_TRANSCRIPT_LINES);
       });
       if (d.truncated !== undefined) setHistoryTruncated(d.truncated);
       if (replace) setShowJump(false);
@@ -609,6 +674,8 @@ function TranscriptView({
     stopRef.current = false;
     cursorRef.current = 0;
     firstRef.current = true;
+    firstChunkRef.current = true;
+    followTailRef.current = false;
     needsResyncRef.current = true;
     void load(target);
     return () => {
@@ -710,13 +777,6 @@ function TranscriptRow({ index, style, ariaAttributes, lines }: RowComponentProp
   );
 }
 
-/** Collapsed-summary text for a reasoning block — one line, same 120-char
- * budget `describeToolCall` uses for a tool's summary. */
-function reasoningPreview(content: string): string {
-  const singleLine = content.replace(/\s+/g, " ").trim();
-  return singleLine.length <= 120 ? singleLine : singleLine.slice(0, 120) + "…";
-}
-
 function TranscriptLine({ line }: { line: StreamLine }) {
   if (line.t === "text") {
     return (
@@ -731,7 +791,7 @@ function TranscriptLine({ line }: { line: StreamLine }) {
       <details className="my-0.5 text-foreground/50">
         <summary className="cursor-pointer hover:text-foreground/80">
           ✻ reasoning
-          {content && <span className="text-foreground/40 ml-2">{reasoningPreview(content)}</span>}
+          {content && <span className="text-foreground/40 ml-2">{previewLine(content)}</span>}
         </summary>
         <div className="whitespace-pre-wrap pl-4 pt-1 font-sans text-sm text-foreground/45 italic">
           {content || "(redacted by the provider)"}
@@ -779,27 +839,21 @@ function TranscriptLine({ line }: { line: StreamLine }) {
 
 function EditCardModal({
   detail,
-  plannerModels,
-  loopModels,
-  evaluatorModels,
   onClose,
   onSaved,
 }: {
   detail: CardDetailData;
-  plannerModels: { value: string; displayName: string }[];
-  loopModels: { value: string; displayName: string }[];
-  evaluatorModels: { value: string; displayName: string }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [title, setTitle] = useState(detail.card.title);
   const [description, setDescription] = useState(detail.card.description);
-  const [models, setModels] = useState({
+  const [roleModels, setRoleModels] = useState<RoleModels>({
     planner: detail.card.plannerModel ?? "",
     loop: detail.card.loopModel ?? "",
     evaluator: detail.card.evaluatorModel ?? "",
   });
-  const options = { planner: plannerModels, loop: loopModels, evaluator: evaluatorModels };
+  const { providers, models } = useRoleModelOptions();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const fieldCls = "bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm";
@@ -813,58 +867,41 @@ function EditCardModal({
         json: {
           title,
           description,
-          plannerModel: models.planner || null,
-          loopModel: models.loop || null,
-          evaluatorModel: models.evaluator || null,
+          plannerModel: roleModels.planner || null,
+          loopModel: roleModels.loop || null,
+          evaluatorModel: roleModels.evaluator || null,
         },
       });
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
       setBusy(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="edit-task-title"
-        className="bg-surface border border-foreground/10 rounded-lg p-4 w-[32rem] max-w-[90vw]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 id="edit-task-title" className="font-medium mb-3">Edit task</h3>
-        <div className="flex flex-col gap-3">
-          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className={fieldCls} />
-          {ROLES.map(({ key, label }) => (
-            <select key={key} value={models[key]} onChange={(e) => setModels({ ...models, [key]: e.target.value })} className={fieldCls}>
-              <option value="">{label} model: Default (from settings)</option>
-              {options[key].map((m) => (
-                <option key={m.value} value={m.value}>{label} model: {m.displayName}</option>
-              ))}
-            </select>
-          ))}
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Description — include a definition of done. The planner only sees this."
-            rows={6}
-            className={`${fieldCls} font-mono`}
-          />
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-          <div className="flex gap-2 justify-end">
-            <button onClick={onClose} className="px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground">Cancel</button>
-            <button
-              onClick={save}
-              disabled={busy || !title.trim()}
-              className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-on-accent font-medium rounded px-3 py-1.5 text-sm"
-            >
-              Save
-            </button>
-          </div>
-        </div>
+    <DialogShell
+      titleId="edit-task-title"
+      title="Edit task"
+      closeLabel="Close edit task"
+      onRequestClose={onClose}
+      footer={<>
+        <button type="button" onClick={onClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+        <button type="button" onClick={save} disabled={busy || !title.trim()} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">Save</button>
+      </>}
+    >
+      <div className="flex flex-col gap-3">
+        <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className={fieldCls} />
+        <RoleModelSelects providers={providers} models={models} values={roleModels} onChange={setRoleModels} idPrefix="edit-" />
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Description — include a definition of done. The planner only sees this."
+          rows={6}
+          className={`${fieldCls} font-mono`}
+        />
+        {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>
-    </div>
+    </DialogShell>
   );
 }

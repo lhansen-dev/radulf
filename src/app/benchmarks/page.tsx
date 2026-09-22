@@ -7,6 +7,9 @@ import { AppShell } from "../ui/appShell";
 import { formatCostUsd } from "../ui/formatCost";
 import type { BenchmarksResponse } from "../api/benchmarks/route";
 import type { RolloutTarget } from "../../server/analytics";
+import { errorMessage } from "@/shared/errorMessage";
+import { formatDurationMs } from "../ui/formatDuration";
+import { formatPercent } from "../ui/formatPercent";
 
 export default function BenchmarksPage() {
   const [data, setData] = useState<BenchmarksResponse | null>(null);
@@ -26,7 +29,7 @@ export default function BenchmarksPage() {
   const refresh = useCallback(() => {
     api<BenchmarksResponse>("/api/benchmarks")
       .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errorMessage(e)));
   }, []);
 
   useEffect(() => {
@@ -59,7 +62,7 @@ export default function BenchmarksPage() {
       setNotice(`Benchmark started — report will land in benchmarks/reports/${res.reportFile}`);
       refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setStarting(false);
     }
@@ -334,19 +337,14 @@ export default function BenchmarksPage() {
 function fmtTargetValue(t: RolloutTarget, value: number | null): string {
   if (value == null) return "—";
   if (t.unit === "ms") return fmtMs(value);
-  if (t.unit === "ratio") return `${(value * 100).toFixed(1)}%`;
+  if (t.unit === "ratio") return formatPercent(value);
   return value.toLocaleString();
 }
 
 function fmtRate(ratio: number | null): string {
-  if (ratio == null) return "—";
-  return `${(ratio * 100).toFixed(0)}%`;
+  return ratio == null ? "—" : formatPercent(ratio, 0);
 }
 
 function fmtMs(ms: number | null): string {
-  if (ms == null) return "—";
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(0)}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m ${Math.round(s % 60)}s`;
+  return ms == null ? "—" : formatDurationMs(ms);
 }

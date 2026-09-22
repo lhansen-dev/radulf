@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { db, settings } from "@/db";
-import { ClientError } from "./clientError";
+import { db, settings, upsertSettingJson } from "@/db";
+import { invalid, record } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
+import { parseHeaderLines } from "./localEndpoint";
+import { REASONING_LEVELS } from "@/shared/providers";
+import { errorMessage } from "@/shared/errorMessage";
 
 function readBuiltInPromptTemplate(fileName: string): string {
   return fs.readFileSync(
@@ -26,14 +29,34 @@ export const SETTING_DEFAULTS = {
   loopModel: "",
   evaluatorProvider: "anthropic",
   evaluatorModel: "",
+  // Spec 17: the scoping session is interactive and read-only, and the
+  // operator is waiting on every turn, so it gets its own seat rather than
+  // riding on whatever was chosen for batch planning.
+  scopingProvider: "anthropic",
+  scopingModel: "",
+  // The one directory the repository picker may browse. Blank means the server
+  // user's home directory. Everything the picker lists is confined beneath
+  // this, resolved through symlinks, because unlike the old native dialog this
+  // is an HTTP surface and Radulf binds 0.0.0.0 once auth is configured.
+  folderBrowserRoot: "",
   omlxBaseUrl: "http://127.0.0.1:8000",
   omlxApiKey: "",
+  // Extra headers for the local endpoint, one `Name: value` per line, for a
+  // gateway that authenticates on a header of its own (Kong's `kong-api-key`)
+  // rather than the bearer token above. Sent with every request to it.
+  omlxHeaders: "",
   openrouterApiKey: "",
   // Brave Search API key. When set, the planner gains a `web_search` tool —
   // planner only, since the loop and evaluator hold bash and must not also hold
   // network reach (spec 14 role split). Blank → the tool is still registered but
   // fails loudly when invoked.
   braveApiKey: "",
+  // Jira import in the New Task dialog: the site's base URL, the Atlassian
+  // account email and an API token for that account. Read-only: Radulf fetches
+  // an issue to prefill a card and never writes to Jira. Blank URL disables it.
+  jiraBaseUrl: "",
+  jiraEmail: "",
+  jiraApiToken: "",
   // Per-agent reasoning/thinking effort, applied to every provider via the pi
   // session's thinking level (spec 13 — one harness, so nothing ignores these).
   // "medium" mirrors pi's own built-in default, so these are no-ops until
@@ -41,19 +64,26 @@ export const SETTING_DEFAULTS = {
   plannerReasoningLevel: "medium",
   loopReasoningLevel: "medium",
   evaluatorReasoningLevel: "medium",
+  scopingReasoningLevel: "medium",
+  // Spec 20: how many of a repo's cards may hold a harness at once (planning,
+  // looping or evaluating). 1 keeps the serial queue locked decision 5
+  // describes. Forced back to 1 whenever the loop provider is local, since
+  // that decision's reason is the machine's unified memory, not the pipeline.
+  maxConcurrentCards: 1,
   // A planning pass is one harness invocation, separate from the loop's
   // card-wide budget below.
   plannerTimeoutMinutes: 30,
   defaultMaxIterations: 50,
   defaultTimeoutMinutes: 60,
   // Spec 11: per-iteration hard cap, always bounded by the run's remaining
-  // timeout. A single timeout retries once; two consecutive ones end the run.
+  // timeout. A single timeout retries once; a second one anywhere in the same
+  // run ends it (spec 18 §2).
   iterationHardTimeoutMinutes: 10,
   // Like planning, evaluation is one harness invocation after a completed
   // loop, rather than part of the loop's card-wide budget.
   evaluatorTimeoutMinutes: 10,
   // Kill ANY harness invocation that emits nothing for this long — planner,
-  // loop, evaluator, improvement proposer, planner chat. A hung provider
+  // loop, evaluator, improvement proposer, scoping. A hung provider
   // stream, dropped wifi, or laptop sleep otherwise burns that call's whole
   // timeout in silence (30 min for a plan, 15 for a proposer pass).
   // NOT a slowness cap: pi streams `thinking_delta` while a model reasons, and
@@ -102,6 +132,14 @@ export const SETTING_DEFAULTS = {
   // model-reachable. macOS-only in effect (no-op on Linux).
   sandboxWeakerIsolationForGoTls: false,
   notificationsEnabled: false,
+  // Spec 18 §5: how long a card may sit in Needs Attention before the
+  // orchestrator says so. Browser notifications only reach an operator with a
+  // tab open, which is how one card went unnoticed for 86 minutes.
+  attentionStaleMinutes: 15,
+  // Spec 18 §5: where card.attention_stale goes to leave this machine. Empty
+  // means nowhere, which is the default. A bare webhook on purpose — ntfy,
+  // Slack, Discord and a handler of your own all take the same POST.
+  alertWebhookUrl: "",
   soundEnabled: false,
   theme: "default",
   ...PROMPT_TEMPLATE_DEFAULTS,
@@ -114,22 +152,13 @@ export type Settings = { [K in keyof typeof SETTING_DEFAULTS]: (typeof SETTING_D
 // the default, so gating it here would silently turn a stored "mock" into a
 // paid provider. The run itself refuses instead (harness/mock.ts).
 const PROVIDERS = new Set(["anthropic", "chatgpt", "copilot", "omlx", "openrouter", "mock"]);
-// pi's thinking levels (pi --thinking): the full ladder pi accepts. Pi clamps
-// an unsupported level to the nearest one the chosen model supports.
-export const REASONING_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
+export { REASONING_LEVELS };
 const REASONING_LEVEL_SET = new Set<string>(REASONING_LEVELS);
 const REASONING_LEVEL_SETTINGS = new Set<keyof Settings>([
   "plannerReasoningLevel",
   "loopReasoningLevel",
   "evaluatorReasoningLevel",
+  "scopingReasoningLevel",
 ]);
 const THEMES = new Set([
   "default",
@@ -154,12 +183,16 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "openPr",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
+  // Upper bound is a guard rail, not a capability claim: past a handful of
+  // concurrent worktrees the machine, not Radulf, is the limit (spec 20).
+  maxConcurrentCards: [1, 8],
   plannerTimeoutMinutes: [1, 10_080],
   defaultMaxIterations: [1, 1_000],
   defaultTimeoutMinutes: [1, 10_080],
   iterationHardTimeoutMinutes: [1, 1_440],
   evaluatorTimeoutMinutes: [1, 10_080],
   stallTimeoutSeconds: [30, 86_400],
+  attentionStaleMinutes: [1, 10_080],
 };
 /** Renamed keys, old → new. `getSettings` replays a stored legacy row onto its
  * successor so a customized value survives the rename; the orphan row is left
@@ -176,6 +209,7 @@ const PRIMARY_PROVIDER_SETTINGS = new Set<keyof Settings>([
   "plannerProvider",
   "loopProvider",
   "evaluatorProvider",
+  "scopingProvider",
 ]);
 const PROMPT_TEMPLATE_SETTINGS = new Set<keyof Settings>(
   Object.keys(PROMPT_TEMPLATE_DEFAULTS) as (keyof typeof PROMPT_TEMPLATE_DEFAULTS)[],
@@ -187,8 +221,10 @@ const MAX_PROMPT_TEMPLATE_LENGTH = 100_000;
  * which is unredacted; only the HTTP layer redacts. */
 const SECRET_SETTINGS = new Set<keyof Settings>([
   "omlxApiKey",
+  "omlxHeaders",
   "openrouterApiKey",
   "braveApiKey",
+  "jiraApiToken",
 ]);
 
 /** Stand-in a stored secret is replaced with on the way out. Distinct from ""
@@ -209,18 +245,10 @@ export function redactSettings(value: Settings): Settings {
   return out;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function invalid(message: string): never {
-  throw new ClientError(message);
-}
-
 export function validateSettingsPatch(value: unknown): Partial<Settings> {
-  if (!isRecord(value)) invalid("settings body must be an object");
+  const body = record(value, "settings body");
   const patch: Partial<Settings> = {};
-  for (const [rawKey, settingValue] of Object.entries(value)) {
+  for (const [rawKey, settingValue] of Object.entries(body)) {
     if (!(rawKey in SETTING_DEFAULTS)) invalid(`unknown setting: ${rawKey}`);
     const key = rawKey as keyof Settings;
     if (BOOLEAN_SETTINGS.has(key)) {
@@ -242,6 +270,14 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
       if (typeof settingValue !== "string" || !REASONING_LEVEL_SET.has(settingValue)) {
         invalid(`${key} must be one of: ${REASONING_LEVELS.join(", ")}`);
       }
+    } else if (key === "folderBrowserRoot") {
+      if (typeof settingValue !== "string") invalid("folderBrowserRoot must be a path");
+      // Blank is meaningful (fall back to $HOME); anything else must be
+      // absolute, since a relative root would resolve against whatever the
+      // server's cwd happens to be.
+      if (settingValue.trim() && !settingValue.trim().startsWith("/") && !settingValue.trim().startsWith("~")) {
+        invalid("folderBrowserRoot must be an absolute path");
+      }
     } else if (key === "omlxBaseUrl") {
       if (typeof settingValue !== "string") invalid("omlxBaseUrl must be a URL");
       let url: URL;
@@ -251,6 +287,28 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         invalid("omlxBaseUrl must be a URL");
       }
       if (!["http:", "https:"].includes(url.protocol)) invalid("omlxBaseUrl must use http or https");
+    } else if (key === "jiraBaseUrl") {
+      if (typeof settingValue !== "string") invalid("jiraBaseUrl must be a URL");
+      // Blank disables the import; anything else must be a site URL.
+      if (settingValue.trim()) {
+        let url: URL;
+        try {
+          url = new URL(settingValue.trim());
+        } catch {
+          invalid("jiraBaseUrl must be a URL");
+        }
+        if (!["http:", "https:"].includes(url.protocol)) invalid("jiraBaseUrl must use http or https");
+      }
+    } else if (key === "omlxHeaders") {
+      if (typeof settingValue !== "string") invalid("omlxHeaders must be a string");
+      // The form echoes a stored value back as REDACTED (see patchSettings).
+      if (settingValue !== REDACTED) {
+        try {
+          parseHeaderLines(settingValue);
+        } catch (e) {
+          invalid(`omlxHeaders: ${errorMessage(e)}`);
+        }
+      }
     } else if (PROMPT_TEMPLATE_SETTINGS.has(key)) {
       if (typeof settingValue !== "string") invalid(`${key} must be a string`);
       if (settingValue.length > MAX_PROMPT_TEMPLATE_LENGTH) {
@@ -269,17 +327,19 @@ export function getSettings(): Settings {
   const out = { ...SETTING_DEFAULTS } as Settings;
   const apply = (key: string, rawValue: string) => {
     try {
-      const validated = validateSettingsPatch({ [key]: JSON.parse(rawValue) });
+      const stored: unknown = JSON.parse(rawValue);
+      // Stored value may be encrypted (current writes) or legacy plaintext
+      // (rows written before this module existed) — decryptSecret handles both.
+      // Decrypt before validating: a format check has to see the plaintext.
+      const plain = SECRET_SETTINGS.has(key as keyof Settings) && typeof stored === "string"
+        ? decryptSecret(stored)
+        : stored;
+      const validated = validateSettingsPatch({ [key]: plain });
       const value = validated[key as keyof Settings];
       // Blank templates are a reset signal, never an executable prompt.
       if (PROMPT_TEMPLATE_SETTINGS.has(key as keyof Settings) &&
           typeof value === "string" && !value.trim()) return;
-      // Stored value may be encrypted (current writes) or legacy plaintext
-      // (rows written before this module existed) — decryptSecret handles both.
-      const resolved = SECRET_SETTINGS.has(key as keyof Settings) && typeof value === "string"
-        ? decryptSecret(value)
-        : value;
-      (out as Record<string, unknown>)[key] = resolved;
+      (out as Record<string, unknown>)[key] = value;
     } catch {
       // Ignore legacy/corrupt values and retain the safe default.
     }
@@ -317,9 +377,6 @@ export function patchSettings(value: unknown) {
       db.delete(settings).where(eq(settings.key, key)).run();
       continue;
     }
-    db.insert(settings)
-      .values({ key, value: JSON.stringify(value) })
-      .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify(value) } })
-      .run();
+    upsertSettingJson(key, value);
   }
 }

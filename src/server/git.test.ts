@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -6,17 +7,14 @@ import { execFileSync } from "node:child_process";
 import {
   createWorktree,
   hasCommits,
+  isRalphBranch,
   isValidBranchName,
   listBranches,
+  offRunBranchReason,
   worktreeIsDirty,
   worktreeDiff,
   worktreeDiffStat,
-  worktreeChangedPaths,
 } from "./git";
-
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
-}
 
 describe("repository inspection", () => {
   let repo: string;
@@ -25,13 +23,7 @@ describe("repository inspection", () => {
   const missingPath = "/tmp/nonexistent-ralph-test-path-12345";
 
   beforeAll(() => {
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-git-test-"));
-    git(repo, "init");
-    git(repo, "config", "user.email", "test@test.com");
-    git(repo, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(repo, "README.md"), "# test");
-    git(repo, "add", ".");
-    git(repo, "commit", "-m", "initial");
+    repo = initScratchRepo("ralph-git-test-");
     git(repo, "branch", "feature-x");
     emptyRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-empty-repo-"));
     git(emptyRepo, "init");
@@ -65,6 +57,25 @@ describe("repository inspection", () => {
     );
   });
 
+  it("offRunBranchReason is null on the run branch, and names where the worktree went otherwise", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-offbranch-wt-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-1");
+    try {
+      expect(await offRunBranchReason(wt, "ralph/run-1")).toBeNull();
+      // The incident shape: the agent checks out a branch nothing else has.
+      git(wt, "checkout", "-q", "feature-x");
+      expect(await offRunBranchReason(wt, "ralph/run-1")).toBe(
+        "worktree left its run branch: on feature-x, expected ralph/run-1",
+      );
+      git(wt, "checkout", "-q", "--detach");
+      expect(await offRunBranchReason(wt, "ralph/run-1")).toBe(
+        "worktree left its run branch: on a detached HEAD, expected ralph/run-1",
+      );
+    } finally {
+      git(repo, "worktree", "remove", "--force", wt);
+    }
+  });
+
   it("worktreeIsDirty sees untracked and modified files, and is false for a missing path", async () => {
     expect(await worktreeIsDirty(repo)).toBe(false);
     expect(await worktreeIsDirty(missingPath)).toBe(false);
@@ -89,7 +100,17 @@ describe("isValidBranchName", () => {
   });
 });
 
-describe("review diff generation (worktreeDiff / worktreeDiffStat / worktreeChangedPaths)", () => {
+describe("isRalphBranch", () => {
+  it.each(["ralph/fix-the-thing-abc123", "ralph/improve-1753500000000"])('claims "%s"', (name) => {
+    expect(isRalphBranch(name)).toBe(true);
+  });
+
+  it.each(["main", "feature/ralph", "ralph", "ralph-notes"])('leaves "%s" alone', (name) => {
+    expect(isRalphBranch(name)).toBe(false);
+  });
+});
+
+describe("review diff generation (worktreeDiff / worktreeDiffStat)", () => {
   let tmpDir: string;
   let defaultBranch: string;
 
@@ -121,15 +142,16 @@ describe("review diff generation (worktreeDiff / worktreeDiffStat / worktreeChan
     expect(stat).toMatch(/1 file changed/);
   });
 
-  it("lists changed paths, excluding .ralph", async () => {
+  it("excludes .ralph from the diff and the stat", async () => {
     fs.mkdirSync(path.join(tmpDir, ".ralph"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, ".ralph", "SUMMARY.md"), "loop notes");
     git(tmpDir, "add", "-A");
     git(tmpDir, "commit", "-m", "loop artifacts");
 
-    const paths = await worktreeChangedPaths(tmpDir, defaultBranch);
-    expect(paths).toContain("README.md");
-    expect(paths.some((p) => p.startsWith(".ralph/"))).toBe(false);
+    const diff = await worktreeDiff(tmpDir, defaultBranch);
+    expect(diff).toContain("README.md");
+    expect(diff).not.toContain("loop notes");
+    expect(await worktreeDiffStat(tmpDir, defaultBranch)).toMatch(/1 file changed/);
   });
 
   it("--text defeats a .gitattributes `-diff` entry that would otherwise hide content as binary", async () => {

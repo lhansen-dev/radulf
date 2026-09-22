@@ -1,22 +1,15 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api } from "./api";
-
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: "Anthropic (Claude subscription)",
-  chatgpt: "ChatGPT (Codex subscription)",
-  copilot: "GitHub Copilot (subscription)",
-  omlx: "Local / self-hosted",
-  openrouter: "OpenRouter",
-  mock: "Mock (scripted, no model)",
-};
+import { api, type Repo } from "./api";
+import { providerLabel } from "@/shared/providers";
 
 export const ROLES = ["planner", "loop", "evaluator"] as const;
 export type Role = (typeof ROLES)[number];
 type ModelOption = { value: string; displayName: string };
 export type RoleModels = Record<Role, string>;
 export const EMPTY_ROLE_MODELS: RoleModels = { planner: "", loop: "", evaluator: "" };
-const ROLE_LABELS: Record<Role, string> = { planner: "Planner model", loop: "Loop model", evaluator: "Evaluator model" };
+export const ROLE_LABELS: Record<Role, string> = { planner: "Planner model", loop: "Loop model", evaluator: "Evaluator model" };
+export const dialogInputCls = "mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3";
 
 /** Each role's configured provider and the models it serves, for the pickers. */
 export function useRoleModelOptions() {
@@ -44,11 +37,8 @@ export function useBranches(repoId: string, onLoaded?: (branches: string[]) => v
   useEffect(() => {
     if (!repoId) return;
     const apply = (list: string[]) => { setBranches(list); onLoadedRef.current?.(list); };
-    fetch(`/api/repos/${repoId}/branches`)
-      .then(async (res) => {
-        const data = res.ok ? await res.json() : [];
-        apply(Array.isArray(data) ? (data as string[]) : []);
-      })
+    api<string[]>(`/api/repos/${repoId}/branches`)
+      .then((data) => apply(Array.isArray(data) ? data : []))
       .catch(() => apply([]));
   }, [repoId]);
   return [branches, setBranches] as const;
@@ -75,37 +65,83 @@ export function RoleModelSelects({ providers, models, values, onChange, idPrefix
   ));
 }
 
+/** The "Repository" picker both dialogs open with; `children` adds trailing options. */
+export function RepoSelect({ repos, value, onChange, children }: { repos: Repo[]; value: string; onChange: (repoId: string) => void; children?: ReactNode }) {
+  return (
+    <label className="block text-sm text-foreground/70">Repository<select value={value} onChange={(e) => onChange(e.target.value)} className={dialogInputCls}>{repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}{children}</select></label>
+  );
+}
+
+/** Iteration cap and timeout as typed; "" means the workspace default. */
+export function RunLimitInputs({ maxIterations, setMaxIterations, timeoutMinutes, setTimeoutMinutes, perTask = false }: {
+  maxIterations: string;
+  setMaxIterations: (value: string) => void;
+  timeoutMinutes: string;
+  setTimeoutMinutes: (value: string) => void;
+  /** An improvement run applies the limits to each task it spawns. */
+  perTask?: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <label className="text-sm text-foreground/70">{perTask ? "Per-task iteration cap" : "Iteration cap"}<input type="number" min="1" value={maxIterations} onChange={(e) => setMaxIterations(e.target.value)} placeholder="Default" className={dialogInputCls} /></label>
+      <label className="text-sm text-foreground/70">{perTask ? "Per-task timeout (min)" : "Timeout (min)"}<input type="number" min="1" value={timeoutMinutes} onChange={(e) => setTimeoutMinutes(e.target.value)} placeholder="Default" className={dialogInputCls} /></label>
+    </div>
+  );
+}
+
 function ModelSelect({ label, providerId, value, setValue, models, inputId, datalistId }: { label: string; providerId: string; value: string; setValue: (value: string) => void; models: ModelOption[]; inputId: string; datalistId: string }) {
   return (
     <div>
       <label htmlFor={inputId} className="block text-sm text-foreground/70">{label}</label>
-      <p className="mt-0.5 text-xs text-foreground/40">Provider: {PROVIDER_LABELS[providerId] ?? providerId}</p>
+      <p className="mt-0.5 text-xs text-foreground/40">Provider: {providerLabel(providerId)}</p>
       <input
         id={inputId}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="Default from settings"
-        className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3"
+        className={dialogInputCls}
         list={datalistId}
       />
       <datalist id={datalistId}>
         {models.map((model) => <option key={model.value} value={model.value}>{model.displayName}</option>)}
       </datalist>
-      {models.length > 0 && models.length <= 30 && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {models.map((model) => (
-            <button
-              key={model.value}
-              type="button"
-              onClick={() => setValue(model.value)}
-              className={`text-xs rounded px-2 py-1 border ${value === model.value ? "border-amber-500 text-amber-400" : "border-foreground/10 text-foreground/60 hover:text-foreground"}`}
-            >
-              {model.displayName}
-            </button>
-          ))}
-        </div>
-      )}
-      {models.length > 30 && <p className="mt-1 text-xs text-foreground/40">Type in the model field to search the list.</p>}
+      <ModelChips models={models} value={value} onPick={setValue} dense />
+    </div>
+  );
+}
+
+const MODEL_CHIP_LIMIT = 30;
+
+/** Pick-a-model chips for a short list. Past MODEL_CHIP_LIMIT there are too
+ * many to browse, so a hint to type into the model field renders instead.
+ * `wrap` lets a caller fold the chips into its own container (settings puts
+ * them behind a <details>); the hint always renders bare. */
+export function ModelChips<M extends ModelOption>({ models, value, onPick, titleFor, dense = false, wrap = (chips) => chips }: {
+  models: M[];
+  value: string;
+  onPick: (value: string) => void;
+  titleFor?: (model: M) => string | undefined;
+  /** The compact variant the task dialogs use in their Advanced section. */
+  dense?: boolean;
+  wrap?: (chips: ReactNode) => ReactNode;
+}) {
+  if (models.length === 0) return null;
+  if (models.length > MODEL_CHIP_LIMIT) {
+    return <p className={`text-xs text-foreground/40 ${dense ? "mt-1" : ""}`}>Type in the model field to search the list.</p>;
+  }
+  return wrap(
+    <div className={`flex flex-wrap ${dense ? "mt-1 gap-1" : "gap-2 pt-2"}`}>
+      {models.map((model) => (
+        <button
+          key={model.value}
+          type="button"
+          onClick={() => onPick(model.value)}
+          title={titleFor?.(model)}
+          className={`border text-xs ${dense ? "rounded px-2 py-1" : "max-w-full rounded-lg px-3 py-2 text-left break-words"} ${value === model.value ? "border-amber-500 text-amber-400" : "border-foreground/10 text-foreground/60 hover:text-foreground"}`}
+        >
+          {model.displayName}
+        </button>
+      ))}
     </div>
   );
 }

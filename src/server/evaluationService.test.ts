@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, desc, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,22 +17,20 @@ const execFileAsync = promisify(execFile);
 const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   tryGit: vi.fn(),
+  offRunBranchReason: vi.fn(),
   // Mutable so the Phase 18.1 regression test below can flip sandboxing on
   // for just that one test (it needs a real git repo + real srtConfig build
   // to reproduce the FK-ordering bug) without disturbing every other test in
   // this file, which deliberately keeps sandboxing off — see the comment on
   // `sandboxEnabled` below.
   settings: {
-    evaluatorProvider: "anthropic",
     evaluatorModel: "evaluator-model",
-    evaluatorReasoningLevel: "medium",
     evaluatorTimeoutMinutes: 10,
     evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}\n{{CRITERIA}}",
     // Lifecycle tests use plain mkdtemp worktrees, not real git repos — same
     // reasoning applies here: sandboxEnabled:false keeps createRunSandbox
     // from resolving a real git-common-dir against a fake worktree.
     sandboxEnabled: false,
-    sandboxNetworkAllowlist: "",
     sandboxWeakerIsolationForGoTls: false,
     // The workspace-wide auto-approve override. Off for every test but the
     // ones that flip it, so the card's own flag stays the only grant.
@@ -47,13 +45,15 @@ vi.mock("./harness", async (importOriginal) => ({
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
   tryGit: mocks.tryGit,
+  offRunBranchReason: mocks.offRunBranchReason,
 }));
-vi.mock("./settings", () => ({
-  getSettings: () => mocks.settings,
+vi.mock("./settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./settings")>()),
+  getSettings: () => testSettings(mocks.settings),
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-evaluationService-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-evaluationService-");
+const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
 const { EvaluationService, renderEvaluatorPrompt } = await import("./evaluationService");
@@ -207,6 +207,7 @@ function makeDeps() {
     finishRun: vi.fn(() => true),
     registerController: vi.fn(),
     releaseController: vi.fn(),
+    pump: vi.fn(),
     replan: vi.fn(),
     approveReview: vi.fn(async () => ({ ok: true })),
   };
@@ -236,16 +237,12 @@ describe("EvaluationService.runEvaluator", () => {
     vi.clearAllMocks();
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
     mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.settings.sandboxEnabled = false;
     mocks.settings.sandboxWeakerIsolationForGoTls = false;
     mocks.settings.autoApprove = false;
     mocks.settings.evaluatorTimeoutMinutes = 10;
     seedRepo();
-  });
-
-  afterAll(() => {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    delete process.env.RADULF_DATA_DIR;
   });
 
   it("approves and advances the card to review", async () => {
@@ -265,6 +262,61 @@ describe("EvaluationService.runEvaluator", () => {
     );
     expect(deps.replan).not.toHaveBeenCalled();
     expect(deps.approveReview).not.toHaveBeenCalled();
+  });
+
+  it("starts no harness for a card that left evaluating before its run row existed", async () => {
+    seedCard("card-left-early");
+    const planId = seedPlan("card-left-early");
+    seedLoopRun("card-left-early", planId);
+    // A cancel that landed during the awaited sandbox and integrity setup:
+    // the card is already back in Backlog when the run row is written.
+    db.update(cards).set({ status: "backlog" }).where(eq(cards.id, "card-left-early")).run();
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-left-early");
+
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "cancelled",
+      "card left evaluating before the run started",
+    );
+    expect(deps.moveCard).not.toHaveBeenCalled();
+    expect(deps.pump).toHaveBeenCalled();
+  });
+
+  it("rejects the verdict when the evaluator moved the worktree off the run branch", async () => {
+    seedCard("card-off-branch");
+    const planId = seedPlan("card-off-branch");
+    seedLoopRun("card-off-branch", planId);
+    mockEvaluationVerdict("VERDICT: approve\n\nLooks solid.");
+    const reason = "worktree left its run branch: on main, expected ralph/run";
+    mocks.offRunBranchReason.mockResolvedValue(reason);
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-off-branch");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "failed", reason, expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-off-branch", "evaluating", "needs_attention", reason);
+    expect(mocks.tryGit.mock.calls.some(([, cmd]) => cmd === "commit")).toBe(false);
+  });
+
+  // Spec 20: the evaluator holds one of its repo's pipeline slots, so it owes
+  // the queue a pump when it lets go. It was the only stage that never did,
+  // which left ready cards parked behind a slot nothing was using.
+  it.each([
+    ["a verdict", "VERDICT: approve\n\nLooks solid."],
+    ["no usable verdict", "I could not tell."],
+  ])("pumps the queue when the evaluation ends with %s", async (_label, report) => {
+    seedCard("card-pump");
+    const planId = seedPlan("card-pump");
+    seedLoopRun("card-pump", planId);
+    mockEvaluationVerdict(report);
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-pump");
+
+    expect(deps.pump).toHaveBeenCalled();
   });
 
   // Auto-approve is granted by the card's own flag OR the workspace-wide

@@ -88,8 +88,9 @@ approval — that never changes.
 Radulf is a single-user tool. There are no accounts, no multi-tenancy, and by
 default no network exposure beyond `localhost` (though you can
 [put it behind a password](AUTHENTICATION.md) if you want to reach it from
-elsewhere). It runs one card at a time — there is no parallelism setting,
-because local models want the whole machine's memory.
+elsewhere). It runs one card at a time per repository by default, which you
+can raise in Settings; on a local model it stays serial however you set it,
+because a local model wants the whole machine's memory.
 
 Its GitHub integration is one thing and no more: once you have approved a diff,
 Radulf can push that branch and open a pull request for it instead of merging it

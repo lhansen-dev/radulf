@@ -35,8 +35,8 @@ are available for the provider.
 
 ## Configuring a role
 
-Open **Settings → Agents & models** in the app. Each of the three roles —
-planner, loop, and evaluator — gets its own three pickers:
+Open **Settings → Agents & models** in the app. Each of the four roles —
+scoping, planner, loop, and evaluator — gets its own three pickers:
 
 - **Provider** — one of the five above.
 - **Model** — a model id. Leaving it blank means "the subscription's default
@@ -60,6 +60,12 @@ struggling loop, raise its model, and continue.
 The roles have genuinely different demands, and matching them is where the cost
 savings live.
 
+**Scoping is the one role you wait on.** It runs a turn at a time while you sit
+in the conversation, reading the repository to ask a useful question rather
+than a generic one. A slow or shallow model here costs your attention directly,
+and a session is a handful of turns per card, so it is a cheap place for a
+strong model.
+
 **The planner benefits most from a frontier model.** It reads a repo it has
 never seen and decides what the work actually is; a weak plan poisons every
 iteration downstream. This is the last role to economize on.
@@ -79,10 +85,25 @@ before treating this as settled.
 cost reasons but for independence. Its whole value is looking at the diff
 without having decided in advance that the diff is correct.
 
+Settings states each of these demands next to the role it applies to, and flags
+a provider that does not suit its role: a planner or evaluator on a self-hosted
+endpoint, and equally a loop on a subscription, which is the same mistake
+pointed the other way. A summary above the four sections offers the split in
+one click when any role is off it, and stays out of the way when none is. The
+advisories never block saving, so a deliberate choice (benchmarking a local
+planner, say) is one dropdown away.
+
 The local provider speaks the OpenAI wire format: Radulf lists what you are
 serving from `/v1/models` and runs the loop against `/v1/chat/completions`. The
 base URL is the server root (`http://127.0.0.1:8000`, the default), though a URL
 that already ends in `/v1` is accepted too.
+
+Most local servers need no credential, so the **Local server API key** can stay
+blank; when set, it is sent as a bearer token. A gateway in front of the server
+that authenticates on a header of its own, such as Kong's `kong-api-key`, takes
+**Extra request headers**: one `Name: value` per line, sent with every request
+alongside the key. A header named `Authorization` replaces the key's bearer
+token rather than being sent next to it.
 
 Two things must hold before you start a loop: the server has to be running and
 reachable at that base URL, and the model has to be tool-capable. On vLLM that
@@ -135,6 +156,45 @@ that all passed first time.
 
 Reproduce or extend it with `benchmarks/run-benchmark.mjs` — see
 [`benchmarks/README.md`](../benchmarks/README.md).
+
+## Watching your allowance
+
+**Providers & keys** carries a usage and health panel: what Radulf has spent
+through each provider over the last 24 hours, its current allowance, and
+whether any provider is refusing work right now.
+
+The allowance figures come from the response headers of the agent's own
+requests. There is no quota endpoint to poll, but the providers stamp every
+response with where the account stands, so Radulf reads that off traffic it was
+making anyway. It is scoped to the credential Radulf itself uses, not to
+whatever is logged in elsewhere on the machine.
+
+What you see depends on what the provider sends. A Claude subscription reports
+utilization for both its 5-hour and 7-day windows, which one is currently
+binding, when each resets, and whether the plan has paid overflow past the
+limit. An OpenAI-compatible endpoint reports request and token counts. A
+self-hosted server usually reports nothing, and the panel then shows nothing
+for it rather than implying it is healthy.
+
+Cost is shown only for providers that meter it. A flat-rate subscription reads
+as having no meter rather than as having spent $0.00.
+
+### When a provider runs out
+
+An exhausted allowance is treated as its own kind of failure, separate from a
+provider being unreachable. It opens that provider's circuit breaker on the
+first occurrence rather than after three: the allowance is gone, and spending
+two more runs proving it only burns the card's failure budget.
+
+How long Radulf then holds off depends on what it knows, in order of
+preference: the reset instant from the provider's own headers, then any
+retry-after stated in the error, then a per-provider default. A subscription
+window is measured in hours, so its default is an hour rather than the minute
+that suits a dropped connection.
+
+Transient capacity errors are deliberately not treated this way. Anthropic's
+529 "overloaded" clears in seconds, and holding a provider off for an hour over
+one would be far too pessimistic.
 
 ## Optional: web search
 
@@ -189,9 +249,10 @@ still need an occasional real run.
 
 ## Where credentials live
 
-Provider credentials — the local server's base URL and key, the OpenRouter key,
+Provider credentials — the local server's base URL, key and extra headers, the OpenRouter key,
 the Brave key — are stored in Radulf's SQLite database and flow into the agent session at
-runtime. They never touch disk inside the worktree, and the agent's shell runs
+runtime. The Jira API token is stored the same way but used only host-side, when you
+import an issue into a card; it never reaches an agent session. They never touch disk inside the worktree, and the agent's shell runs
 with a scrubbed environment so it cannot read Radulf's own secrets.
 
 Subscription credentials are held by pi in `data/pi-agent/auth.json`, not by

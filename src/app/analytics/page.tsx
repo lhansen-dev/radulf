@@ -6,6 +6,9 @@ import { BarList } from "../ui/barList";
 import { formatCostUsd } from "../ui/formatCost";
 import type { AnalyticsResponse } from "../../server/analytics";
 import { AppShell } from "../ui/appShell";
+import { errorMessage } from "@/shared/errorMessage";
+import { formatDurationMs } from "../ui/formatDuration";
+import { formatPercent } from "../ui/formatPercent";
 
 export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsResponse | null>(null);
@@ -22,7 +25,7 @@ export default function AnalyticsPage() {
     const query = qs.toString();
     api<AnalyticsResponse>(`/api/analytics${query ? `?${query}` : ""}`)
       .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errorMessage(e)));
   }, [range, provider, model]);
 
   if (error) {
@@ -240,17 +243,11 @@ function KpiTile({ label, value, hint }: { label: string; value: string; hint?: 
 }
 
 function fmtDuration(ms: number | null): string {
-  if (ms == null) return "—";
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(totalSeconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
-  return `${minutes}m ${seconds}s`;
+  return ms == null ? "—" : formatDurationMs(ms);
 }
 
 function fmtPercent(ratio: number | null): string {
-  if (ratio == null) return "—";
-  return `${(ratio * 100).toFixed(1)}%`;
+  return ratio == null ? "—" : formatPercent(ratio);
 }
 
 function FilterSelect({ id, label, value, onChange, options }: {

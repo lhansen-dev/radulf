@@ -1,16 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  computeAnalytics,
-  computeRolloutAcceptance,
-  filterAnalyticsInput,
-  percentile,
-} from "./analytics";
-import type {
-  AnalyticsCardRow,
-  AnalyticsRunRow,
-  AnalyticsIterationRow,
-  AnalyticsFilter,
-} from "./analytics";
+import { computeAnalytics, computeRolloutAcceptance, percentile } from "./analytics";
+import type { AnalyticsCardRow, AnalyticsRunRow, AnalyticsIterationRow } from "./analytics";
 
 const T0 = Date.parse("2026-07-01T00:00:00Z");
 
@@ -69,7 +59,6 @@ describe("computeAnalytics", () => {
     expect(result.cardsByStatus).toEqual([]);
     expect(result.runsByStatus).toEqual([]);
     expect(result.tokensPerRun).toEqual([]);
-    expect(result.iterationDurationsMs).toEqual([]);
     expect(result.successRate).toBe(0);
     expect(result.loopKpis).toMatchObject({
       sampleSize: 0,
@@ -117,7 +106,7 @@ describe("computeAnalytics", () => {
     ]);
   });
 
-  it("sorts iteration durations ascending and skips unmeasurable iterations", () => {
+  it("ranks durations ascending for the loop KPIs and skips unmeasurable iterations", () => {
     const iterations = [
       iter(1, 5),
       iter(2, 2),
@@ -125,7 +114,12 @@ describe("computeAnalytics", () => {
       { ...iter(4, 10), startedAt: "" },
       iter(5, 10),
     ];
-    expect(analyze({ iterations }).iterationDurationsMs).toEqual([2000, 5000, 10000]);
+    // Sorted sample [2000, 5000, 10000]: nearest-rank p50 is the middle value.
+    expect(analyze({ iterations }).loopKpis).toMatchObject({
+      sampleSize: 3,
+      durationP50Ms: 5000,
+      durationMaxMs: 10000,
+    });
   });
 
   it("labels tokensPerRun by card title (run id for orphans), drops zero-token runs, sorts descending", () => {
@@ -154,6 +148,9 @@ describe("computeAnalytics", () => {
     [["completed", "completed", "failed", "timeout", "cancelled"], 0.4],
     [["completed", "running"], 1],
     [["running", "queued"], 0],
+    // A user pause leaves the rate entirely rather than counting either way.
+    [["completed", "paused"], 1],
+    [["failed", "paused"], 0],
   ])("computes successRate over terminal runs: %j → %d", (statuses, expected) => {
     const runs = statuses.map((status, i) => run(`r${i}`, { status }));
     expect(analyze({ runs }).successRate).toBe(expected);
@@ -182,30 +179,6 @@ describe("computeAnalytics", () => {
   });
 });
 
-describe("filterAnalyticsInput", () => {
-  const runs = [
-    run("r1", { startedAt: "2025-01-01T00:00:00Z", provider: "anthropic", model: "opus" }),
-    run("r2", { startedAt: "2025-01-02T00:00:00Z", provider: "openai", model: "gpt-4" }),
-    run("r3", { startedAt: "2025-01-10T00:00:00Z", provider: "anthropic", model: "opus" }),
-  ];
-  // Every iteration's own timestamp is in range: they are kept or dropped with their run.
-  const iterations = runs.map((r, i) => iter(i, null, { runId: r.id }, 40 * 86400));
-  const cards: AnalyticsCardRow[] = [{ id: "c1", title: "Card A", status: "completed" }];
-
-  it.each<[string, AnalyticsFilter, number[]]>([
-    ["fromMs", { fromMs: Date.parse("2025-01-05T00:00:00Z") }, [2]],
-    ["provider", { provider: "anthropic" }, [0, 2]],
-    ["model", { model: "gpt-4" }, [1]],
-    ["empty", {}, [0, 1, 2]],
-    ["blank", { provider: "", model: "", fromMs: null }, [0, 1, 2]],
-  ])("applies a %s filter to runs and their iterations, passing cards through", (_label, filter, kept) => {
-    const result = filterAnalyticsInput({ cards, runs, iterations }, filter);
-    expect(result.runs).toEqual(kept.map((i) => runs[i]));
-    expect(result.iterations).toEqual(kept.map((i) => iterations[i]));
-    expect(result.cards).toEqual(cards);
-  });
-});
-
 describe("percentile", () => {
   it("uses nearest-rank on a sorted sample", () => {
     const sorted = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
@@ -219,7 +192,7 @@ describe("percentile", () => {
 });
 
 describe("loopKpis", () => {
-  it("derives duration percentiles and the five-minute outlier rate from iterationDurationsMs", () => {
+  it("derives duration percentiles and the five-minute outlier rate from measurable iterations", () => {
     // 60s, 120s, 180s, 360s — one of four is ≥ 5 minutes
     const result = analyze({ iterations: [iter(1, 60), iter(2, 120), iter(3, 180), iter(4, 360)] });
     expect(result.loopKpis).toMatchObject({
@@ -228,8 +201,6 @@ describe("loopKpis", () => {
       durationMaxMs: 360000,
       slowIterationRate: 0.25,
     });
-    // Same pipeline as iterationDurationsMs — no second duration calculation.
-    expect(result.iterationDurationsMs).toEqual([60000, 120000, 180000, 360000]);
   });
 
   it("computes model-turn median, cache-hit ratio, tool time, and cost only over reporting iterations", () => {
@@ -375,13 +346,9 @@ describe("computeRolloutAcceptance", () => {
     expect(target(result, "medianDurationMs").actual).not.toBeNull();
   });
 
-  it("accepts the most recent 30 measurable iterations when all four targets are met", () => {
-    // 30 old slow iterations and an unmeasurable one fall outside the window.
-    const result = computeRolloutAcceptance([
-      ...batch(30, 400, 20),
-      iter(31, null),
-      ...batch(30, 90, 9, 32),
-    ]);
+  it("accepts a full window of 30 measurable iterations when all four targets are met", () => {
+    // The caller's query selects the window; an unmeasurable row is still skipped.
+    const result = computeRolloutAcceptance([iter(31, null), ...batch(30, 90, 9, 32)]);
 
     expect(result.sufficientSample).toBe(true);
     expect(result.windowSize).toBe(30);

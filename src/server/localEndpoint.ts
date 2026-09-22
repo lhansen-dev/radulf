@@ -22,6 +22,26 @@ export function v1Root(baseUrl: string): string {
   return `${baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`;
 }
 
+/**
+ * Parse the "one `Name: value` per line" header setting into a record.
+ *
+ * A gateway in front of a local model (Kong, a corporate proxy) often
+ * authenticates on a header of its own rather than a bearer token; this is how
+ * that header reaches both `/v1/models` and the pi provider block. Blank lines
+ * are skipped. Anything else must be a header name (an RFC 9110 token), a
+ * colon, and a non-empty value.
+ */
+export function parseHeaderLines(text: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [i, line] of text.split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    const m = /^\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*:\s*(.*?)\s*$/.exec(line);
+    if (!m || !m[2]) throw new Error(`line ${i + 1} must look like "Name: value"`);
+    headers[m[1]] = m[2];
+  }
+  return headers;
+}
+
 /** One entry of an OpenAI-compatible `/v1/models` response. */
 export type LocalModel = {
   id: string;
@@ -38,9 +58,10 @@ export type LocalModel = {
 export async function listLocalModels(
   baseUrl: string,
   apiKey: string,
+  headers: Record<string, string> = {},
 ): Promise<LocalModel[]> {
   const url = `${v1Root(baseUrl)}/models`;
-  const data = (await fetchJson(url, apiKey || "local", `the local endpoint at ${url}`)) as {
+  const data = (await fetchJson(url, apiKey || "local", `the local endpoint at ${url}`, headers)) as {
     data?: { id: string; max_model_len?: number; context_length?: number }[];
   };
   return (data.data ?? []).map((m) => ({

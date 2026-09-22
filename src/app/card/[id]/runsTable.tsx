@@ -1,18 +1,21 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MetricsPanel, type Iteration, type Run } from "./metricsPanel";
-import { formatDurationMs } from "./formatDuration";
+import { formatDurationMs } from "../../ui/formatDuration";
 import { reasoningLevelForKind } from "./reasoningLevel";
 import { iterationTask, type IterationTask } from "./iterationTask";
 import type { CardDetailData, Plan } from "./useCardDetail";
 import { timeAgo } from "../../ui/api";
-import { formatCostUsd, sumCostUsd } from "../../ui/formatCost";
+import { formatCostUsd, sumReported } from "../../ui/formatCost";
+import { formatTokens, runTotals } from "./runTotals";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { useNow } from "../../ui/useNow";
 
 export type TranscriptTarget = {
   runId: string;
   iteration: number;
+  /** Whether the run is still executing, so the view should follow pushes. */
+  live: boolean;
   provider?: string | null;
   model?: string | null;
   reasoningLevel?: string | null;
@@ -24,48 +27,11 @@ const KIND_LABEL = {
   evaluate: "🔎 Evaluator",
 } as const;
 
-/** Same "don't invent a zero" sum `sumCostUsd` applies to money, so an
- * unmeasured run never reads as a free one. */
-const sumReported = sumCostUsd;
-
-/**
- * Prompt/completion/cost for one run row.
- *
- * A loop run is summed from its iterations rather than read off the run row:
- * the run-level roll-up is only written when the run finishes, so an in-flight
- * loop would otherwise read as unmeasured while its numbers are visibly
- * climbing. A finished loop's roll-up is that same sum, so the two agree.
- * Plan and evaluate runs are a single harness invocation with no iteration
- * rows, so their roll-up is the only source.
- */
-export function runTotals(run: Run): {
-  promptTokens: number | null;
-  completionTokens: number | null;
-  costUsd: number | null;
-} {
-  if (run.kind === "loop" && run.iterations.length > 0) {
-    return {
-      promptTokens: sumReported(run.iterations.map((it) => it.promptTokens)),
-      completionTokens: sumReported(run.iterations.map((it) => it.completionTokens)),
-      costUsd: sumCostUsd(run.iterations.map((it) => it.costUsd)),
-    };
-  }
-  return {
-    promptTokens: run.promptTokens ?? null,
-    completionTokens: run.completionTokens ?? null,
-    costUsd: run.costUsd ?? null,
-  };
-}
-
 /** Milliseconds the run was actually executing — `nowMs` keeps a live run's
  * cell ticking; a run with no end and no clock contributes nothing. */
 function runDurationMs(run: Run, nowMs: number): number | null {
   const end = run.endedAt ? new Date(run.endedAt).getTime() : run.status === "running" ? nowMs : null;
   return end === null ? null : end - new Date(run.startedAt).getTime();
-}
-
-function formatTokens(value: number | null): string {
-  return value == null ? "—" : value.toLocaleString();
 }
 
 const TASK_STATE_CLASS: Record<IterationTask["state"], string> = {
@@ -77,6 +43,8 @@ const TASK_STATE_CLASS: Record<IterationTask["state"], string> = {
 function statusClass(status: string): string {
   if (status === "completed") return "bg-green-900/60 text-green-300";
   if (status === "running") return "bg-amber-900/60 text-amber-300";
+  // A pause is the operator's doing, not a failure — never red.
+  if (status === "paused") return "bg-sky-900/60 text-sky-300";
   return "bg-red-900/60 text-red-300";
 }
 
@@ -139,7 +107,7 @@ export function RunsTable({
   const perRunTotals = ordered.map(runTotals);
   const totalPrompt = sumReported(perRunTotals.map((t) => t.promptTokens));
   const totalCompletion = sumReported(perRunTotals.map((t) => t.completionTokens));
-  const totalCost = sumCostUsd(perRunTotals.map((t) => t.costUsd));
+  const totalCost = sumReported(perRunTotals.map((t) => t.costUsd));
 
   return (
     <div className="overflow-x-auto">
@@ -222,6 +190,7 @@ export function RunsTable({
                         plans={plans}
                         cardSummary={run.id === lastEvaluateId ? cardSummary : null}
                         reasoningLevel={reasoningLevelForKind(run.kind, models)}
+                        nowMs={nowMs}
                         onOpenTranscript={onOpenTranscript}
                       />
                     </div>
@@ -260,18 +229,21 @@ function RunDetail({
   plans,
   cardSummary,
   reasoningLevel,
+  nowMs,
   onOpenTranscript,
 }: {
   run: Run;
   plans: Plan[];
   cardSummary: string | null;
   reasoningLevel: string | undefined;
+  nowMs: number;
   onOpenTranscript: (target: TranscriptTarget) => void;
 }) {
   const open = (iteration: number) =>
     onOpenTranscript({
       runId: run.id,
       iteration,
+      live: run.status === "running",
       provider: run.provider,
       model: run.model,
       reasoningLevel,
@@ -281,7 +253,7 @@ function RunDetail({
     return (
       <div className="flex flex-col gap-2">
         {run.iterations.length > 0 ? (
-          <MetricsPanel run={run} />
+          <MetricsPanel run={run} nowMs={nowMs} />
         ) : (
           <p className="text-xs text-foreground/50">No iterations recorded for this run.</p>
         )}

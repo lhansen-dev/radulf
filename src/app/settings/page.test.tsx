@@ -4,21 +4,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import SettingsPage from "./page";
 import type { Settings } from "./useSettingsData";
 import type { Repo } from "../ui/api";
+import { testSettings } from "@/testUtils/testSettings";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/settings" }));
 
-const initialSettings: Settings = {
-  plannerProvider: "anthropic", plannerModel: "planner", plannerReasoningLevel: "medium",
-  loopProvider: "anthropic", loopModel: "looper", loopReasoningLevel: "medium",
-  evaluatorProvider: "anthropic", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
-  plannerTimeoutMinutes: 30, defaultMaxIterations: 50, defaultTimeoutMinutes: 60,
-  iterationHardTimeoutMinutes: 10, evaluatorTimeoutMinutes: 10, stallTimeoutSeconds: 300,
-  omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "", openrouterApiKey: "••••••••", braveApiKey: "",
-  minimalToolset: false, sandboxEnabled: true, sandboxNetworkAllowlist: "",
-  sandboxWeakerIsolationForGoTls: false, notificationsEnabled: false, soundEnabled: false,
-  theme: "default", plannerPromptTemplate: "Plan {{TITLE}}", evaluatorPromptTemplate: "Review {{CRITERIA}}",
+const initialSettings = testSettings({
+  plannerModel: "planner", loopModel: "looper", evaluatorModel: "reviewer", evaluatorReasoningLevel: "high",
+  openrouterApiKey: "••••••••",
+  plannerPromptTemplate: "Plan {{TITLE}}", evaluatorPromptTemplate: "Review {{CRITERIA}}",
   improvePromptTemplate: "Improve {{FOCUS}}",
-};
+});
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -46,6 +41,11 @@ describe("SettingsPage", () => {
       if (url === "/api/settings") {
         return init?.method === "PATCH" ? patch(JSON.parse(String(init.body))) : json(savedSettings);
       }
+      if (url === "/api/repos/init" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { parentPath: string; name: string };
+        repositories = [{ id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-21" }];
+        return json(repositories[0], 201);
+      }
       if (url === "/api/repos") {
         if (init?.method === "POST") {
           repositories = [{ id: "new-repo", createdAt: "2026-09-12", ...JSON.parse(String(init.body)) }];
@@ -55,6 +55,24 @@ describe("SettingsPage", () => {
       }
       if (url.startsWith("/api/repos/") && init?.method === "DELETE") {
         return json({ error: "cannot remove a repository while one of its tasks is running or merging" }, 409);
+      }
+      if (url.startsWith("/api/providers/usage")) {
+        return json({
+          windowHours: 24,
+          providers: [
+            { provider: "anthropic", runs: 4, failedRuns: 0, promptTokens: 120_000, completionTokens: 3_000, costUsd: 0, costReported: false, lastRunAt: "2026-09-20T11:00:00.000Z", breaker: { provider: "anthropic", state: "open", reason: "limit", consecutiveFailures: 1, openedAt: "2026-09-20T11:30:00.000Z", openUntil: "2026-09-20T12:30:00.000Z" }, rateLimit: { provider: "anthropic", observedAt: "2026-09-20T11:30:00.000Z", status: "warning", windows: [{ label: "5h", utilization: 0.05, remaining: null, status: "ok", resetAt: null }, { label: "7d", utilization: 0.8, remaining: null, status: "warning", resetAt: null }], bindingWindow: "7d", resetAt: "2026-09-24T08:00:00.000Z", overageAvailable: false } },
+            { provider: "omlx", runs: 2, failedRuns: 1, promptTokens: 2_000_000, completionTokens: 40_000, costUsd: 0, costReported: false, lastRunAt: "2026-09-20T11:50:00.000Z", breaker: { provider: "omlx", state: "closed", reason: null, consecutiveFailures: 0, openedAt: null, openUntil: null }, rateLimit: null },
+          ],
+        });
+      }
+      if (url.startsWith("/api/folder-browser")) {
+        return json({
+          root: "/home/dev", path: "/home/dev", parent: null, truncated: false,
+          entries: [
+            { name: "my-project", path: "/home/dev/my-project", isGitRepo: true },
+            { name: "downloads", path: "/home/dev/downloads", isGitRepo: false },
+          ],
+        });
       }
       if (url.startsWith("/api/providers/")) return json({
         models: [
@@ -102,7 +120,7 @@ describe("SettingsPage", () => {
 
   it("shows a repository removal conflict on that repository's row", async () => {
     repositories = [
-      { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", createdAt: "2026-09-12" },
+      { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-12" },
     ];
     vi.stubGlobal("confirm", vi.fn(() => true));
     window.history.replaceState(null, "", "/settings#repos");
@@ -160,6 +178,42 @@ describe("SettingsPage", () => {
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("creates a fresh repository from the folder browser and lists it", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Repositories");
+    fireEvent.click(screen.getByRole("button", { name: "Choose repository folder" }));
+    await screen.findByRole("list", { name: "Folders" });
+
+    fireEvent.change(screen.getByLabelText("New repository name"), { target: { value: "fresh-project" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create here" }));
+
+    await screen.findByText("fresh-project");
+    expect(screen.getByText("/home/dev/fresh-project")).toBeTruthy();
+    // The browser closes once the repository exists; the list is the result.
+    expect(screen.queryByRole("list", { name: "Folders" })).toBeNull();
+  });
+
+  it("browses for a repository folder in the browser, not a host dialog", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Repositories");
+    fireEvent.click(screen.getByRole("button", { name: "Choose repository folder" }));
+
+    const folders = await screen.findByRole("list", { name: "Folders" });
+    await waitFor(() => expect(folders.textContent).toContain("my-project"));
+    // Only the git repository is directly selectable; a plain folder navigates.
+    expect(screen.getAllByRole("button", { name: "Select" })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Choose repository folder" }).textContent)
+        .toContain("/home/dev/my-project"),
+    );
+    // The name is derived from the folder when the field is still blank.
+    expect((screen.getByLabelText("Repository name") as HTMLInputElement).value).toBe("my-project");
+  });
+
   it("keeps edits made while a save is in flight", async () => {
     let finishSave!: (response: Response) => void;
     patch = () => new Promise((resolve) => { finishSave = resolve; });
@@ -177,5 +231,68 @@ describe("SettingsPage", () => {
     expect((screen.getByRole("checkbox", { name: "Desktop notifications" }) as HTMLInputElement).checked).toBe(true);
     section("Providers & keys");
     expect((screen.getByLabelText("OpenRouter API key") as HTMLInputElement).value).toBe("••••••••");
+  });
+
+  it("flags a role whose provider does not suit it, and applies the suggested split", async () => {
+    savedSettings = { ...initialSettings, scopingProvider: "omlx", scopingModel: "llm", plannerProvider: "omlx", plannerModel: "llm", evaluatorProvider: "omlx", evaluatorModel: "llm" };
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Agents & models");
+
+    // Scoping, the planner and the evaluator are on the self-hosted endpoint,
+    // the looper on a subscription, so every role is off the split and all
+    // four are named.
+    const summary = screen.getByRole("region", { name: "Suggested model split" });
+    expect(summary.textContent).toContain("Scoping agent");
+    expect(summary.textContent).toContain("Planner agent");
+    expect(summary.textContent).toContain("Looper agent");
+    expect(summary.textContent).toContain("Evaluator agent");
+    expect(screen.getByText(/Scoping is a live conversation/)).toBeTruthy();
+    expect(screen.getByText(/Planning is the pipeline's hardest reasoning/)).toBeTruthy();
+    expect(screen.getByText(/only gate that runs the whole-card acceptance criteria/)).toBeTruthy();
+    expect(screen.getByText(/drives most of your token spend/)).toBeTruthy();
+
+    fireEvent.click(within(summary).getByRole("button", { name: /Use Claude for planning and review/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => expect(savedSettings.plannerProvider).toBe("anthropic"));
+    expect(savedSettings.scopingProvider).toBe("anthropic");
+    expect(savedSettings.evaluatorProvider).toBe("anthropic");
+    expect(savedSettings.loopProvider).toBe("omlx");
+    // The callout goes quiet once every role suits its stage.
+    expect(screen.queryByRole("region", { name: "Suggested model split" })).toBeNull();
+  });
+
+  it("names a provider that is out of allowance, and what it has spent", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Providers & keys");
+    const panel = await screen.findByRole("region", { name: "Provider usage and health" });
+    await waitFor(() => expect(panel.textContent).toContain("Usage limit reached"));
+    // The self-hosted endpoint is healthy, so it reports usage without a warning.
+    expect(panel.textContent).toContain("2.0M in");
+    expect(panel.textContent).toContain("1 failed");
+    // Flat-rate providers report no cost, so no misleading $0.00 is shown.
+    expect(panel.textContent).not.toContain("$0.00");
+  });
+
+  it("shows live allowance from the provider's own headers", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Providers & keys");
+    const panel = await screen.findByRole("region", { name: "Provider usage and health" });
+    await waitFor(() => expect(panel.textContent).toContain("7d 80% used"));
+    expect(panel.textContent).toContain("5h 5% used");
+    expect(panel.textContent).toContain("7d is binding");
+    // No paid overflow past the limit is worth saying out loud.
+    expect(panel.textContent).toContain("no overage");
+    expect(panel.textContent).toContain("Approaching the allowance");
+  });
+
+  it("does not nag when every role already suits its stage", async () => {
+    savedSettings = { ...initialSettings, loopProvider: "omlx", loopModel: "llm" };
+    render(<SettingsPage />);
+    await screen.findByRole("heading", { name: "General", level: 2 });
+    section("Agents & models");
+    expect(screen.queryByRole("region", { name: "Suggested model split" })).toBeNull();
   });
 });

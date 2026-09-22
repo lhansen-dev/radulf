@@ -1,15 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, plans, runs, repos, reviews } from "@/db";
+import { db, now, plans, runs, reviews, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
+import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
+import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
+import { errorMessage } from "@/shared/errorMessage";
 import { getSettings } from "./settings";
-import { planStatePath } from "./bookkeeping";
+import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
 import { tryGit } from "./git";
+import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import {
   circuitOpenReason,
@@ -25,16 +29,7 @@ const RALPH_FILES = ["PLAN.md", "CRITERIA.md", "PROMPT.md"] as const;
 const PLANNER_FILES = ["QUESTIONS.md", ...RALPH_FILES] as const;
 
 function readRalphFile(worktreePath: string, name: string): string {
-  const p = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph", name);
-  return fs.existsSync(/* turbopackIgnore: true */ p)
-    ? fs.readFileSync(/* turbopackIgnore: true */ p, "utf8").trim()
-    : "";
-}
-
-function removeRalphFiles(worktreePath: string, names: readonly string[]) {
-  for (const name of names) {
-    fs.rmSync(path.join(/* turbopackIgnore: true */ worktreePath, ".ralph", name), { force: true });
-  }
+  return readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDirPath(worktreePath), name)).trim();
 }
 
 /** Planner retries intentionally reuse a worktree, but never another
@@ -43,18 +38,59 @@ export function clearPlannerArtifacts(worktreePath: string) {
   removeRalphFiles(worktreePath, PLANNER_FILES);
 }
 
+const SCOPING_SPEAKER: Record<ScopingRole, string> = {
+  user: "Operator",
+  assistant: "Scoping assistant",
+  planner: "Planner (an earlier planning run)",
+  loop: "Implementation loop (blocked)",
+};
+
+/** What the planner re-plans from when the loop stopped for it rather than
+ * for a retry: the blocker it reported, or a checklist it ticked off without
+ * ever signalling DONE. Either way the work so far is on the branch. */
+function loopStopFeedback(exitReason: string, feedback: string | null): string {
+  if (exitReason === LOOP_BLOCKED_EXIT) {
+    return (
+      "The implementation loop stopped on a blocker outside its control:\n\n" +
+      (feedback ?? "(no detail recorded)") +
+      "\n\nPlan around it. The loop runs sandboxed — no network beyond package registries, " +
+      "no credentials, no logged-in sessions, nobody to ask — so do not give it a task that " +
+      "needs what it does not have. Leave what only the operator can do to the operator, and " +
+      "say so in PLAN.md. The scoping thread holds the operator's answers, if any."
+    );
+  }
+  return (
+    "Every checklist item was ticked, but the loop never signalled DONE, so the final task's " +
+    "own check did not pass. Plan the work still needed on top of the code already on this " +
+    "branch. The scoping thread holds anything the operator added since."
+  );
+}
+
 export function renderPlanPrompt(
   template: string,
   title: string,
   description: string,
   feedback?: string,
+  scoping: Pick<ScopingMessage, "role" | "content">[] = [],
 ) {
   const feedbackSection = feedback
     ? `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n\nThe working directory already holds the previous attempt's implementation,\ncommitted on this branch. Plan only the work needed to address the feedback\nabove on top of that code — do not re-plan tasks it already satisfies.\n`
     : "";
-  return template
+  // Spec 17: the thread is part of the card, so the planner gets it whole and
+  // the decisions reached there constrain the plan. Questions an earlier
+  // planning run raised appear with the operator's answers under them.
+  const scopingSection = scoping.length
+    ? `\nSCOPING THREAD\n==============\nThe operator scoped this card in conversation before planning. Decisions\nreached below are part of the card; where they and the description disagree,\nthe thread is the newer of the two.\n\n${scoping.map((m) => `${SCOPING_SPEAKER[m.role]}: ${m.content}`).join("\n\n")}\n`
+    : "";
+  // A template customized before this placeholder existed still gets the
+  // thread, right after the description, rather than silently losing it.
+  const withScoping = template.includes("{{SCOPING_SECTION}}")
+    ? template
+    : template.replace("{{DESCRIPTION}}", "{{DESCRIPTION}}\n{{SCOPING_SECTION}}");
+  return withScoping
     .replaceAll("{{TITLE}}", title)
     .replaceAll("{{DESCRIPTION}}", description || "(no description)")
+    .replaceAll("{{SCOPING_SECTION}}", scopingSection)
     .replaceAll("{{FEEDBACK_SECTION}}", feedbackSection);
 }
 
@@ -92,7 +128,21 @@ export function pendingReplanFeedback(cardId: string): string | null {
     .orderBy(desc(runs.startedAt))
     .limit(1)
     .get();
-  const newest = [rejection, revise]
+  // A loop that stopped for the planner: blocked, or exhausted without DONE.
+  // Older exhausted rows carry no feedback of their own, so the wording is
+  // supplied here rather than read from the row.
+  const loopStop = db
+    .select({ feedback: runs.feedback, exitReason: runs.exitReason, at: runs.startedAt })
+    .from(runs)
+    .where(and(onLatestPlan, eq(runs.kind, "loop"), inArray(runs.exitReason, [...REPLAN_LOOP_EXITS])))
+    .orderBy(desc(runs.startedAt))
+    .limit(1)
+    .get();
+  const newest = [
+    rejection,
+    revise,
+    loopStop && { feedback: loopStopFeedback(loopStop.exitReason!, loopStop.feedback), at: loopStop.at },
+  ]
     .filter((row) => row?.feedback)
     .sort((a, b) => b!.at.localeCompare(a!.at))[0];
   return newest?.feedback ?? null;
@@ -116,7 +166,7 @@ export class PlanningService {
   async runPlanning(cardId: string) {
     const deps = this.deps;
     const card = deps.getCard(cardId)!;
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new Error("repo not found");
     const settings = getSettings();
 
@@ -129,8 +179,8 @@ export class PlanningService {
     clearPlannerArtifacts(worktreePath);
     // Spec 14 Phase 3: the planner's ONLY L2 write root is the worktree's
     // `.ralph/` — ensure it exists so the write root resolves.
-    fs.mkdirSync(path.join(/* turbopackIgnore: true */ worktreePath, ".ralph"), { recursive: true });
-    const ctx = createRunSandbox(runId);
+    fs.mkdirSync(/* turbopackIgnore: true */ ralphDirPath(worktreePath), { recursive: true });
+    const ctx = await createRunSandbox(runId);
     startRunRow(
       { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model },
       ctx,
@@ -141,7 +191,8 @@ export class PlanningService {
 
     const controller = new AbortController();
     deps.registerController(runId, controller);
-    const fail = (status: FinishStatus, exitReason: string, moveReason = exitReason, telemetry?: RunTelemetry) => {
+    let telemetry: RunTelemetry | undefined;
+    const fail = (exitReason: string, moveReason = exitReason, status: FinishStatus = "failed") => {
       deps.finishRun(runId, status, exitReason, telemetry);
       deps.moveCard(cardId, "planning", "needs_attention", moveReason);
     };
@@ -157,7 +208,7 @@ export class PlanningService {
     const replanFeedback = pendingReplanFeedback(cardId);
     try {
       const breaker = circuitOpenReason(provider);
-      if (breaker) return fail("failed", breaker);
+      if (breaker) return fail(breaker);
 
       const result = await runWithTranscript({
         runId,
@@ -170,6 +221,7 @@ export class PlanningService {
           card.title,
           card.description,
           replanFeedback ?? prevPlan?.feedback ?? undefined,
+          listScopingMessages(cardId),
         ),
         cwd: worktreePath,
         timeoutMs: settings.plannerTimeoutMinutes * 60 * 1000,
@@ -179,9 +231,9 @@ export class PlanningService {
       });
       if (controller.signal.aborted) return; // cancelCard already finalized
 
-      const telemetry = runTelemetry(result);
+      telemetry = runTelemetry(result);
       const failure = harnessFailure(result, provider, "planner");
-      if (failure) return fail(failure.status, failure.exitReason, failure.moveReason, telemetry);
+      if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
 
       // The planner's follow-up questions escape hatch.
       const questions = readRalphFile(worktreePath, "QUESTIONS.md");
@@ -189,6 +241,9 @@ export class PlanningService {
         await tryGit(worktreePath, "add", ".ralph");
         await tryGit(worktreePath, "commit", "-m", `ralph: planner raised questions for "${card.title}"`);
         emitEvent("plan.questions", { cardId, runId, payload: { questions } });
+        // Spec 17: the questions join the card's scoping thread, where the
+        // operator answers them; the next planning run reads the whole thread.
+        addScopingMessage(cardId, "planner", questions);
         deps.finishRun(runId, "completed", "planner raised follow-up questions", telemetry);
         deps.moveCard(cardId, "planning", "needs_attention", "planner has follow-up questions");
         return;
@@ -198,11 +253,11 @@ export class PlanningService {
         RALPH_FILES.map((f) => [f, readRalphFile(worktreePath, f)]),
       ) as Record<(typeof RALPH_FILES)[number], string>;
       if (RALPH_FILES.some((f) => !contents[f])) {
-        return fail("failed", "planner produced malformed artifacts", undefined, telemetry);
+        return fail("planner produced malformed artifacts");
       }
       // There is no fallback prompt, so an unparseable plan cannot run.
       if (!firstUnchecked(contents["PLAN.md"])) {
-        return fail("failed", "plan checklist unparseable or has no unchecked tasks", undefined, telemetry);
+        return fail("plan checklist unparseable or has no unchecked tasks");
       }
 
       const version = (prevPlan?.version ?? 0) + 1;
@@ -236,6 +291,14 @@ export class PlanningService {
 
       deps.finishRun(runId, "completed", "plan artifacts written", telemetry);
       deps.moveCard(cardId, "planning", planningDestination(card));
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        const reason = `planner failed: ${errorMessage(error)}`;
+        deps.finishRun(runId, "failed", reason.slice(0, 500), telemetry);
+        if (deps.getCard(cardId)?.status === "planning") {
+          deps.moveCard(cardId, "planning", "needs_attention", reason);
+        }
+      }
     } finally {
       deps.releaseController(runId);
       await ctx.cleanup();

@@ -10,23 +10,121 @@ vi.mock("next/link", () => ({
     (props as { href?: string }).href ? <a href={(props as { href?: string }).href}>{children as React.ReactNode}</a> : <span>{children as React.ReactNode}</span>,
 }));
 
+const push = vi.fn();
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
+
 beforeEach(() => {
+  push.mockClear();
   vi.stubGlobal("confirm", () => false);
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => ({
     ok: true,
-    json: async () =>
-      String(url).includes("/providers/")
-        ? { models: [] }
-        : { plannerProvider: "p", loopProvider: "l", evaluatorProvider: "e" },
+    json: async () => {
+      const target = String(url);
+      if (target.includes("/providers/")) return { models: [] };
+      if (target.includes("/api/folder-browser")) {
+        return {
+          root: "/home/dev", path: "/home/dev", parent: null, truncated: false,
+          entries: [
+            { name: "a-repo", path: "/home/dev/a-repo", isGitRepo: true },
+            { name: "notes", path: "/home/dev/notes", isGitRepo: false },
+          ],
+        };
+      }
+      if (target === "/api/cards" && init?.method === "POST") return { id: "card-1" };
+      if (target.startsWith("/api/jira/issue")) {
+        return { key: "DEV-123", url: "https://jira.example/browse/DEV-123", title: "[DEV-123] Fix the widget", description: "Jira: https://jira.example/browse/DEV-123\n\nIt is broken." };
+      }
+      if (target === "/api/repos/init") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { parentPath: string; name: string };
+        return { id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+      }
+      if (target.includes("/api/repos") && init?.method !== "GET") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { name: string; path: string };
+        return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+      }
+      return { plannerProvider: "p", loopProvider: "l", evaluatorProvider: "e" };
+    },
   }))) as unknown as typeof fetch;
 });
 
 describe("NewTaskDialog", () => {
+  it("registers a repository browsed from inside the dialog and selects it", async () => {
+    const user = userEvent.setup();
+    render(<NewTaskDialog repos={[]} onClose={() => {}} onCreated={() => {}} />);
+
+    // With no repositories the browser opens straight away, rather than
+    // sending the user to Settings and back.
+    const folders = await screen.findByRole("list", { name: "Folders" });
+    expect(folders.textContent).toContain("a-repo");
+    // Only a git repository offers Select; a plain folder is navigation only.
+    expect(screen.getAllByRole("button", { name: "Select" })).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Select" }));
+
+    const repoSelect = await screen.findByLabelText("Repository");
+    await waitFor(() => expect((repoSelect as HTMLSelectElement).value).toBe("new-repo"));
+    expect(repoSelect.textContent).toContain("a-repo");
+    cleanup();
+  });
+
+  it("prefills the title and description from a Jira issue", async () => {
+    const user = userEvent.setup();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Import from Jira"), "https://jira.example/browse/DEV-123");
+    await user.click(screen.getByRole("button", { name: "Import" }));
+
+    await waitFor(() => expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("[DEV-123] Fix the widget"));
+    expect((screen.getByLabelText("Description and definition of done") as HTMLTextAreaElement).value)
+      .toBe("Jira: https://jira.example/browse/DEV-123\n\nIt is broken.");
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    expect(calls.some(([url]) => url === `/api/jira/issue?ref=${encodeURIComponent("https://jira.example/browse/DEV-123")}`)).toBe(true);
+    cleanup();
+  });
+
+  it("creates a fresh repository inside the browsed folder and selects it", async () => {
+    const user = userEvent.setup();
+    render(<NewTaskDialog repos={[]} onClose={() => {}} onCreated={() => {}} />);
+    await screen.findByRole("list", { name: "Folders" });
+
+    await user.type(screen.getByLabelText("New repository name"), "fresh-project");
+    await user.click(screen.getByRole("button", { name: "Create here" }));
+
+    const repoSelect = await screen.findByLabelText("Repository");
+    await waitFor(() => expect((repoSelect as HTMLSelectElement).value).toBe("made-repo"));
+    expect(repoSelect.textContent).toContain("fresh-project");
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
+    const initCall = calls.find(([url]) => url === "/api/repos/init");
+    expect(JSON.parse(String(initCall?.[1].body))).toEqual({ parentPath: "/home/dev", name: "fresh-project" });
+    cleanup();
+  });
+
+  it("offers browsing from the repository select when repositories exist", async () => {
+    const user = userEvent.setup();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={() => {}}
+      />
+    );
+    expect(screen.queryByRole("list", { name: "Folders" })).toBeNull();
+    await user.selectOptions(screen.getByLabelText("Repository"), "__add__");
+    expect(await screen.findByRole("list", { name: "Folders" })).toBeTruthy();
+    cleanup();
+  });
+
   it("keeps focus in the Title input while typing", async () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -37,10 +135,43 @@ describe("NewTaskDialog", () => {
     expect(document.activeElement).toBe(title);
   });
 
+  it("creates the task and opens it for scoping from Create and scope, but not from Create task", async () => {
+    cleanup();
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={onCreated}
+      />
+    );
+    await user.type(screen.getByLabelText("Title"), "Rough ask");
+    await user.click(screen.getByRole("button", { name: "Create and scope" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+    expect(push).toHaveBeenCalledWith("/card/card-1");
+    // The old planner chat is gone from Advanced.
+    expect(screen.queryByText(/planner chat/i)).toBeNull();
+    cleanup();
+
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={onCreated}
+      />
+    );
+    await user.type(screen.getByLabelText("Title"), "Full ask");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(2));
+    expect(push).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
   it("defaults to the scoped repo when defaultRepoId is provided", async () => {
     cleanup();
-    const radulf = { id: "radulf", name: "radulf", path: "/r/radulf", defaultBranch: "main", createdAt: "" };
-    const doomClone = { id: "doom", name: "doom-clone", path: "/r/doom", defaultBranch: "main", createdAt: "" };
+    const radulf = { id: "radulf", name: "radulf", path: "/r/radulf", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+    const doomClone = { id: "doom", name: "doom-clone", path: "/r/doom", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
     render(
       <NewTaskDialog
         repos={[radulf, doomClone]}
@@ -72,7 +203,7 @@ describe("NewTaskDialog", () => {
       const user = userEvent.setup();
       render(
         <NewTaskDialog
-          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
           onClose={() => {}}
           onCreated={() => {}}
         />
@@ -118,7 +249,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -163,7 +294,7 @@ describe("NewTaskDialog", () => {
   // authenticated AND the selected repo has an `origin`. Each of the three
   // failures names a different next action, so each is asserted separately.
   describe("Open a pull request instead of merging", () => {
-    const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" };
+    const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
 
     function stubGithubStatus(status: Record<string, unknown>) {
       cleanup();
@@ -202,8 +333,8 @@ describe("NewTaskDialog", () => {
       ],
       [
         "the install, when gh is missing",
-        { ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed or not on PATH", hasRemote: true },
-        /not installed or not on PATH/,
+        { ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed, not on PATH, or not executable", hasRemote: true },
+        /not installed, not on PATH, or not executable/,
       ],
     ])("is disabled, naming %s", async (_label, status, reason) => {
       stubGithubStatus(status);
@@ -241,7 +372,7 @@ describe("NewTaskDialog", () => {
       const user = userEvent.setup();
       render(
         <NewTaskDialog
-          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
           onClose={() => {}}
           onCreated={() => {}}
         />

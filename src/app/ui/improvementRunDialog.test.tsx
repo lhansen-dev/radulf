@@ -12,7 +12,7 @@ vi.mock("next/link", () => ({
     (props as { href?: string }).href ? <a href={(props as { href?: string }).href}>{children as React.ReactNode}</a> : <span>{children as React.ReactNode}</span>,
 }));
 
-const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" };
+const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
 
 beforeEach(() => {
   vi.stubGlobal("confirm", () => false);

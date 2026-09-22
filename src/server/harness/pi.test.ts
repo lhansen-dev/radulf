@@ -2,12 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { omlxProviderConfig, pathRootsForRole, piNormalize, shouldSandboxBash, toolsForRole } from "./pi";
-import { SETTING_DEFAULTS, type Settings } from "../settings";
-
-/** A minimal settings object for testing — never touches the db. */
-function testSettings(overrides: Partial<Settings> = {}): Settings {
-  return { ...SETTING_DEFAULTS, ...overrides } as Settings;
-}
+import { testSettings } from "@/testUtils/testSettings";
 
 /** piNormalize takes SDK event objects; cast arbitrary shapes for the tests. */
 function norm(evt: unknown) {
@@ -91,6 +86,17 @@ describe("omlxProviderConfig", () => {
   it("falls back to a window no larger than any plausible server", () => {
     const s = testSettings({ omlxBaseUrl: "http://localhost:8000" });
     expect(omlxProviderConfig("m", s).models[0].contextWindow).toBe(32_768);
+  });
+
+  it("passes extra headers through, escaped so pi sends them literally", () => {
+    // pi reads `$NAME` as an env reference and a leading `!` as a shell
+    // command; a pasted value must survive that as-is.
+    const config = omlxProviderConfig(
+      "m",
+      testSettings({ omlxHeaders: "kong-api-key: abc$123\nX-Note: !literal" }),
+    );
+    expect(config.headers).toEqual({ "kong-api-key": "abc$$123", "X-Note": "$!literal" });
+    expect(omlxProviderConfig("m", testSettings()).headers).toEqual({});
   });
 });
 
@@ -191,7 +197,7 @@ describe("piNormalize", () => {
       type: "message_end",
       message: { role: "toolResult", toolCallId: "tc_1", content: [] },
     };
-    expect(norm(evt)).toEqual([{ t: "raw", line: JSON.stringify(evt) }]);
+    expect(norm(evt)).toEqual([{ t: "raw", event: evt }]);
   });
 
   it("maps a failed auto_retry_end to result:failed", () => {
@@ -202,7 +208,7 @@ describe("piNormalize", () => {
   it("keeps a successful auto_retry_end as raw and marks the retry completed", () => {
     const evt = { type: "auto_retry_end", success: true, attempt: 1 };
     expect(norm(evt)).toEqual([
-      { t: "raw", line: JSON.stringify(evt) },
+      { t: "raw", event: evt },
       { t: "result", exit: "completed" },
     ]);
   });
@@ -215,9 +221,9 @@ describe("piNormalize", () => {
       result: "ok",
       isError: false,
     };
-    expect(norm(end)).toEqual([{ t: "raw", line: JSON.stringify(end) }]);
+    expect(norm(end)).toEqual([{ t: "raw", event: end }]);
 
     const unknown = { type: "queue_update", steering: [], followUp: [] };
-    expect(norm(unknown)).toEqual([{ t: "raw", line: JSON.stringify(unknown) }]);
+    expect(norm(unknown)).toEqual([{ t: "raw", event: unknown }]);
   });
 });

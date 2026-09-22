@@ -13,14 +13,16 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import { listLocalModels, v1Root } from "../localEndpoint";
-import type { ProviderId } from "../providers";
+import { DATA_DIR } from "@/db";
+import { listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
+import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
 import { createGuardedFsTools } from "./guardedTools";
 import { DEFAULT_MOCK_SCENARIO, mockProviderConfig } from "./mock";
 import { agentEnv, type TranscriptEvent } from "./types";
+import { rateLimitExtension } from "./rateLimitExtension";
 import { createWebSearchTool } from "./webSearch";
 
 /**
@@ -74,10 +76,6 @@ const PI_PROVIDER: Record<ProviderId, string> = {
 // Persistent, Radulf-owned pi agent dir (spec 13)
 // ---------------------------------------------------------------------------
 
-function radulfDataDir(): string {
-  return process.env.RADULF_DATA_DIR ?? path.join(process.cwd(), "data");
-}
-
 /**
  * One Radulf-owned pi agent dir, shared by every run. Holds `auth.json` (the
  * subscription logins established once via `make login` → `/login`, which points
@@ -88,7 +86,7 @@ function radulfDataDir(): string {
  * enforced by the session options, not by an empty dir.
  */
 export function piAgentDir(): string {
-  return path.join(radulfDataDir(), "pi-agent");
+  return path.join(DATA_DIR, "pi-agent");
 }
 
 /**
@@ -199,6 +197,11 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
     baseUrl: v1Root(s.omlxBaseUrl),
     apiKey: s.omlxApiKey || "omlx",
     api: "openai-completions" as const,
+    // Sent on every request; a header named Authorization wins over the
+    // bearer token pi derives from apiKey.
+    headers: Object.fromEntries(
+      Object.entries(parseHeaderLines(s.omlxHeaders)).map(([name, value]) => [name, piLiteral(value)]),
+    ),
     models: [
       {
         id: model,
@@ -216,6 +219,16 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
   };
 }
 
+/**
+ * pi reads a provider header value as a config reference: `$NAME` is an
+ * environment variable and a leading `!` runs a shell command. A header pasted
+ * into Settings is a literal, so escape it the way pi documents: `$$` for `$`,
+ * `$!` for `!`.
+ */
+function piLiteral(value: string): string {
+  return value.replace(/\$/g, "$$$$").replace(/^!/, "$!");
+}
+
 /** The OpenRouter endpoint pi's installed `openai-completions` API expects. */
 const OPENROUTER_COMPLETIONS_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -231,7 +244,7 @@ const OPENROUTER_COMPLETIONS_BASE_URL = "https://openrouter.ai/api/v1";
  * with OpenRouter's HTML 404 page. Re-shape those entries to match pi 0.84's
  * bundled catalog for the same models. Remove this once pi is upgraded.
  */
-export function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
+function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
   m: M,
 ): M {
   if (m.api !== "anthropic-messages") return m;
@@ -290,7 +303,7 @@ export async function resolveModel(
     // Ask the server what it is actually serving. The context window is a
     // per-deployment number (vLLM's --max-model-len), so it cannot be a
     // constant here, and a wrong one surfaces as a 400 deep into a loop.
-    const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey);
+    const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey, parseHeaderLines(s.omlxHeaders));
     const meta = served.find((x) => x.id === model);
     if (!meta) {
       throw new Error(
@@ -343,11 +356,11 @@ export async function resolveModel(
  * `thinking`, and `toolCall` — plus usage and stopReason); `auto_retry_end`
  * carries `success`/`finalError`. Streaming deltas and lifecycle framing are
  * dropped deliberately — their content is fully duplicated by `message_end`.
- * Everything unrecognized is preserved as `t:"raw"` with a stringified event
+ * Everything unrecognized is preserved as `t:"raw"` carrying the event object
  * so nothing is lost.
  */
 export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
-  const raw = (): TranscriptEvent[] => [{ t: "raw", line: JSON.stringify(evt) }];
+  const raw = (): TranscriptEvent[] => [{ t: "raw", event: evt }];
 
   if (evt.type === "message_end") {
     const message = evt.message as unknown as Record<string, unknown> | undefined;
@@ -475,7 +488,7 @@ export type AgentRole = "planner" | "loop" | "evaluator";
  * | loop      | ✓    | ✗          | full set                       |
  * | evaluator | ✓    | ✗          | full set                       |
  *
- * `readOnly` (planner chat, improvement proposer — human-interactive, outside the pipeline
+ * `readOnly` (scoping, improvement proposer — human-interactive, outside the pipeline
  * roles) keeps the read-only browse set plus web_search. With no role and not
  * readOnly the loop set applies — never web_search by default.
  */
@@ -620,6 +633,8 @@ export async function createRalphSession(
     noThemes: true,
     noContextFiles: true,
     systemPromptOverride: () => RALPH_SYSTEM_PROMPT,
+    // Rate-limit telemetry: a passive header reader, see rateLimitExtension.
+    extensionFactories: [rateLimitExtension(opts.provider)],
   });
   await resourceLoader.reload();
 
@@ -668,15 +683,7 @@ export function harnessPackageVersion(): string {
 export async function listAuthedModels(
   provider: ProviderId,
   opts: { force?: boolean } = {},
-): Promise<
-  {
-    value: string;
-    displayName: string;
-    description: string;
-    costPerMillionInput?: number;
-    costPerMillionOutput?: number;
-  }[]
-> {
+): Promise<ProviderModel[]> {
   const runtime = await getModelRuntime();
   const pid = PI_PROVIDER[provider];
   await refreshProviderCatalog(runtime, pid, opts.force);

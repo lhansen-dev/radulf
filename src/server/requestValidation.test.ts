@@ -1,34 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { parseCreateCard, parseUpdateCard } from "./cardValidation";
+import { optionalInteger, record, rejectUnknownKeys, requiredInteger } from "./requestValidation";
 import { REDACTED, SETTING_DEFAULTS, redactSettings, validateSettingsPatch } from "./settings";
+import { testSettings } from "@/testUtils/testSettings";
 
 describe("redactSettings", () => {
-  const secrets = ["omlxApiKey", "openrouterApiKey", "braveApiKey"] as const;
+  const secrets = ["omlxApiKey", "omlxHeaders", "openrouterApiKey", "braveApiKey", "jiraApiToken"] as const;
 
   it("replaces every stored provider credential with the redaction marker", () => {
-    const redacted = redactSettings({
-      ...SETTING_DEFAULTS,
+    const redacted = redactSettings(testSettings({
       omlxApiKey: "omlx-secret",
+      omlxHeaders: "kong-api-key: header-secret",
       openrouterApiKey: "sk-or-v1-secret",
       braveApiKey: "brave-secret",
-    });
+      jiraApiToken: "jira-secret",
+    }));
 
     for (const key of secrets) expect(redacted[key]).toBe(REDACTED);
     // Not merely masked in place — no fragment of the real value survives.
     const serialized = JSON.stringify(redacted);
-    for (const secret of ["omlx-secret", "sk-or-v1-secret", "brave-secret"]) {
+    for (const secret of ["omlx-secret", "header-secret", "sk-or-v1-secret", "brave-secret", "jira-secret"]) {
       expect(serialized).not.toContain(secret);
     }
   });
 
   it("keeps unset credentials empty, leaves non-secret settings alone, and never mutates its input", () => {
-    const input = {
-      ...SETTING_DEFAULTS,
+    const input = testSettings({
       openrouterApiKey: "",
       braveApiKey: "brave-secret",
       omlxBaseUrl: "http://127.0.0.1:9999",
       theme: "nord",
-    };
+    });
     const redacted = redactSettings(input);
     expect(redacted.openrouterApiKey).toBe("");
     expect(redacted.omlxBaseUrl).toBe("http://127.0.0.1:9999");
@@ -70,6 +72,7 @@ describe("validateSettingsPatch", () => {
         theme: "nord",
         loopReasoningLevel: "high",
         omlxBaseUrl: "http://127.0.0.1:8000",
+        omlxHeaders: "kong-api-key: abc123\n",
         plannerPromptTemplate: "Plan {{TITLE}}",
         sandboxEnabled: false,
         sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -86,6 +89,7 @@ describe("validateSettingsPatch", () => {
       theme: "nord",
       loopReasoningLevel: "high",
       omlxBaseUrl: "http://127.0.0.1:8000",
+      omlxHeaders: "kong-api-key: abc123\n",
       plannerPromptTemplate: "Plan {{TITLE}}",
       sandboxEnabled: false,
       sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -104,11 +108,33 @@ describe("validateSettingsPatch", () => {
     [{ theme: "matrix" }, /known theme/],
     [{ evaluatorReasoningLevel: "extreme" }, /evaluatorReasoningLevel must be one of/],
     [{ omlxBaseUrl: "file:///tmp/model" }, /http or https/],
+    [{ omlxHeaders: "kong-api-key abc123" }, /omlxHeaders: line 1 must look like "Name: value"/],
+    [{ omlxHeaders: 42 }, /omlxHeaders must be a string/],
     [{ evaluatorPromptTemplate: 42 }, /must be a string/],
     [{ improvePromptTemplate: "x".repeat(100_001) }, /at most 100000 characters/],
     [{ madeUpSetting: true }, /unknown setting/],
   ])("rejects invalid settings %#", (value, expected) => {
     expect(() => validateSettingsPatch(value)).toThrow(expected);
+  });
+});
+
+describe("request validation primitives", () => {
+  it("names the body and the key in its errors", () => {
+    expect(() => record([], "cleanup body")).toThrow("cleanup body must be an object");
+    expect(record({ a: 1 }, "body")).toEqual({ a: 1 });
+    expect(() => rejectUnknownKeys({ x: 1 }, new Set(["a"]))).toThrow("unknown field: x");
+    expect(() => rejectUnknownKeys({ x: 1 }, new Set(["a"]), "card field")).toThrow("unknown card field: x");
+  });
+
+  it("requires an integer in range, coercing numeric strings", () => {
+    expect(requiredInteger("30", "budgetMinutes", 10_080)).toBe(30);
+    for (const value of [undefined, null, "", 0, 1.5, 10_081, "x"]) {
+      expect(() => requiredInteger(value, "budgetMinutes", 10_080)).toThrow(
+        "budgetMinutes must be an integer between 1 and 10080",
+      );
+    }
+    for (const value of [undefined, null, ""]) expect(optionalInteger(value, "f", 10)).toBeNull();
+    expect(optionalInteger("7", "f", 10)).toBe(7);
   });
 });
 
@@ -164,5 +190,16 @@ describe("card request validation", () => {
       maxIterations: null,
       loopModel: null,
     });
+  });
+});
+
+describe("jiraBaseUrl", () => {
+  it("accepts blank (import disabled) and a site URL, and rejects anything else", () => {
+    expect(validateSettingsPatch({ jiraBaseUrl: "" })).toEqual({ jiraBaseUrl: "" });
+    expect(validateSettingsPatch({ jiraBaseUrl: "https://example.atlassian.net" })).toEqual({
+      jiraBaseUrl: "https://example.atlassian.net",
+    });
+    expect(() => validateSettingsPatch({ jiraBaseUrl: "example.atlassian.net" })).toThrow(/must be a URL/);
+    expect(() => validateSettingsPatch({ jiraBaseUrl: "ftp://example.atlassian.net" })).toThrow(/http or https/);
   });
 });

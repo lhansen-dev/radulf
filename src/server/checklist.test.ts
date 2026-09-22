@@ -51,10 +51,12 @@ describe("firstUnchecked", () => {
       taskNumber: 2,
       item: { text: "First", checked: false },
       isLastUnchecked: false,
+      taskCount: 3,
     });
     expect(firstUnchecked(md("## Tasks", "- [x] Done", "- [ ] Last", "- [x] Done"))).toMatchObject({
       taskNumber: 2,
       isLastUnchecked: true,
+      taskCount: 3,
     });
   });
 

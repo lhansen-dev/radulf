@@ -20,14 +20,7 @@ export function authEnabled(): boolean {
  * Format: `<expiresAtMs>.<base64url(hmac_sha256(expiresAtMs))>`
  */
 export async function signSession(expiresAtMs: number): Promise<string> {
-  const secret = getSecret();
-  const key = await importHmacKey(secret);
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(String(expiresAtMs)),
-  );
-  return `${expiresAtMs}.${base64url(sig)}`;
+  return `${expiresAtMs}.${base64url(await hmac(expiresAtMs))}`;
 }
 
 /**
@@ -43,21 +36,7 @@ export async function verifySession(value: string): Promise<boolean> {
 
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
 
-  const secret = getSecret();
-  const key = await importHmacKey(secret);
-
-  const expectedSig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(String(expiresAtMs)),
-  );
-
-  // Constant-time comparison
-  const expectedArr = new Uint8Array(expectedSig);
-  const actualArr = base64urlDecode(sigB64);
-  if (expectedArr.byteLength !== actualArr.byteLength) return false;
-
-  return constantTimeEqual(expectedArr, actualArr);
+  return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), base64urlDecode(sigB64));
 }
 
 /**
@@ -81,6 +60,23 @@ export function isAllowedOrigin(origin: string | null): boolean {
   }
 }
 
+/**
+ * Base URL a Route Handler should build its redirects against.
+ *
+ * `request.url` in a Route Handler carries the address the server is bound to,
+ * not the Host the client asked for. On anything but a localhost-only
+ * deployment that sends the browser somewhere it cannot reach: bound to
+ * 0.0.0.0 a LAN client is redirected to http://0.0.0.0:3000/, and bound to
+ * 127.0.0.1 it is sent to the client's own loopback. The proxy rejects any
+ * mutating request whose Origin is not allowed before a handler ever runs, so
+ * when a browser sent one it is both present and safe to redirect to. Non-
+ * browser clients send none, and fall back to the previous behaviour.
+ */
+export function redirectBase(request: Request): string {
+  const origin = request.headers.get("origin");
+  return origin && isAllowedOrigin(origin) ? origin : request.url;
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -100,6 +96,19 @@ async function importHmacKey(secret: string): Promise<CryptoKey> {
     false,
     ["sign"],
   );
+}
+
+/** The imported key for the secret it was imported from. Importing once per
+ * process rather than once per request (the proxy verifies on every hit)
+ * while still following a rotated RADULF_AUTH_SECRET. */
+let cachedKey: { secret: string; key: CryptoKey } | undefined;
+
+/** HMAC-SHA256 of the expiry timestamp — what signSession writes and
+ * verifySession recomputes. */
+async function hmac(expiresAtMs: number): Promise<ArrayBuffer> {
+  const secret = getSecret();
+  if (cachedKey?.secret !== secret) cachedKey = { secret, key: await importHmacKey(secret) };
+  return crypto.subtle.sign("HMAC", cachedKey.key, new TextEncoder().encode(String(expiresAtMs)));
 }
 
 /** Base64url-encode an ArrayBuffer (no padding). */

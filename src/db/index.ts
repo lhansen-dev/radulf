@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema";
@@ -67,3 +67,27 @@ export function migrationsPending(): boolean {
 
 export * from "./schema";
 export const now = () => new Date().toISOString();
+
+/**
+ * One JSON-valued row of the settings KV table, which the circuit breaker and
+ * the rate-limit readings share with the operator's settings. Null when the
+ * key is absent or its value is not JSON.
+ */
+export function readSettingJson(key: string): unknown {
+  const row = db.select().from(schema.settings).where(eq(schema.settings.key, key)).get();
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** Write one JSON-valued row of the settings KV table, replacing any existing value. */
+export function upsertSettingJson(key: string, value: unknown): void {
+  const json = JSON.stringify(value);
+  db.insert(schema.settings)
+    .values({ key, value: json })
+    .onConflictDoUpdate({ target: schema.settings.key, set: { value: json } })
+    .run();
+}

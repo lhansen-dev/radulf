@@ -46,12 +46,16 @@ history inline.
 | [08 — Hosting and auth](../specs/08-hosting-auth.md) | Internet exposure and single-password auth | Current — see also the [Authentication guide](AUTHENTICATION.md) |
 | [09 — Multi-harness runners](../specs/09-multi-harness.md) | A loop harness per provider | **Superseded by 13** |
 | [10 — Mobile-first workspace](../specs/10-mobile-first-ui.md) | The attention-ordered Work feed and responsive layout | Current; amends 05 |
-| [11 — Loop performance](../specs/11-loop-performance.md) | Loop latency, token and turn telemetry, lean harnesses, benchmarks | Current; amends 09 |
+| [11 — Loop performance](../specs/11-loop-performance.md) | Loop latency, token and turn telemetry, lean harnesses, benchmarks | Current; amends 09, amended by 18 |
 | [12 — Pi harness](../specs/12-pi-harness.md) | pi as a fourth harness, and the proxied-provider default | **Superseded by 13** |
 | [13 — One harness: pi in SDK mode](../specs/13-single-pi-sdk-harness.md) | Consolidating every provider onto pi in SDK mode | Current — this is what ships |
 | [13 — Implementation checklist](../specs/13-implementation-checklist.md) | The checklist that tracked the migration to 13 | Completed |
-| [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current — see also the [Sandboxing guide](SANDBOXING.md) |
+| [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current; amended by 19. See also the [Sandboxing guide](SANDBOXING.md) |
 | [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | Current; amends decision 6 |
+| [17 — Task scoping](../specs/17-task-scoping.md) | A repo-aware scoping thread on every card, closing the planner's questions loop | Current; extends 04, adds a fourth role to decision 3, replaces 10's planner chat. Split proposals and scoping-authored plans not yet built |
+| [18 — Loop failure modes](../specs/18-loop-failure-modes.md) | What the loop knows when an iteration ends badly, and what it does with it | Current; amends 11 |
+| [19: Radulf's own refs](../specs/19-shared-git-ref-noise.md) | Why a sibling card's branch is not tampering, and what the run-end integrity check still compares | Current; amends 14 |
+| [20: More than one card at a time](../specs/20-concurrent-cards.md) | The per-repo concurrency cap, and telling the integrity check about the merges Radulf itself performs | Current; amends locked decision 5, completes 19 |
 
 ## Implementation plans
 
@@ -68,7 +72,8 @@ What they built is documented in [Sandboxing](SANDBOXING.md) and
 
 A handful of decisions were made at the outset and are treated as fixed unless
 explicitly revisited: the task domain (coding tasks against local Git repos),
-the stack, one ticket in the pipeline at a time, in-app diff review, and — the
+the stack, a metered pipeline (one card at a time until you raise it, and
+always one on a local model), in-app diff review, and — the
 one that matters most — **merging always requires human approval**. No version
 of Radulf merges on its own without an explicit opt-in design.
 

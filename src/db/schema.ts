@@ -110,6 +110,41 @@ export const plans = sqliteTable("plans", {
   createdAt: text("created_at").notNull(),
 }, (table) => [index("plans_card_version_idx").on(table.cardId, table.version)]);
 
+/**
+ * Spec 17: a card's scoping thread — the operator, the scoping assistant, the
+ * planner's own blocking questions, and any blocker the loop reported, in
+ * order. Part of the card rather than of a run: the planner receives it as
+ * context, and it is the durable record of why the card is shaped the way it
+ * is.
+ */
+export type ScopingRole = "user" | "assistant" | "planner" | "loop";
+
+export const scopingMessages = sqliteTable(
+  "scoping_messages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    cardId: text("card_id")
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    role: text("role").$type<ScopingRole>().notNull(),
+    content: text("content").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("scoping_messages_card_id_idx").on(table.cardId, table.id)],
+);
+
+/**
+ * Why a run's provider call failed, when the error said anything about it.
+ * Null when the failure says nothing about the provider — an unparseable
+ * plan or a failing test is not the provider's doing.
+ *
+ * "conn" is a provider that is down or rejecting our credentials, "limit" an
+ * allowance that is spent, and "config" (spec 18 §3) a request the provider
+ * rejected as malformed or unsupported. The first two clear on their own and
+ * are worth retrying; the third never does.
+ */
+export type FailureKind = "conn" | "limit" | "config";
+
 export type RunStatus =
   | "running"
   | "completed"
@@ -134,6 +169,11 @@ export const runs = sqliteTable("runs", {
   baseBranch: text("base_branch"),
   iterationsDone: integer("iterations_done").notNull().default(0),
   exitReason: text("exit_reason"),
+  // Spec 18 §3: what the exit reason says about the provider, classified once
+  // when the run ends so nothing has to re-read the message to decide whether
+  // a retry could possibly help. Null on success and on failures that say
+  // nothing about the provider.
+  failureKind: text("failure_kind").$type<FailureKind>(),
   // An evaluate run's feedback on a `revise` verdict — what the planner
   // re-plans from (see planningService's `pendingReplanFeedback`).
   feedback: text("feedback"),
