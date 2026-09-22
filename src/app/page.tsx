@@ -103,6 +103,17 @@ export default function WorkPage() {
   const [showNew, setShowNew] = useState(false);
   const [showImprovementRun, setShowImprovementRun] = useState(false);
   const [notice, setNotice] = useState("");
+  const restartPoll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const restartTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // restartServer's health poll and give-up timeout outlive the click handler;
+  // without this, navigating away mid-restart leaves them running and
+  // location.reload() fires on whatever page the operator has since moved to.
+  useEffect(() => {
+    return () => {
+      if (restartPoll.current) clearInterval(restartPoll.current);
+      if (restartTimeout.current) clearTimeout(restartTimeout.current);
+    };
+  }, []);
   // Row details such as "3m elapsed" read Date.now() at render, so a tick here
   // is what keeps them current; the card list itself does not change.
   useNow(true, 30_000);
@@ -269,16 +280,20 @@ export default function WorkPage() {
     if (!confirm(`Restart the server?${inProgress ? ` ${inProgress} active task${inProgress === 1 ? "" : "s"} will return to the backlog.` : ""}`)) return;
     setRestarting(true);
     await api("/api/restart", { method: "POST" }).catch(() => {});
-    const poll = setInterval(async () => {
+    restartPoll.current = setInterval(async () => {
       try {
         const health = await api<{ ok?: boolean; restartRequired?: boolean }>("/api/health");
         if (health.ok && !health.restartRequired) {
-          clearInterval(poll);
+          if (restartPoll.current) clearInterval(restartPoll.current);
           location.reload();
         }
       } catch {}
     }, 1000);
-    setTimeout(() => { clearInterval(poll); setRestarting(false); setError("Server did not return after restart."); }, 60_000);
+    restartTimeout.current = setTimeout(() => {
+      if (restartPoll.current) clearInterval(restartPoll.current);
+      setRestarting(false);
+      setError("Server did not return after restart.");
+    }, 60_000);
   }
 
   const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction };
