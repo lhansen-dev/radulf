@@ -39,7 +39,7 @@ import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
-import { limitCooldownMs } from "./providerRateLimit";
+import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { getCard, requireCard } from "./cards";
@@ -1242,16 +1242,7 @@ export class Orchestrator {
           // A limit error means the allowance is gone, not that this
           // iteration was unlucky. Stop the run on the first one rather than
           // spending the remaining failure budget re-hitting the same wall.
-          const failureKind = classifyProviderError(result.error);
-          // A "config" failure says nothing about the provider's health — it
-          // is serving fine and rejecting this request (spec 18 §3), so it
-          // must not count towards the breaker.
-          if (failureKind && failureKind !== "config") {
-            recordProviderOutcome(provider, false, {
-              kind: failureKind,
-              retryAfterMs: failureKind === "limit" ? limitCooldownMs(provider, result.error) : null,
-            });
-          }
+          const failureKind = recordProviderFailure(provider, result.error);
           const isConnErr = failureKind === "conn";
           const isLimitErr = failureKind === "limit";
           // A rejected request is rejected the same way every time. Spending

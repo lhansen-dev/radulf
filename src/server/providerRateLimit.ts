@@ -2,7 +2,12 @@ import { eq } from "drizzle-orm";
 import { db, settings } from "@/db";
 import type { ProviderId } from "./providers";
 import { parseRateLimitHeaders, type ProviderRateLimit } from "./harness/rateLimit";
-import { parseLimitRetryAfterMs } from "./circuitBreaker";
+import {
+  classifyProviderError,
+  parseLimitRetryAfterMs,
+  recordProviderOutcome,
+  type FailureKind,
+} from "./circuitBreaker";
 
 /**
  * Latest rate-limit reading per provider, in the same settings KV table the
@@ -84,4 +89,24 @@ export function limitCooldownMs(
   nowMs = Date.now(),
 ): number | null {
   return rateLimitCooldownMs(provider, nowMs) ?? parseLimitRetryAfterMs(error, nowMs);
+}
+
+/**
+ * Record a run's harness error against `provider`'s breaker, and say what
+ * kind of failure it was (null when it says nothing about the provider).
+ *
+ * A "config" failure is classified but never recorded: the provider is
+ * serving fine and rejecting this request (spec 18 §3), so it must not count
+ * towards the breaker. A limit failure carries the cooldown `limitCooldownMs`
+ * names. Lives here rather than in circuitBreaker.ts because this module
+ * already imports that one; the reverse import would be a cycle.
+ */
+export function recordProviderFailure(provider: ProviderId, error: string): FailureKind | null {
+  const kind = classifyProviderError(error);
+  if (kind === null || kind === "config") return kind;
+  recordProviderOutcome(provider, false, {
+    kind,
+    retryAfterMs: kind === "limit" ? limitCooldownMs(provider, error) : null,
+  });
+  return kind;
 }
