@@ -68,9 +68,28 @@ describe("ImprovementRunDialog", () => {
     });
   });
 
+  // The enabled case alone proves nothing here: the dialog opens with a valid
+  // budget ("30") and auto-selects a base branch, so every term of
+  // `busy || !repoId || !baseBranch || !budgetValid` is already false before
+  // the assertion runs. Deleting the whole `disabled` prop would leave that
+  // passing. Drive the budget to each value that should disable it instead.
   it("disables Start run until a positive budget and base branch are set", async () => {
+    const user = userEvent.setup();
     render(<ImprovementRunDialog repos={[repo]} onClose={() => {}} onCreated={() => {}} />);
     await waitFor(() => expect((screen.getByLabelText("Base branch") as HTMLSelectElement).value).toBe("main"));
-    expect((screen.getByText("Start run") as HTMLButtonElement).disabled).toBe(false);
+    const startRun = () => screen.getByText("Start run") as HTMLButtonElement;
+    const budget = screen.getByLabelText("Time budget") as HTMLInputElement;
+
+    expect(startRun().disabled).toBe(false);
+
+    await user.clear(budget);
+    expect(startRun().disabled).toBe(true);
+
+    await user.type(budget, "0");
+    expect(startRun().disabled).toBe(true);
+
+    await user.clear(budget);
+    await user.type(budget, "45");
+    expect(startRun().disabled).toBe(false);
   });
 });
