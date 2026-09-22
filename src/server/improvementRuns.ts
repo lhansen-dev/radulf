@@ -39,11 +39,18 @@ export type CreateImprovementRunInput = {
   timeoutMinutes?: number | null;
 };
 
-// A card reaches one of these three statuses and never leaves it without a
-// human (or another explicit start) acting on it — the driver's signal that
-// its in-flight task is over (decision 3).
+// A card reaches one of these statuses and never leaves it without a human
+// (or another explicit start) acting on it — the driver's signal that its
+// in-flight task is over (decision 3). Cancelling is a human acting on it
+// too: cancelCard parks the card in "backlog", which auto-mode's pump()
+// never claims back out from under the driver.
 function isTerminalCardStatus(status: CardStatus): boolean {
-  return status === "done" || status === "needs_attention" || status === "abandoned";
+  return (
+    status === "done" ||
+    status === "needs_attention" ||
+    status === "abandoned" ||
+    status === "backlog"
+  );
 }
 
 // Repeated dry proposer passes (nothing left worth proposing, or a flaky
@@ -96,16 +103,17 @@ function stopRequests(): Set<string> {
 }
 
 /**
- * Block until `cardId` reaches a terminal status (N2). Resolves on whichever
- * fires first: a `bus` event naming this card whose current DB status is
- * already terminal, or a periodic poll (belt-and-braces — the in-process bus
- * is the primary signal, matching the pattern the SSE stream itself relies
- * on).
+ * Block until `cardId` reaches a terminal status (N2) or is deleted out from
+ * under the driver. Resolves on whichever fires first: a `bus` event naming
+ * this card whose current DB status is already terminal, or a periodic poll
+ * (belt-and-braces — the in-process bus is the primary signal, matching the
+ * pattern the SSE stream itself relies on). Resolves `null` for a deleted
+ * card — it has no status to report, and null is never "done".
  */
-export function awaitCardTerminal(cardId: string, pollMs = 2_000): Promise<CardStatus> {
+export function awaitCardTerminal(cardId: string, pollMs = 2_000): Promise<CardStatus | null> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (status: CardStatus) => {
+    const finish = (status: CardStatus | null) => {
       if (settled) return;
       settled = true;
       bus.off("event", onEvent);
@@ -115,7 +123,11 @@ export function awaitCardTerminal(cardId: string, pollMs = 2_000): Promise<CardS
     const check = () => {
       if (settled) return;
       const card = getCard(cardId);
-      if (card && isTerminalCardStatus(card.status)) finish(card.status);
+      if (!card) {
+        finish(null);
+        return;
+      }
+      if (isTerminalCardStatus(card.status)) finish(card.status);
     };
     const onEvent = (row: RalphEvent) => {
       if (row.cardId === cardId) check();
