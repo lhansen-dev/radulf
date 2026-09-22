@@ -82,7 +82,7 @@ export type LoopCohort = {
   durationP90Ms: number;
 };
 
-export const MIN_COHORT_SIZE = 10;
+const MIN_COHORT_SIZE = 10;
 /** The flat "this is taking a while" mark. Still the comparison point for the
  * cross-run KPIs below, which have no single run's budget to scale to, and
  * since spec 18 §10 also the floor under the orchestrator's per-iteration

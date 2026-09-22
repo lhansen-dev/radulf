@@ -142,7 +142,7 @@ export async function assertBranchExists(repoPath: string, name: string, label: 
   }
 }
 
-export function slugify(s: string): string {
+function slugify(s: string): string {
   return (
     s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "card"
   );
@@ -359,7 +359,7 @@ export async function mergeBaseIntoWorktree(
 
 /** The remote a card's branch is pushed to. Not configurable — a repo with a
  * differently-named remote is out of scope rather than silently guessed at. */
-export const PR_REMOTE = "origin";
+const PR_REMOTE = "origin";
 
 /** Does this repo have an `origin` to push to? Most registered repos are
  * local-only, so PR delivery is offered per repo, not globally. */

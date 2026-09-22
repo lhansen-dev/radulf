@@ -161,7 +161,7 @@ export function doneFilePath(ralphDir: string): string | null {
 }
 
 /** Return the path to `.ralph/ITERATION_DONE` within `ralphDir`. */
-export function iterationDonePath(ralphDir: string): string {
+function iterationDonePath(ralphDir: string): string {
   return path.join(/* turbopackIgnore: true */ ralphDir, "ITERATION_DONE");
 }
 

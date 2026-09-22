@@ -10,7 +10,7 @@ import { errorMessage } from "@/shared/errorMessage";
  * or a shell would read as an option. */
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-export const INITIAL_BRANCH = "main";
+const INITIAL_BRANCH = "main";
 
 /**
  * Create a fresh repository at `<parentPath>/<name>`: `git init` on `main`, a

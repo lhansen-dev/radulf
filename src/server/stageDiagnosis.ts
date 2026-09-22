@@ -43,7 +43,7 @@ function saysNothingAboutTheModel(run: DiagnosisRun): boolean {
 
 /** How many attempts in a row, on one provider and model, before the pattern
  * is worth naming. Two is a coincidence; three is a configuration. */
-export const MISCONFIGURED_STREAK = 3;
+const MISCONFIGURED_STREAK = 3;
 
 /** A run that ended badly on its own terms. A cancel is the operator's doing
  * and a restart is the process's, so neither says anything about the model. */

@@ -16,12 +16,12 @@ const execFileAsync = promisify(execFile);
  */
 
 /** Fail the run when its private dirs grow past this (bytes). */
-export const DEFAULT_MAX_RUN_BYTES = 16 * 1024 * 1024 * 1024; // 16 GiB
+const DEFAULT_MAX_RUN_BYTES = 16 * 1024 * 1024 * 1024; // 16 GiB
 /** Fail the run when the volume's free space drops below this (bytes). */
-export const DEFAULT_MIN_FREE_BYTES = 4 * 1024 * 1024 * 1024; // 4 GiB
-export const DEFAULT_SAMPLE_INTERVAL_MS = 5_000;
+const DEFAULT_MIN_FREE_BYTES = 4 * 1024 * 1024 * 1024; // 4 GiB
+const DEFAULT_SAMPLE_INTERVAL_MS = 5_000;
 /** Dead weight deleted on disk pressure so the machine stays usable. */
-export const BALLAST_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
+const BALLAST_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 /** Sum of `du` for every existing path, in bytes. */
 export async function sampleUsageBytes(paths: string[]): Promise<number> {
@@ -38,7 +38,7 @@ export async function sampleUsageBytes(paths: string[]): Promise<number> {
   }
 }
 
-export async function freeBytes(onPath: string): Promise<number | null> {
+async function freeBytes(onPath: string): Promise<number | null> {
   try {
     const s = await fs.promises.statfs(onPath);
     return Number(s.bavail) * Number(s.bsize);
@@ -72,7 +72,7 @@ export async function ensureBallast(
   }
 }
 
-export function releaseBallast(ballastPath: string): void {
+function releaseBallast(ballastPath: string): void {
   fs.rmSync(ballastPath, { force: true });
 }
 

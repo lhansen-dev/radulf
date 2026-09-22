@@ -35,7 +35,7 @@ export function parseJiraIssueRef(input: string): string | null {
   return segment ? segment.toUpperCase() : null;
 }
 
-export function jiraConfigured(s: JiraSettings): boolean {
+function jiraConfigured(s: JiraSettings): boolean {
   return Boolean(s.jiraBaseUrl.trim() && s.jiraEmail.trim() && s.jiraApiToken);
 }
 

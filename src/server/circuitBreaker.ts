@@ -31,7 +31,7 @@ export const LIMIT_ERROR_PATTERN =
  * Checked last, so a 401 or a 429 whose body happens to mention the model
  * keeps its more specific reading.
  */
-export const CONFIG_ERROR_PATTERN =
+const CONFIG_ERROR_PATTERN =
   /\b400\b|invalid[_ ]request|model[_ ]not[_ ]found|unsupported|(?:does not|doesn't) support|unknown model|no such model|or newer is required/i;
 
 /** Why a run's provider call failed. Re-exported from the schema, which owns

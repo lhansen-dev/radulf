@@ -13,7 +13,7 @@ import path from "node:path";
  * real enforcement under load is verification checklist #9.
  */
 
-export const CGROUP_ROOT = "/sys/fs/cgroup";
+const CGROUP_ROOT = "/sys/fs/cgroup";
 
 export type CgroupPlan = {
   dir: string;

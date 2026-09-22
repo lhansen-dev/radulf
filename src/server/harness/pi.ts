@@ -244,7 +244,7 @@ const OPENROUTER_COMPLETIONS_BASE_URL = "https://openrouter.ai/api/v1";
  * with OpenRouter's HTML 404 page. Re-shape those entries to match pi 0.84's
  * bundled catalog for the same models. Remove this once pi is upgraded.
  */
-export function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
+function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
   m: M,
 ): M {
   if (m.api !== "anthropic-messages") return m;

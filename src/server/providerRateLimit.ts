@@ -19,7 +19,7 @@ function key(provider: ProviderId): string {
   return `rateLimit:${provider}`;
 }
 
-export function recordProviderRateLimit(reading: ProviderRateLimit): void {
+function recordProviderRateLimit(reading: ProviderRateLimit): void {
   upsertSettingJson(key(reading.provider), reading);
 }
 

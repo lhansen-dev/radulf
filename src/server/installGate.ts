@@ -28,7 +28,7 @@ const execFileAsync = promisify(execFile);
  * allowlist and replaces the enumeration step below.
  */
 
-export const LIFECYCLE_EVENTS = ["preinstall", "install", "postinstall", "prepare"] as const;
+const LIFECYCLE_EVENTS = ["preinstall", "install", "postinstall", "prepare"] as const;
 
 export type LifecycleScriptPackage = {
   name: string;

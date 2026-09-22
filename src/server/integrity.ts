@@ -175,7 +175,7 @@ function baselineDir(): string {
   return path.join(DATA_DIR, "integrity");
 }
 
-export function baselinePath(runId: string): string {
+function baselinePath(runId: string): string {
   return path.join(baselineDir(), `${runId}.json`);
 }
 

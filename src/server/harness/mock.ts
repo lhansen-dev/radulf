@@ -19,7 +19,7 @@ import type { ProviderModel } from "../providers";
  * sessions can't interfere.
  */
 
-export function mockProviderEnabled(): boolean {
+function mockProviderEnabled(): boolean {
   return process.env.RADULF_MOCK_LLM === "1";
 }
 
