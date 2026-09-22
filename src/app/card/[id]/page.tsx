@@ -17,6 +17,7 @@ import { transcriptPushDecision } from "./transcriptPushDecision";
 import { isRenderableLine } from "./renderableLine";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { parsePayload } from "@/shared/eventPayload";
 import { errorMessage } from "@/shared/errorMessage";
 
 const TABS = ["Task", "Activity"] as const;
@@ -96,7 +97,7 @@ export default function CardDetail() {
   if (card.status === "needs_attention") {
     const latest = detail.events.filter((e) => e.type === "stage.misconfigured").at(-1);
     if (latest) {
-      try { misconfiguredStage = JSON.parse(latest.payload).message ?? ""; } catch {}
+      misconfiguredStage = (parsePayload(latest.payload) as { message?: string }).message ?? "";
     }
   }
   const latestPlanRun = runs.find((r) => r.kind === "plan");
@@ -111,7 +112,7 @@ export default function CardDetail() {
   const questionsEvent = latestPlanRun && detail.events.find((e) => e.type === "plan.questions" && e.runId === latestPlanRun.id);
   let plannerQuestions = "";
   if (card.status === "needs_attention" && questionsEvent) {
-    try { plannerQuestions = JSON.parse(questionsEvent.payload).questions ?? ""; } catch {}
+    plannerQuestions = (parsePayload(questionsEvent.payload) as { questions?: string }).questions ?? "";
   }
   // Spec 17: the questions live in the scoping thread, where they are
   // answered. Cards parked before that existed still show them here.
@@ -140,7 +141,7 @@ export default function CardDetail() {
       (e) => e.type === "install.gate" && e.runId === latestLoopRun.id,
     );
     if (gateEvent) {
-      try { gatePackages = JSON.parse(gateEvent.payload).packages ?? []; } catch {}
+      gatePackages = (parsePayload(gateEvent.payload) as { packages?: GatePackage[] }).packages ?? [];
     }
   }
 

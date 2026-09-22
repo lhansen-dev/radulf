@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { refreshTargetsForEvent } from "./eventRefresh";
 import { ATTENTION_STATUSES } from "@/shared/cardStatus";
+import { parsePayload } from "@/shared/eventPayload";
 import { notificationsAvailable, playAlertSound, showCardNotification } from "./notify";
 
 export type ImprovementRunAlert = {
@@ -111,32 +112,28 @@ export function useWorkData() {
   const wasDisconnected = useRef(false);
   useEventStream((event) => {
     if (event.type === "improvement.completed") {
-      try {
-        const payload = JSON.parse(event.payload ?? "{}") as {
-          featureBranch?: string;
-          tasksSucceeded?: number;
-          status?: ImprovementRun["status"];
+      const payload = parsePayload(event.payload) as {
+        featureBranch?: string;
+        tasksSucceeded?: number;
+        status?: ImprovementRun["status"];
+      };
+      if (payload.featureBranch && payload.status) {
+        const alert: ImprovementRunAlert = {
+          featureBranch: payload.featureBranch,
+          tasksSucceeded: payload.tasksSucceeded ?? 0,
+          status: payload.status,
         };
-        if (payload.featureBranch && payload.status) {
-          const alert: ImprovementRunAlert = {
-            featureBranch: payload.featureBranch,
-            tasksSucceeded: payload.tasksSucceeded ?? 0,
-            status: payload.status,
-          };
-          const title =
-            alert.status === "failed" ? "Improvement run failed" :
-            alert.status === "stopped" ? "Improvement run stopped" :
-            "Improvement run finished";
-          const body = `${alert.tasksSucceeded} task${alert.tasksSucceeded === 1 ? "" : "s"} landed on ${alert.featureBranch}`;
-          if (notifyPrefs.current.notifications && notificationsAvailable()) {
-            showCardNotification(title, body);
-          } else {
-            setImprovementAlert(alert);
-          }
-          if (notifyPrefs.current.sound) playAlertSound();
+        const title =
+          alert.status === "failed" ? "Improvement run failed" :
+          alert.status === "stopped" ? "Improvement run stopped" :
+          "Improvement run finished";
+        const body = `${alert.tasksSucceeded} task${alert.tasksSucceeded === 1 ? "" : "s"} landed on ${alert.featureBranch}`;
+        if (notifyPrefs.current.notifications && notificationsAvailable()) {
+          showCardNotification(title, body);
+        } else {
+          setImprovementAlert(alert);
         }
-      } catch {
-        // ignore malformed payload
+        if (notifyPrefs.current.sound) playAlertSound();
       }
     }
     const targets = refreshTargetsForEvent(event.type);
