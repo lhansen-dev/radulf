@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { List, useDynamicRowHeight, useListRef, type RowComponentProps } from "react-window";
 import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
+import { DetailsMenu } from "../../ui/detailsMenu";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
@@ -209,14 +210,11 @@ export default function CardDetail() {
         {headerActions.filter((a) => a.show).map((a) => (
           <ActionButton key={a.label} primary={a.primary} onClick={a.run}>{a.label}</ActionButton>
         ))}
-        <details className="relative">
-          <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" aria-label="More task actions">•••</summary>
-          <div className="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl">
-            {menuActions.filter((m) => m.when.includes(card.status)).map((m) => (
-              <MenuButton key={m.label} danger={m.danger} onClick={m.run}>{m.label}</MenuButton>
-            ))}
-          </div>
-        </details>
+        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="More task actions" summary="•••">
+          {menuActions.filter((m) => m.when.includes(card.status)).map((m) => (
+            <MenuButton key={m.label} danger={m.danger} onClick={m.run}>{m.label}</MenuButton>
+          ))}
+        </DetailsMenu>
         </div>
       </section>
       {showEdit && (

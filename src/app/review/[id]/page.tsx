@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "../../ui/api";
+import { DetailsMenu } from "../../ui/detailsMenu";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
@@ -127,13 +128,10 @@ export default function ReviewPage() {
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>
-        <details className="relative">
-          <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" aria-label="Review options">•••</summary>
-          <div className="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl">
-            <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-            <button disabled={busy} onClick={() => confirm("Abandon this task? Its worktree and branch will be deleted.") && api(`/api/cards/${id}/abandon`, { json: {} }).then(() => router.push("/"))} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
-          </div>
-        </details>
+        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
+          <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
+          <button disabled={busy} onClick={() => confirm("Abandon this task? Its worktree and branch will be deleted.") && api(`/api/cards/${id}/abandon`, { json: {} }).then(() => router.push("/"))} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
+        </DetailsMenu>
       </header>
 
       {diff?.done && <DoneSummaryView done={diff.done} />}
