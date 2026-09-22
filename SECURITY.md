@@ -81,6 +81,12 @@ no server-side session store, so the kill switch for a leaked cookie is rotating
 that secret: delete `data/auth-secret` and restart — every outstanding session
 becomes invalid at once.
 
+`data/auth-secret` and `data/radulf.db` are written `0600`, and an install that
+predates that is tightened in place at boot. Both files were previously created
+at whatever the umask allowed, which on a stock host is `0644`: the
+session-signing key and every provider key and transcript, readable by every
+other account on the machine.
+
 ## Supported versions
 
 Radulf is pre-1.0 and under active development. Only the latest `main` is
