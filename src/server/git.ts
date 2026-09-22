@@ -320,21 +320,28 @@ export async function withRepoMergeLock<T>(repoPath: string, fn: () => Promise<T
 
 /** Merge the ralph branch into the repo's base branch. Always restores the
  * checkout the user's repo was on before the merge — merging must never
- * leave their working copy switched to the base branch. */
+ * leave their working copy switched to the base branch.
+ *
+ * `onCommitted`, if given, fires the instant the merge commit's oid is known
+ * — see `mergeBranchLocked` for why it exists and what it does not cover. */
 export async function mergeBranch(
   repoPath: string,
   baseBranch: string,
   branch: string,
-  message: string
+  message: string,
+  onCommitted?: (mergeCommit: string) => void
 ): Promise<{ ok: boolean; mergeCommit?: string; error?: string; conflict?: boolean }> {
-  return withRepoMergeLock(repoPath, () => mergeBranchLocked(repoPath, baseBranch, branch, message));
+  return withRepoMergeLock(repoPath, () =>
+    mergeBranchLocked(repoPath, baseBranch, branch, message, onCommitted)
+  );
 }
 
 async function mergeBranchLocked(
   repoPath: string,
   baseBranch: string,
   branch: string,
-  message: string
+  message: string,
+  onCommitted?: (mergeCommit: string) => void
 ): Promise<{ ok: boolean; mergeCommit?: string; error?: string; conflict?: boolean }> {
   const original = await git(repoPath, "rev-parse", "--abbrev-ref", "HEAD");
   const restore = async () => {
@@ -373,6 +380,16 @@ async function mergeBranchLocked(
     return { ok: false, error: `merge commit failed: ${commit.out}` };
   }
   const mergeCommit = await git(repoPath, "rev-parse", "HEAD");
+  // Fire before `restore()`'s checkout, not after: the base ref already moved
+  // at the `commit` above, and `restore()` can be a slow checkout on a large
+  // repo. Every tick it takes is a tick where another card's stale baseline
+  // still thinks the old oid is current (spec 20's noteRadulfRefWrite). This
+  // narrows that window, it does not close it — the ref moved back at
+  // `commit`, before we could have read its new oid here, and that sliver is
+  // unavoidable without inspecting the ref inside the same git process that
+  // wrote it. git.ts stays free of integrity.ts; the caller supplies what to
+  // do with the oid.
+  onCommitted?.(mergeCommit);
   await restore();
   return { ok: true, mergeCommit };
 }

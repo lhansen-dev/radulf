@@ -341,3 +341,92 @@ describe("mergeBranch concurrency (spec 20: different cards, same repo)", () => 
     }).trim()).toBe(defaultBranch);
   });
 });
+
+describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window)", () => {
+  let tmpDir: string;
+  let defaultBranch: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-callback-"));
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@test.com");
+    git(tmpDir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "initial");
+    defaultBranch = execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    git(tmpDir, "checkout", "-b", "ralph/card-c");
+    fs.writeFileSync(path.join(tmpDir, "c.txt"), "c\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "card c change");
+
+    // Leave the repo's checkout on a third branch — not the base, not the run
+    // branch — so mergeBranch's restore() has somewhere real to return to,
+    // and "still on the base branch" at callback time is a meaningful check.
+    git(tmpDir, "checkout", "-b", "operator-branch", defaultBranch);
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const headBranch = () =>
+    execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+  it("fires after the commit but before the post-merge checkout restore", async () => {
+    let branchAtCallback: string | undefined;
+
+    const result = await mergeBranch(
+      tmpDir,
+      defaultBranch,
+      "ralph/card-c",
+      "ralph: merge card c",
+      () => {
+        branchAtCallback = headBranch();
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    // mergeBranchLocked commits, then calls onCommitted, then restores the
+    // operator's original checkout — at callback time HEAD is still on the
+    // base branch, not yet moved back to operator-branch.
+    expect(branchAtCallback).toBe(defaultBranch);
+    // By the time mergeBranch resolves, the checkout has been restored.
+    expect(headBranch()).toBe("operator-branch");
+  });
+
+  it("does not fire on a conflicted merge", async () => {
+    git(tmpDir, "checkout", "-b", "ralph/card-conflict", defaultBranch);
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "conflicting change\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "conflicting change");
+    git(tmpDir, "checkout", "operator-branch");
+
+    // Diverge the base branch on the same file so the merge conflicts.
+    git(tmpDir, "checkout", defaultBranch);
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base changed differently\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "diverge base");
+    git(tmpDir, "checkout", "operator-branch");
+
+    let called = false;
+    const result = await mergeBranch(
+      tmpDir,
+      defaultBranch,
+      "ralph/card-conflict",
+      "ralph: merge conflicting card",
+      () => {
+        called = true;
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe(true);
+    expect(called).toBe(false);
+  });
+});
