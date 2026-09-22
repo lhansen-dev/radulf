@@ -238,7 +238,7 @@ export class EvaluationService {
       }
 
       const priorRevisions = db
-        .select()
+        .select({ id: runs.id })
         .from(runs)
         .where(and(eq(runs.cardId, cardId), eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")))
         .all().length;

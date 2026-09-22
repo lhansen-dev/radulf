@@ -190,7 +190,8 @@ export class PlanningService {
 
     const controller = new AbortController();
     deps.registerController(runId, controller);
-    const fail = (status: FinishStatus, exitReason: string, moveReason = exitReason, telemetry?: RunTelemetry) => {
+    let telemetry: RunTelemetry | undefined;
+    const fail = (exitReason: string, moveReason = exitReason, status: FinishStatus = "failed") => {
       deps.finishRun(runId, status, exitReason, telemetry);
       deps.moveCard(cardId, "planning", "needs_attention", moveReason);
     };
@@ -206,7 +207,7 @@ export class PlanningService {
     const replanFeedback = pendingReplanFeedback(cardId);
     try {
       const breaker = circuitOpenReason(provider);
-      if (breaker) return fail("failed", breaker);
+      if (breaker) return fail(breaker);
 
       const result = await runWithTranscript({
         runId,
@@ -229,9 +230,9 @@ export class PlanningService {
       });
       if (controller.signal.aborted) return; // cancelCard already finalized
 
-      const telemetry = runTelemetry(result);
+      telemetry = runTelemetry(result);
       const failure = harnessFailure(result, provider, "planner");
-      if (failure) return fail(failure.status, failure.exitReason, failure.moveReason, telemetry);
+      if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
 
       // The planner's follow-up questions escape hatch.
       const questions = readRalphFile(worktreePath, "QUESTIONS.md");
@@ -251,11 +252,11 @@ export class PlanningService {
         RALPH_FILES.map((f) => [f, readRalphFile(worktreePath, f)]),
       ) as Record<(typeof RALPH_FILES)[number], string>;
       if (RALPH_FILES.some((f) => !contents[f])) {
-        return fail("failed", "planner produced malformed artifacts", undefined, telemetry);
+        return fail("planner produced malformed artifacts");
       }
       // There is no fallback prompt, so an unparseable plan cannot run.
       if (!firstUnchecked(contents["PLAN.md"])) {
-        return fail("failed", "plan checklist unparseable or has no unchecked tasks", undefined, telemetry);
+        return fail("plan checklist unparseable or has no unchecked tasks");
       }
 
       const version = (prevPlan?.version ?? 0) + 1;
