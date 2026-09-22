@@ -1,8 +1,12 @@
-import { eq } from "drizzle-orm";
-import { db, settings } from "@/db";
+import { readSettingJson, upsertSettingJson } from "@/db";
 import type { ProviderId } from "./providers";
 import { parseRateLimitHeaders, type ProviderRateLimit } from "./harness/rateLimit";
-import { parseLimitRetryAfterMs } from "./circuitBreaker";
+import {
+  classifyProviderError,
+  parseLimitRetryAfterMs,
+  recordProviderOutcome,
+  type FailureKind,
+} from "./circuitBreaker";
 
 /**
  * Latest rate-limit reading per provider, in the same settings KV table the
@@ -15,24 +19,14 @@ function key(provider: ProviderId): string {
   return `rateLimit:${provider}`;
 }
 
-export function recordProviderRateLimit(reading: ProviderRateLimit): void {
-  const value = JSON.stringify(reading);
-  db.insert(settings)
-    .values({ key: key(reading.provider), value })
-    .onConflictDoUpdate({ target: settings.key, set: { value } })
-    .run();
+function recordProviderRateLimit(reading: ProviderRateLimit): void {
+  upsertSettingJson(key(reading.provider), reading);
 }
 
 export function readProviderRateLimit(provider: ProviderId): ProviderRateLimit | null {
-  const row = db.select().from(settings).where(eq(settings.key, key(provider))).get();
-  if (!row) return null;
-  try {
-    const parsed = JSON.parse(row.value) as ProviderRateLimit;
-    // Trust the shape only as far as the two fields every consumer reads.
-    return parsed && typeof parsed.status === "string" ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parsed = readSettingJson(key(provider)) as ProviderRateLimit | null;
+  // Trust the shape only as far as the two fields every consumer reads.
+  return parsed && typeof parsed.status === "string" ? parsed : null;
 }
 
 /**
@@ -84,4 +78,24 @@ export function limitCooldownMs(
   nowMs = Date.now(),
 ): number | null {
   return rateLimitCooldownMs(provider, nowMs) ?? parseLimitRetryAfterMs(error, nowMs);
+}
+
+/**
+ * Record a run's harness error against `provider`'s breaker, and say what
+ * kind of failure it was (null when it says nothing about the provider).
+ *
+ * A "config" failure is classified but never recorded: the provider is
+ * serving fine and rejecting this request (spec 18 §3), so it must not count
+ * towards the breaker. A limit failure carries the cooldown `limitCooldownMs`
+ * names. Lives here rather than in circuitBreaker.ts because this module
+ * already imports that one; the reverse import would be a cycle.
+ */
+export function recordProviderFailure(provider: ProviderId, error: string): FailureKind | null {
+  const kind = classifyProviderError(error);
+  if (kind === null || kind === "config") return kind;
+  recordProviderOutcome(provider, false, {
+    kind,
+    retryAfterMs: kind === "limit" ? limitCooldownMs(provider, error) : null,
+  });
+  return kind;
 }

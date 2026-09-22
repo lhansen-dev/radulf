@@ -16,6 +16,8 @@ import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
+import { getRepo } from "./repos";
+import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
 import { checkRepoIntegrity, loadBaseline, noteRadulfRefWrite, removeBaseline } from "./integrity";
 import type { StageDependencies } from "./stage";
 
@@ -116,11 +118,6 @@ export class ReviewService {
     runId: string,
     approvedBy: ApprovedBy = "human",
   ): Promise<ReviewResult> {
-    const existing = this.reviewForRun(runId);
-    if (existing) {
-      if (existing.decision === "approved") return { ok: true };
-      throw new ClientError("run was already rejected");
-    }
     return this.approveClaimedRun(runId, "review", approvedBy);
   }
 
@@ -155,15 +152,11 @@ export class ReviewService {
       evaluation &&
       !(
         evaluation.status === "completed" &&
-        (evaluation.exitReason === "approve" ||
-          evaluation.exitReason === "revise — revision limit reached")
+        (EVALUATOR_CLEARED_EXITS as readonly string[]).includes(evaluation.exitReason ?? "")
       )
     ) {
       throw new ClientError("the evaluator has not cleared this loop run for merging");
     }
-    const existing = this.reviewForRun(run.id);
-    if (existing?.decision === "approved") return { ok: true };
-    if (existing) throw new ClientError("run was already rejected");
     // Always "human": retry is an operator clicking a button on a card that
     // has already failed once.
     return this.approveClaimedRun(run.id, "needs_attention", "human");
@@ -182,11 +175,10 @@ export class ReviewService {
       if (existing.decision === "rejected") return;
       throw new ClientError("run was already approved");
     }
+    // Checked before the claim, so failing it needs no restore.
+    const cardId = db.select({ cardId: runs.cardId }).from(runs).where(eq(runs.id, runId)).get()?.cardId;
+    if (cardId && !this.deps.latestPlan(cardId)) throw new ClientError("card has no plan");
     const { card } = this.claimReviewRun(runId, "review");
-    if (!this.deps.latestPlan(card.id)) {
-      this.deps.moveCard(card.id, "reviewing", "review", "review operation failed");
-      throw new ClientError("card has no plan");
-    }
 
     const reviewId = nanoid();
     try {
@@ -223,7 +215,7 @@ export class ReviewService {
       .limit(1)
       .get();
     if (active) throw new ClientError("cannot abandon a card with an active run; cancel it first");
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new ClientError("repo not found");
     if (!this.deps.moveCard(cardId, card.status, "abandoned")) {
       throw new ClientError("card status changed while it was being abandoned");
@@ -296,7 +288,7 @@ export class ReviewService {
     }
     const latest = this.latestLoopRun(card.id);
     if (latest?.id !== run.id) throw new ClientError("run is stale; review the card's current run");
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new ClientError("repo not found");
     if (!this.deps.moveCard(card.id, expectedStatus, "reviewing")) {
       throw new ClientError("review decision is already in progress");
@@ -309,7 +301,13 @@ export class ReviewService {
     expectedStatus: "review" | "needs_attention",
     approvedBy: ApprovedBy,
   ): Promise<ReviewResult> {
+    const existing = this.reviewForRun(runId);
+    if (existing) {
+      if (existing.decision === "approved") return { ok: true };
+      throw new ClientError("run was already rejected");
+    }
     const { run, card, repo } = this.claimReviewRun(runId, expectedStatus);
+    const baseBranch = run.baseBranch ?? repo.defaultBranch;
 
     // Spec 14: THE load-bearing integrity check — re-verify the parent repo's
     // hooks and config immediately before the trusted, unsandboxed merge,
@@ -335,19 +333,19 @@ export class ReviewService {
       (card.openPr || getSettings().openPr) &&
       !belongsToImprovementRun(card.repoId, run.baseBranch)
     ) {
-      return this.deliverPullRequest(card, run, repo, expectedStatus, approvedBy);
+      return this.deliverPullRequest(card, run, repo, baseBranch, expectedStatus, approvedBy);
     }
 
     const result = await this.restoreOnThrow(card.id, expectedStatus, () =>
       mergeBranch(
         repo.path,
-        run.baseBranch ?? repo.defaultBranch,
+        baseBranch,
         run.branch,
         `ralph: merge "${card.title}" (card ${card.id})`,
       ),
     );
     if (!result.ok) {
-      if (result.conflict && (await this.reloopForConflict(card, run, repo, result.error!))) {
+      if (result.conflict && (await this.reloopForConflict(card, run, baseBranch, result.error!))) {
         decided(card.id, runId, { mergeConflict: result.error, reloop: true });
         return { ok: false, error: `merge conflict — handed back to the loop to resolve: ${result.error}` };
       }
@@ -360,11 +358,7 @@ export class ReviewService {
     // this repo, or each one reports our own merge as tampering at its run-end
     // integrity check. The base branch is deliberately outside the managed
     // namespace (spec 19), so nothing else would excuse this.
-    noteRadulfRefWrite(
-      repo.path,
-      `refs/heads/${run.baseBranch ?? repo.defaultBranch}`,
-      result.mergeCommit!,
-    );
+    noteRadulfRefWrite(repo.path, `refs/heads/${baseBranch}`, result.mergeCommit!);
     await this.completeApproval(card, run, repo, { mergeCommit: result.mergeCommit }, result.mergeCommit);
     return { ok: true };
   }
@@ -394,11 +388,10 @@ export class ReviewService {
     card: Card,
     run: Run,
     repo: Repo,
+    baseBranch: string,
     expectedStatus: "review" | "needs_attention",
     approvedBy: ApprovedBy,
   ): Promise<ReviewResult> {
-    const baseBranch = run.baseBranch ?? repo.defaultBranch;
-
     /** A precondition the operator fixes outside Radulf and then retries.
      * The card goes back where it was rather than to needs_attention, so the
      * Approve button they just used is still there. */
@@ -427,7 +420,7 @@ export class ReviewService {
     const merged = await mergeBaseIntoWorktree(run.worktreePath, baseBranch);
     if (merged.conflicted) {
       const error = `merge conflict with ${baseBranch}: ${merged.out}`;
-      if (await this.reloopForConflict(card, run, repo, error, merged)) {
+      if (await this.reloopForConflict(card, run, baseBranch, error, merged)) {
         decided(card.id, run.id, { delivery: "pr", mergeConflict: error, reloop: true });
         return { ok: false, error: `merge conflict — handed back to the loop to resolve: ${merged.out}` };
       }
@@ -480,12 +473,11 @@ export class ReviewService {
   private async reloopForConflict(
     card: Card,
     run: Run,
-    repo: Repo,
+    baseBranch: string,
     error: string,
     alreadyMerged?: Awaited<ReturnType<typeof mergeBaseIntoWorktree>>,
   ): Promise<boolean> {
     if (!fs.existsSync(/* turbopackIgnore: true */ run.worktreePath)) return false;
-    const baseBranch = run.baseBranch ?? repo.defaultBranch;
     const merged =
       alreadyMerged ?? (await mergeBaseIntoWorktree(run.worktreePath, baseBranch));
     if (!merged.ok && !merged.conflicted) return false;

@@ -307,9 +307,11 @@ describe("CardDetail", () => {
 
     expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Edit model overrides" }));
-    const evaluatorSelect = (await screen.findByRole("option", { name: "Evaluator model: Haiku" }))
-      .parentElement as HTMLSelectElement;
-    fireEvent.change(evaluatorSelect, { target: { value: "haiku" } });
+    // The picker is the shared one from the task dialogs: a text input with a
+    // datalist of the provider's models, filled once the model list loads.
+    const evaluatorInput = await screen.findByLabelText("Evaluator model");
+    await screen.findAllByRole("button", { name: "Haiku" });
+    fireEvent.change(evaluatorInput, { target: { value: "haiku" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await vi.waitFor(() => expect(patches).toHaveLength(1));

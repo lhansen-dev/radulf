@@ -36,11 +36,11 @@ beforeEach(() => {
       }
       if (target === "/api/repos/init") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { parentPath: string; name: string };
-        return { id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", createdAt: "" };
+        return { id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
       }
       if (target.includes("/api/repos") && init?.method !== "GET") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { name: string; path: string };
-        return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", createdAt: "" };
+        return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
       }
       return { plannerProvider: "p", loopProvider: "l", evaluatorProvider: "e" };
     },
@@ -71,7 +71,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />,
@@ -109,7 +109,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -124,7 +124,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -141,7 +141,7 @@ describe("NewTaskDialog", () => {
     const onCreated = vi.fn();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={onCreated}
       />
@@ -156,7 +156,7 @@ describe("NewTaskDialog", () => {
 
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={onCreated}
       />
@@ -170,8 +170,8 @@ describe("NewTaskDialog", () => {
 
   it("defaults to the scoped repo when defaultRepoId is provided", async () => {
     cleanup();
-    const radulf = { id: "radulf", name: "radulf", path: "/r/radulf", defaultBranch: "main", createdAt: "" };
-    const doomClone = { id: "doom", name: "doom-clone", path: "/r/doom", defaultBranch: "main", createdAt: "" };
+    const radulf = { id: "radulf", name: "radulf", path: "/r/radulf", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+    const doomClone = { id: "doom", name: "doom-clone", path: "/r/doom", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
     render(
       <NewTaskDialog
         repos={[radulf, doomClone]}
@@ -203,7 +203,7 @@ describe("NewTaskDialog", () => {
       const user = userEvent.setup();
       render(
         <NewTaskDialog
-          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
           onClose={() => {}}
           onCreated={() => {}}
         />
@@ -249,7 +249,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -294,7 +294,7 @@ describe("NewTaskDialog", () => {
   // authenticated AND the selected repo has an `origin`. Each of the three
   // failures names a different next action, so each is asserted separately.
   describe("Open a pull request instead of merging", () => {
-    const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" };
+    const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
 
     function stubGithubStatus(status: Record<string, unknown>) {
       cleanup();
@@ -333,8 +333,8 @@ describe("NewTaskDialog", () => {
       ],
       [
         "the install, when gh is missing",
-        { ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed or not on PATH", hasRemote: true },
-        /not installed or not on PATH/,
+        { ok: false, reason: "missing", detail: "the GitHub CLI (`gh`) is not installed, not on PATH, or not executable", hasRemote: true },
+        /not installed, not on PATH, or not executable/,
       ],
     ])("is disabled, naming %s", async (_label, status, reason) => {
       stubGithubStatus(status);
@@ -372,7 +372,7 @@ describe("NewTaskDialog", () => {
       const user = userEvent.setup();
       render(
         <NewTaskDialog
-          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", createdAt: "" }]}
+          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
           onClose={() => {}}
           onCreated={() => {}}
         />

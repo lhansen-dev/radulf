@@ -10,10 +10,11 @@
  *
  * Module layout:
  *
- *   0. Plan state        (planStatePath)
+ *   0. Plan state        (planStatePath, readPlanState)
  *   1. Prompt helpers    (taskInjectionBlock, buildLoopPrompt)
  *   2. Message helpers   (deterministicCommitMessage)
- *   3. Signal I/O        (iterationDonePath, readIterationDone)
+ *   3. Signal I/O        (ralphDirPath, readFileIfExists, removeRalphFiles,
+ *                         iterationDonePath, readIterationDone, doneFilePath)
  *   4. Progress helpers  (buildProgressState)
  *   5. Iteration flow    (performIterationBookkeeping)
  *   6. Done flow         (performDoneBookkeeping)
@@ -22,6 +23,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DATA_DIR } from "@/db";
 import { firstUnchecked, markChecked } from "./checklist";
 import { tryGit } from "./git";
 
@@ -37,14 +39,12 @@ import { tryGit } from "./git";
  * prompt. The orchestrator alone reads and ticks this file.
  */
 export function planStatePath(cardId: string): string {
-  if (process.env.RADULF_DATA_DIR) {
-    return path.join(
-      /* turbopackIgnore: true */ process.env.RADULF_DATA_DIR,
-      "plans",
-      `${cardId}.md`,
-    );
-  }
-  return path.join(process.cwd(), "data", "plans", `${cardId}.md`);
+  return path.join(DATA_DIR, "plans", `${cardId}.md`);
+}
+
+/** The card's private PLAN.md, or null when none is on disk. */
+export function readPlanState(cardId: string): string | null {
+  return readFileIfExists(planStatePath(cardId)) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,8 +128,40 @@ export function deterministicCommitMessage(taskNumber: number, summary: string):
 // 3. Signal I/O
 // ---------------------------------------------------------------------------
 
+/** The worktree's `.ralph/` directory, where every signal file lives. */
+export function ralphDirPath(worktreePath: string): string {
+  return path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+}
+
+/** The file's contents, or `""` when it does not exist. */
+export function readFileIfExists(filePath: string): string {
+  return fs.existsSync(/* turbopackIgnore: true */ filePath)
+    ? fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf8")
+    : "";
+}
+
+/** Remove the named `.ralph/` files; missing ones are not an error. */
+export function removeRalphFiles(worktreePath: string, names: readonly string[]): void {
+  const dir = ralphDirPath(worktreePath);
+  for (const name of names) {
+    fs.rmSync(path.join(/* turbopackIgnore: true */ dir, name), { force: true });
+  }
+}
+
+/** Small models write DONE.md as often as DONE — accept both. */
+export const DONE_FILE_NAMES = ["DONE", "DONE.md"] as const;
+
+/** The DONE signal file present in `ralphDir`, or null when there is none. */
+export function doneFilePath(ralphDir: string): string | null {
+  for (const name of DONE_FILE_NAMES) {
+    const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
+    if (fs.existsSync(/* turbopackIgnore: true */ p)) return p;
+  }
+  return null;
+}
+
 /** Return the path to `.ralph/ITERATION_DONE` within `ralphDir`. */
-export function iterationDonePath(ralphDir: string): string {
+function iterationDonePath(ralphDir: string): string {
   return path.join(/* turbopackIgnore: true */ ralphDir, "ITERATION_DONE");
 }
 
@@ -161,16 +193,17 @@ export function readIterationDone(ralphDir: string): string | null {
  * "no activity" — and the content hash matters because porcelain lists only
  * paths: once a file is modified, further edits to it leave the status
  * output byte-identical.
+ *
+ * Pass `state` when the caller has already captured HEAD and status at this
+ * same boundary, so the two git reads are spawned once rather than twice.
  */
 export async function buildProgressState(
   worktreePath: string,
   planPath: string,
+  state?: PreIterationState,
 ): Promise<string> {
-  const head = (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
-  const checklist = fs.existsSync(/* turbopackIgnore: true */ planPath)
-    ? fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8")
-    : "";
-  const status = (await tryGit(worktreePath, "status", "--porcelain")).out;
+  const { head, status } = state ?? (await captureIterationState(worktreePath));
+  const checklist = readFileIfExists(planPath);
   const dirty = status ? `${status}\n${await dirtyContentHash(worktreePath)}` : "";
   return `${head}\n${dirty}\n${checklist}`;
 }
@@ -181,11 +214,12 @@ export async function buildProgressState(
  */
 async function dirtyContentHash(worktreePath: string): Promise<string> {
   const hash = crypto.createHash("sha256");
-  hash.update(
-    (await tryGit(worktreePath, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD")).out,
-  );
-  const untracked = (await tryGit(worktreePath, "ls-files", "--others", "--exclude-standard", "-z")).out;
-  for (const rel of untracked.split("\0").filter(Boolean)) {
+  const [diff, untracked] = await Promise.all([
+    tryGit(worktreePath, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
+    tryGit(worktreePath, "ls-files", "--others", "--exclude-standard", "-z"),
+  ]);
+  hash.update(diff.out);
+  for (const rel of untracked.out.split("\0").filter(Boolean)) {
     const abs = path.join(/* turbopackIgnore: true */ worktreePath, rel);
     hash.update(`\0${rel}\0`);
     try {
@@ -212,10 +246,11 @@ export type PreIterationState = {
 export async function captureIterationState(
   worktreePath: string,
 ): Promise<PreIterationState> {
-  return {
-    head: (await tryGit(worktreePath, "rev-parse", "HEAD")).out,
-    status: (await tryGit(worktreePath, "status", "--porcelain")).out,
-  };
+  const [head, status] = await Promise.all([
+    tryGit(worktreePath, "rev-parse", "HEAD"),
+    tryGit(worktreePath, "status", "--porcelain"),
+  ]);
+  return { head: head.out, status: status.out };
 }
 
 /** The ITERATION_DONE signal itself must not count as a work product. */
@@ -362,16 +397,7 @@ export async function performDoneBookkeeping(opts: {
 }): Promise<{ taskNumber: number; summary: string } | null> {
   const { ralphDir, worktreePath, planPath } = opts;
 
-  // Find DONE or DONE.md
-  let donePath: string | null = null;
-  for (const name of ["DONE", "DONE.md"]) {
-    const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
-    if (fs.existsSync(/* turbopackIgnore: true */ p)) {
-      donePath = p;
-      break;
-    }
-  }
-
+  const donePath = doneFilePath(ralphDir);
   if (donePath === null) {
     return null;
   }

@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, worktrees, WORKTREES_DIR } from "@/db";
+import { ClientError } from "./clientError";
+import { execBounded } from "./exec";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -16,65 +17,30 @@ const GIT_TIMEOUT_MS = 30_000;
 // the orchestrator runs one card at a time globally, so a wedged git freezes
 // everything.
 const GIT_REMOTE_TIMEOUT_MS = 10 * 60_000;
-// A process wedged deep in a blocking syscall can ignore SIGTERM; escalate to
-// SIGKILL this long after if it's still alive.
-const GIT_KILL_GRACE_MS = 5_000;
 
-/**
- * Run `git -C cwd ...args` with a bounded lifetime: SIGTERM at
- * GIT_TIMEOUT_MS, SIGKILL at GIT_TIMEOUT_MS + GIT_KILL_GRACE_MS if it's still
- * alive. Not built on `promisify(execFile)`'s own `timeout` option because
- * that only ever sends one signal — a hung git process (credential-helper
- * prompt on stdin, corrupt lock file, dead network mount) must not be able to
- * freeze the whole app, since the orchestrator runs exactly one card at a
- * time globally.
- */
 type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
 
-function execGit(
+/** Run `git -C cwd ...args` under `execBounded`'s two-signal timeout,
+ * rejecting on any failure with the child's output attached to the error. */
+async function execGit(
   cwd: string,
   args: string[],
   options: ExecGitOptions = {}
 ): Promise<{ stdout: string; stderr: string }> {
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
-  return new Promise((resolve, reject) => {
-    let timedOut = false;
-    const child = execFile(
-      "git",
-      ["-C", cwd, ...args],
-      {
-        encoding: "utf8" as const,
-        maxBuffer: MAX_BUFFER,
-        ...(options.env ? { env: options.env } : {}),
-      },
-      (err, stdout, stderr) => {
-        clearTimeout(termTimer);
-        clearTimeout(killTimer);
-        if (err) {
-          if (timedOut) {
-            // Make the failure actionable instead of an opaque "Command
-            // failed" — surfaced both via the thrown Error's message (git())
-            // and via `out` (tryGit(), which never looks at err.message).
-            const msg = `git ${args.join(" ")} timed out after ${timeoutMs}ms`;
-            err.message = msg;
-            stderr = stderr ? `${stderr}\n${msg}` : msg;
-          }
-          reject(Object.assign(err, { stdout, stderr }));
-        } else {
-          resolve({ stdout, stderr });
-        }
-      }
-    );
-    // Nothing this module runs is ever meant to read stdin. Closing it makes a
-    // credential helper that decides to prompt fail immediately instead of
-    // blocking on a read that will never be answered.
-    child.stdin?.end();
-    const termTimer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, timeoutMs);
-    const killTimer = setTimeout(() => child.kill("SIGKILL"), timeoutMs + GIT_KILL_GRACE_MS);
+  const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...args], {
+    timeoutMs,
+    maxBuffer: MAX_BUFFER,
+    ...(options.env ? { env: options.env } : {}),
   });
+  if (!err) return { stdout, stderr };
+  if (!timedOut) throw Object.assign(err, { stdout, stderr });
+  // Make the failure actionable instead of an opaque "Command failed" —
+  // surfaced both via the thrown Error's message (git()) and via `out`
+  // (tryGit(), which never looks at err.message).
+  const msg = `git ${args.join(" ")} timed out after ${timeoutMs}ms`;
+  err.message = msg;
+  throw Object.assign(err, { stdout, stderr: stderr ? `${stderr}\n${msg}` : msg });
 }
 
 /** Run git, throwing on a non-zero exit. Async so a slow or large git
@@ -99,7 +65,6 @@ export async function tryGit(
 
 /** List local branch names; returns [] when the path is not a git repo. */
 export async function listBranches(repoPath: string): Promise<string[]> {
-  if (!(await isGitRepo(repoPath))) return [];
   const { ok, out } = await tryGit(repoPath, "branch", "--format=%(refname:short)");
   if (!ok || !out) return [];
   return out.split("\n").filter(Boolean);
@@ -158,7 +123,26 @@ export async function hasCommits(dir: string): Promise<boolean> {
   return (await tryGit(dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")).ok;
 }
 
-export function slugify(s: string): string {
+/** The repo-registration check: `dir` must be a git repository with at
+ * least one commit, otherwise a ClientError the API returns verbatim. */
+export async function assertUsableRepo(dir: string): Promise<void> {
+  if (!(await isGitRepo(dir))) throw new ClientError(`${dir} is not a git repository`);
+  // An unborn HEAD has no ref to branch a worktree from — reject here rather
+  // than let every task on this repo die at `git worktree add`.
+  if (!(await hasCommits(dir))) {
+    throw new ClientError(`${dir} has no commits yet — make an initial commit before adding it`);
+  }
+}
+
+/** ClientError unless `name` is a local branch of the repo; `label` names
+ * the field in the message ("baseBranch does not exist in the repository"). */
+export async function assertBranchExists(repoPath: string, name: string, label: string): Promise<void> {
+  if (!(await listBranches(repoPath)).includes(name)) {
+    throw new ClientError(`${label} does not exist in the repository`);
+  }
+}
+
+function slugify(s: string): string {
   return (
     s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "card"
   );
@@ -242,50 +226,38 @@ const REVIEW_DIFF_FLAGS = [
   "--text",
 ] as const;
 
+/** The review diff: merge-base of `defaultBranch` and HEAD up to HEAD, under
+ * REVIEW_DIFF_FLAGS, with `.ralph` excluded. `flags` go to `git diff`. */
+async function reviewDiff(
+  worktreePath: string,
+  defaultBranch: string,
+  ...flags: string[]
+): Promise<string> {
+  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
+  return git(
+    worktreePath,
+    ...REVIEW_DIFF_FLAGS,
+    ...flags,
+    base,
+    "HEAD",
+    "--",
+    ".",
+    ":(exclude).ralph"
+  );
+}
+
 export async function worktreeDiff(
   worktreePath: string,
   defaultBranch: string
 ): Promise<string> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  return git(worktreePath, ...REVIEW_DIFF_FLAGS, base, "HEAD", "--", ".", ":(exclude).ralph");
+  return reviewDiff(worktreePath, defaultBranch);
 }
 
 export async function worktreeDiffStat(
   worktreePath: string,
   defaultBranch: string
 ): Promise<string> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  return git(
-    worktreePath,
-    ...REVIEW_DIFF_FLAGS,
-    "--shortstat",
-    base,
-    "HEAD",
-    "--",
-    ".",
-    ":(exclude).ralph"
-  );
-}
-
-/** Paths changed between the merge-base and HEAD, same scope as
- * `worktreeDiff` (`.ralph` excluded) — used to flag sensitive-path and
- * ignore-file changes in the review UI without re-parsing the diff text. */
-export async function worktreeChangedPaths(
-  worktreePath: string,
-  defaultBranch: string
-): Promise<string[]> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  const out = await git(
-    worktreePath,
-    ...REVIEW_DIFF_FLAGS,
-    "--name-only",
-    base,
-    "HEAD",
-    "--",
-    ".",
-    ":(exclude).ralph"
-  );
-  return out ? out.split("\n").filter(Boolean) : [];
+  return reviewDiff(worktreePath, defaultBranch, "--shortstat");
 }
 
 /** Return true when the worktree has uncommitted changes (git status --porcelain is non-empty). */
@@ -293,6 +265,15 @@ export async function worktreeIsDirty(worktreePath: string): Promise<boolean> {
   if (!fs.existsSync(worktreePath)) return false;
   const { ok, out } = await tryGit(worktreePath, "status", "--porcelain");
   return ok && out.trim().length > 0;
+}
+
+/** Drop `.ralph/` from the index and, once git has let go of it, from disk.
+ * Returns the `git rm` result. `mergeBranch` and `stripRalphForDelivery` have
+ * to agree on exactly this (see the latter's docstring), so both call here. */
+async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }> {
+  const removed = await tryGit(cwd, "rm", "-r", "-f", "-q", "--ignore-unmatch", ".ralph");
+  if (removed.ok) fs.rmSync(path.join(cwd, ".ralph"), { recursive: true, force: true });
+  return removed;
 }
 
 /** Merge the ralph branch into the repo's base branch. Always restores the
@@ -332,8 +313,7 @@ export async function mergeBranch(
     // tell a conflict apart from an unrecoverable failure.
     return { ok: false, conflict: true, error: `merge conflict — rebase needed: ${merge.out}` };
   }
-  await tryGit(repoPath, "rm", "-r", "-f", "-q", "--ignore-unmatch", ".ralph");
-  fs.rmSync(path.join(repoPath, ".ralph"), { recursive: true, force: true });
+  await removeRalphDir(repoPath);
   const commit = await tryGit(repoPath, "commit", "-m", message);
   if (!commit.ok) {
     await tryGit(repoPath, "merge", "--abort");
@@ -379,7 +359,7 @@ export async function mergeBaseIntoWorktree(
 
 /** The remote a card's branch is pushed to. Not configurable — a repo with a
  * differently-named remote is out of scope rather than silently guessed at. */
-export const PR_REMOTE = "origin";
+const PR_REMOTE = "origin";
 
 /** Does this repo have an `origin` to push to? Most registered repos are
  * local-only, so PR delivery is offered per repo, not globally. */
@@ -391,8 +371,8 @@ export async function hasRemote(repoPath: string): Promise<boolean> {
 /**
  * Drop `.ralph/` from the branch and commit that removal.
  *
- * Every review surface excludes `.ralph` (`worktreeDiff`, `worktreeDiffStat`,
- * `worktreeChangedPaths` all pass `:(exclude).ralph`) and `mergeBranch` strips
+ * Every review surface excludes `.ralph` (`worktreeDiff` and `worktreeDiffStat`
+ * both pass `:(exclude).ralph`) and `mergeBranch` strips
  * it before committing, so the plan artifacts, loop memory, and evaluator
  * verdict are deliberately not part of what a human approves. A push has to
  * honour the same exclusion or PR delivery would publish to a remote exactly
@@ -407,17 +387,8 @@ export async function stripRalphForDelivery(
   worktreePath: string,
   message: string
 ): Promise<{ ok: boolean; out: string }> {
-  const removed = await tryGit(
-    worktreePath,
-    "rm",
-    "-r",
-    "-f",
-    "-q",
-    "--ignore-unmatch",
-    ".ralph"
-  );
+  const removed = await removeRalphDir(worktreePath);
   if (!removed.ok) return removed;
-  fs.rmSync(path.join(worktreePath, ".ralph"), { recursive: true, force: true });
   const staged = await tryGit(worktreePath, "diff", "--cached", "--quiet");
   // `--quiet` exits non-zero when there *is* something staged.
   if (staged.ok) return { ok: true, out: "" };

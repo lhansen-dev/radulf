@@ -22,7 +22,8 @@ fixture. It creates a card per run through the Radulf API, waits for the
 loop to finish, executes the fixture's criteria in the run's worktree, and
 reports wall time, iterations, model turns, p50/p90 iteration time, token
 and cost sums, criteria pass rate, and diff correctness, aggregated across
-runs.
+runs. The p50/p90 use the same nearest-rank rule as the analytics tab, so a
+report and the tab agree on the same durations.
 
 ```bash
 node benchmarks/run-benchmark.mjs \

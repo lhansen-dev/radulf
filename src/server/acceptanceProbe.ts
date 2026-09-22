@@ -2,6 +2,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { RunSandboxContext } from "./sandbox/context";
 import { wrapBashCommand } from "./sandbox/srt";
+import { errorMessage } from "@/shared/errorMessage";
 
 const execAsync = promisify(exec);
 
@@ -100,7 +101,7 @@ export async function runAcceptanceProbe(opts: {
       } catch (e) {
         // Could not contain it, so do not run it. Reported as unprobed, never
         // as a failure: the criterion is not disproven by our own plumbing.
-        console.warn(`acceptance probe skipped "${command}": ${e instanceof Error ? e.message : String(e)}`);
+        console.warn(`acceptance probe skipped "${command}": ${errorMessage(e)}`);
         continue;
       }
     }

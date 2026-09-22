@@ -2,16 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, plans, runs, repos, reviews, type ScopingRole } from "@/db";
+import { db, now, plans, runs, reviews, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
 import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
 import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
+import { errorMessage } from "@/shared/errorMessage";
 import { getSettings } from "./settings";
-import { planStatePath } from "./bookkeeping";
+import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
 import { firstUnchecked } from "./checklist";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
 import { tryGit } from "./git";
+import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import {
   circuitOpenReason,
@@ -27,16 +29,7 @@ const RALPH_FILES = ["PLAN.md", "CRITERIA.md", "PROMPT.md"] as const;
 const PLANNER_FILES = ["QUESTIONS.md", ...RALPH_FILES] as const;
 
 function readRalphFile(worktreePath: string, name: string): string {
-  const p = path.join(/* turbopackIgnore: true */ worktreePath, ".ralph", name);
-  return fs.existsSync(/* turbopackIgnore: true */ p)
-    ? fs.readFileSync(/* turbopackIgnore: true */ p, "utf8").trim()
-    : "";
-}
-
-function removeRalphFiles(worktreePath: string, names: readonly string[]) {
-  for (const name of names) {
-    fs.rmSync(path.join(/* turbopackIgnore: true */ worktreePath, ".ralph", name), { force: true });
-  }
+  return readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDirPath(worktreePath), name)).trim();
 }
 
 /** Planner retries intentionally reuse a worktree, but never another
@@ -173,7 +166,7 @@ export class PlanningService {
   async runPlanning(cardId: string) {
     const deps = this.deps;
     const card = deps.getCard(cardId)!;
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new Error("repo not found");
     const settings = getSettings();
 
@@ -186,8 +179,8 @@ export class PlanningService {
     clearPlannerArtifacts(worktreePath);
     // Spec 14 Phase 3: the planner's ONLY L2 write root is the worktree's
     // `.ralph/` — ensure it exists so the write root resolves.
-    fs.mkdirSync(path.join(/* turbopackIgnore: true */ worktreePath, ".ralph"), { recursive: true });
-    const ctx = createRunSandbox(runId);
+    fs.mkdirSync(/* turbopackIgnore: true */ ralphDirPath(worktreePath), { recursive: true });
+    const ctx = await createRunSandbox(runId);
     startRunRow(
       { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model },
       ctx,
@@ -198,7 +191,8 @@ export class PlanningService {
 
     const controller = new AbortController();
     deps.registerController(runId, controller);
-    const fail = (status: FinishStatus, exitReason: string, moveReason = exitReason, telemetry?: RunTelemetry) => {
+    let telemetry: RunTelemetry | undefined;
+    const fail = (exitReason: string, moveReason = exitReason, status: FinishStatus = "failed") => {
       deps.finishRun(runId, status, exitReason, telemetry);
       deps.moveCard(cardId, "planning", "needs_attention", moveReason);
     };
@@ -214,7 +208,7 @@ export class PlanningService {
     const replanFeedback = pendingReplanFeedback(cardId);
     try {
       const breaker = circuitOpenReason(provider);
-      if (breaker) return fail("failed", breaker);
+      if (breaker) return fail(breaker);
 
       const result = await runWithTranscript({
         runId,
@@ -237,9 +231,9 @@ export class PlanningService {
       });
       if (controller.signal.aborted) return; // cancelCard already finalized
 
-      const telemetry = runTelemetry(result);
+      telemetry = runTelemetry(result);
       const failure = harnessFailure(result, provider, "planner");
-      if (failure) return fail(failure.status, failure.exitReason, failure.moveReason, telemetry);
+      if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
 
       // The planner's follow-up questions escape hatch.
       const questions = readRalphFile(worktreePath, "QUESTIONS.md");
@@ -259,11 +253,11 @@ export class PlanningService {
         RALPH_FILES.map((f) => [f, readRalphFile(worktreePath, f)]),
       ) as Record<(typeof RALPH_FILES)[number], string>;
       if (RALPH_FILES.some((f) => !contents[f])) {
-        return fail("failed", "planner produced malformed artifacts", undefined, telemetry);
+        return fail("planner produced malformed artifacts");
       }
       // There is no fallback prompt, so an unparseable plan cannot run.
       if (!firstUnchecked(contents["PLAN.md"])) {
-        return fail("failed", "plan checklist unparseable or has no unchecked tasks", undefined, telemetry);
+        return fail("plan checklist unparseable or has no unchecked tasks");
       }
 
       const version = (prevPlan?.version ?? 0) + 1;
@@ -297,6 +291,14 @@ export class PlanningService {
 
       deps.finishRun(runId, "completed", "plan artifacts written", telemetry);
       deps.moveCard(cardId, "planning", planningDestination(card));
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        const reason = `planner failed: ${errorMessage(error)}`;
+        deps.finishRun(runId, "failed", reason.slice(0, 500), telemetry);
+        if (deps.getCard(cardId)?.status === "planning") {
+          deps.moveCard(cardId, "planning", "needs_attention", reason);
+        }
+      }
     } finally {
       deps.releaseController(runId);
       await ctx.cleanup();

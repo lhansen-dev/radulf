@@ -4,24 +4,15 @@ import { api, type Repo } from "../ui/api";
 import { FolderBrowser } from "../ui/folderBrowser";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
+import { ModelChips } from "../ui/taskDialog";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
+import { PROVIDERS, REASONING_LEVELS, providerLabel, type ProviderModel } from "@/shared/providers";
 import {
   SETTINGS_SECTIONS, SettingsNav, SettingsPanel, ThemePicker, ToggleRow,
   inputCls, secondaryButtonCls, sectionCls, useSettingsSection,
 } from "./settingsUI";
-
-type ProviderModel = {
-  value: string;
-  displayName: string;
-  description: string;
-  reasoningEfforts?: string[];
-  reasoningMandatory?: boolean;
-  /** USD per 1M tokens, when the provider reports pricing. Undefined for a
-   * self-hosted model, which has no market rate. */
-  costPerMillionInput?: number;
-  costPerMillionOutput?: number;
-};
+import { errorMessage } from "@/shared/errorMessage";
 
 type GithubStatusResponse = {
   ok: boolean;
@@ -122,21 +113,6 @@ function priceLabel(m: ProviderModel, input = " / 1M input", output = " / 1M out
     m.costPerMillionOutput != null && `${formatPricePerMillion(m.costPerMillionOutput)}${output}`,
   ].filter(Boolean).join(sep);
 }
-
-const PROVIDERS = [
-  { id: "anthropic", label: "Anthropic (Claude subscription)" },
-  { id: "omlx", label: "Local / self-hosted (OpenAI-compatible)" },
-  { id: "openrouter", label: "OpenRouter" },
-  { id: "chatgpt", label: "ChatGPT (Codex subscription)" },
-  { id: "copilot", label: "GitHub Copilot (subscription)" },
-  // Testing-only (RADULF_MOCK_LLM=1) — listed only while a role already uses
-  // it, so a stored "mock" renders as itself; select it via PATCH /api/settings.
-  { id: "mock", label: "Mock (scripted, no model)" },
-] as const;
-
-// Mirror of REASONING_LEVELS in src/server/settings.ts (pi's --thinking ladder);
-// the server validates, this only populates the picker.
-const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /**
  * Levels to offer for the picked model, ordered by the canonical ladder. When
@@ -256,7 +232,6 @@ function SectionHeading({ title, children }: { title: string; children?: React.R
   );
 }
 
-const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function SettingsPage() {
   const { settings, setSettings, repos, saved, saving, dirty, error, setError, refetch, save } = useSettingsData();
@@ -299,6 +274,12 @@ export default function SettingsPage() {
     <label className="text-sm text-foreground/70">
       {props.label}
       <input type={props.type} value={settings[key]} onChange={(e) => set({ [key]: e.target.value })} placeholder={props.placeholder} className={inputCls} />
+    </label>
+  );
+  const textArea = (key: StringKey, props: { label: string; rows: number; placeholder?: string }) => (
+    <label className="text-sm text-foreground/70">
+      {props.label}
+      <textarea rows={props.rows} value={settings[key]} onChange={(e) => set({ [key]: e.target.value })} placeholder={props.placeholder} className={`${inputCls} font-mono`} />
     </label>
   );
   const numberInput = (key: NumberKey, label: string, hint?: string, min = 1, className = "text-sm text-foreground/70") => (
@@ -427,16 +408,7 @@ export default function SettingsPage() {
                     {textInput("omlxBaseUrl", { label: "Local server base URL" })}
                     {textInput("omlxApiKey", { label: "Local server API key", type: "password", placeholder: "optional; many local servers need none" })}
                   </div>
-                  <label className="text-sm text-foreground/70">
-                    Extra request headers (one per line)
-                    <textarea
-                      rows={2}
-                      value={settings.omlxHeaders}
-                      onChange={(e) => set({ omlxHeaders: e.target.value })}
-                      placeholder="kong-api-key: …"
-                      className={`${inputCls} font-mono`}
-                    />
-                  </label>
+                  {textArea("omlxHeaders", { label: "Extra request headers (one per line)", rows: 2, placeholder: "kong-api-key: …" })}
                   <p className="text-xs text-foreground/40">
                     For a gateway in front of the server that authenticates on a header of its own.
                     Sent with every request alongside the API key; a header named Authorization
@@ -546,16 +518,7 @@ export default function SettingsPage() {
                   banner appears everywhere, and every affected run is stamped{" "}
                   <code>sandboxed: false</code> in its run detail and in analytics.
                 </p>
-                <label className="text-sm text-foreground/70">
-                  Extra network allowlist (one domain per line)
-                  <textarea
-                    rows={3}
-                    value={settings.sandboxNetworkAllowlist}
-                    onChange={(e) => set({ sandboxNetworkAllowlist: e.target.value })}
-                    placeholder="pypi.org"
-                    className={`${inputCls} font-mono`}
-                  />
-                </label>
+                {textArea("sandboxNetworkAllowlist", { label: "Extra network allowlist (one domain per line)", rows: 3, placeholder: "pypi.org" })}
                 <p className="text-xs text-foreground/40">
                   Package registries (registry.npmjs.org) are always reachable. Every domain added here
                   widens egress: the proxy allows by requested hostname and does not terminate TLS, so a
@@ -653,14 +616,6 @@ function PromptTemplateEditor({
   );
 }
 
-/** Provider dropdown + model input with a datalist/chips loaded from the provider. */
-/**
- * Summary callout above the three agent sections. Silent when every role's
- * provider already suits it, so a deliberate setup is not nagged at; when it
- * does appear it names the roles and offers the split Radulf's pipeline is
- * designed around: strong models on the once-per-card stages, the cheap seat
- * on the stage that runs every iteration.
- */
 /** How often the health panel re-reads usage while the settings page is open. */
 const PROVIDER_HEALTH_POLL_MS = 60_000;
 
@@ -735,7 +690,7 @@ function ProviderHealthPanel() {
         <div key={row.provider} className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-t border-foreground/10 pt-3 first-of-type:border-t-0 first-of-type:pt-0">
           <div className="min-w-0">
             <p className="text-sm font-medium">
-              {PROVIDERS.find((p) => p.id === row.provider)?.label ?? row.provider}
+              {providerLabel(row.provider)}
             </p>
             {row.rateLimit && (
               <p className="mt-1 text-xs leading-relaxed text-foreground/55">
@@ -774,6 +729,13 @@ function ProviderHealthPanel() {
   );
 }
 
+/**
+ * Summary callout above the three agent sections. Silent when every role's
+ * provider already suits it, so a deliberate setup is not nagged at; when it
+ * does appear it names the roles and offers the split Radulf's pipeline is
+ * designed around: strong models on the once-per-card stages, the cheap seat
+ * on the stage that runs every iteration.
+ */
 function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string[]; onApply: () => void }) {
   if (misfitRoles.length === 0) return null;
   return (
@@ -803,6 +765,7 @@ function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string
   );
 }
 
+/** Provider dropdown + model input with a datalist/chips loaded from the provider. */
 function AgentSection({
   title,
   subtitle,
@@ -851,7 +814,7 @@ function AgentSection({
       })
       .catch((e) => {
         setModels([]);
-        setStatus(`✗ ${e instanceof Error ? e.message : e}`);
+        setStatus(`✗ ${errorMessage(e)}`);
       });
   }, []);
 
@@ -884,6 +847,8 @@ function AgentSection({
             onChange={(e) => onProvider(e.target.value)}
             className={inputCls}
           >
+            {/* Mock is testing-only (RADULF_MOCK_LLM=1) — listed only while this role already
+                uses it, so a stored "mock" renders as itself; select it via PATCH /api/settings. */}
             {PROVIDERS.filter((p) => p.id !== "mock" || provider === "mock").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
@@ -956,32 +921,21 @@ function AgentSection({
           {status}
         </p>
       )}
-      {models.length > 0 && models.length <= 30 && (
-        <details className="group border-t border-foreground/10 pt-3">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
-            Browse {models.length} available model{models.length === 1 ? "" : "s"}
-            <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
-          </summary>
-          <div className="flex flex-wrap gap-2 pt-2">
-            {models.map((m) => (
-              <button
-                key={m.value}
-                onClick={() => onModel(m.value)}
-                title={priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
-                className={`max-w-full rounded-lg border px-3 py-2 text-left text-xs break-words ${model === m.value
-                    ? "border-amber-500 text-amber-400"
-                    : "border-foreground/10 text-foreground/60 hover:text-foreground"
-                  }`}
-              >
-                {m.displayName}
-              </button>
-            ))}
-          </div>
-        </details>
-      )}
-      {models.length > 30 && (
-        <p className="text-xs text-foreground/40">Type in the model field to search the list.</p>
-      )}
+      <ModelChips
+        models={models}
+        value={model}
+        onPick={onModel}
+        titleFor={(m) => priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
+        wrap={(chips) => (
+          <details className="group border-t border-foreground/10 pt-3">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
+              Browse {models.length} available model{models.length === 1 ? "" : "s"}
+              <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
+            </summary>
+            {chips}
+          </details>
+        )}
+      />
     </section>
   );
 }
@@ -994,8 +948,6 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   // Shown on the row it belongs to — e.g. the conflict when a repo still has
   // running work — rather than below the add form.
   const [removeError, setRemoveError] = useState<{ repoId: string; message: string } | null>(null);
-  const [notARepo, setNotARepo] = useState(false);
-  const [emptyRepo, setEmptyRepo] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   // Typing an absolute path stays available: the browser is confined to one
   // root, and a repo kept outside it has to be reachable some other way.
@@ -1004,10 +956,6 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   function pickFolder(picked: string) {
     setPath(picked);
     setBrowsing(false);
-    setNotARepo(false);
-    setEmptyRepo(false);
-    // POST /api/repos validates with git; these flags only pre-empt the
-    // round trip for the two cases worth warning about early.
     if (!name.trim()) setName(picked.split("/").pop() ?? "");
   }
 
@@ -1026,11 +974,9 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
       setName("");
       setPath("");
       setBranch("");
-      setNotARepo(false);
-      setEmptyRepo(false);
       onChange();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -1058,7 +1004,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 setRemoveError(null);
                 api(`/api/repos/${r.id}`, { method: "DELETE" })
                   .then(onChange)
-                  .catch((cause) => setRemoveError({ repoId: r.id, message: cause instanceof Error ? cause.message : String(cause) }));
+                  .catch((cause) => setRemoveError({ repoId: r.id, message: errorMessage(cause) }));
               }}
               className="min-h-11 px-2 text-xs text-red-400/70 hover:text-red-400"
             >
@@ -1092,11 +1038,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
               <input
                 id="repo-path"
                 value={path}
-                onChange={(e) => {
-                  setPath(e.target.value);
-                  setNotARepo(false);
-                  setEmptyRepo(false);
-                }}
+                onChange={(e) => setPath(e.target.value)}
                 placeholder="/absolute/path/to/repo"
                 className={`${inputCls} font-mono`}
               />
@@ -1132,17 +1074,6 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
             Add repository
           </button>
         </div>
-        {notARepo && (
-          <p className="text-xs text-amber-400/80">
-            That folder is not a git repository — pick the folder containing <code>.git</code>.
-          </p>
-        )}
-        {emptyRepo && (
-          <p className="text-xs text-amber-400/80">
-            That repository has no commits yet — Radulf branches each task off an existing commit, so
-            make an initial commit first.
-          </p>
-        )}
         {!typePath && (
           <button
             type="button"

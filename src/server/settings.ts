@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { db, settings } from "@/db";
-import { ClientError } from "./clientError";
+import { db, settings, upsertSettingJson } from "@/db";
+import { invalid, record } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
 import { parseHeaderLines } from "./localEndpoint";
+import { REASONING_LEVELS } from "@/shared/providers";
+import { errorMessage } from "@/shared/errorMessage";
 
 function readBuiltInPromptTemplate(fileName: string): string {
   return fs.readFileSync(
@@ -150,17 +152,7 @@ export type Settings = { [K in keyof typeof SETTING_DEFAULTS]: (typeof SETTING_D
 // the default, so gating it here would silently turn a stored "mock" into a
 // paid provider. The run itself refuses instead (harness/mock.ts).
 const PROVIDERS = new Set(["anthropic", "chatgpt", "copilot", "omlx", "openrouter", "mock"]);
-// pi's thinking levels (pi --thinking): the full ladder pi accepts. Pi clamps
-// an unsupported level to the nearest one the chosen model supports.
-export const REASONING_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
+export { REASONING_LEVELS };
 const REASONING_LEVEL_SET = new Set<string>(REASONING_LEVELS);
 const REASONING_LEVEL_SETTINGS = new Set<keyof Settings>([
   "plannerReasoningLevel",
@@ -253,18 +245,10 @@ export function redactSettings(value: Settings): Settings {
   return out;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function invalid(message: string): never {
-  throw new ClientError(message);
-}
-
 export function validateSettingsPatch(value: unknown): Partial<Settings> {
-  if (!isRecord(value)) invalid("settings body must be an object");
+  const body = record(value, "settings body");
   const patch: Partial<Settings> = {};
-  for (const [rawKey, settingValue] of Object.entries(value)) {
+  for (const [rawKey, settingValue] of Object.entries(body)) {
     if (!(rawKey in SETTING_DEFAULTS)) invalid(`unknown setting: ${rawKey}`);
     const key = rawKey as keyof Settings;
     if (BOOLEAN_SETTINGS.has(key)) {
@@ -322,7 +306,7 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         try {
           parseHeaderLines(settingValue);
         } catch (e) {
-          invalid(`omlxHeaders: ${e instanceof Error ? e.message : e}`);
+          invalid(`omlxHeaders: ${errorMessage(e)}`);
         }
       }
     } else if (PROMPT_TEMPLATE_SETTINGS.has(key)) {
@@ -393,9 +377,6 @@ export function patchSettings(value: unknown) {
       db.delete(settings).where(eq(settings.key, key)).run();
       continue;
     }
-    db.insert(settings)
-      .values({ key, value: JSON.stringify(value) })
-      .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify(value) } })
-      .run();
+    upsertSettingJson(key, value);
   }
 }

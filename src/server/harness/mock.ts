@@ -1,5 +1,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import type { ProviderModel } from "../providers";
+
 /**
  * The mock provider: a deterministic, scripted stand-in for the model, so the
  * whole pipeline (planner → loop → evaluator) can be exercised end to end for
@@ -17,7 +19,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
  * sessions can't interfere.
  */
 
-export function mockProviderEnabled(): boolean {
+function mockProviderEnabled(): boolean {
   return process.env.RADULF_MOCK_LLM === "1";
 }
 
@@ -133,7 +135,7 @@ const evaluator: Script = ({ step }) => {
 
 /** Scoping and the improvement proposer (read-only, no pipeline role).
  * One reply serves both: prose for scoping, a JSON proposal for the
- * proposer (pm.ts parseProposals). */
+ * proposer (improvementProposer.ts parseProposals). */
 const readOnly: Script = () => [
   say(
     "Mock reply — no model was called.\n\n```json\n" +
@@ -238,7 +240,7 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
 export const DEFAULT_MOCK_SCENARIO = "happy-path";
 
 /** The scenarios, shaped for the provider model pickers. */
-export function mockProviderModels(): { value: string; displayName: string; description: string }[] {
+export function mockProviderModels(): ProviderModel[] {
   assertMockProviderEnabled();
   return Object.entries(MOCK_SCENARIOS).map(([id, s]) => ({
     value: id,
@@ -359,8 +361,7 @@ function untilAborted(signal: AbortSignal | undefined): Promise<void> {
 }
 
 const streamSimple: StreamSimple = (model, ctx, options) => {
-  let resolveResult!: (message: AssistantMessage) => void;
-  const result = new Promise<AssistantMessage>((resolve) => (resolveResult = resolve));
+  const { promise: result, resolve: resolveResult } = Promise.withResolvers<AssistantMessage>();
 
   async function* events(): AsyncGenerator<AssistantEvent> {
     const scripted = reply(model, ctx);

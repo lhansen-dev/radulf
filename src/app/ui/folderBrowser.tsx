@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import { errorMessage } from "@/shared/errorMessage";
 
 export type FolderEntry = { name: string; path: string; isGitRepo: boolean };
 type Listing = {
@@ -43,7 +44,7 @@ export function FolderBrowser({
     setCreating(true);
     onCreate(listing.path, newName.trim())
       .then(() => setNewName(""))
-      .catch((cause) => onError?.(cause instanceof Error ? cause.message : String(cause)))
+      .catch((cause) => onError?.(errorMessage(cause)))
       .finally(() => setCreating(false));
   };
 
@@ -61,7 +62,7 @@ export function FolderBrowser({
         setError("");
       })
       .catch((cause) => {
-        const message = cause instanceof Error ? cause.message : String(cause);
+        const message = errorMessage(cause);
         setError(message);
         onError?.(message);
       })

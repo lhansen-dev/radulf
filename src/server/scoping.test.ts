@@ -1,8 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const mocks = vi.hoisted(() => ({ runHarness: vi.fn() }));
 
@@ -18,8 +17,7 @@ vi.mock("./settings", () => ({
   }),
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-scoping-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-scoping-");
 
 const { db, cards, repos, scopingMessages, now } = await import("@/db");
 const {
@@ -30,11 +28,6 @@ const {
   renderScopingPrompt,
   scopingTurn,
 } = await import("./scoping");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
-});
 
 describe("renderScopingPrompt", () => {
   const card = { title: "Add rate limiting", description: "Login is brute-forceable." };

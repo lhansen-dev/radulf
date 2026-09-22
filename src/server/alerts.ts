@@ -1,4 +1,5 @@
 import { getSettings } from "./settings";
+import { errorMessage } from "@/shared/errorMessage";
 
 /**
  * Getting one event off this machine.
@@ -40,6 +41,6 @@ export async function postAlert(alert: Alert): Promise<void> {
       signal: AbortSignal.timeout(ALERT_TIMEOUT_MS),
     });
   } catch (e) {
-    console.warn(`alert webhook failed: ${e instanceof Error ? e.message : String(e)}`);
+    console.warn(`alert webhook failed: ${errorMessage(e)}`);
   }
 }

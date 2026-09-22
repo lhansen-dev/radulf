@@ -1,13 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { git } from "@/testUtils/gitRepo";
 import { initRepository } from "./repoInit";
-
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
-}
 
 let root: string;
 let outside: string;

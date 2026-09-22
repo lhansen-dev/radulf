@@ -38,6 +38,8 @@ export type SelectedTask = {
   item: ChecklistItem;
   /** true when no other unchecked item remains after this one. */
   isLastUnchecked: boolean;
+  /** How many items the checklist holds in all, checked or not. */
+  taskCount: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -164,6 +166,7 @@ export function firstUnchecked(planMd: string): SelectedTask | null {
     taskNumber: firstUncheckedIndex + 1, // 1-based
     item: parsed.items[firstUncheckedIndex],
     isLastUnchecked: !hasLaterUnchecked,
+    taskCount: parsed.items.length,
   };
 }
 

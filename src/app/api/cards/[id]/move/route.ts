@@ -1,9 +1,10 @@
 import { eq } from "drizzle-orm";
 import { db, cards, now } from "@/db";
+import { requireCard } from "@/server/cards";
 import { getOrchestrator } from "@/server/orchestrator";
+import { record } from "@/server/requestValidation";
+import { PULLBACK_STATUSES } from "@/shared/cardStatus";
 import { json, err, handle } from "../../../_lib";
-
-export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -19,41 +20,33 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function POST(req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const body = await req.json();
+    const body = record(await req.json(), "move body");
     const to = String(body.to ?? "");
-    const card = db.select().from(cards).where(eq(cards.id, id)).get();
-    if (!card) return err("card not found", 404);
+    const card = requireCard(id);
     const orch = getOrchestrator();
 
+    // startCard accepts todo and needs_attention, queueCard only backlog;
+    // both throw the ClientError for anything else.
     if (to === "in_progress") {
-      if (card.status === "todo") {
-        orch.startCard(id);
-      } else if (card.status === "needs_attention") {
-        orch.restartCard(id);
-      } else {
-        return err(`cannot move a ${card.status} card to In Progress`);
-      }
+      orch.startCard(id);
       return json({ ok: true });
     }
 
     if (to === "todo") {
-      if (card.status === "backlog") {
-        orch.queueCard(id);
-        return json({ ok: true });
-      }
       if (card.status === "todo") {
         if (typeof body.position !== "number") return err("position required for reorder");
         db.update(cards)
           .set({ position: body.position, updatedAt: now() })
           .where(eq(cards.id, id))
           .run();
-        return json({ ok: true });
+      } else {
+        orch.queueCard(id);
       }
-      return err(`cannot move a ${card.status} card to Todo`);
+      return json({ ok: true });
     }
 
     if (to === "backlog") {
-      if (["todo", "planning", "ready", "looping", "evaluating", "review", "plan_review", "needs_attention", "paused"].includes(card.status)) {
+      if (PULLBACK_STATUSES.includes(card.status)) {
         orch.cancelCard(id);
         return json({ ok: true });
       }

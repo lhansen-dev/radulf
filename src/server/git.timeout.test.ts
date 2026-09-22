@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ execFile: vi.fn() }));
 
-// git.ts calls execFile directly (not promisify(execFile)) so it can keep a
-// handle on the ChildProcess for the SIGTERM→SIGKILL escalation — the mock
-// has to match that calling convention: (cmd, args, options, callback),
-// returning an object with a `.kill(signal)` method.
+// exec.ts (which git.ts runs every command through) calls execFile directly
+// (not promisify(execFile)) so it can keep a handle on the ChildProcess for the
+// SIGTERM→SIGKILL escalation — the mock has to match that calling convention:
+// (cmd, args, options, callback), returning an object with a `.kill(signal)`
+// method.
 vi.mock("node:child_process", () => ({
   execFile: (
     ...args: [string, string[], object, (err: unknown, stdout: string, stderr: string) => void]

@@ -1,22 +1,23 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const mocks = vi.hoisted(() => ({
   startCard: vi.fn(),
   proposeOneImprovement: vi.fn(),
   git: vi.fn(),
-  listBranches: vi.fn(),
+  assertBranchExists: vi.fn(),
 }));
 
 vi.mock("./orchestrator", () => ({ getOrchestrator: () => ({ startCard: mocks.startCard }) }));
 vi.mock("./improvementProposer", () => ({ proposeOneImprovement: mocks.proposeOneImprovement }));
-vi.mock("./git", () => ({ git: mocks.git, listBranches: mocks.listBranches }));
+vi.mock("./git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./git")>()),
+  git: mocks.git,
+  assertBranchExists: mocks.assertBranchExists,
+}));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-improvement-runs-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-improvement-runs-");
 
 const { db, cards, repos, improvementRuns, events, now } = await import("@/db");
 const { emitEvent } = await import("./events");
@@ -26,10 +27,6 @@ const {
   stopImprovementRun,
   awaitCardTerminal,
 } = await import("./improvementRuns");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-});
 
 function insertRepo(id = "repo-1") {
   db.insert(repos)
@@ -84,7 +81,7 @@ beforeEach(() => {
   db.delete(repos).run();
   db.delete(events).run();
   vi.clearAllMocks();
-  mocks.listBranches.mockResolvedValue(["main"]);
+  mocks.assertBranchExists.mockResolvedValue(undefined);
   mocks.git.mockResolvedValue("");
   insertRepo();
 });
@@ -197,6 +194,15 @@ describe("createImprovementRun", () => {
     await expect(
       createImprovementRun({ repoId: "repo-1", baseBranch: "main", budgetMinutes: 30 }),
     ).rejects.toThrow(/already active/);
+  });
+
+  it("refuses a ralph/* base branch, as card creation does", async () => {
+    await expect(
+      createImprovementRun({ repoId: "repo-1", baseBranch: "ralph/improve-1700000000000", budgetMinutes: 30 }),
+    ).rejects.toThrow(/ralph\//);
+
+    expect(mocks.git).not.toHaveBeenCalled();
+    expect(db.select().from(improvementRuns).all()).toHaveLength(0);
   });
 
   it("cuts a feature branch off baseBranch and persists the run", async () => {

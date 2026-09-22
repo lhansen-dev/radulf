@@ -16,7 +16,7 @@
  * its deny list, so an agent can neither push nor read the credential this
  * module depends on.
  */
-import { execFile } from "node:child_process";
+import { execBounded } from "./exec";
 
 const GH_TIMEOUT_MS = 30_000;
 const GH_PR_TIMEOUT_MS = 2 * 60_000;
@@ -31,49 +31,31 @@ export type GithubStatus =
   | { ok: false; reason: "missing"; detail: string }
   | { ok: false; reason: "unauthenticated"; detail: string };
 
-function run(
+async function run(
   args: string[],
   options: { cwd?: string; timeoutMs: number },
-): Promise<{ ok: boolean; out: string }> {
-  return new Promise((resolve) => {
-    let timedOut = false;
-    const child = execFile(
-      "gh",
-      args,
-      {
-        encoding: "utf8" as const,
-        maxBuffer: 8 * 1024 * 1024,
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-        env: {
-          ...process.env,
-          // gh renders progress and colour differently under a TTY; force the
-          // plain, parseable form regardless of how the server was started.
-          NO_COLOR: "1",
-          GH_PROMPT_DISABLED: "1",
-        },
-      },
-      (err, stdout, stderr) => {
-        clearTimeout(termTimer);
-        clearTimeout(killTimer);
-        const out = ((stdout ?? "") + (stderr ?? "")).trim();
-        if (err) {
-          resolve({
-            ok: false,
-            out: timedOut ? `gh ${args[0]} timed out after ${options.timeoutMs}ms` : out || err.message,
-          });
-        } else {
-          resolve({ ok: true, out });
-        }
-      },
-    );
-    // gh must never sit waiting on input it will not get.
-    child.stdin?.end();
-    const termTimer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, options.timeoutMs);
-    const killTimer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs + 5_000);
+): Promise<{ ok: boolean; out: string; code?: string | number }> {
+  const { err, stdout, stderr, timedOut } = await execBounded("gh", args, {
+    timeoutMs: options.timeoutMs,
+    maxBuffer: 8 * 1024 * 1024,
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    env: {
+      ...process.env,
+      // gh renders progress and colour differently under a TTY; force the
+      // plain, parseable form regardless of how the server was started.
+      NO_COLOR: "1",
+      GH_PROMPT_DISABLED: "1",
+    },
   });
+  const out = ((stdout ?? "") + (stderr ?? "")).trim();
+  if (!err) return { ok: true, out };
+  return {
+    ok: false,
+    out: timedOut ? `gh ${args[0]} timed out after ${options.timeoutMs}ms` : out || err.message,
+    // A non-zero exit arrives as a number; a spawn failure arrives as a
+    // string such as "ENOENT" (no `gh` on PATH) or "EACCES" (not executable).
+    code: err.code ?? undefined,
+  };
 }
 
 let cached: { at: number; status: GithubStatus } | null = null;
@@ -92,32 +74,27 @@ export function invalidateGithubStatus(): void {
 export async function githubStatus(options: { refresh?: boolean } = {}): Promise<GithubStatus> {
   if (options.refresh) cached = null;
   if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
-  const version = await run(["--version"], { timeoutMs: GH_TIMEOUT_MS });
+  const auth = await run(["auth", "status"], { timeoutMs: GH_TIMEOUT_MS });
   let status: GithubStatus;
-  if (!version.ok) {
+  if (typeof auth.code === "string") {
     status = {
       ok: false,
       reason: "missing",
-      detail: "the GitHub CLI (`gh`) is not installed or not on PATH",
+      detail: "the GitHub CLI (`gh`) is not installed, not on PATH, or not executable",
+    };
+  } else if (!auth.ok) {
+    status = {
+      ok: false,
+      reason: "unauthenticated",
+      detail: "`gh` is not authenticated — run `gh auth login` in a terminal",
     };
   } else {
-    const auth = await run(["auth", "status"], { timeoutMs: GH_TIMEOUT_MS });
     // Which account will open the pull requests is the part worth surfacing —
     // "logged in" is not reassuring if it is the wrong identity. Scraped from
     // gh's human-readable output, so treat its absence as unremarkable: the
     // status is still `ok`, just unnamed.
-    const account = auth.ok
-      ? /account\s+(\S+)/.exec(auth.out)?.[1]
-      : undefined;
-    status = auth.ok
-      ? account
-        ? { ok: true, account }
-        : { ok: true }
-      : {
-          ok: false,
-          reason: "unauthenticated",
-          detail: "`gh` is not authenticated — run `gh auth login` in a terminal",
-        };
+    const account = /account\s+(\S+)/.exec(auth.out)?.[1];
+    status = account ? { ok: true, account } : { ok: true };
   }
   cached = { at: Date.now(), status };
   return status;

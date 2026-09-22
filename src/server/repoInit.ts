@@ -4,12 +4,13 @@ import { ClientError } from "./clientError";
 import { browsableRoot } from "./folderBrowser";
 import { tryGit } from "./git";
 import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
+import { errorMessage } from "@/shared/errorMessage";
 
 /** A folder name and nothing more: no separators, not hidden, and nothing git
  * or a shell would read as an option. */
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-export const INITIAL_BRANCH = "main";
+const INITIAL_BRANCH = "main";
 
 /**
  * Create a fresh repository at `<parentPath>/<name>`: `git init` on `main`, a
@@ -50,7 +51,7 @@ export async function initRepository(
   try {
     fs.mkdirSync(target);
   } catch (cause) {
-    throw new ClientError(`could not create ${target}: ${cause instanceof Error ? cause.message : cause}`);
+    throw new ClientError(`could not create ${target}: ${errorMessage(cause)}`);
   }
   try {
     await step(target, "init", ["init"]);

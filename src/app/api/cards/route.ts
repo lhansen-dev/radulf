@@ -4,14 +4,13 @@ import { db, cards, repos, runs, now } from "@/db";
 import { getSettings } from "@/server/settings";
 import { modelTag } from "@/server/modelTag";
 import { getOrchestrator } from "@/server/orchestrator";
-import { isRalphBranch, listBranches } from "@/server/git";
-import { currentTaskFromFile } from "@/server/currentTask";
-import { planStatePath } from "@/server/bookkeeping";
+import { getRepo } from "@/server/repos";
+import { assertBranchExists, isRalphBranch } from "@/server/git";
+import { readPlanState } from "@/server/bookkeeping";
+import { firstUnchecked } from "@/server/checklist";
 import { parseCreateCard } from "@/server/cardValidation";
 import { emitEvent } from "@/server/events";
 import { json, err, handle } from "../_lib";
-
-export const dynamic = "force-dynamic";
 
 /** Board payload: every card plus what its column badge needs. */
 export async function GET() {
@@ -46,7 +45,7 @@ export async function GET() {
             exitReason: latestRun.exitReason,
             startedAt: latestRun.startedAt,
             currentTask: card.status === "looping"
-              ? currentTaskFromFile(planStatePath(card.id))
+              ? firstUnchecked(readPlanState(card.id) ?? "")?.item.text ?? null
               : null,
           }
         : null,
@@ -67,14 +66,12 @@ export async function GET() {
 export async function POST(req: Request) {
   return handle(async () => {
     const body = parseCreateCard(await req.json());
-    const repo = db.select().from(repos).where(eq(repos.id, body.repoId)).get();
+    const repo = getRepo(body.repoId);
     if (!repo) return err("repoId does not exist");
     if (body.baseBranch && isRalphBranch(body.baseBranch)) {
       return err("baseBranch cannot be one of Radulf's own ralph/* branches");
     }
-    if (body.baseBranch && !(await listBranches(repo.path)).includes(body.baseBranch)) {
-      return err("baseBranch does not exist in the repository");
-    }
+    if (body.baseBranch) await assertBranchExists(repo.path, body.baseBranch, "baseBranch");
 
     const maxPos =
       db
@@ -97,9 +94,9 @@ export async function POST(req: Request) {
         plannerModel: body.plannerModel,
         loopModel: body.loopModel,
         evaluatorModel: body.evaluatorModel,
-        reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation === true ? 1 : 0,
-        autoApprove: body.autoApprove === true ? 1 : 0,
-        openPr: body.openPr === true ? 1 : 0,
+        reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation ? 1 : 0,
+        autoApprove: body.autoApprove ? 1 : 0,
+        openPr: body.openPr ? 1 : 0,
         baseBranch: body.baseBranch,
         createdAt: now(),
         updatedAt: now(),

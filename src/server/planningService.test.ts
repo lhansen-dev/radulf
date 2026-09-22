@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 import { planningDestination, clearPlannerArtifacts, renderPlanPrompt } from "./planningService";
 
 describe("planningDestination", () => {
@@ -108,21 +109,19 @@ vi.mock("./git", async (importOriginal) => ({
   createWorktree: mocks.createWorktree,
   tryGit: mocks.tryGit,
 }));
-vi.mock("./settings", () => ({
-  getSettings: () => ({
-    plannerProvider: "anthropic",
-    plannerModel: "planner-model",
-    plannerReasoningLevel: "medium",
-    plannerTimeoutMinutes: 42,
-    plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
-    sandboxEnabled: false,
-    sandboxNetworkAllowlist: "",
-    sandboxWeakerIsolationForGoTls: false,
-  }),
+vi.mock("./settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./settings")>()),
+  getSettings: () =>
+    testSettings({
+      plannerModel: "planner-model",
+      plannerTimeoutMinutes: 42,
+      plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
+      sandboxEnabled: false,
+    }),
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-planningService-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-planningService-");
+const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
 const { PlanningService, pendingReplanFeedback } = await import("./planningService");
@@ -204,11 +203,6 @@ describe("PlanningService.runPlanning", () => {
     seedRepo();
   });
 
-  afterAll(() => {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    delete process.env.RADULF_DATA_DIR;
-  });
-
   it("routes a completed plan straight to ready when reviewPlanBeforeImplementation is 0", async () => {
     seedCard("card-ready", 0);
     mockPlannerHarness(completeArtifacts);
@@ -241,6 +235,29 @@ describe("PlanningService.runPlanning", () => {
     await new PlanningService(deps).runPlanning("card-plan-review");
 
     expect(deps.moveCard).toHaveBeenCalledWith("card-plan-review", "planning", "plan_review");
+  });
+
+  it("finishes the run and parks the card when the planner harness throws", async () => {
+    // Without a catch, a throw after startRunRow left the run row `running`
+    // and the card landed in needs_attention with no finished run behind it.
+    seedCard("card-throws");
+    mocks.runHarness.mockRejectedValueOnce(new Error("harness crashed"));
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-throws");
+
+    expect(deps.finishRun.mock.calls[0].slice(0, 3)).toEqual([
+      expect.any(String),
+      "failed",
+      expect.stringContaining("planner failed: harness crashed"),
+    ]);
+    expect(deps.moveCard).toHaveBeenCalledWith(
+      "card-throws",
+      "planning",
+      "needs_attention",
+      expect.stringContaining("harness crashed"),
+    );
+    expect(deps.pump).toHaveBeenCalled();
   });
 
   it("escalates to needs_attention when the planner raises follow-up questions", async () => {

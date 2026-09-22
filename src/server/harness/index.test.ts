@@ -9,7 +9,7 @@ import {
   runHarness,
 } from "./index";
 import type { TranscriptEvent } from "./types";
-import { SETTING_DEFAULTS, type Settings } from "../settings";
+import { testSettings } from "@/testUtils/testSettings";
 
 describe("foldTranscriptEvent", () => {
   function fold(events: TranscriptEvent[]) {
@@ -206,9 +206,10 @@ describe("runHarness watchdogs", () => {
   }
 
   /** Like `run`, on fake timers advanced by `ms` so time-based watchdogs trip
-   * without the test waiting on a real clock. */
+   * without the test waiting on a real clock. Date is faked too: the stall
+   * watchdog compares Date.now() against its last-activity timestamp. */
   async function runFor(ms: number, script: Script, opts: Parameters<typeof run>[1] = {}) {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const pending = run(script, opts);
     await vi.advanceTimersByTimeAsync(ms);
     return pending;
@@ -251,7 +252,7 @@ describe("runHarness watchdogs", () => {
     // setting — floored at 30s — that has to arm the watchdog.
     const result = await runFor(30_000, silentAfterStart, {
       stallTimeoutMs: undefined,
-      settings: { ...SETTING_DEFAULTS, stallTimeoutSeconds: 1 } as Settings,
+      settings: testSettings({ stallTimeoutSeconds: 1 }),
     });
 
     expect(result.stalled).toBe(true);

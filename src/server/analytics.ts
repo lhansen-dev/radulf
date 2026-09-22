@@ -1,3 +1,5 @@
+import { groupBy } from "./queryGrouping";
+
 export type BarDatum = { label: string; value: number };
 
 export type AnalyticsCardRow = {
@@ -80,7 +82,7 @@ export type LoopCohort = {
   durationP90Ms: number;
 };
 
-export const MIN_COHORT_SIZE = 10;
+const MIN_COHORT_SIZE = 10;
 /** The flat "this is taking a while" mark. Still the comparison point for the
  * cross-run KPIs below, which have no single run's budget to scale to, and
  * since spec 18 §10 also the floor under the orchestrator's per-iteration
@@ -132,7 +134,6 @@ export type Analytics = {
   runsByStatus: BarDatum[];
   tokensPerRun: BarDatum[];
   costPerRun: BarDatum[];
-  iterationDurationsMs: number[];
   loopKpis: LoopKpis;
   loopCohorts: LoopCohort[];
   successRate: number;
@@ -145,29 +146,7 @@ export type Analytics = {
   tokensByRole: BarDatum[];
 };
 
-export type AnalyticsFilter = {
-  fromMs?: number | null;   // inclusive lower bound on run.startedAt; null = no bound
-  provider?: string;        // exact match on run.provider; "" / undefined = no filter
-  model?: string;           // exact match on run.model; "" / undefined = no filter
-};
-
 export type AnalyticsResponse = Analytics & { providers: string[]; models: string[] };
-
-export function filterAnalyticsInput(
-  input: { cards: AnalyticsCardRow[]; runs: AnalyticsRunRow[]; iterations: AnalyticsIterationRow[] },
-  filter: AnalyticsFilter,
-): { cards: AnalyticsCardRow[]; runs: AnalyticsRunRow[]; iterations: AnalyticsIterationRow[] } {
-  const { fromMs, provider, model } = filter;
-
-  const runs = input.runs.filter(
-    (r) =>
-      (fromMs == null || new Date(r.startedAt).getTime() >= fromMs) &&
-      (!provider || r.provider === provider) &&
-      (!model || r.model === model),
-  );
-  const runIds = new Set(runs.map((r) => r.id));
-  return { cards: input.cards, runs, iterations: input.iterations.filter((i) => runIds.has(i.runId)) };
-}
 
 /** Sum `value` per `label`, drop empty groups, largest first. */
 function groupBars<T>(rows: T[], label: (row: T) => string, value: (row: T) => number): BarDatum[] {
@@ -214,13 +193,6 @@ export function computeAnalytics(input: {
   const model = (r: AnalyticsRunRow) => (r.model?.trim() ? r.model : "unknown");
   const count = () => 1;
 
-  // Ordered ascending; spec 11 forbids a second duration calculation, so the
-  // loop KPIs derive from this same list.
-  const iterationDurationsMs = iterations
-    .filter((i) => i.startedAt && i.endedAt)
-    .map(durationMs)
-    .sort((a, b) => a - b);
-
   // "paused" is deliberately absent (spec 18 §6): the operator stopped that
   // run, so it is neither a success nor a failure and belongs on neither side
   // of the rate.
@@ -242,8 +214,7 @@ export function computeAnalytics(input: {
     runsByStatus: groupBars(runs, (r) => r.status, count),
     tokensPerRun: byValueDesc(runs.map((r) => ({ label: runLabel(r), value: tokens(r) }))),
     costPerRun: byValueDesc(pricedRuns.map((r) => ({ label: runLabel(r), value: cost(r) }))),
-    iterationDurationsMs,
-    loopKpis: computeLoopKpis(iterations, iterationDurationsMs),
+    loopKpis: computeLoopKpis(iterations),
     loopCohorts: computeLoopCohorts(iterations, runs),
     successRate: terminal.length === 0 ? 0 : completed / terminal.length,
     tokensByModel: groupBars(runs, model, tokens),
@@ -266,16 +237,34 @@ function median(values: number[]): number | null {
   return percentile([...values].sort((a, b) => a - b), 50);
 }
 
-function computeLoopKpis(
-  iterations: AnalyticsIterationRow[],
-  sortedDurationsMs: number[],
-): LoopKpis {
-  const sampleSize = sortedDurationsMs.length;
+/** The duration and model-turn facts both the loop KPIs and the rollout
+ * acceptance read off a set of iterations: the measurable durations ranked
+ * ascending (spec 11 forbids a second duration calculation, so this is the
+ * one place it happens), their p50 and p90, the share at or over
+ * SLOW_ITERATION_MS, and the median of the reported model turns. */
+function loopWindowStats(iterations: AnalyticsIterationRow[]) {
+  const sortedDurationsMs = iterations
+    .filter((i) => i.startedAt && i.endedAt)
+    .map(durationMs)
+    .sort((a, b) => a - b);
   const slowCount = sortedDurationsMs.filter((d) => d >= SLOW_ITERATION_MS).length;
-
   const turnSamples = iterations
     .map((i) => i.modelTurns)
     .filter((t): t is number => t != null);
+  return {
+    sortedDurationsMs,
+    durationP50Ms: percentile(sortedDurationsMs, 50),
+    durationP90Ms: percentile(sortedDurationsMs, 90),
+    slowIterationRate: sortedDurationsMs.length > 0 ? slowCount / sortedDurationsMs.length : null,
+    medianModelTurns: median(turnSamples),
+    modelTurnsSampleSize: turnSamples.length,
+  };
+}
+
+function computeLoopKpis(iterations: AnalyticsIterationRow[]): LoopKpis {
+  const stats = loopWindowStats(iterations);
+  const { sortedDurationsMs } = stats;
+  const sampleSize = sortedDurationsMs.length;
 
   // Cache-hit ratio only over iterations that actually reported cache facts —
   // mixing in pre-telemetry rows would understate the ratio.
@@ -283,16 +272,15 @@ function computeLoopKpis(
   const cachedInput = cacheRows.reduce((sum, i) => sum + (i.cachedInputTokens ?? 0), 0);
   const uncachedInput = cacheRows.reduce((sum, i) => sum + (i.promptTokens ?? 0), 0);
 
-
   return {
     sampleSize,
-    durationP50Ms: percentile(sortedDurationsMs, 50),
-    durationP90Ms: percentile(sortedDurationsMs, 90),
+    durationP50Ms: stats.durationP50Ms,
+    durationP90Ms: stats.durationP90Ms,
     durationP95Ms: percentile(sortedDurationsMs, 95),
     durationMaxMs: sampleSize > 0 ? sortedDurationsMs[sampleSize - 1] : null,
-    slowIterationRate: sampleSize > 0 ? slowCount / sampleSize : null,
-    medianModelTurns: median(turnSamples),
-    modelTurnsSampleSize: turnSamples.length,
+    slowIterationRate: stats.slowIterationRate,
+    medianModelTurns: stats.medianModelTurns,
+    modelTurnsSampleSize: stats.modelTurnsSampleSize,
     cacheHitRatio:
       cachedInput + uncachedInput > 0 ? cachedInput / (cachedInput + uncachedInput) : null,
     cacheSampleSize: cacheRows.length,
@@ -301,32 +289,17 @@ function computeLoopKpis(
   };
 }
 
-/** Evaluate the spec 11 performance-policy targets over the most recent
- * ROLLOUT_SAMPLE_SIZE iterations that have a measurable duration. The
- * criteria-pass / approval-rate "no regression" condition needs a baseline
- * cohort comparison and stays a human judgment — it is not encoded here. */
+/** Evaluate the spec 11 performance-policy targets over `iterations`: the
+ * rollout window, i.e. the most recent ROLLOUT_SAMPLE_SIZE iterations with a
+ * measurable duration, which the caller's query selects. The criteria-pass /
+ * approval-rate "no regression" condition needs a baseline cohort comparison
+ * and stays a human judgment — it is not encoded here. */
 export function computeRolloutAcceptance(
   iterations: AnalyticsIterationRow[],
 ): RolloutAcceptance {
-  const measurable = iterations
-    .filter((i) => i.startedAt && i.endedAt)
-    .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
-
-  const window = measurable.slice(-ROLLOUT_SAMPLE_SIZE);
-  const sufficientSample = measurable.length >= ROLLOUT_SAMPLE_SIZE;
-
-  const durations = window.map(durationMs).sort((a, b) => a - b);
-  const turnSamples = window
-    .map((i) => i.modelTurns)
-    .filter((t): t is number => t != null);
-
-  const medianDuration = percentile(durations, 50);
-  const p90Duration = percentile(durations, 90);
-  const slowRate =
-    durations.length > 0
-      ? durations.filter((d) => d >= SLOW_ITERATION_MS).length / durations.length
-      : null;
-  const medianTurns = median(turnSamples);
+  const stats = loopWindowStats(iterations);
+  const windowSize = stats.sortedDurationsMs.length;
+  const sufficientSample = windowSize >= ROLLOUT_SAMPLE_SIZE;
 
   function evaluate(
     key: RolloutTarget["key"],
@@ -346,10 +319,10 @@ export function computeRolloutAcceptance(
   }
 
   const targets = [
-    evaluate("medianDurationMs", "Median iteration duration", medianDuration, 120_000, "atMost", "ms"),
-    evaluate("p90DurationMs", "p90 iteration duration", p90Duration, 240_000, "atMost", "ms"),
-    evaluate("slowIterationRate", "Iterations at least 5 minutes", slowRate, 0.05, "under", "ratio"),
-    evaluate("medianModelTurns", "Median model turns", medianTurns, 14, "atMost", "count"),
+    evaluate("medianDurationMs", "Median iteration duration", stats.durationP50Ms, 120_000, "atMost", "ms"),
+    evaluate("p90DurationMs", "p90 iteration duration", stats.durationP90Ms, 240_000, "atMost", "ms"),
+    evaluate("slowIterationRate", "Iterations at least 5 minutes", stats.slowIterationRate, 0.05, "under", "ratio"),
+    evaluate("medianModelTurns", "Median model turns", stats.medianModelTurns, 14, "atMost", "count"),
   ];
 
   const accepted = targets.some((t) => t.pass === false)
@@ -359,7 +332,7 @@ export function computeRolloutAcceptance(
       : null;
 
   return {
-    windowSize: window.length,
+    windowSize,
     requiredSampleSize: ROLLOUT_SAMPLE_SIZE,
     sufficientSample,
     targets,
@@ -374,23 +347,21 @@ function computeLoopCohorts(
   // Breakdowns use ACTUAL provider/model/harness/version. Pre-telemetry rows
   // fall back to the run's requested pair, which was accurate absent fallback.
   const runById = new Map(runs.map((r) => [r.id, r]));
-  const groups = new Map<string, number[]>();
-  for (const i of iterations) {
-    if (!i.startedAt || !i.endedAt) continue;
+  const cohortLabel = (i: AnalyticsIterationRow) => {
     const run = runById.get(i.runId);
     const provider = i.actualProvider ?? run?.provider ?? "unknown";
     const model = i.actualModel ?? run?.model ?? "unknown";
     const harness = i.harness
       ? ` · ${i.harness}${i.harnessVersion ? ` ${i.harnessVersion}` : ""}`
       : "";
-    const label = `${provider}/${model || "unknown"}${harness}`;
-    groups.set(label, [...(groups.get(label) ?? []), durationMs(i)]);
-  }
+    return `${provider}/${model || "unknown"}${harness}`;
+  };
+  const groups = groupBy(iterations.filter((i) => i.startedAt && i.endedAt), cohortLabel);
 
   return Array.from(groups.entries())
-    .filter(([, durations]) => durations.length >= MIN_COHORT_SIZE)
-    .map(([label, durations]) => {
-      const sorted = durations.sort((a, b) => a - b);
+    .filter(([, cohort]) => cohort.length >= MIN_COHORT_SIZE)
+    .map(([label, cohort]) => {
+      const sorted = cohort.map(durationMs).sort((a, b) => a - b);
       return {
         label,
         sampleSize: sorted.length,

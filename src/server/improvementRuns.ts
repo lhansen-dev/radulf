@@ -4,7 +4,6 @@ import {
   db,
   now,
   cards,
-  repos,
   improvementRuns,
   type CardStatus,
   type ImprovementRunStatus,
@@ -13,10 +12,13 @@ import { bus, emitEvent, type RalphEvent } from "./events";
 import { getSettings } from "./settings";
 import { normalizeProvider } from "./providers";
 import { getOrchestrator } from "./orchestrator";
-import { proposeOneImprovement } from "./improvementProposer";
-import type { Proposal } from "./pm";
-import { git, listBranches } from "./git";
+import { proposeOneImprovement, type Proposal } from "./improvementProposer";
+import { assertBranchExists, git, isRalphBranch } from "./git";
 import { ClientError } from "./clientError";
+import { getCard } from "./cards";
+import { getRepo } from "./repos";
+import { sleep } from "@/shared/sleep";
+import { errorMessage } from "@/shared/errorMessage";
 
 export type ImprovementRun = typeof improvementRuns.$inferSelect;
 
@@ -48,23 +50,8 @@ function isTerminalCardStatus(status: CardStatus): boolean {
 const EMPTY_PROPOSAL_LIMIT = 3;
 const EMPTY_PROPOSAL_BACKOFF_MS = 15_000;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    t.unref?.();
-  });
-}
-
 function getRun(runId: string): ImprovementRun | undefined {
   return db.select().from(improvementRuns).where(eq(improvementRuns.id, runId)).get();
-}
-
-function getRepo(repoId: string) {
-  return db.select().from(repos).where(eq(repos.id, repoId)).get();
-}
-
-function getCard(cardId: string) {
-  return db.select().from(cards).where(eq(cards.id, cardId)).get();
 }
 
 function activeRunForRepo(repoId: string): ImprovementRun | undefined {
@@ -162,12 +149,12 @@ export async function createImprovementRun(
   if (activeRunForRepo(input.repoId)) {
     throw new ClientError("an improvement run is already active for this repo");
   }
-  if (!(await listBranches(repo.path)).includes(input.baseBranch)) {
-    throw new ClientError("baseBranch does not exist in the repository");
+  // The same rule card creation applies (spec 19): a run cut off one of
+  // Radulf's own branches would accumulate onto another run's or card's work.
+  if (isRalphBranch(input.baseBranch)) {
+    throw new ClientError("baseBranch cannot be one of Radulf's own ralph/* branches");
   }
-  if (!Number.isInteger(input.budgetMinutes) || input.budgetMinutes < 1) {
-    throw new ClientError("budgetMinutes must be a positive integer");
-  }
+  await assertBranchExists(repo.path, input.baseBranch, "baseBranch");
 
   const featureBranch = `ralph/improve-${Date.now()}`;
   await git(repo.path, "branch", featureBranch, input.baseBranch);
@@ -249,6 +236,12 @@ function finishRun(
   });
 }
 
+/** The run ran out of time or work: "stopped" when an operator asked for
+ * it, "completed" when the deadline simply arrived. */
+function endRun(runId: string, reason: string): void {
+  finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", reason);
+}
+
 /** Record a just-finished task's outcome (decision 3): success resets the
  * consecutive-failure counter; a failure increments it and stops the run
  * once it hits 3 in a row. */
@@ -321,7 +314,7 @@ async function runDriverLoop(runId: string): Promise<void> {
 
       // Timer is a soft gate, checked only between tasks (decision/ruling 5).
       if (Date.now() >= Date.parse(run.deadlineAt)) {
-        finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", "deadline reached");
+        endRun(runId, "deadline reached");
         return;
       }
 
@@ -342,7 +335,7 @@ async function runDriverLoop(runId: string): Promise<void> {
           plannerProvider: normalizeProvider(settings.plannerProvider, "anthropic"),
           plannerModel: run.plannerModel || settings.plannerModel,
           plannerReasoningLevel: run.plannerReasoning || settings.plannerReasoningLevel,
-          s: settings,
+          template: settings.improvePromptTemplate,
         });
       } catch {
         proposal = null;
@@ -351,11 +344,7 @@ async function runDriverLoop(runId: string): Promise<void> {
       if (!proposal) {
         emptyStreak += 1;
         if (emptyStreak >= EMPTY_PROPOSAL_LIMIT) {
-          finishRun(
-            runId,
-            stopRequests().has(runId) ? "stopped" : "completed",
-            "proposer ran dry",
-          );
+          endRun(runId, "proposer ran dry");
           return;
         }
         await sleep(EMPTY_PROPOSAL_BACKOFF_MS);
@@ -371,7 +360,7 @@ async function runDriverLoop(runId: string): Promise<void> {
       const fresh = getRun(runId) ?? run;
       const remainingMinutes = Math.floor((Date.parse(fresh.deadlineAt) - Date.now()) / 60_000);
       if (remainingMinutes < 1) {
-        finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", "deadline reached");
+        endRun(runId, "deadline reached");
         return;
       }
       const timeoutMinutes = Math.min(
@@ -413,6 +402,6 @@ async function runDriverLoop(runId: string): Promise<void> {
       recordCardOutcome(runId, (await awaitCardTerminal(cardId)) === "done");
     }
   } catch (e) {
-    finishRun(runId, "failed", `improvement run crashed: ${e instanceof Error ? e.message : String(e)}`);
+    finishRun(runId, "failed", `improvement run crashed: ${errorMessage(e)}`);
   }
 }

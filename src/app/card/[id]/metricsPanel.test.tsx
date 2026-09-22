@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { describe, it, expect, afterEach } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 import { MetricsPanel, Run } from "./metricsPanel";
 
 function makeRun(overrides: Partial<Run> = {}): Run {
@@ -41,14 +41,11 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 }
 
 describe("MetricsPanel", () => {
-  afterEach(() => {
-    cleanup();
-    vi.useRealTimers();
-  });
+  afterEach(cleanup);
 
   it("renders a completed run with a concrete total duration", () => {
     const run = makeRun();
-    render(<MetricsPanel run={run} />);
+    render(<MetricsPanel run={run} nowMs={Date.now()} />);
 
     // Total row should show the duration of the whole run
     // Started at 00:00:00, ended at 00:00:02 => "2s"
@@ -63,10 +60,8 @@ describe("MetricsPanel", () => {
     expect(screen.getByText("160")).toBeTruthy();
   });
 
-  it("renders a running run with live ticking total and iteration durations", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
-
+  it("follows the clock it is handed for a running run's total and iteration durations", () => {
+    const start = new Date("2025-01-01T00:00:00Z").getTime();
     const run = makeRun({
       status: "running",
       endedAt: null,
@@ -84,33 +79,37 @@ describe("MetricsPanel", () => {
         },
       ],
     });
-    render(<MetricsPanel run={run} />);
+    const { rerender } = render(<MetricsPanel run={run} nowMs={start} />);
 
-    // Initially the iteration row and Total row both show "0s"
-    // (startedAt = now, so 0 seconds elapsed)
-    const zeroCells = screen.getAllByText("0s");
-    expect(zeroCells.length).toBe(2);
+    // The iteration row and Total row both show "0s" at the start.
+    expect(screen.getAllByText("0s")).toHaveLength(2);
 
-    // Advance timers by 2 seconds — both should now show "2s"
-    act(() => {
-      vi.advanceTimersByTime(2000);
-    });
-    const twoCells = screen.getAllByText("2s");
-    expect(twoCells.length).toBe(2);
+    // The RunsTable's clock moves on 2 seconds — both show "2s".
+    rerender(<MetricsPanel run={run} nowMs={start + 2000} />);
+    expect(screen.getAllByText("2s")).toHaveLength(2);
 
-    // Advance by another second — both should show "3s"
-    act(() => {
-      vi.advanceTimersByTime(1000);
-    });
-    const threeCells = screen.getAllByText("3s");
-    expect(threeCells.length).toBe(2);
+    rerender(<MetricsPanel run={run} nowMs={start + 3000} />);
+    expect(screen.getAllByText("3s")).toHaveLength(2);
+  });
+
+  it("renders unmeasured tokens as em dash and totals only what was reported", () => {
+    const run = makeRun();
+    run.iterations[1].promptTokens = null;
+    run.iterations[1].completionTokens = null;
+    render(<MetricsPanel run={run} nowMs={Date.now()} />);
+
+    // Row 2's two token cells, plus the three unpriced cost cells.
+    expect(screen.getAllByText("—")).toHaveLength(5);
+    // The totals are the one measured row's numbers, not that row plus zero.
+    expect(screen.getAllByText("50")).toHaveLength(2);
+    expect(screen.getAllByText("100")).toHaveLength(2);
   });
 
   it("shows per-iteration cost, totaling only what was priced", () => {
     const run = makeRun();
     run.iterations[0].costUsd = 0.0123;
     run.iterations[1].costUsd = 0.0004;
-    const { rerender } = render(<MetricsPanel run={run} />);
+    const { rerender } = render(<MetricsPanel run={run} nowMs={Date.now()} />);
     expect(screen.getByText("$0.0123")).toBeTruthy();
     expect(screen.getByText("$0.0004")).toBeTruthy();
     expect(screen.getByText("$0.0127")).toBeTruthy();
@@ -118,12 +117,12 @@ describe("MetricsPanel", () => {
     // A pre-telemetry row is an em dash, and the total covers only the priced one.
     const partlyPriced = makeRun();
     partlyPriced.iterations[0].costUsd = 0.05;
-    rerender(<MetricsPanel run={partlyPriced} />);
+    rerender(<MetricsPanel run={partlyPriced} nowMs={Date.now()} />);
     expect(screen.getAllByText("—")).toHaveLength(1);
     expect(screen.getAllByText("$0.0500")).toHaveLength(2);
 
     // Nothing priced: both rows and the total are em dashes, never $0.
-    rerender(<MetricsPanel run={makeRun()} />);
+    rerender(<MetricsPanel run={makeRun()} nowMs={Date.now()} />);
     expect(screen.getAllByText("—")).toHaveLength(3);
   });
 });

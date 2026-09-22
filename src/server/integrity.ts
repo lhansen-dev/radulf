@@ -58,6 +58,20 @@ function snapshotHooks(hooksDir: string): Record<string, string> {
   return hooks;
 }
 
+/** The hook and config half of a baseline: what the pre-merge check re-reads
+ * on its own, refs aside. */
+function snapshotHooksAndConfig(
+  commonDir: string,
+): Pick<RepoIntegrityBaseline, "hooks" | "configHash"> {
+  let configHash = "";
+  try {
+    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
+  } catch {
+    // No config file — "" stands in, on both sides of the comparison.
+  }
+  return { hooks: snapshotHooks(path.join(commonDir, "hooks")), configHash };
+}
+
 async function snapshotRefs(repoPath: string): Promise<Record<string, string>> {
   const { ok, out } = await tryGit(
     repoPath,
@@ -81,17 +95,7 @@ export async function snapshotRepoIntegrity(
 ): Promise<RepoIntegrityBaseline | null> {
   const commonDir = await gitCommonDir(repoPath);
   if (commonDir === null) return null;
-  let configHash = "";
-  try {
-    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
-  } catch {
-    // No config file — "" is the baseline.
-  }
-  return {
-    hooks: snapshotHooks(path.join(commonDir, "hooks")),
-    configHash,
-    refs: await snapshotRefs(repoPath),
-  };
+  return { ...snapshotHooksAndConfig(commonDir), refs: await snapshotRefs(repoPath) };
 }
 
 /**
@@ -132,7 +136,7 @@ export async function checkRepoIntegrity(
     return [`repo at ${repoPath} is no longer a usable git repository`];
   }
 
-  const hooksNow = snapshotHooks(path.join(commonDir, "hooks"));
+  const { hooks: hooksNow, configHash } = snapshotHooksAndConfig(commonDir);
   for (const [name, hash] of Object.entries(hooksNow)) {
     if (!(name in baseline.hooks)) violations.push(`hook appeared: .git/hooks/${name}`);
     else if (baseline.hooks[name] !== hash) violations.push(`hook changed: .git/hooks/${name}`);
@@ -141,12 +145,6 @@ export async function checkRepoIntegrity(
     if (!(name in hooksNow)) violations.push(`hook removed: .git/hooks/${name}`);
   }
 
-  let configHash = "";
-  try {
-    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
-  } catch {
-    // Missing now — compares against baseline "" below.
-  }
   if (configHash !== baseline.configHash) violations.push(".git/config changed");
 
   if (opts.checkRefs) {
@@ -177,7 +175,7 @@ function baselineDir(): string {
   return path.join(DATA_DIR, "integrity");
 }
 
-export function baselinePath(runId: string): string {
+function baselinePath(runId: string): string {
   return path.join(baselineDir(), `${runId}.json`);
 }
 
@@ -221,13 +219,6 @@ export function registerRunBaseline(
 
 export function releaseRunBaseline(runId: string): void {
   liveBaselines.delete(runId);
-}
-
-/** The registered baseline, or undefined for a run that never registered one
- * (a repo that is not a usable git repo, or a unit test). Callers fall back to
- * whatever they snapshotted themselves. */
-export function liveBaseline(runId: string): RepoIntegrityBaseline | undefined {
-  return liveBaselines.get(runId)?.baseline;
 }
 
 /**

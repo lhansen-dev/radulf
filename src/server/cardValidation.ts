@@ -1,5 +1,12 @@
 import type { CreateCardRequest } from "@/shared/cardRequests";
-import { ClientError } from "./clientError";
+import {
+  invalid,
+  optionalInteger,
+  optionalString,
+  record,
+  rejectUnknownKeys,
+  requiredString,
+} from "./requestValidation";
 
 type CreateCardInput = Omit<
   CreateCardRequest,
@@ -23,50 +30,14 @@ export type UpdateCardInput = {
   evaluatorModel?: string | null;
 };
 
-function invalid(message: string): never {
-  throw new ClientError(message);
-}
-
-function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    invalid("card body must be an object");
-  }
-  return value as Record<string, unknown>;
-}
-
-function rejectUnknownKeys(body: Record<string, unknown>, allowed: Set<string>) {
-  const unknown = Object.keys(body).find((key) => !allowed.has(key));
-  if (unknown) invalid(`unknown card field: ${unknown}`);
-}
-
-function requiredString(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) invalid(`${field} is required`);
-  return value.trim();
-}
-
-function optionalString(value: unknown, field: string): string | null {
-  if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string") invalid(`${field} must be a string or null`);
-  return value.trim() || null;
-}
-
-function optionalInteger(value: unknown, field: string, max: number): number | null {
-  if (value === undefined || value === null || value === "") return null;
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) {
-    invalid(`${field} must be an integer between 1 and ${max}`);
-  }
-  return parsed;
-}
-
 const CREATE_FIELDS = new Set([
   "repoId", "title", "description", "maxIterations", "timeoutMinutes", "plannerModel",
   "loopModel", "evaluatorModel", "reviewPlanBeforeImplementation", "autoApprove", "openPr", "baseBranch",
 ]);
 
 export function parseCreateCard(value: unknown): CreateCardInput {
-  const body = record(value);
-  rejectUnknownKeys(body, CREATE_FIELDS);
+  const body = record(value, "card body");
+  rejectUnknownKeys(body, CREATE_FIELDS, "card field");
   if (body.description !== undefined && typeof body.description !== "string") {
     invalid("description must be a string");
   }
@@ -94,8 +65,8 @@ const UPDATE_FIELDS = new Set([
 ]);
 
 export function parseUpdateCard(value: unknown): UpdateCardInput {
-  const body = record(value);
-  rejectUnknownKeys(body, UPDATE_FIELDS);
+  const body = record(value, "card body");
+  rejectUnknownKeys(body, UPDATE_FIELDS, "card field");
   const patch: UpdateCardInput = {};
   if ("title" in body) patch.title = requiredString(body.title, "title");
   if ("description" in body) {

@@ -13,8 +13,9 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import { DATA_DIR } from "@/db";
 import { listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
-import type { ProviderId } from "../providers";
+import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
@@ -75,10 +76,6 @@ const PI_PROVIDER: Record<ProviderId, string> = {
 // Persistent, Radulf-owned pi agent dir (spec 13)
 // ---------------------------------------------------------------------------
 
-function radulfDataDir(): string {
-  return process.env.RADULF_DATA_DIR ?? path.join(process.cwd(), "data");
-}
-
 /**
  * One Radulf-owned pi agent dir, shared by every run. Holds `auth.json` (the
  * subscription logins established once via `make login` → `/login`, which points
@@ -89,7 +86,7 @@ function radulfDataDir(): string {
  * enforced by the session options, not by an empty dir.
  */
 export function piAgentDir(): string {
-  return path.join(radulfDataDir(), "pi-agent");
+  return path.join(DATA_DIR, "pi-agent");
 }
 
 /**
@@ -247,7 +244,7 @@ const OPENROUTER_COMPLETIONS_BASE_URL = "https://openrouter.ai/api/v1";
  * with OpenRouter's HTML 404 page. Re-shape those entries to match pi 0.84's
  * bundled catalog for the same models. Remove this once pi is upgraded.
  */
-export function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
+function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
   m: M,
 ): M {
   if (m.api !== "anthropic-messages") return m;
@@ -359,11 +356,11 @@ export async function resolveModel(
  * `thinking`, and `toolCall` — plus usage and stopReason); `auto_retry_end`
  * carries `success`/`finalError`. Streaming deltas and lifecycle framing are
  * dropped deliberately — their content is fully duplicated by `message_end`.
- * Everything unrecognized is preserved as `t:"raw"` with a stringified event
+ * Everything unrecognized is preserved as `t:"raw"` carrying the event object
  * so nothing is lost.
  */
 export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
-  const raw = (): TranscriptEvent[] => [{ t: "raw", line: JSON.stringify(evt) }];
+  const raw = (): TranscriptEvent[] => [{ t: "raw", event: evt }];
 
   if (evt.type === "message_end") {
     const message = evt.message as unknown as Record<string, unknown> | undefined;
@@ -686,15 +683,7 @@ export function harnessPackageVersion(): string {
 export async function listAuthedModels(
   provider: ProviderId,
   opts: { force?: boolean } = {},
-): Promise<
-  {
-    value: string;
-    displayName: string;
-    description: string;
-    costPerMillionInput?: number;
-    costPerMillionOutput?: number;
-  }[]
-> {
+): Promise<ProviderModel[]> {
   const runtime = await getModelRuntime();
   const pid = PI_PROVIDER[provider];
   await refreshProviderCatalog(runtime, pid, opts.force);

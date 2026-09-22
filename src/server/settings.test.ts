@@ -1,10 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-settings-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-settings-");
 process.env.RADULF_AUTH_SECRET =
   "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
 
@@ -12,8 +9,6 @@ const { db, settings: settingsTable } = await import("@/db");
 const { getSettings, patchSettings } = await import("./settings");
 
 afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
   delete process.env.RADULF_AUTH_SECRET;
 });
 

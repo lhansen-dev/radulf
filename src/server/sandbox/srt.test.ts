@@ -197,26 +197,27 @@ describe("resolveGitCommonDir", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("resolves the main repo's .git dir for an ordinary (non-worktree) checkout", () => {
-    expect(resolveGitCommonDir(tmpDir)).toBe(path.join(tmpDir, ".git"));
+  it("resolves the main repo's .git dir for an ordinary (non-worktree) checkout", async () => {
+    expect(await resolveGitCommonDir(tmpDir)).toBe(path.join(tmpDir, ".git"));
   });
 
   it("resolves the SHARED .git dir for a linked worktree, not the worktree's own pointer file", async () => {
-    const worktreePath = path.join(tmpDir, "..", "radulf-srt-git-wt");
-    await git(tmpDir, "worktree", "add", worktreePath, "-b", "feature");
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-git-wt-"));
     try {
+      await git(tmpDir, "worktree", "add", worktreePath, "-b", "feature");
       // realpath: on macOS os.tmpdir() is a /var symlink into /private/var,
       // and `git rev-parse` resolves through it — compare canonical paths.
-      expect(resolveGitCommonDir(worktreePath)).toBe(fs.realpathSync(path.join(tmpDir, ".git")));
+      expect(await resolveGitCommonDir(worktreePath)).toBe(fs.realpathSync(path.join(tmpDir, ".git")));
     } finally {
       await git(tmpDir, "worktree", "remove", "--force", worktreePath).catch(() => {});
+      fs.rmSync(worktreePath, { recursive: true, force: true });
     }
   });
 
-  it("throws for a directory that is not a git repo at all (fail loud, no silent fallback)", () => {
+  it("throws for a directory that is not a git repo at all (fail loud, no silent fallback)", async () => {
     const notGit = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-notgit-"));
     try {
-      expect(() => resolveGitCommonDir(notGit)).toThrow();
+      await expect(resolveGitCommonDir(notGit)).rejects.toThrow();
     } finally {
       fs.rmSync(notGit, { recursive: true, force: true });
     }
@@ -236,8 +237,8 @@ describe("gitWorktreeDenies", () => {
     fs.writeFileSync(path.join(repoDir, "f"), "x");
     await git(repoDir, "add", ".");
     await git(repoDir, "commit", "-m", "init");
-    gitCommonDir = resolveGitCommonDir(repoDir);
-    worktreePath = path.join(repoDir, "..", "radulf-srt-wtdeny-wt");
+    gitCommonDir = await resolveGitCommonDir(repoDir);
+    worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wtdeny-wt-"));
     await git(repoDir, "worktree", "add", worktreePath, "-b", "wtdeny");
   });
 
@@ -515,12 +516,12 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
     fs.writeFileSync(path.join(repoDir, "f"), "x");
     await git(repoDir, "add", ".");
     await git(repoDir, "commit", "-m", "init");
-    worktree = path.join(repoDir, "..", "radulf-accept-wt");
+    worktree = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-accept-wt-"));
     await git(repoDir, "worktree", "add", worktree, "-b", "accept-feature");
     // A branch nothing has checked out: the one shape of `git checkout` that
     // git itself would not refuse inside a linked worktree.
     await git(repoDir, "branch", "accept-other");
-    gitCommonDir = resolveGitCommonDir(worktree);
+    gitCommonDir = await resolveGitCommonDir(worktree);
     // Seed the per-worktree config BEFORE the first sandboxed run. For a deny
     // path that doesn't exist yet, srt has bwrap create a read-only mount
     // point for it on the host and only unlinks it in a process-exit handler —

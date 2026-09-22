@@ -26,7 +26,7 @@ export const REPLAN_LOOP_EXITS: ReadonlySet<string> = new Set([LOOP_BLOCKED_EXIT
 const FAILED_STATUSES = new Set(["failed", "timeout", "interrupted"]);
 
 /** Pick the run with the latest start or completion activity. */
-export function latestPipelineRun<T extends PipelineRun>(runRows: T[]): T | undefined {
+function latestPipelineRun<T extends PipelineRun>(runRows: T[]): T | undefined {
   let latest: T | undefined;
   let latestActivity = "";
 

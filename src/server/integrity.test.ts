@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 
 // integrity.ts resolves its baseline dir from DATA_DIR at import time.
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-integrity-"));
@@ -18,21 +18,11 @@ const {
   noteRadulfRefWrite,
 } = await import("./integrity");
 
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
-}
-
 const RUN_BRANCH = "ralph/test-card-run1";
 let repo: string;
 
 beforeAll(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-integrity-repo-"));
-  git(repo, "init", "-b", "main");
-  git(repo, "config", "user.email", "t@t.t");
-  git(repo, "config", "user.name", "T");
-  fs.writeFileSync(path.join(repo, "README.md"), "# repo");
-  git(repo, "add", ".");
-  git(repo, "commit", "-m", "initial");
+  repo = initScratchRepo("radulf-integrity-repo-");
   git(repo, "branch", RUN_BRANCH);
 });
 

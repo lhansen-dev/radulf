@@ -1,19 +1,11 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-rl-ext-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-rl-ext-");
 
 const { db, settings } = await import("@/db");
 const { rateLimitExtension } = await import("./rateLimitExtension");
 const { readProviderRateLimit } = await import("../providerRateLimit");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
-});
 
 beforeEach(() => {
   db.delete(settings).run();

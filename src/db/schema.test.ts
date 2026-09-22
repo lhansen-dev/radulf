@@ -1,21 +1,26 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 import { eq } from "drizzle-orm";
 
 // The DB must open against a throwaway data dir, so the env var is set before
 // the module (and its import-time path resolution) loads.
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-schema-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-schema-");
 
-const { db, now, repos, runs, cards, worktrees, DATA_DIR, WORKTREES_DIR, PLANS_DIR } =
-  await import("@/db");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
-});
+const {
+  db,
+  now,
+  repos,
+  runs,
+  cards,
+  worktrees,
+  settings,
+  readSettingJson,
+  upsertSettingJson,
+  DATA_DIR,
+  WORKTREES_DIR,
+  PLANS_DIR,
+} = await import("@/db");
 
 describe("spec 14 directory layout", () => {
   it("keeps worktrees and plans OUTSIDE data/ (sandbox denies data/ wholesale)", () => {
@@ -47,5 +52,20 @@ describe("schema defaults and constraints", () => {
     const row = db.select().from(worktrees).where(eq(worktrees.id, "wt1")).get()!;
     expect(row.runId).toBeNull();
     expect(row.removedAt).toBeNull();
+  });
+});
+
+describe("settings KV JSON helpers", () => {
+  it("upserts one row per key and reads it back parsed", () => {
+    upsertSettingJson("kv:test", { a: 1 });
+    upsertSettingJson("kv:test", { a: 2 });
+    expect(db.select().from(settings).where(eq(settings.key, "kv:test")).all()).toHaveLength(1);
+    expect(readSettingJson("kv:test")).toEqual({ a: 2 });
+  });
+
+  it("reads a missing or corrupt row as null", () => {
+    expect(readSettingJson("kv:absent")).toBeNull();
+    db.insert(settings).values({ key: "kv:corrupt", value: "not json" }).run();
+    expect(readSettingJson("kv:corrupt")).toBeNull();
   });
 });

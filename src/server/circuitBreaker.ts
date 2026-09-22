@@ -1,5 +1,4 @@
-import { eq } from "drizzle-orm";
-import { db, now, settings, type FailureKind } from "@/db";
+import { now, readSettingJson, upsertSettingJson, type FailureKind } from "@/db";
 import type { ProviderId } from "./providers";
 
 // Same connection/auth-shaped failure signal the orchestrator already uses to
@@ -32,7 +31,7 @@ export const LIMIT_ERROR_PATTERN =
  * Checked last, so a 401 or a 429 whose body happens to mention the model
  * keeps its more specific reading.
  */
-export const CONFIG_ERROR_PATTERN =
+const CONFIG_ERROR_PATTERN =
   /\b400\b|invalid[_ ]request|model[_ ]not[_ ]found|unsupported|(?:does not|doesn't) support|unknown model|no such model|or newer is required/i;
 
 /** Why a run's provider call failed. Re-exported from the schema, which owns
@@ -155,28 +154,20 @@ function settingsKey(provider: ProviderId): string {
 }
 
 function readState(provider: ProviderId): BreakerState {
-  const row = db.select().from(settings).where(eq(settings.key, settingsKey(provider))).get();
-  if (!row) return CLOSED;
-  try {
-    const parsed = JSON.parse(row.value) as Partial<BreakerState>;
-    return {
-      state: parsed.state === "open" ? "open" : "closed",
-      consecutiveFailures:
-        typeof parsed.consecutiveFailures === "number" ? parsed.consecutiveFailures : 0,
-      openedAt: typeof parsed.openedAt === "string" ? parsed.openedAt : null,
-      reason: parsed.reason === "limit" || parsed.reason === "conn" ? parsed.reason : null,
-      openUntil: typeof parsed.openUntil === "string" ? parsed.openUntil : null,
-    };
-  } catch {
-    return CLOSED;
-  }
+  const parsed = readSettingJson(settingsKey(provider)) as Partial<BreakerState> | null;
+  if (!parsed) return CLOSED;
+  return {
+    state: parsed.state === "open" ? "open" : "closed",
+    consecutiveFailures:
+      typeof parsed.consecutiveFailures === "number" ? parsed.consecutiveFailures : 0,
+    openedAt: typeof parsed.openedAt === "string" ? parsed.openedAt : null,
+    reason: parsed.reason === "limit" || parsed.reason === "conn" ? parsed.reason : null,
+    openUntil: typeof parsed.openUntil === "string" ? parsed.openUntil : null,
+  };
 }
 
 function writeState(provider: ProviderId, state: BreakerState): void {
-  db.insert(settings)
-    .values({ key: settingsKey(provider), value: JSON.stringify(state) })
-    .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify(state) } })
-    .run();
+  upsertSettingJson(settingsKey(provider), state);
 }
 
 /**

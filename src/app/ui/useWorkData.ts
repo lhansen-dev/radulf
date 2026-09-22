@@ -10,6 +10,8 @@ import {
   type Repo,
 } from "./api";
 import { refreshTargetsForEvent } from "./eventRefresh";
+import { ATTENTION_STATUSES } from "@/shared/cardStatus";
+import { parsePayload } from "@/shared/eventPayload";
 import { notificationsAvailable, playAlertSound, showCardNotification } from "./notify";
 
 export type ImprovementRunAlert = {
@@ -43,7 +45,7 @@ export function useWorkData() {
         if (
           previous &&
           previous !== card.status &&
-          ["review", "plan_review", "needs_attention"].includes(card.status)
+          ATTENTION_STATUSES.includes(card.status)
         ) {
           if (notifyPrefs.current.notifications) {
             showCardNotification("Task needs you", card.title);
@@ -110,32 +112,28 @@ export function useWorkData() {
   const wasDisconnected = useRef(false);
   useEventStream((event) => {
     if (event.type === "improvement.completed") {
-      try {
-        const payload = JSON.parse(event.payload ?? "{}") as {
-          featureBranch?: string;
-          tasksSucceeded?: number;
-          status?: ImprovementRun["status"];
+      const payload = parsePayload(event.payload) as {
+        featureBranch?: string;
+        tasksSucceeded?: number;
+        status?: ImprovementRun["status"];
+      };
+      if (payload.featureBranch && payload.status) {
+        const alert: ImprovementRunAlert = {
+          featureBranch: payload.featureBranch,
+          tasksSucceeded: payload.tasksSucceeded ?? 0,
+          status: payload.status,
         };
-        if (payload.featureBranch && payload.status) {
-          const alert: ImprovementRunAlert = {
-            featureBranch: payload.featureBranch,
-            tasksSucceeded: payload.tasksSucceeded ?? 0,
-            status: payload.status,
-          };
-          const title =
-            alert.status === "failed" ? "Improvement run failed" :
-            alert.status === "stopped" ? "Improvement run stopped" :
-            "Improvement run finished";
-          const body = `${alert.tasksSucceeded} task${alert.tasksSucceeded === 1 ? "" : "s"} landed on ${alert.featureBranch}`;
-          if (notifyPrefs.current.notifications && notificationsAvailable()) {
-            showCardNotification(title, body);
-          } else {
-            setImprovementAlert(alert);
-          }
-          if (notifyPrefs.current.sound) playAlertSound();
+        const title =
+          alert.status === "failed" ? "Improvement run failed" :
+          alert.status === "stopped" ? "Improvement run stopped" :
+          "Improvement run finished";
+        const body = `${alert.tasksSucceeded} task${alert.tasksSucceeded === 1 ? "" : "s"} landed on ${alert.featureBranch}`;
+        if (notifyPrefs.current.notifications && notificationsAvailable()) {
+          showCardNotification(title, body);
+        } else {
+          setImprovementAlert(alert);
         }
-      } catch {
-        // ignore malformed payload
+        if (notifyPrefs.current.sound) playAlertSound();
       }
     }
     const targets = refreshTargetsForEvent(event.type);
@@ -161,10 +159,6 @@ export function useWorkData() {
   });
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCards((current) => [...current]);
-      checkHealth();
-    }, 30_000);
     const offline = () => setStreamConnected(false);
     const online = () => {
       setStreamConnected(true);
@@ -173,12 +167,11 @@ export function useWorkData() {
     window.addEventListener("offline", offline);
     window.addEventListener("online", online);
     return () => {
-      clearInterval(interval);
       if (eventTimer.current) clearTimeout(eventTimer.current);
       window.removeEventListener("offline", offline);
       window.removeEventListener("online", online);
     };
-  }, [checkHealth, refetch]);
+  }, [refetch]);
 
   return {
     cards,
@@ -200,6 +193,7 @@ export function useWorkData() {
     restartRequired,
     restarting,
     setRestarting,
-    refetch,
+    refetchCards,
+    refetchImprovementRuns,
   };
 }

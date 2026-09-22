@@ -14,6 +14,9 @@ import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sa
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR, WORKTREES_DIR } from "@/db";
+import { errorMessage } from "@/shared/errorMessage";
+import { git } from "../git";
+import { isInsideOrEqual } from "./pathGuard";
 
 /**
  * Layer 1 — OS sandbox on agent bash (spec 14 Phase 6), via
@@ -77,29 +80,19 @@ export function systemReadRoots(): string[] {
 }
 
 /**
- * True when `candidate` is `target` itself or a proper ancestor directory of
- * it. srt's read-allow is a *recursive* subpath match, so an `allowRead`
- * entry that is an ancestor of a supposedly-denied root re-opens that whole
- * root — this is the check that stops that from happening by accident.
- */
-function isAncestorOrSelf(candidate: string, target: string): boolean {
-  if (candidate === target) return true;
-  const prefix = candidate.endsWith(path.sep) ? candidate : candidate + path.sep;
-  return target.startsWith(prefix);
-}
-
-/**
  * Drop any candidate read-allow root that would, by containing one of
  * `protectedRoots` (or being `/` itself), silently re-open it — e.g. a PATH
  * entry of `/bin` naively contributing `/` (its `dirname`) as an "allow"
  * would recursively re-open the entire filesystem, defeating `$HOME`'s
- * deny outright. Narrow re-allows genuinely *inside* a protected root
+ * deny outright. srt's read-allow is a *recursive* subpath match, so an
+ * `allowRead` entry that is an ancestor of a supposedly-denied root re-opens
+ * that whole root. Narrow re-allows genuinely *inside* a protected root
  * (`~/.nvm` inside `$HOME`) are unaffected — this only rejects candidates
  * that are the protected root or broader.
  */
 export function dropRootsThatWouldReopen(candidates: string[], protectedRoots: string[]): string[] {
   return candidates.filter(
-    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isAncestorOrSelf(c, protectedRoot)),
+    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isInsideOrEqual(protectedRoot, c)),
   );
 }
 
@@ -142,10 +135,8 @@ export function toolchainHomeReAllows(): string[] {
  * write access here (objects, the worktree's own index) except for the
  * hook/config and ref vectors carved out below.
  */
-export function resolveGitCommonDir(worktree: string): string {
-  const out = execFileSync("git", ["-C", worktree, "rev-parse", "--git-common-dir"], {
-    encoding: "utf8",
-  }).trim();
+export async function resolveGitCommonDir(worktree: string): Promise<string> {
+  const out = await git(worktree, "rev-parse", "--git-common-dir");
   return path.isAbsolute(out) ? out : path.resolve(worktree, out);
 }
 
@@ -373,7 +364,7 @@ export function initializeSandboxRuntimeOnce(): Promise<SandboxPreflightResult> 
       } catch (e) {
         return {
           ok: false,
-          errors: [...preflight.errors, `sandbox startup failed: ${e instanceof Error ? e.message : String(e)}`],
+          errors: [...preflight.errors, `sandbox startup failed: ${errorMessage(e)}`],
           warnings: preflight.warnings,
         };
       } finally {
@@ -397,9 +388,10 @@ export function resetSandboxRuntimeForTests(): void {
  * wrap-and-`updateConfig` step one at a time, in arrival order, without
  * rejecting any of them. `queueDepth`/`queuedConfig` exist only for the
  * narrower safety check kept below: don't delete either without first
- * making network policy genuinely per-call (today it's always derived from
- * global settings, so it can never actually differ across calls — see the
- * check itself for why that's still verified at runtime, not assumed).
+ * making network policy genuinely per-call (today it's derived from the
+ * Settings snapshot each run takes at start, so it differs across calls
+ * only when the allowlist setting changes between two overlapping runs —
+ * see the check itself).
  */
 let sandboxQueueTail: Promise<void> = Promise.resolve();
 let queueDepth = 0;
@@ -479,13 +471,14 @@ export async function wrapBashCommand(
   command: string,
   runConfig: SandboxRuntimeConfig,
 ): Promise<string> {
-  // Real (not hardcoded-"always equal") safety check: today every caller's
-  // config is derived from the same global settings, so this never actually
-  // trips — but if per-run network policy is ever added, two genuinely
-  // different concurrent configs must still fail loudly rather than one
-  // silently overwriting the other's `updateConfig()` call. Compares only
-  // the network-policy slice (PLAN.md Phase 19.1) — the per-run filesystem
-  // config is expected to differ on every call and must never factor in.
+  // Real (not hardcoded-"always equal") safety check. Every run derives its
+  // network policy from the Settings snapshot taken at its start
+  // (context.ts), so two overlapping runs differ only when an operator edits
+  // `sandboxNetworkAllowlist` between their starts — and then this trips for
+  // the later run rather than letting its `updateConfig()` silently overwrite
+  // the earlier run's policy. Compares only the network-policy slice
+  // (PLAN.md Phase 19.1) — the per-run filesystem config is expected to
+  // differ on every call and must never factor in.
   const incomingPolicy = networkPolicySlice(runConfig);
   if (queueDepth > 0 && queuedConfig !== null && !sandboxConfigsEqual(queuedConfig, incomingPolicy)) {
     throw new Error(
@@ -497,10 +490,8 @@ export async function wrapBashCommand(
   queuedConfig = incomingPolicy;
   queueDepth++;
   const myTurn = sandboxQueueTail;
-  let releaseMyTurn!: () => void;
-  sandboxQueueTail = new Promise<void>((resolve) => {
-    releaseMyTurn = resolve;
-  });
+  const { promise: myDone, resolve: releaseMyTurn } = Promise.withResolvers<void>();
+  sandboxQueueTail = myDone;
   await myTurn;
   try {
     SandboxManager.updateConfig(runConfig);

@@ -1,17 +1,16 @@
 import { getOrchestrator } from "@/server/orchestrator";
 import { ClientError } from "@/server/clientError";
+import { record } from "@/server/requestValidation";
 import type { ApprovedInstallScript } from "@/db";
 import { json, err, handle } from "../../../_lib";
-
-export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string; action: string }> };
 
 /** Body: { packages: { name, version, scriptHash }[] } — the install-script
  * gate approval (spec 14). Out-of-band human decision; never model-reachable. */
 async function installPackages(req: Request): Promise<ApprovedInstallScript[]> {
-  const body = (await req.json().catch(() => null)) as { packages?: unknown } | null;
-  if (!body || !Array.isArray(body.packages)) {
+  const body = record(await req.json(), "approve-install body");
+  if (!Array.isArray(body.packages)) {
     throw new ClientError("body must be { packages: [...] }");
   }
   return body.packages.map((p) => {

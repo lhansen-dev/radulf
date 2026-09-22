@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { RunsTable, runTotals } from "./runsTable";
+import { RunsTable } from "./runsTable";
+import { runTotals } from "./runTotals";
 import type { Run } from "./metricsPanel";
 import type { CardDetailData, Plan } from "./useCardDetail";
 
@@ -288,6 +289,7 @@ describe("RunsTable", () => {
       {
         runId: "r-plan",
         iteration: 0,
+        live: false,
         provider: "anthropic",
         model: "opus",
         reasoningLevel: "high",

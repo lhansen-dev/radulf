@@ -1,7 +1,6 @@
+import { record } from "@/server/requestValidation";
 import { scopingTurn } from "@/server/scoping";
 import { json, err, handle } from "../../../_lib";
-
-export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -10,8 +9,8 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function POST(req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const body = (await req.json().catch(() => null)) as { content?: unknown; reply?: unknown } | null;
-    if (!body || typeof body.content !== "string") return err("content is required");
+    const body = record(await req.json(), "scoping body");
+    if (typeof body.content !== "string") return err("content is required");
     if (body.reply !== undefined && typeof body.reply !== "boolean") return err("reply must be a boolean");
     return json({ messages: await scopingTurn(id, body.content, { reply: body.reply }) });
   });

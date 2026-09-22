@@ -1,10 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-rate-limit-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-rate-limit-");
 
 const { db, settings } = await import("@/db");
 const {
@@ -12,15 +9,16 @@ const {
   readProviderRateLimit,
   rateLimitCooldownMs,
   limitCooldownMs,
+  recordProviderFailure,
 } = await import("./providerRateLimit");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
-});
+const { providerBreakerStatus } = await import("./circuitBreaker");
 
 beforeEach(() => {
   db.delete(settings).run();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const exhausted = (resetEpochSeconds: number) => ({
@@ -100,5 +98,33 @@ describe("cooldowns from the observed reset", () => {
   it("ignores a reset that has already passed", () => {
     observeRateLimitHeaders("anthropic", exhausted(Math.floor((nowMs - 60_000) / 1000)));
     expect(rateLimitCooldownMs("anthropic", nowMs)).toBeNull();
+  });
+});
+
+describe("recordProviderFailure", () => {
+  it("counts a connection failure towards the breaker and reports its kind", () => {
+    expect(recordProviderFailure("anthropic", "fetch failed")).toBe("conn");
+    expect(providerBreakerStatus("anthropic").consecutiveFailures).toBe(1);
+  });
+
+  it("classifies a config failure without recording it", () => {
+    expect(recordProviderFailure("anthropic", "400 invalid_request: unknown model")).toBe("config");
+    expect(providerBreakerStatus("anthropic").consecutiveFailures).toBe(0);
+  });
+
+  it("says nothing about an error that is not the provider's", () => {
+    expect(recordProviderFailure("anthropic", "2 tests failed")).toBeNull();
+    expect(providerBreakerStatus("anthropic").consecutiveFailures).toBe(0);
+  });
+
+  it("opens on a limit failure until the account's own observed reset", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-20T12:00:00.000Z"));
+    observeRateLimitHeaders("anthropic", exhausted(Math.floor(Date.now() / 1000) + 3_600));
+    expect(recordProviderFailure("anthropic", "429 rate limit; retry after 30 seconds")).toBe("limit");
+    const status = providerBreakerStatus("anthropic");
+    expect(status.state).toBe("open");
+    expect(status.reason).toBe("limit");
+    expect(status.openUntil).toBe("2026-09-20T13:00:00.000Z");
   });
 });

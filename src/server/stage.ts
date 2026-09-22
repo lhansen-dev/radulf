@@ -4,12 +4,8 @@ import { emitEvent } from "./events";
 import type { Settings } from "./settings";
 import { runHarness, type RunnerResult, type RunTelemetry } from "./harness";
 import type { ProviderId } from "./providers";
-import {
-  classifyProviderError,
-  providerBreakerStatus,
-  recordProviderOutcome,
-} from "./circuitBreaker";
-import { limitCooldownMs } from "./providerRateLimit";
+import { providerBreakerStatus, recordProviderOutcome } from "./circuitBreaker";
+import { recordProviderFailure } from "./providerRateLimit";
 import { createWorktree, currentBranch, recordWorktree } from "./git";
 import { runTranscriptDir } from "./retention";
 import { startTranscriptPush } from "./transcript";
@@ -137,16 +133,7 @@ export function harnessFailure(
     };
   }
   if (result.error) {
-    const kind = classifyProviderError(result.error);
-    // A "config" failure says nothing about the provider's health — it is
-    // serving fine and rejecting this request (spec 18 §3), so it must not
-    // count towards the breaker.
-    if (kind && kind !== "config") {
-      recordProviderOutcome(provider, false, {
-        kind,
-        retryAfterMs: kind === "limit" ? limitCooldownMs(provider, result.error) : null,
-      });
-    }
+    recordProviderFailure(provider, result.error);
     return {
       status: "failed",
       exitReason: `${label} failed: ${result.error.slice(0, 500)}`,

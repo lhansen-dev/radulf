@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, desc, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,16 +24,13 @@ const mocks = vi.hoisted(() => ({
   // this file, which deliberately keeps sandboxing off — see the comment on
   // `sandboxEnabled` below.
   settings: {
-    evaluatorProvider: "anthropic",
     evaluatorModel: "evaluator-model",
-    evaluatorReasoningLevel: "medium",
     evaluatorTimeoutMinutes: 10,
     evaluatorPromptTemplate: "Evaluate {{TITLE}} from {{BASE_BRANCH}}\n{{DESCRIPTION}}\n{{CRITERIA}}",
     // Lifecycle tests use plain mkdtemp worktrees, not real git repos — same
     // reasoning applies here: sandboxEnabled:false keeps createRunSandbox
     // from resolving a real git-common-dir against a fake worktree.
     sandboxEnabled: false,
-    sandboxNetworkAllowlist: "",
     sandboxWeakerIsolationForGoTls: false,
     // The workspace-wide auto-approve override. Off for every test but the
     // ones that flip it, so the card's own flag stays the only grant.
@@ -50,12 +47,13 @@ vi.mock("./git", async (importOriginal) => ({
   tryGit: mocks.tryGit,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
-vi.mock("./settings", () => ({
-  getSettings: () => mocks.settings,
+vi.mock("./settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./settings")>()),
+  getSettings: () => testSettings(mocks.settings),
 }));
 
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-evaluationService-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+const testDataDir = setupTestDataDir("radulf-evaluationService-");
+const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
 const { EvaluationService, renderEvaluatorPrompt } = await import("./evaluationService");
@@ -247,11 +245,6 @@ describe("EvaluationService.runEvaluator", () => {
     seedRepo();
   });
 
-  afterAll(() => {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    delete process.env.RADULF_DATA_DIR;
-  });
-
   it("approves and advances the card to review", async () => {
     mocks.settings.evaluatorTimeoutMinutes = 17;
     seedCard("card-approve");
@@ -269,6 +262,27 @@ describe("EvaluationService.runEvaluator", () => {
     );
     expect(deps.replan).not.toHaveBeenCalled();
     expect(deps.approveReview).not.toHaveBeenCalled();
+  });
+
+  it("starts no harness for a card that left evaluating before its run row existed", async () => {
+    seedCard("card-left-early");
+    const planId = seedPlan("card-left-early");
+    seedLoopRun("card-left-early", planId);
+    // A cancel that landed during the awaited sandbox and integrity setup:
+    // the card is already back in Backlog when the run row is written.
+    db.update(cards).set({ status: "backlog" }).where(eq(cards.id, "card-left-early")).run();
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-left-early");
+
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "cancelled",
+      "card left evaluating before the run started",
+    );
+    expect(deps.moveCard).not.toHaveBeenCalled();
+    expect(deps.pump).toHaveBeenCalled();
   });
 
   it("rejects the verdict when the evaluator moved the worktree off the run branch", async () => {

@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { initScratchRepo } from "@/testUtils/gitRepo";
 
 const mocks = vi.hoisted(() => ({ runHarness: vi.fn() }));
 // vi.mock factories run before any top-level `beforeAll`, so the directories
@@ -23,12 +23,7 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { proposeOneImprovement, renderImprovePrompt } from "./improvementProposer";
-import type { Settings } from "./settings";
-
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
-}
+import { parseProposals, proposeOneImprovement, renderImprovePrompt } from "./improvementProposer";
 
 function leakedWorktrees(): string[] {
   return fs.readdirSync(dirs.worktreesDir).filter((n) => n.startsWith("improve-proposer-"));
@@ -43,11 +38,90 @@ describe("renderImprovePrompt", () => {
     expect(renderImprovePrompt([], template, undefined)).toBe(`- (none) / ${noFocus}`);
     expect(renderImprovePrompt([], "{{FOCUS}}", "   ")).toBe(noFocus);
   });
+
+  it("lists every prior title as a bullet", () => {
+    expect(renderImprovePrompt(["First card", "Second card"], "Open work:\n{{EXISTING_CARDS}}")).toBe(
+      "Open work:\n- First card\n- Second card",
+    );
+  });
+});
+
+describe("parseProposals", () => {
+  const one = (title: string) =>
+    `[{"title": ${JSON.stringify(title)}, "description": "d", "rationale": "r"}]`;
+
+  it.each([
+    ["a bare JSON array", one("A")],
+    ["a fenced array", "```json\n" + one("A") + "\n```"],
+    ["an array with prose on both sides and no fence", `Here you go: ${one("A")} — hope that helps.`],
+  ])("parses %s", (_label, text) => {
+    expect(parseProposals(text)).toEqual([{ title: "A", description: "d", rationale: "r" }]);
+  });
+
+  // Regression: an observed live Improvement Run lost this exact shape — a
+  // sentence of preamble before the fenced array — and the run went on to end
+  // "proposer ran dry" having created zero cards.
+  it("parses an array preceded by prose the model was told not to emit", () => {
+    const text =
+      "Based on my review, I found a clear gap: `pm.ts` exports a helper that " +
+      "has no direct tests.\n\n```json\n" +
+      one("Add a parseProposals unit test suite") +
+      "\n```";
+    expect(parseProposals(text)).toEqual([
+      {
+        title: "Add a parseProposals unit test suite",
+        description: "d",
+        rationale: "r",
+      },
+    ]);
+  });
+
+  // Regression: the same live pass wrote ```json *inside* a description
+  // string, which closes a lazy fence match early. The outermost bracket span
+  // is the fallback that survives it.
+  it("recovers when a description contains a code fence of its own", () => {
+    const text =
+      "Here is my proposal.\n\n```json\n" +
+      `[{"title":"A","description":"strips leading/trailing \\u0060\\u0060\\u0060json fences before parsing","rationale":"r"}]` +
+      "\n```";
+    expect(parseProposals(text)).toEqual([
+      {
+        title: "A",
+        description: "strips leading/trailing ```json fences before parsing",
+        rationale: "r",
+      },
+    ]);
+  });
+
+  it("prefers a fenced array over bracket text elsewhere in the prose", () => {
+    const text = `I considered [a, b, c] first.\n\n\`\`\`json\n${one("Chosen")}\n\`\`\``;
+    expect(parseProposals(text)[0]?.title).toBe("Chosen");
+  });
+
+  it("coerces a missing rationale and drops empty-field items", () => {
+    const text = `[{"title":"A","description":"d"},{"title":"","description":"d"},{"title":"B"}]`;
+    expect(parseProposals(text)).toEqual([{ title: "A", description: "d", rationale: "" }]);
+  });
+
+  it("caps the result at 3", () => {
+    const items = Array.from({ length: 5 }, (_, i) => ({
+      title: `t${i}`,
+      description: "d",
+      rationale: "r",
+    }));
+    expect(parseProposals(JSON.stringify(items))).toHaveLength(3);
+  });
+
+  it("returns [] for prose with no array, non-array JSON, and malformed input", () => {
+    expect(parseProposals("I have nothing to propose.")).toEqual([]);
+    expect(parseProposals(`{"title":"A","description":"d"}`)).toEqual([]);
+    expect(parseProposals("```json\n[{title: broken]\n```")).toEqual([]);
+    expect(parseProposals("")).toEqual([]);
+  });
 });
 
 describe("proposeOneImprovement", () => {
   let repoPath: string;
-  const baseSettings = { improvePromptTemplate: "T:\n{{EXISTING_CARDS}}\nF:{{FOCUS}}" } as Settings;
   const baseInput = () => ({
     repo: { path: repoPath },
     featureBranch: "main",
@@ -55,19 +129,13 @@ describe("proposeOneImprovement", () => {
     plannerProvider: "anthropic" as const,
     plannerModel: "planner-model",
     plannerReasoningLevel: "medium",
-    s: baseSettings,
+    template: "T:\n{{EXISTING_CARDS}}\nF:{{FOCUS}}",
   });
 
   beforeAll(() => {
     dirs.worktreesDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-improve-worktrees-"));
     dirs.transcriptsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-improve-transcripts-"));
-    repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-improve-repo-"));
-    git(repoPath, "init", "-b", "main");
-    git(repoPath, "config", "user.email", "test@test.com");
-    git(repoPath, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(repoPath, "README.md"), "# test");
-    git(repoPath, "add", ".");
-    git(repoPath, "commit", "-m", "initial");
+    repoPath = initScratchRepo("ralph-improve-repo-");
   });
 
   afterAll(() => {
