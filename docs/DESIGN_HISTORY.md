@@ -58,6 +58,7 @@ history inline.
 | [20: More than one card at a time](../specs/20-concurrent-cards.md) | The per-repo concurrency cap, and telling the integrity check about the merges Radulf itself performs | Current; amends locked decision 5, completes 19 |
 | [21: Registering a repository by URL](../specs/21-clone-on-register.md) | Cloning into Radulf's own repos dir when a URL is registered, so a server or container install needs no pre-mounted checkouts | Current; extends locked decision 1 |
 | [22: Scheduling queue drains and improvement runs](../specs/22-scheduled-work.md) | Cron schedules for the two things that want to happen unattended, and what that does to 06's autonomy boundary | Current; amends 06's hard rule 2, delivers roadmap item 4 |
+| [23: Logging a provider in from the app](../specs/23-provider-login-in-app.md) | Driving pi's typed login interaction from a route, so a server or container install needs no TUI over `docker exec` | Current; narrows the "OAuth belongs in the terminal" posture to "drive a typed interface, shell out otherwise" |
 
 ## Implementation plans
 
