@@ -32,6 +32,9 @@ import { scriptKey } from "@/shared/installScripts";
 
 const TABS = ["Task", "Activity"] as const;
 
+/** Exporting a card never depends on where it is in its lifecycle. */
+const ALL_STATUSES = Object.keys(STATUS_LABELS);
+
 /** Tab names this page used to have, so old links and bookmarks still land
  * somewhere sensible: the plan moved into Task, the transcript became a
  * drill-down inside Activity. */
@@ -175,8 +178,17 @@ export default function CardDetail() {
     { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
   ];
   const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
-  const menuActions: { label: string; when: readonly string[]; danger?: boolean; run: () => void }[] = [
+  // `href` rather than `run` for the export: the route answers with
+  // Content-Disposition, so a download anchor saves the file and leaves the
+  // page where it is. Navigating there through the router would instead ask
+  // Next to render an attachment as a page.
+  const menuActions: { label: string; when: readonly string[]; danger?: boolean; run?: () => void; href?: string }[] = [
     { label: "Edit task", when: ["backlog", "todo"], run: () => setShowEdit(true) },
+    {
+      label: "Export as a file",
+      when: ALL_STATUSES,
+      href: `/api/cards/export?cardId=${encodeURIComponent(id)}`,
+    },
     {
       label: "Move to backlog",
       when: PULLBACK_STATUSES,
@@ -220,7 +232,9 @@ export default function CardDetail() {
         ))}
         <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="More task actions" summary="•••">
           {menuActions.filter((m) => m.when.includes(card.status)).map((m) => (
-            <MenuButton key={m.label} danger={m.danger} onClick={m.run}>{m.label}</MenuButton>
+            m.href
+              ? <a key={m.label} href={m.href} download className={menuItemCls()}>{m.label}</a>
+              : <MenuButton key={m.label} danger={m.danger} onClick={m.run!}>{m.label}</MenuButton>
           ))}
         </DetailsMenu>
         </div>
@@ -530,8 +544,13 @@ function ActionButton({ children, onClick, primary }: { children: React.ReactNod
   );
 }
 
+/** Shared by the menu's buttons and its one download link. */
+function menuItemCls(danger?: boolean) {
+  return `flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] ${danger ? "text-red-300" : ""}`;
+}
+
 function MenuButton({ children, onClick, danger }: { children: React.ReactNode; onClick: () => void; danger?: boolean }) {
-  return <button type="button" onClick={onClick} className={`min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] ${danger ? "text-red-300" : ""}`}>{children}</button>;
+  return <button type="button" onClick={onClick} className={menuItemCls(danger)}>{children}</button>;
 }
 
 // Defined alongside the search/export helpers that have to agree with the

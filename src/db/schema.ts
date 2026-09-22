@@ -138,7 +138,8 @@ export const plans = sqliteTable("plans", {
  * context, and it is the durable record of why the card is shaped the way it
  * is.
  */
-export type ScopingRole = "user" | "assistant" | "planner" | "loop";
+export const SCOPING_ROLES = ["user", "assistant", "planner", "loop"] as const;
+export type ScopingRole = (typeof SCOPING_ROLES)[number];
 
 export const scopingMessages = sqliteTable(
   "scoping_messages",

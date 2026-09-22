@@ -46,6 +46,28 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [description, setDescription] = useState("");
   const [jiraRef, setJiraRef] = useState("");
   const [importing, setImporting] = useState(false);
+  // Importing a file creates its cards directly rather than prefilling this
+  // dialog: a file may hold many, and there is nothing to fill in for the
+  // second one. Its cards land in Backlog, like anything created here.
+  async function importFromFile(file: File) {
+    if (!repoId || importing) return;
+    setImporting(true); setError("");
+    try {
+      const payload = JSON.parse(await file.text()) as Record<string, unknown>;
+      const result = await api<{ cardIds: string[]; notes: string[] }>("/api/cards/import", {
+        json: { ...payload, repoId },
+      });
+      onCreated();
+      if (result.notes.length > 0) {
+        alert(`Imported ${result.cardIds.length} card(s).\n\n${result.notes.join("\n")}`);
+      }
+      onClose();
+    } catch (e) {
+      setError(e instanceof SyntaxError ? "that file is not JSON Radulf can read" : errorMessage(e));
+    } finally {
+      setImporting(false);
+    }
+  }
   // Prefills title and description from the issue; the user edits before creating.
   async function importFromJira() {
     const ref = jiraRef.trim();
@@ -155,6 +177,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
               <label className="block grow text-sm text-foreground/70">Import from Jira<input value={jiraRef} onChange={(e) => setJiraRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void importFromJira(); } }} placeholder="Issue link or key, e.g. DEV-123 (optional)" className={dialogInputCls} /></label>
               <button type="button" onClick={() => void importFromJira()} disabled={importing || !jiraRef.trim()} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">{importing ? "Importing…" : "Import"}</button>
             </div>
+            <label className="block text-sm text-foreground/70">Import an exported file<input type="file" accept="application/json,.json" disabled={importing || !repoId} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importFromFile(file); }} className={`${dialogInputCls} py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-foreground/10 file:px-2 file:py-1 file:text-sm file:text-foreground/80`} /></label>
+            <p className="-mt-1 text-xs text-foreground/45">A card exported from this or another Radulf, with its scoping thread. Its cards go straight to Backlog for the repository selected below.</p>
             <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={dialogInputCls} required /></label>
             <RepoSelect repos={repoList} value={repoId} onChange={(value) => { if (value === "__add__") { setAddingRepo(true); return; } setRepoId(value); setBranches([]); setSelectedBranch(""); setShowNewBranch(false); setNewBranchName(""); }}><option value="__add__">Add a repository…</option></RepoSelect>
             {addingRepo && <FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} />}

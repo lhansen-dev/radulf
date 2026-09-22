@@ -171,6 +171,22 @@ One `RunSandboxContext` is created per run by the entry point and cleaned up in
 its `finally`; it threads into the pi session's bash spawn hook via
 `RunHarnessOpts.runContext`.
 
+## Card export and import
+
+`src/server/cardTransfer.ts` moves a card between installs as a versioned
+JSON file. What travels is the card's intent: its title, description, the
+per-card settings, and its scoping thread, which spec 17 calls the durable
+record of why the card is shaped the way it is. What does not travel is
+anything that happened — runs, iterations, transcripts, reviews and worktree
+paths describe one machine's execution. Plans are left out on purpose: a plan
+is written against one checkout at one commit, so importing one would land a
+card claiming to be planned for a repository the plan has never seen.
+
+An import always creates fresh ids in Backlog, and the request, not the file,
+names the target repository. A `baseBranch` the target does not have falls
+back to its default with a note in the response, rather than failing the whole
+file over a branch name that only meant something where it came from.
+
 ## Scheduling
 
 `src/server/schedules.ts` is the whole scheduler (spec 22), ticked once a

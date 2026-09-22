@@ -41,8 +41,8 @@ itself (the backlog below becomes cards).
    — **shipped** as [22-scheduled-work.md](22-scheduled-work.md).
 5. **Hosting & auth** — expose at `radulf.example.com` with
    single-password login (08); cluster manifests managed via GitOps.
-6. **Polish** — transcript search, better stall heuristics, card
-   export/import, packaging under launchd.
+6. **Polish** — ~~transcript search~~ **shipped**, better stall heuristics,
+   ~~card export/import~~ **shipped**, packaging under launchd.
 7. **Deferred bets** — pluggable runners (Ollama), ~~GitHub PR mode~~ —
    **shipped** as [15-github-pr-delivery.md](15-github-pr-delivery.md).
    - ~~Codex CLI harness for a ChatGPT-subscription provider~~ — **shipped** as
