@@ -7,6 +7,13 @@ export type Finding = {
 
 export type Evaluation = { verdict: "approve" | "revise"; feedback: string; findings: Finding[] };
 
+/**
+ * Exit reasons of an evaluate run that sent its card on to human review: the
+ * evaluator approved, or it asked for revisions until the limit and escalated.
+ * A loop run is merge-eligible only under one of these.
+ */
+export const EVALUATOR_CLEARED_EXITS = ["approve", "revise — revision limit reached"] as const;
+
 const SEVERITIES = new Set(["critical", "important", "suggestion"]);
 
 function isFinding(v: unknown): v is Finding {

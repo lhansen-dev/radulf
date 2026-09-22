@@ -5,7 +5,7 @@ import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
-import { parseEvaluation } from "@/shared/evaluation";
+import { EVALUATOR_CLEARED_EXITS, parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
@@ -32,6 +32,8 @@ import {
  * re-looping it and escalates to the human, unresolved feedback attached —
  * an evaluator and a struggling loop must not ping-pong forever. */
 const MAX_EVALUATOR_REVISIONS = 2;
+
+const [APPROVED_EXIT, REVISION_LIMIT_EXIT] = EVALUATOR_CLEARED_EXITS;
 
 /** Evaluator attempts share a worktree, but never another attempt's verdict. */
 export function clearEvaluationArtifact(worktreePath: string) {
@@ -197,7 +199,10 @@ export class EvaluationService {
       // hit the limit) carry the evaluator's `.ralph/SUMMARY.md` onto the card
       // and its doc edits onto the review branch (`add -A`); `.ralph` is
       // stripped at merge, the docs stay. A missing summary is non-fatal.
-      const advanceToReview = async (exitReason: string, moveReason: string) => {
+      const advanceToReview = async (
+        exitReason: (typeof EVALUATOR_CLEARED_EXITS)[number],
+        moveReason: string,
+      ) => {
         const summary = readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md")).trim();
         if (summary) {
           db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
@@ -210,7 +215,7 @@ export class EvaluationService {
       };
 
       if (evaluation.verdict === "approve") {
-        await advanceToReview("approve", "evaluator approved");
+        await advanceToReview(APPROVED_EXIT, "evaluator approved");
         // Auto-approve: merge straight through the same review path, granted
         // by the card's own flag or the global setting (a live override read
         // at verdict time; `source` records which one, since the global may
@@ -239,7 +244,7 @@ export class EvaluationService {
         .all().length;
       if (priorRevisions >= MAX_EVALUATOR_REVISIONS) {
         await advanceToReview(
-          "revise — revision limit reached",
+          REVISION_LIMIT_EXIT,
           "evaluator revision limit — escalated to human review",
         );
         return;
