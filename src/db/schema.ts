@@ -350,6 +350,39 @@ export const improvementRuns = sqliteTable(
   (table) => [index("improvement_runs_repo_status_idx").on(table.repoId, table.status)],
 );
 
+/**
+ * Spec 22: the two things a schedule may start. Not a plugin point — a third
+ * kind is a decision, not a configuration.
+ */
+export const SCHEDULE_KINDS = ["queue-drain", "improvement-run"] as const;
+export type ScheduleKind = (typeof SCHEDULE_KINDS)[number];
+
+export const schedules = sqliteTable(
+  "schedules",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").$type<ScheduleKind>().notNull(),
+    // Null means every repo, and is only legal for a queue drain: an
+    // improvement run is per repo by construction (spec 06 decision 6).
+    repoId: text("repo_id").references(() => repos.id, { onDelete: "cascade" }),
+    // Five fields, server-local, parsed by src/server/cron.ts.
+    cron: text("cron").notNull(),
+    enabled: integer("enabled").notNull().default(1),
+    // An improvement run's argument list as JSON rather than a column each:
+    // spec 06 owns that list and keeps changing it, and a column per
+    // parameter would make this table a mirror of improvement_runs.
+    config: text("config").notNull().default("{}"),
+    lastFiredAt: text("last_fired_at"),
+    // What the last firing did, or why it did nothing. Kept so a schedule
+    // that is quietly failing is visible without reading the server log.
+    lastResult: text("last_result"),
+    lastError: text("last_error"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("schedules_enabled_idx").on(table.enabled)],
+);
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

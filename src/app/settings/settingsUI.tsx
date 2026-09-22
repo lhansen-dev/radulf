@@ -8,6 +8,7 @@ export const SETTINGS_SECTIONS = [
   { id: "models", label: "Agents & models", group: "Agents", description: "Give each stage of your workflow the right model and reasoning effort.", icon: "M8 3v3m8-3v3M5 6h14v14H5V6Zm3 5h.01M16 11h.01M9 16h6M2 10v6m20-6v6" },
   { id: "agents", label: "Providers & keys", group: "Agents", description: "Connect your subscriptions, local models, and API services.", icon: "m14 8 2 2m-9 4-4 4v3h3v-3h3l3-3M21 7a5 5 0 1 1-10 0 5 5 0 0 1 10 0" },
   { id: "defaults", label: "Run limits", group: "Agents", description: "Set the time and iteration budgets for your agents.", icon: "M12 8v4l3 2M9 2h6M12 2v3m6 1 2-2M21 13a9 9 0 1 1-18 0 9 9 0 0 1 18 0" },
+  { id: "schedules", label: "Schedules", group: "Agents", description: "Work the queue, or start an improvement run, on a cron instead of by hand.", icon: "M8 2v4m8-4v4M3 10h18M5 6h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Zm7 8v3l2 1" },
   { id: "templates", label: "Prompt templates", group: "Agents", description: "Shape the instructions your agents use for future runs.", icon: "M14 2H5v20h14V7l-5-5Zm0 0v5h5M8 12h8m-8 4h5" },
   { id: "sandbox", label: "Sandbox", group: "System", description: "Control how agents access your machine and the network.", icon: "m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Zm-4 9 3 3 5-6" },
   { id: "maintenance", label: "Maintenance", group: "System", description: "Manage stored history and keep your workspace tidy.", icon: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" },

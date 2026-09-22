@@ -171,6 +171,25 @@ One `RunSandboxContext` is created per run by the entry point and cleaned up in
 its `finally`; it threads into the pi session's bash spawn hook via
 `RunHarnessOpts.runContext`.
 
+## Scheduling
+
+`src/server/schedules.ts` is the whole scheduler (spec 22), ticked once a
+minute from `src/instrumentation.ts`. A schedule starts only what a button
+starts, by the path a button takes: `queue-drain` calls `startCard` on every
+card waiting in the Queue, and `improvement-run` calls `createImprovementRun`
+with the arguments stored on the schedule. Every cap those paths enforce still
+applies, and no schedule merges anything.
+
+Expressions are five-field cron, server-local, parsed by
+`src/server/cron.ts` — written here rather than taken from npm, and the one
+place the day-of-month/day-of-week OR rule lives. `fireDueSchedules` compares
+`lastFiredAt` at minute resolution, so a tick that runs twice in a minute
+cannot start the same work twice, and a tick the server was down for is missed
+rather than replayed. A firing that throws is recorded on the schedule and
+emitted as `schedule.fired`; the schedule stays enabled, because a provider
+outage must not silently cancel the cadence that would have picked the work
+back up.
+
 ## Git
 
 `src/server/git.ts` wraps every git call. Each run gets a worktree on its own
@@ -192,9 +211,9 @@ an unrecoverable failure.
 ## Persistence
 
 `src/db/schema.ts`, Drizzle over SQLite, created on first run with no manual
-migration step. Eleven tables: `repos`, `cards`, `plans`, `scopingMessages`,
-`runs`, `iterations`, `reviews`, `events`, `improvementRuns`, `settings`,
-`worktrees`.
+migration step. Twelve tables: `repos`, `cards`, `plans`, `scopingMessages`,
+`runs`, `iterations`, `reviews`, `events`, `improvementRuns`, `schedules`,
+`settings`, `worktrees`.
 
 Transcripts are **not** in the database — they are JSONL files on disk, read in
 chunks by `src/server/transcript.ts` (`TRANSCRIPT_CHUNK_BYTES`, 512 KB). A long

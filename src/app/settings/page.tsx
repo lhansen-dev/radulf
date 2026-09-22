@@ -5,6 +5,7 @@ import { FolderBrowser } from "../ui/folderBrowser";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
 import { ModelChips } from "../ui/taskDialog";
+import { SchedulesSection } from "./schedulesSection";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
 import { PROVIDERS, REASONING_LEVELS, providerLabel, type ProviderModel } from "@/shared/providers";
@@ -494,6 +495,10 @@ export default function SettingsPage() {
                   <PromptTemplateEditor key={key} {...template} value={settings[key]} onChange={(value) => set({ [key]: value })} />
                 ))}
               </section>
+            </SettingsPanel>
+
+            <SettingsPanel active={activeSection} section="schedules">
+              <SchedulesSection repos={repos} />
             </SettingsPanel>
 
             <SettingsPanel active={activeSection} section="defaults">
