@@ -44,6 +44,7 @@ import { offRunBranchReason, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { getCard, requireCard } from "./cards";
 import { getRepo, requireRepo } from "./repos";
+import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService } from "./reviewService";
@@ -278,17 +279,28 @@ export class Orchestrator {
       .from(cards)
       .where(eq(cards.status, "needs_attention"))
       .all();
-    for (const card of waiting) {
-      const cardEvents = db
+    if (waiting.length === 0) return;
+    // Only the two event types the decision turns on, for every waiting card
+    // in one query — not each card's whole history.
+    const markerEvents = groupBy(
+      db
         .select()
         .from(events)
-        .where(eq(events.cardId, card.id))
+        .where(
+          and(
+            inArray(events.cardId, waiting.map((card) => card.id)),
+            inArray(events.type, ["card.attention_stale", "card.moved"]),
+          ),
+        )
         .orderBy(desc(events.id))
-        .all();
+        .all(),
+      (e) => e.cardId!,
+    );
+    for (const card of waiting) {
       // Walking back by event id rather than by timestamp: the newest of
       // these two decides. An announcement first means this entry has already
       // been announced; the move first means it has not.
-      const marker = cardEvents.find(
+      const marker = markerEvents.get(card.id)?.find(
         (e) =>
           e.type === "card.attention_stale" ||
           (e.type === "card.moved" && parsePayload(e.payload).to === "needs_attention"),
