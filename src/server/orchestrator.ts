@@ -37,7 +37,7 @@ import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
 import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
 import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
-import { postAlert } from "./alerts";
+import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, removeWorktree, tryGit } from "./git";
@@ -379,7 +379,45 @@ export class Orchestrator {
       .run();
     if (result.changes !== 1) return false;
     emitEvent("card.moved", { cardId, payload: { from, to, ...(reason ? { reason } : {}) } });
+    this.alertOnArrival(cardId, to, reason);
     return true;
+  }
+
+  /**
+   * Announce a card the moment it reaches a gate that waits on a human.
+   *
+   * `sweepStaleAttention` only speaks up once a card has already been ignored
+   * for `attentionStaleMinutes`, and it only watches Needs Attention — a diff
+   * cleared into In Review is the thing an operator is most likely to be
+   * waiting for, and it had no way off this machine at all. Every transition
+   * routes through `moveCard`, including the ones `evaluationService` and
+   * `reviewService` drive through `deps`, so this is the one place that sees
+   * them all.
+   */
+  private alertOnArrival(cardId: string, to: CardStatus, reason?: string) {
+    if (to !== "review" && to !== "needs_attention") return;
+    const settings = getSettings();
+    if (!alertWebhookConfigured()) return;
+    if (!(to === "review" ? settings.alertOnReviewReady : settings.alertOnNeedsAttention)) return;
+    const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
+    if (!card) return;
+    void postAlert(
+      to === "review"
+        ? {
+            type: "card.review_ready",
+            cardId,
+            title: `${card.title} is ready for review`,
+            message: reason || "The evaluator cleared the diff.",
+            url: `/review/${cardId}`,
+          }
+        : {
+            type: "card.needs_attention",
+            cardId,
+            title: `${card.title} needs your attention`,
+            message: reason || "The card needs a decision before the pipeline can continue.",
+            url: `/card/${cardId}`,
+          },
+    );
   }
 
   private failIterations(runId: string, summary: string) {

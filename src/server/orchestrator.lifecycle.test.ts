@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 import type { Settings } from "./settings";
 
@@ -1178,6 +1178,74 @@ describe("Orchestrator cancellation lifecycle", () => {
       orchestrator.sweepStaleAttention();
 
       expect(staleEvents("again")).toHaveLength(2);
+    });
+  });
+
+  describe("alerting a gate the moment it is reached", () => {
+    /** Drive a card through a clean loop and an approving evaluator, which is
+     * the transition into In Review — the one an operator waits on and the one
+     * the stale sweep above never sees, because the sweep only watches Needs
+     * Attention and only after `attentionStaleMinutes`. */
+    async function clearIntoReview(cardId: string) {
+      card(cardId);
+      plan(cardId);
+      mocks.runHarness
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeDone(cwd);
+          return successfulHarnessResult;
+        })
+        .mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+          writeEvaluation(cwd, "VERDICT: approve\n\nAll criteria passed independently.");
+          return successfulHarnessResult;
+        });
+      routeOrchestrator().startCard(cardId);
+      await vi.waitFor(() => expect(getCard(cardId).status).toBe("review"));
+    }
+
+    function stubFetch() {
+      const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("posts a review-ready alert when the evaluator clears a diff", async () => {
+      mocks.settings.alertWebhookUrl = "https://ntfy.example/radulf";
+      const fetchMock = stubFetch();
+
+      await clearIntoReview("alert-review");
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("https://ntfy.example/radulf");
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        type: "card.review_ready",
+        cardId: "alert-review",
+        url: "/review/alert-review",
+      });
+    });
+
+    it("stays quiet when the operator turned that event off", async () => {
+      mocks.settings.alertWebhookUrl = "https://ntfy.example/radulf";
+      mocks.settings.alertOnReviewReady = false;
+      const fetchMock = stubFetch();
+
+      await clearIntoReview("alert-muted");
+      await settle();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("stays quiet when no webhook is configured", async () => {
+      const fetchMock = stubFetch();
+
+      await clearIntoReview("alert-no-hook");
+      await settle();
+
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

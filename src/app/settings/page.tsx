@@ -268,7 +268,7 @@ export default function SettingsPage() {
   if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
 
   const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
-  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls") =>
+  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished") =>
     ({ checked: settings[key], onChange: (value: boolean) => set({ [key]: value }) });
   const textInput = (key: StringKey, props: { label: string; type?: string; placeholder?: string }) => (
     <label className="text-sm text-foreground/70">
@@ -348,6 +348,19 @@ export default function SettingsPage() {
                       {numberInput("attentionStaleMinutes", "Waiting-too-long alert (minutes)", "How long a card may sit in Needs Attention before Radulf says so. Desktop notifications only reach you with a tab open; this fires either way.")}
                       {textInput("alertWebhookUrl", { label: "Alert webhook URL", type: "url", placeholder: "https://ntfy.sh/your-topic" })}
                     </div>
+                    <fieldset className="pt-4" disabled={!settings.alertWebhookUrl.trim()}>
+                      <legend className="text-sm font-medium">Send to the webhook</legend>
+                      <p className="mt-1 mb-3 text-xs leading-relaxed text-foreground/55">
+                        {settings.alertWebhookUrl.trim()
+                          ? "A card going stale in Needs Attention is always sent. These are the events that reach you the moment they happen."
+                          : "Set an alert webhook URL above to choose which events leave this machine."}
+                      </p>
+                      <div className="flex flex-col gap-3">
+                        <ToggleRow title="Diff ready for review" description="A card cleared the evaluator and is waiting on your approval." {...toggle("alertOnReviewReady")} />
+                        <ToggleRow title="Task needs attention" description="A card stopped and needs a decision — sent on arrival, not after the wait above." {...toggle("alertOnNeedsAttention")} />
+                        <ToggleRow title="Improvement run finished" description="A run spent its time budget, was stopped, or failed. Its branch is waiting for review." {...toggle("alertOnImprovementRunFinished")} />
+                      </div>
+                    </fieldset>
                   </div>
                   <button
                     onClick={() => {

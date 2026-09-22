@@ -9,6 +9,7 @@ import {
   type ImprovementRunStatus,
 } from "@/db";
 import { bus, emitEvent, type RalphEvent } from "./events";
+import { postAlert } from "./alerts";
 import { getSettings } from "./settings";
 import { normalizeProvider } from "./providers";
 import { getOrchestrator } from "./orchestrator";
@@ -234,6 +235,17 @@ function finishRun(
       reason,
     },
   });
+  // A run outlives the tab that started it by design — it holds a wall-clock
+  // budget measured in hours — so the branch waiting to be reviewed at the end
+  // of one is exactly the news that has to leave the machine.
+  if (getSettings().alertOnImprovementRunFinished) {
+    void postAlert({
+      type: "improvement.completed",
+      title: `Improvement run ${status} on ${run.featureBranch}`,
+      message: `${run.tasksSucceeded} task${run.tasksSucceeded === 1 ? "" : "s"} landed. ${reason}`.trim(),
+      url: "/",
+    });
+  }
 }
 
 /** The run ran out of time or work: "stopped" when an operator asked for
