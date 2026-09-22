@@ -4,6 +4,7 @@ import { db, cards, repos, runs, now } from "@/db";
 import { getSettings } from "@/server/settings";
 import { modelTag } from "@/server/modelTag";
 import { getOrchestrator } from "@/server/orchestrator";
+import { getRepo } from "@/server/repos";
 import { isRalphBranch, listBranches } from "@/server/git";
 import { currentTaskFromFile } from "@/server/currentTask";
 import { planStatePath } from "@/server/bookkeeping";
@@ -67,7 +68,7 @@ export async function GET() {
 export async function POST(req: Request) {
   return handle(async () => {
     const body = parseCreateCard(await req.json());
-    const repo = db.select().from(repos).where(eq(repos.id, body.repoId)).get();
+    const repo = getRepo(body.repoId);
     if (!repo) return err("repoId does not exist");
     if (body.baseBranch && isRalphBranch(body.baseBranch)) {
       return err("baseBranch cannot be one of Radulf's own ralph/* branches");

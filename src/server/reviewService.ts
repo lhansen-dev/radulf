@@ -16,6 +16,7 @@ import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
+import { getRepo } from "./repos";
 import { checkRepoIntegrity, loadBaseline, noteRadulfRefWrite, removeBaseline } from "./integrity";
 import type { StageDependencies } from "./stage";
 
@@ -223,7 +224,7 @@ export class ReviewService {
       .limit(1)
       .get();
     if (active) throw new ClientError("cannot abandon a card with an active run; cancel it first");
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new ClientError("repo not found");
     if (!this.deps.moveCard(cardId, card.status, "abandoned")) {
       throw new ClientError("card status changed while it was being abandoned");
@@ -296,7 +297,7 @@ export class ReviewService {
     }
     const latest = this.latestLoopRun(card.id);
     if (latest?.id !== run.id) throw new ClientError("run is stale; review the card's current run");
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new ClientError("repo not found");
     if (!this.deps.moveCard(card.id, expectedStatus, "reviewing")) {
       throw new ClientError("review decision is already in progress");

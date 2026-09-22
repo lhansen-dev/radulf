@@ -4,7 +4,6 @@ import {
   db,
   now,
   cards,
-  repos,
   improvementRuns,
   type CardStatus,
   type ImprovementRunStatus,
@@ -17,6 +16,8 @@ import { proposeOneImprovement } from "./improvementProposer";
 import type { Proposal } from "./pm";
 import { git, listBranches } from "./git";
 import { ClientError } from "./clientError";
+import { getCard } from "./cards";
+import { getRepo } from "./repos";
 
 export type ImprovementRun = typeof improvementRuns.$inferSelect;
 
@@ -57,14 +58,6 @@ function sleep(ms: number): Promise<void> {
 
 function getRun(runId: string): ImprovementRun | undefined {
   return db.select().from(improvementRuns).where(eq(improvementRuns.id, runId)).get();
-}
-
-function getRepo(repoId: string) {
-  return db.select().from(repos).where(eq(repos.id, repoId)).get();
-}
-
-function getCard(cardId: string) {
-  return db.select().from(cards).where(eq(cards.id, cardId)).get();
 }
 
 function activeRunForRepo(repoId: string): ImprovementRun | undefined {

@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, cards, now } from "@/db";
+import { requireCard } from "@/server/cards";
 import { getOrchestrator } from "@/server/orchestrator";
 import { json, err, handle } from "../../../_lib";
 
@@ -21,8 +22,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const { id } = await params;
     const body = await req.json();
     const to = String(body.to ?? "");
-    const card = db.select().from(cards).where(eq(cards.id, id)).get();
-    if (!card) return err("card not found", 404);
+    const card = requireCard(id);
     const orch = getOrchestrator();
 
     if (to === "in_progress") {

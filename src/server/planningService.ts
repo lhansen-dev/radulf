@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, plans, runs, repos, reviews, type ScopingRole } from "@/db";
+import { db, now, plans, runs, reviews, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
 import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
 import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
@@ -12,6 +12,7 @@ import { firstUnchecked } from "./checklist";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
 import { tryGit } from "./git";
+import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import {
   circuitOpenReason,
@@ -173,7 +174,7 @@ export class PlanningService {
   async runPlanning(cardId: string) {
     const deps = this.deps;
     const card = deps.getCard(cardId)!;
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new Error("repo not found");
     const settings = getSettings();
 

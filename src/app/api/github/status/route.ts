@@ -1,6 +1,5 @@
-import { eq } from "drizzle-orm";
-import { db, repos } from "@/db";
 import { hasRemote } from "@/server/git";
+import { getRepo } from "@/server/repos";
 import { githubStatus } from "@/server/github";
 import { json, handle } from "../../_lib";
 
@@ -26,7 +25,7 @@ export async function GET(req: Request) {
     const gh = await githubStatus({ refresh: params.get("refresh") === "1" });
     let remote: boolean | null = null;
     if (repoId) {
-      const repo = db.select().from(repos).where(eq(repos.id, repoId)).get();
+      const repo = getRepo(repoId);
       remote = repo ? await hasRemote(repo.path) : false;
     }
     return json({

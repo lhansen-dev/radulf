@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import { asc, desc, eq, inArray } from "drizzle-orm";
-import { db, cards, plans, runs, iterations, reviews, events, repos } from "@/db";
+import { db, cards, plans, runs, iterations, reviews, events } from "@/db";
 import { now } from "@/db";
 import { planStatePath } from "@/server/bookkeeping";
 import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
+import { getCard, requireCard } from "@/server/cards";
+import { getRepo } from "@/server/repos";
 import { groupBy } from "@/server/queryGrouping";
 import { removeRunTranscripts } from "@/server/retention";
 import { listScopingMessages } from "@/server/scoping";
@@ -18,9 +20,9 @@ type Ctx = { params: Promise<{ id: string }> };
 /** Full card detail: plans, runs (+iterations), reviews, recent events. */
 export async function GET(_req: Request, { params }: Ctx) {
   const { id } = await params;
-  const card = db.select().from(cards).where(eq(cards.id, id)).get();
+  const card = getCard(id);
   if (!card) return err("card not found", 404);
-  const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+  const repo = getRepo(card.repoId);
   const cardPlans = db
     .select()
     .from(plans)
@@ -106,15 +108,14 @@ export async function PATCH(req: Request, { params }: Ctx) {
 export async function DELETE(_req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const card = db.select().from(cards).where(eq(cards.id, id)).get();
-    if (!card) return err("card not found", 404);
+    const card = requireCard(id);
     if (["planning", "looping", "evaluating"].includes(card.status))
       return err("cannot delete a card with an active run — pull it back to Backlog first");
     // Clean up any leftover worktree before the rows cascade away.
     const { getOrchestrator } = await import("@/server/orchestrator");
     const run = getOrchestrator().latestWorktreeRun(id);
     if (run) {
-      const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+      const repo = getRepo(card.repoId);
       if (repo) {
         const { removeWorktree } = await import("@/server/git");
         await removeWorktree(repo.path, run.worktreePath, run.branch);

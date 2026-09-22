@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, cards, runs, repos } from "@/db";
+import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import { parseEvaluation } from "@/shared/evaluation";
@@ -10,6 +10,7 @@ import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
+import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import {
   registerRunBaseline,
@@ -80,7 +81,7 @@ export class EvaluationService {
   async runEvaluator(cardId: string) {
     const deps = this.deps;
     const card = deps.getCard(cardId)!;
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new Error("repo not found");
     const plan = deps.latestPlan(cardId);
     if (!plan) throw new Error("card has no plan");

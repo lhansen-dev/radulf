@@ -36,6 +36,8 @@ import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { limitCooldownMs } from "./providerRateLimit";
 import { offRunBranchReason, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
+import { getCard, requireCard } from "./cards";
+import { getRepo, requireRepo } from "./repos";
 import { PlanningService, pendingReplanFeedback } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService } from "./reviewService";
@@ -68,7 +70,6 @@ import {
   type StageDependencies,
 } from "./stage";
 
-type Card = typeof cards.$inferSelect;
 type Run = typeof runs.$inferSelect;
 
 const HARNESS_STATUSES: CardStatus[] = ["planning", "looping", "evaluating"];
@@ -225,7 +226,7 @@ export class Orchestrator {
   private controllers = new Map<string, AbortController>();
 
   private stageDeps: StageDependencies = {
-    getCard: (cardId) => this.getCard(cardId),
+    getCard,
     latestPlan: (cardId) => this.latestPlan(cardId),
     latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
     moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
@@ -373,16 +374,6 @@ export class Orchestrator {
 
   // ---- helpers -------------------------------------------------------------
 
-  private getCard(cardId: string): Card | undefined {
-    return db.select().from(cards).where(eq(cards.id, cardId)).get();
-  }
-
-  private requireCard(cardId: string): Card {
-    const card = this.getCard(cardId);
-    if (!card) throw new ClientError("card not found", 404);
-    return card;
-  }
-
   private moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean {
     const result = db
       .update(cards)
@@ -409,7 +400,7 @@ export class Orchestrator {
         ? this.planningService.runPlanning(cardId)
         : this.evaluationService.runEvaluator(cardId);
     void run.catch((err) => {
-      if (this.getCard(cardId)?.status === stage) {
+      if (getCard(cardId)?.status === stage) {
         this.moveCard(cardId, stage, "needs_attention", String(err));
       }
     });
@@ -496,7 +487,7 @@ export class Orchestrator {
   private isRunActive(runId: string, cardId: string, signal: AbortSignal): boolean {
     if (signal.aborted) return false;
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
-    return run?.status === "running" && this.getCard(cardId)?.status === "looping";
+    return run?.status === "running" && getCard(cardId)?.status === "looping";
   }
 
   private latestPlan(cardId: string) {
@@ -539,7 +530,7 @@ export class Orchestrator {
 
   /** Todo → In Progress. Plans if needed, otherwise queues for the loop slot. */
   startCard(cardId: string) {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     if (!["todo", "needs_attention"].includes(card.status))
       throw new ClientError(`cannot start card in status ${card.status}`);
     if (!card.startedAt)
@@ -565,7 +556,7 @@ export class Orchestrator {
 
   /** Backlog → Todo. Auto-mode may immediately claim the queued card. */
   queueCard(cardId: string) {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     if (card.status !== "backlog") {
       throw new ClientError(`cannot queue card in status ${card.status}`);
     }
@@ -591,13 +582,13 @@ export class Orchestrator {
   }
 
   pauseCard(cardId: string) {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     if (card.status !== "looping") throw new ClientError(`cannot pause a ${card.status} card`);
     this.pausedCards.add(cardId);
   }
 
   resumeCard(cardId: string) {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     if (card.status !== "paused") throw new ClientError(`cannot resume a ${card.status} card`);
     this.pausedCards.delete(cardId);
     this.moveCard(cardId, "paused", "ready");
@@ -605,7 +596,7 @@ export class Orchestrator {
   }
 
   cancelCard(cardId: string) {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     this.cancelActiveRun(cardId, "cancelled by user");
     // Pulling work back must always land somewhere auto-mode cannot claim.
     // Clear the durable manual-start marker in the same write.
@@ -622,7 +613,7 @@ export class Orchestrator {
 
   /** Needs Attention → In Progress. */
   restartCard(cardId: string) {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     if (card.status !== "needs_attention")
       throw new ClientError(`cannot restart card in status ${card.status}`);
     this.startCard(cardId);
@@ -630,7 +621,7 @@ export class Orchestrator {
 
   /** Retry the latest failed pipeline stage without replaying completed ones. */
   retryFailedStep(cardId: string): { ok: true; step: NonNullable<ReturnType<typeof retryableFailedStep>> } {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     const step = retryableFailedStep(db.select().from(runs).where(eq(runs.cardId, cardId)).all());
     if (!step) throw new ClientError("the latest pipeline step did not fail");
     if (card.status !== "needs_attention") {
@@ -793,12 +784,12 @@ export class Orchestrator {
         const readyCard = repoReady[nextReady++];
         if (readyCard) {
           // A nested pump may have claimed it since the list was read.
-          if (this.getCard(readyCard.id)?.status !== "ready") continue;
+          if (getCard(readyCard.id)?.status !== "ready") continue;
           const id = readyCard.id;
           this.activeLoopCards.set(id, repoId);
           void this.runLoop(id)
             .catch((err) => {
-              if (this.getCard(id)?.status === "looping") {
+              if (getCard(id)?.status === "looping") {
                 this.moveCard(id, "looping", "needs_attention", String(err));
               }
             })
@@ -827,8 +818,8 @@ export class Orchestrator {
   }
 
   private async runLoop(cardId: string) {
-    const card = this.getCard(cardId)!;
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const card = getCard(cardId)!;
+    const repo = getRepo(card.repoId);
     if (!repo) throw new Error("repo not found");
     const plan = this.latestPlan(cardId);
     if (!plan) throw new Error("card has no plan");
@@ -1427,7 +1418,7 @@ export class Orchestrator {
     worktreePath: string;
     n: number;
   }): Promise<boolean> {
-    const repo = db.select().from(repos).where(eq(repos.id, opts.repoId)).get();
+    const repo = getRepo(opts.repoId);
     if (!repo) return false;
     const unapproved = unapprovedScripts(collectLifecycleScripts(opts.worktreePath), approvedScripts(repo));
     if (unapproved.length === 0) return false;
@@ -1455,15 +1446,14 @@ export class Orchestrator {
    * gate fired.
    */
   async approveInstallScripts(cardId: string, packages: ApprovedInstallScript[]): Promise<{ ok: true }> {
-    const card = this.requireCard(cardId);
+    const card = requireCard(cardId);
     if (card.status !== "needs_attention") {
       throw new ClientError(`cannot approve install scripts for a ${card.status} card`);
     }
     if (packages.length === 0) throw new ClientError("no packages to approve");
     const run = this.latestWorktreeRun(cardId);
     if (!run) throw new ClientError("card has no worktree left to resume");
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
-    if (!repo) throw new ClientError("repo not found", 404);
+    const repo = requireRepo(card.repoId);
 
     // Approve only what is actually present in the resolved tree, matched on
     // the full {name, version, scriptHash} triple — a stale UI payload must
@@ -1544,8 +1534,8 @@ export class Orchestrator {
   }
 
   async resetCard(cardId: string) {
-    const card = this.requireCard(cardId);
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get()!;
+    const card = requireCard(cardId);
+    const repo = requireRepo(card.repoId);
     this.cancelActiveRun(cardId, "reset by user");
 
     // Remove worktrees for ALL runs before deleting their rows.

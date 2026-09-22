@@ -1,8 +1,10 @@
 import path from "node:path";
 import { asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { cards, db, now, repos, scopingMessages, TRANSCRIPTS_DIR, type ScopingRole } from "@/db";
+import { db, now, scopingMessages, TRANSCRIPTS_DIR, type ScopingRole } from "@/db";
 import { ClientError } from "./clientError";
+import { requireCard as requireCardRow } from "./cards";
+import { requireRepo } from "./repos";
 import { runHarness } from "./harness";
 import { normalizeProvider } from "./providers";
 import { getSettings } from "./settings";
@@ -119,11 +121,8 @@ export function parseScopedCardProposal(
 }
 
 function requireCard(cardId: string) {
-  const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
-  if (!card) throw new ClientError("card not found", 404);
-  const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
-  if (!repo) throw new ClientError("repository not found", 404);
-  return { card, repo };
+  const card = requireCardRow(cardId);
+  return { card, repo: requireRepo(card.repoId) };
 }
 
 /** One read-only harness turn against the card's repository, on the scoping role. */

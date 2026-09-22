@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db, cards, repos, runs } from "@/db";
 import { planStatePath } from "@/server/bookkeeping";
 import { hasCommits, isGitRepo, listBranches, removeWorktree } from "@/server/git";
+import { getRepo, requireRepo } from "@/server/repos";
 import { removeRunTranscripts } from "@/server/retention";
 import { json, err, handle } from "../../_lib";
 
@@ -12,7 +13,7 @@ type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
   const { id } = await params;
-  const row = db.select().from(repos).where(eq(repos.id, id)).get();
+  const row = getRepo(id);
   return row ? json(row) : err("repo not found", 404);
 }
 
@@ -20,8 +21,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
     const body = await req.json();
-    const current = db.select().from(repos).where(eq(repos.id, id)).get();
-    if (!current) return err("repo not found", 404);
+    const current = requireRepo(id);
     const patch: Partial<typeof repos.$inferInsert> = {};
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
     if (typeof body.path === "string" && body.path.trim()) {
@@ -47,8 +47,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
 export async function DELETE(_req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const repo = db.select().from(repos).where(eq(repos.id, id)).get();
-    if (!repo) return err("repo not found", 404);
+    const repo = requireRepo(id);
     const { getOrchestrator } = await import("@/server/orchestrator");
     const orchestrator = getOrchestrator();
     // The same cleanup deleting a card does, for every card of the repo.
