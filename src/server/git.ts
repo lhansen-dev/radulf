@@ -206,50 +206,38 @@ const REVIEW_DIFF_FLAGS = [
   "--text",
 ] as const;
 
+/** The review diff: merge-base of `defaultBranch` and HEAD up to HEAD, under
+ * REVIEW_DIFF_FLAGS, with `.ralph` excluded. `flags` go to `git diff`. */
+async function reviewDiff(
+  worktreePath: string,
+  defaultBranch: string,
+  ...flags: string[]
+): Promise<string> {
+  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
+  return git(
+    worktreePath,
+    ...REVIEW_DIFF_FLAGS,
+    ...flags,
+    base,
+    "HEAD",
+    "--",
+    ".",
+    ":(exclude).ralph"
+  );
+}
+
 export async function worktreeDiff(
   worktreePath: string,
   defaultBranch: string
 ): Promise<string> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  return git(worktreePath, ...REVIEW_DIFF_FLAGS, base, "HEAD", "--", ".", ":(exclude).ralph");
+  return reviewDiff(worktreePath, defaultBranch);
 }
 
 export async function worktreeDiffStat(
   worktreePath: string,
   defaultBranch: string
 ): Promise<string> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  return git(
-    worktreePath,
-    ...REVIEW_DIFF_FLAGS,
-    "--shortstat",
-    base,
-    "HEAD",
-    "--",
-    ".",
-    ":(exclude).ralph"
-  );
-}
-
-/** Paths changed between the merge-base and HEAD, same scope as
- * `worktreeDiff` (`.ralph` excluded) — used to flag sensitive-path and
- * ignore-file changes in the review UI without re-parsing the diff text. */
-export async function worktreeChangedPaths(
-  worktreePath: string,
-  defaultBranch: string
-): Promise<string[]> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  const out = await git(
-    worktreePath,
-    ...REVIEW_DIFF_FLAGS,
-    "--name-only",
-    base,
-    "HEAD",
-    "--",
-    ".",
-    ":(exclude).ralph"
-  );
-  return out ? out.split("\n").filter(Boolean) : [];
+  return reviewDiff(worktreePath, defaultBranch, "--shortstat");
 }
 
 /** Return true when the worktree has uncommitted changes (git status --porcelain is non-empty). */
@@ -355,8 +343,8 @@ export async function hasRemote(repoPath: string): Promise<boolean> {
 /**
  * Drop `.ralph/` from the branch and commit that removal.
  *
- * Every review surface excludes `.ralph` (`worktreeDiff`, `worktreeDiffStat`,
- * `worktreeChangedPaths` all pass `:(exclude).ralph`) and `mergeBranch` strips
+ * Every review surface excludes `.ralph` (`worktreeDiff` and `worktreeDiffStat`
+ * both pass `:(exclude).ralph`) and `mergeBranch` strips
  * it before committing, so the plan artifacts, loop memory, and evaluator
  * verdict are deliberately not part of what a human approves. A push has to
  * honour the same exclusion or PR delivery would publish to a remote exactly
