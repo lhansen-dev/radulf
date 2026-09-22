@@ -162,10 +162,6 @@ export function useWorkData() {
   });
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCards((current) => [...current]);
-      checkHealth();
-    }, 30_000);
     const offline = () => setStreamConnected(false);
     const online = () => {
       setStreamConnected(true);
@@ -174,12 +170,11 @@ export function useWorkData() {
     window.addEventListener("offline", offline);
     window.addEventListener("online", online);
     return () => {
-      clearInterval(interval);
       if (eventTimer.current) clearTimeout(eventTimer.current);
       window.removeEventListener("offline", offline);
       window.removeEventListener("online", online);
     };
-  }, [checkHealth, refetch]);
+  }, [refetch]);
 
   return {
     cards,

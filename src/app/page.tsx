@@ -98,6 +98,9 @@ export default function WorkPage() {
   const [showNew, setShowNew] = useState(false);
   const [showImprovementRun, setShowImprovementRun] = useState(false);
   const [notice, setNotice] = useState("");
+  // Row details such as "3m elapsed" read Date.now() at render, so a tick here
+  // is what keeps them current; the card list itself does not change.
+  useNow(true, 30_000);
 
   useEffect(() => {
     const readUrl = () => {
