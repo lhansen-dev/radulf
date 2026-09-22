@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   tryGit: vi.fn(),
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
+  startDiskWatchdog: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
    * moving the defaults every other test relies on. */
@@ -29,6 +30,13 @@ vi.mock("./harness", async (importOriginal) => ({
 vi.mock("./installGate", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./installGate")>()),
   rebuildPackages: mocks.rebuildPackages,
+}));
+// Real ensureBallast (guarded off in test by NODE_ENV), mocked startDiskWatchdog
+// so a test can trip it deterministically instead of waiting on real du/statfs
+// polling.
+vi.mock("./sandbox/diskWatchdog", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./sandbox/diskWatchdog")>()),
+  startDiskWatchdog: mocks.startDiskWatchdog,
 }));
 vi.mock("./providers", () => ({
   listProviderModels: mocks.listProviderModels,
@@ -291,6 +299,7 @@ describe("Orchestrator cancellation lifecycle", () => {
     mocks.preflightProvider.mockResolvedValue(undefined);
     mocks.tryGit.mockImplementation(async () => ({ ok: true, out: "" }));
     mocks.offRunBranchReason.mockResolvedValue(null);
+    mocks.startDiskWatchdog.mockImplementation(() => ({ stop: vi.fn() }));
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "no verdict written in test" });
     delete (globalThis as typeof globalThis & {
@@ -445,6 +454,34 @@ describe("Orchestrator cancellation lifecycle", () => {
     expect(run.exitReason).toContain("harness crashed");
     const openIterations = db.select().from(iterations).all()
       .filter((iteration) => iteration.runId === run.id && iteration.status !== "failed");
+    expect(openIterations).toHaveLength(0);
+  });
+
+  it("fails the open iteration when the disk watchdog trips a running loop", async () => {
+    card("watchdog-trip");
+    plan("watchdog-trip");
+    const harness = deferred<never>();
+    mocks.runHarness.mockReturnValueOnce(harness.promise);
+    let trip: ((reason: string) => void) | undefined;
+    mocks.startDiskWatchdog.mockImplementationOnce((opts: { onTrip: (reason: string) => void }) => {
+      trip = opts.onTrip;
+      return { stop: vi.fn() };
+    });
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    orchestrator.startCard("watchdog-trip");
+    await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+    trip!("disk pressure: worktree exceeded 16 GiB");
+    harness.reject(new Error("child exited after abort"));
+    await settle();
+
+    expect(getCard("watchdog-trip").status).toBe("needs_attention");
+    const run = getRun("watchdog-trip");
+    expect(run.status).toBe("failed");
+    expect(run.exitReason).toBe("disk pressure: worktree exceeded 16 GiB");
+    const openIterations = db.select().from(iterations).all()
+      .filter((iteration) => iteration.runId === run.id && iteration.status === "running");
     expect(openIterations).toHaveLength(0);
   });
 

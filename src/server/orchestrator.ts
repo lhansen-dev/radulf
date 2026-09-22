@@ -962,6 +962,9 @@ export class Orchestrator {
       ballastPath: this.ballastPath(),
       onTrip: (reason) => {
         if (this.finishRun(runId, "failed", reason)) {
+          // Parity with endActiveRun: an open iteration row must not outlive
+          // the run it belongs to.
+          this.failIterations(runId, reason);
           this.moveCard(cardId, "looping", "needs_attention", reason);
         }
         controller.abort();
