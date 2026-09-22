@@ -103,6 +103,18 @@ export default function ReviewPage() {
     }
   }
 
+  async function abandon() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/cards/${id}/abandon`, { json: {} });
+      router.push("/");
+    } catch (e) {
+      setError(errorMessage(e));
+      setBusy(false);
+    }
+  }
+
   if (!detail) return <div className="p-8 text-foreground/50">{error || "Loading…"}</div>;
 
   return (
@@ -114,7 +126,7 @@ export default function ReviewPage() {
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>
         <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
           <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-          <button disabled={busy} onClick={() => confirm("Abandon this task? Its worktree and branch will be deleted.") && api(`/api/cards/${id}/abandon`, { json: {} }).then(() => router.push("/"))} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
+          <button disabled={busy} onClick={() => { if (confirm("Abandon this task? Its worktree and branch will be deleted.")) void abandon(); }} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
         </DetailsMenu>
       </header>
 

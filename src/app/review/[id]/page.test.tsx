@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import ReviewPage from "./page";
 
 vi.mock("next/link", () => ({
@@ -100,6 +100,28 @@ describe("ReviewPage", () => {
     expect(screen.getByText("claude-subscription/sonnet")).toBeTruthy();
     expect(screen.getByText(/Evaluator approved this change/)).toBeTruthy();
     expect(screen.getByText("All acceptance criteria passed.")).toBeTruthy();
+  });
+
+  it("shows why an abandon failed instead of dropping the rejection", async () => {
+    const baseFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/cards/c1/abandon") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "worktree is locked" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("confirm", () => true);
+
+    render(<ReviewPage />);
+    fireEvent.click(await screen.findByText("Abandon task"));
+
+    expect(await screen.findByText("worktree is locked")).toBeTruthy();
+    vi.unstubAllGlobals();
   });
 });
 
