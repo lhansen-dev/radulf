@@ -1,3 +1,5 @@
+import { groupBy } from "./queryGrouping";
+
 export type BarDatum = { label: string; value: number };
 
 export type AnalyticsCardRow = {
@@ -347,23 +349,21 @@ function computeLoopCohorts(
   // Breakdowns use ACTUAL provider/model/harness/version. Pre-telemetry rows
   // fall back to the run's requested pair, which was accurate absent fallback.
   const runById = new Map(runs.map((r) => [r.id, r]));
-  const groups = new Map<string, number[]>();
-  for (const i of iterations) {
-    if (!i.startedAt || !i.endedAt) continue;
+  const cohortLabel = (i: AnalyticsIterationRow) => {
     const run = runById.get(i.runId);
     const provider = i.actualProvider ?? run?.provider ?? "unknown";
     const model = i.actualModel ?? run?.model ?? "unknown";
     const harness = i.harness
       ? ` · ${i.harness}${i.harnessVersion ? ` ${i.harnessVersion}` : ""}`
       : "";
-    const label = `${provider}/${model || "unknown"}${harness}`;
-    groups.set(label, [...(groups.get(label) ?? []), durationMs(i)]);
-  }
+    return `${provider}/${model || "unknown"}${harness}`;
+  };
+  const groups = groupBy(iterations.filter((i) => i.startedAt && i.endedAt), cohortLabel);
 
   return Array.from(groups.entries())
-    .filter(([, durations]) => durations.length >= MIN_COHORT_SIZE)
-    .map(([label, durations]) => {
-      const sorted = durations.sort((a, b) => a - b);
+    .filter(([, cohort]) => cohort.length >= MIN_COHORT_SIZE)
+    .map(([label, cohort]) => {
+      const sorted = cohort.map(durationMs).sort((a, b) => a - b);
       return {
         label,
         sampleSize: sorted.length,
