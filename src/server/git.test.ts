@@ -9,6 +9,7 @@ import {
   isRalphBranch,
   isValidBranchName,
   listBranches,
+  offRunBranchReason,
   worktreeIsDirty,
   worktreeDiff,
   worktreeDiffStat,
@@ -64,6 +65,25 @@ describe("repository inspection", () => {
     await expect(createWorktree(repo, "nope", "My task", "run2")).rejects.toThrow(
       /base branch "nope" does not exist/,
     );
+  });
+
+  it("offRunBranchReason is null on the run branch, and names where the worktree went otherwise", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-offbranch-wt-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-1");
+    try {
+      expect(await offRunBranchReason(wt, "ralph/run-1")).toBeNull();
+      // The incident shape: the agent checks out a branch nothing else has.
+      git(wt, "checkout", "-q", "feature-x");
+      expect(await offRunBranchReason(wt, "ralph/run-1")).toBe(
+        "worktree left its run branch: on feature-x, expected ralph/run-1",
+      );
+      git(wt, "checkout", "-q", "--detach");
+      expect(await offRunBranchReason(wt, "ralph/run-1")).toBe(
+        "worktree left its run branch: on a detached HEAD, expected ralph/run-1",
+      );
+    } finally {
+      git(repo, "worktree", "remove", "--force", wt);
+    }
   });
 
   it("worktreeIsDirty sees untracked and modified files, and is false for a missing path", async () => {

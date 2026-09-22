@@ -139,8 +139,8 @@ export function toolchainHomeReAllows(): string[] {
  * Resolve the shared `.git` dir for a worktree (`git rev-parse
  * --git-common-dir`) — the parent repo's real git metadata, which a linked
  * worktree's own `.git` file only points at. The agent's git commands need
- * write access here (refs, objects, the worktree's own HEAD/index) except
- * for the hook/config vectors carved out below.
+ * write access here (objects, the worktree's own index) except for the
+ * hook/config and ref vectors carved out below.
  */
 export function resolveGitCommonDir(worktree: string): string {
   const out = execFileSync("git", ["-C", worktree, "rev-parse", "--git-common-dir"], {
@@ -158,19 +158,25 @@ export function resolveGitCommonDir(worktree: string): string {
  * worktree, run-private TMPDIR/cache, and the parent repo's shared `.git`
  * except the hook/config vectors.
  */
+/** The per-worktree files agent git must not write: `config` is the
+ * `core.hooksPath` code-execution vector, `HEAD` is the checkout pointer. */
+const WORKTREE_DENY_FILES = ["config", "HEAD"];
+
 /**
- * Concrete `<gitCommonDir>/worktrees/<name>/config` paths for every linked
- * worktree registered right now.
+ * Concrete `<gitCommonDir>/worktrees/<name>/{config,HEAD}` paths for every
+ * linked worktree registered right now.
  *
  * srt glob-expands only its OWN mandatory deny list (via ripgrep `--iglob`).
  * A caller-supplied `denyWrite` entry is taken as a literal path: Seatbelt
  * still matches `*` as a pattern, but bwrap has no pattern support and would
  * mount over a path whose component is literally `*`, protecting nothing. So
- * the pattern form alone left this write vector — `core.hooksPath` in a
- * per-worktree config is arbitrary code execution on the next git
- * command — open on Linux. Enumerating gives both platforms a real deny.
+ * the pattern form alone left these write vectors open on Linux:
+ * `core.hooksPath` in a per-worktree config is arbitrary code execution on
+ * the next git command, and a rewritten per-worktree `HEAD` is
+ * `git checkout` onto another branch. Enumerating gives both platforms a
+ * real deny.
  */
-export function gitWorktreeConfigDenies(gitCommonDir: string): string[] {
+export function gitWorktreeDenies(gitCommonDir: string): string[] {
   const worktreesDir = path.join(gitCommonDir, "worktrees");
   let entries;
   try {
@@ -180,7 +186,7 @@ export function gitWorktreeConfigDenies(gitCommonDir: string): string[] {
   }
   return entries
     .filter((e) => e.isDirectory())
-    .map((e) => path.join(worktreesDir, e.name, "config"));
+    .flatMap((e) => WORKTREE_DENY_FILES.map((name) => path.join(worktreesDir, e.name, name)));
 }
 
 export function buildFilesystemConfig(opts: {
@@ -213,13 +219,23 @@ export function buildFilesystemConfig(opts: {
     denyWrite: [
       path.join(opts.gitCommonDir, "hooks"),
       path.join(opts.gitCommonDir, "config"),
-      ...gitWorktreeConfigDenies(opts.gitCommonDir),
+      // Every ref and checkout pointer. The orchestrator makes each commit
+      // from the host, so agent git has no legitimate ref write: this stops
+      // `git checkout <base>` inside the worktree, `git commit`,
+      // `git branch -f`, `git reset` and `git update-ref` at the kernel, with
+      // the orchestrator's run-branch guard as the backstop for unsandboxed
+      // runs. `packed-refs` need not exist yet; srt then binds a read-only
+      // stub in its place for the command's duration.
+      path.join(opts.gitCommonDir, "refs"),
+      path.join(opts.gitCommonDir, "packed-refs"),
+      path.join(opts.gitCommonDir, "HEAD"),
+      ...gitWorktreeDenies(opts.gitCommonDir),
       // Kept on macOS only: Seatbelt honours the pattern, which also covers a
       // worktree registered after this config was built — something the
       // snapshot above cannot. On Linux the same entry is inert at best, so
       // there it would only add a bogus literal-`*` mount.
       ...(process.platform === "darwin"
-        ? [path.join(opts.gitCommonDir, "worktrees", "*", "config")]
+        ? WORKTREE_DENY_FILES.map((name) => path.join(opts.gitCommonDir, "worktrees", "*", name))
         : []),
     ],
   };

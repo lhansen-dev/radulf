@@ -115,7 +115,7 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 | Access | Paths |
 |--------|-------|
 | **write allow** | the worktree; the run's `$TMPDIR`; the run's cache root; the parent repo's shared `.git` (resolved via `git rev-parse --git-common-dir`, so a linked worktree's pointer file isn't mistaken for it) |
-| **write deny** | `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir |
+| **write deny** | `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir. `<git>/refs`, `<git>/packed-refs`, `<git>/HEAD`, `<git>/worktrees/*/HEAD` — every ref and checkout pointer, so agent git cannot commit, move a branch, or check the worktree out onto another branch. The orchestrator makes every commit from the host. |
 | **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH`; three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
 | **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, plus a backstop credential denylist |
 

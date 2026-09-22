@@ -128,6 +128,24 @@ export async function currentBranch(repoPath: string, fallback: string): Promise
   return out;
 }
 
+/**
+ * Null when `worktreePath` has `branch` checked out; otherwise why nothing
+ * must be committed there. Every orchestrator commit is meant for the run's
+ * own `ralph/` branch, and nothing else keeps the worktree on it: an agent
+ * that runs `git checkout <base>` inside the worktree routes every commit
+ * after it onto the base branch, where the run-end integrity check then
+ * reads Radulf's own work as tampering (`integrity.ts`).
+ */
+export async function offRunBranchReason(
+  worktreePath: string,
+  branch: string,
+): Promise<string | null> {
+  const { ok, out } = await tryGit(worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD");
+  const current = ok && out ? out : null;
+  if (current === branch) return null;
+  return `worktree left its run branch: on ${current ?? "a detached HEAD"}, expected ${branch}`;
+}
+
 export async function isGitRepo(dir: string): Promise<boolean> {
   return fs.existsSync(dir) && (await tryGit(dir, "rev-parse", "--git-dir")).ok;
 }

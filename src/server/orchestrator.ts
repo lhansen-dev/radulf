@@ -34,7 +34,7 @@ import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { limitCooldownMs } from "./providerRateLimit";
-import { removeWorktree, tryGit } from "./git";
+import { offRunBranchReason, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { PlanningService, pendingReplanFeedback } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
@@ -870,8 +870,14 @@ export class Orchestrator {
     }
     fs.writeFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), plan.promptMd);
     clearEvaluationArtifact(ralphDir);
-    await tryGit(worktreePath, "add", ".ralph");
-    await tryGit(worktreePath, "commit", "-m", `ralph: sync plan v${plan.version}`);
+    // A reused worktree (retry, restart) may have been left on another branch
+    // by an earlier run's agent. Commit nothing to it; the run fails below,
+    // once it has a row to fail.
+    const offBranchAtStart = await offRunBranchReason(worktreePath, branch);
+    if (!offBranchAtStart) {
+      await tryGit(worktreePath, "add", ".ralph");
+      await tryGit(worktreePath, "commit", "-m", `ralph: sync plan v${plan.version}`);
+    }
 
     // Spec 14 L3: per-run sandbox context and the parent-repo integrity
     // baseline. The baseline persists to disk because the pre-merge re-check
@@ -932,6 +938,7 @@ export class Orchestrator {
     });
 
     try {
+      if (offBranchAtStart) return fail(offBranchAtStart);
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
 
@@ -1083,6 +1090,14 @@ export class Orchestrator {
           runId,
           payload: { n, failed, stuck: result.stuck, summary: (result.error || result.lastText).slice(0, 200) },
         });
+
+        // Every commit below lands on whatever branch the worktree has checked
+        // out. The agent's git is meant to be read-only, but `git checkout` is
+        // one command away, and the run-end integrity check would then read
+        // the orchestrator's own commits on the base branch as tampering. Stop
+        // here, before anything is committed.
+        const offBranch = await offRunBranchReason(worktreePath, branch);
+        if (offBranch) return fail(offBranch, n);
 
         /**
          * Bank whatever the iteration left behind: tick and commit a signalled

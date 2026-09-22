@@ -17,6 +17,7 @@ const execFileAsync = promisify(execFile);
 const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   tryGit: vi.fn(),
+  offRunBranchReason: vi.fn(),
   // Mutable so the Phase 18.1 regression test below can flip sandboxing on
   // for just that one test (it needs a real git repo + real srtConfig build
   // to reproduce the FK-ordering bug) without disturbing every other test in
@@ -47,6 +48,7 @@ vi.mock("./harness", async (importOriginal) => ({
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
   tryGit: mocks.tryGit,
+  offRunBranchReason: mocks.offRunBranchReason,
 }));
 vi.mock("./settings", () => ({
   getSettings: () => mocks.settings,
@@ -237,6 +239,7 @@ describe("EvaluationService.runEvaluator", () => {
     vi.clearAllMocks();
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
     mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.settings.sandboxEnabled = false;
     mocks.settings.sandboxWeakerIsolationForGoTls = false;
     mocks.settings.autoApprove = false;
@@ -266,6 +269,22 @@ describe("EvaluationService.runEvaluator", () => {
     );
     expect(deps.replan).not.toHaveBeenCalled();
     expect(deps.approveReview).not.toHaveBeenCalled();
+  });
+
+  it("rejects the verdict when the evaluator moved the worktree off the run branch", async () => {
+    seedCard("card-off-branch");
+    const planId = seedPlan("card-off-branch");
+    seedLoopRun("card-off-branch", planId);
+    mockEvaluationVerdict("VERDICT: approve\n\nLooks solid.");
+    const reason = "worktree left its run branch: on main, expected ralph/run";
+    mocks.offRunBranchReason.mockResolvedValue(reason);
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-off-branch");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "failed", reason, expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-off-branch", "evaluating", "needs_attention", reason);
+    expect(mocks.tryGit.mock.calls.some(([, cmd]) => cmd === "commit")).toBe(false);
   });
 
   // Spec 20: the evaluator holds one of its repo's pipeline slots, so it owes

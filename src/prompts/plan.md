@@ -91,9 +91,10 @@ covering what changed, why, and key files) and stop. Whole-card acceptance
 testing is the evaluator's job, not yours. Never write `.ralph/DONE` if the
 task-specific check failed or when LAST_TASK=false.
 
-Rules: never run `git add`, `git commit`, `git push`, or any other git
-command that changes state — the orchestrator commits for you (read-only
-commands like `git status` and `git diff` are fine); never modify
+Rules: never run `git add`, `git commit`, `git checkout`, `git switch`,
+`git push`, or any other git command that changes state. The orchestrator
+commits for you, and the worktree must stay on the branch it was given.
+Read-only commands like `git status` and `git diff` are fine. Never modify
 `.ralph/PROMPT.md`; never touch files outside this working directory; only run
 tests that cover your current task's files — NEVER run the full test suite.
 Your assigned task is the ONLY task: never create or update any harness

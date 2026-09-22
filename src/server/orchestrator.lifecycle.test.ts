@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   mergeBranch: vi.fn(),
   removeWorktree: vi.fn(),
   tryGit: vi.fn(),
+  offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
@@ -79,6 +80,7 @@ vi.mock("./git", async (importOriginal) => ({
   mergeBranch: mocks.mergeBranch,
   removeWorktree: mocks.removeWorktree,
   tryGit: mocks.tryGit,
+  offRunBranchReason: mocks.offRunBranchReason,
 }));
 
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-orchestrator-"));
@@ -301,6 +303,7 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
     mocks.preflightProvider.mockResolvedValue(undefined);
     mocks.tryGit.mockImplementation(async () => ({ ok: true, out: "" }));
+    mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "no verdict written in test" });
     delete (globalThis as typeof globalThis & {
@@ -718,6 +721,49 @@ describe("Orchestrator cancellation lifecycle", () => {
 
     it("never exceeds the ceiling", () => {
       expect(iterationBudgetMs(5 * MIN, [20 * MIN, 20 * MIN, 20 * MIN])).toBe(5 * MIN);
+    });
+  });
+
+  describe("worktree off its run branch", () => {
+    const reason = "worktree left its run branch: on main, expected ralph/run";
+    const commits = () => mocks.tryGit.mock.calls.filter(([, cmd]) => cmd === "commit");
+
+    it("fails the run before the first iteration, without the plan-sync commit", async () => {
+      card("off-at-start");
+      plan("off-at-start");
+      mocks.offRunBranchReason.mockResolvedValue(reason);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("off-at-start");
+
+      await vi.waitFor(() => expect(getCard("off-at-start").status).toBe("needs_attention"));
+      expect(getRun("off-at-start")).toMatchObject({ status: "failed", exitReason: reason });
+      expect(mocks.runHarness).not.toHaveBeenCalled();
+      expect(commits()).toHaveLength(0);
+    });
+
+    it("fails the run after the iteration that left the branch, before committing its work", async () => {
+      card("off-after-iteration");
+      plan("off-after-iteration");
+      mocks.offRunBranchReason.mockResolvedValueOnce(null).mockResolvedValue(reason);
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        fs.writeFileSync(path.join(cwd, "feature.txt"), "work");
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), "done");
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("off-after-iteration");
+
+      await vi.waitFor(() => expect(getCard("off-after-iteration").status).toBe("needs_attention"));
+      expect(getRun("off-after-iteration")).toMatchObject({
+        status: "failed",
+        exitReason: reason,
+        iterationsDone: 1,
+      });
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+      // Only the plan sync at loop start; the iteration's work was never committed.
+      expect(commits().map((call) => call[3])).toEqual(["ralph: sync plan v1"]);
     });
   });
 

@@ -206,6 +206,18 @@ describe("mock provider — full pipeline", () => {
     expect(cardStatus(cardId)).toBe("needs_attention");
     expect(cardRuns(cardId, "loop")[0]).toMatchObject({ exitReason: "stalled", iterationsDone: 3 });
   }, 30_000);
+
+  it("off-branch: an agent that checks out another branch fails the run before anything is committed", async () => {
+    const { cardId, repo } = await runScenario("off-branch");
+    expect(cardStatus(cardId)).toBe("needs_attention");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "failed", iterationsDone: 1 });
+    expect(loop.exitReason).toBe(`worktree left its run branch: on escaped, expected ${loop.branch}`);
+    // The branch the agent switched to still sits where it was created: no
+    // task commit followed the checkout, and the run branch is untouched.
+    expect(gitIn(repo.repoPath, "rev-parse", "escaped")).toBe(gitIn(repo.repoPath, "rev-parse", loop.branch));
+    expect(gitIn(repo.repoPath, "log", "--format=%s", "-1", loop.branch)).toBe("ralph: sync plan v1");
+  }, 30_000);
 });
 
 describe("mock provider — outside the pipeline", () => {

@@ -216,6 +216,23 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
           : [say("Blocked; reported, not faked.")],
     },
   },
+  "off-branch": {
+    description: "Loop checks the worktree out onto another branch before signalling; the orchestrator refuses to commit.",
+    scripts: {
+      loop: ({ step }) => {
+        switch (step) {
+          case 0:
+            return [bash("git checkout -q -b escaped")];
+          case 1:
+            return [write("mock-output/escaped.md", `written off the run branch ${Date.now()}\n`)];
+          case 2:
+            return [write(".ralph/ITERATION_DONE", "Done, on the wrong branch.\n")];
+          default:
+            return [say("Done.")];
+        }
+      },
+    },
+  },
 };
 
 export const DEFAULT_MOCK_SCENARIO = "happy-path";
