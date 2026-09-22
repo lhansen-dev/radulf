@@ -389,6 +389,38 @@ describe("Orchestrator cancellation lifecycle", () => {
     expect(db.select().from(runs).all().filter((run) => run.cardId === "twice")).toHaveLength(1);
   });
 
+  it("starts no evaluator for a card cancelled after its DONE but before the loop's bookkeeping finished", async () => {
+    // After the harness returns, the loop awaits the branch guard, the
+    // bookkeeping commits, the integrity check, the install gate and the
+    // acceptance probe. A cancel landing in that window finalizes the run and
+    // sends the card to Backlog; the loop's continuation then reached the
+    // DONE handling and started an evaluator run for the Backlog card anyway,
+    // because neither compare-and-swap result was checked.
+    card("late-cancel");
+    plan("late-cancel");
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      writeDone(cwd);
+      return successfulHarnessResult;
+    });
+    const orchestrator = new Orchestrator({ autoStart: false });
+    // The first call is the at-start check; the second is the post-harness
+    // one, the first await of the window — cancel from inside it.
+    mocks.offRunBranchReason.mockResolvedValueOnce(null).mockImplementationOnce(async () => {
+      orchestrator.cancelCard("late-cancel");
+      return null;
+    });
+
+    orchestrator.startCard("late-cancel");
+    await vi.waitFor(() => expect(getRun("late-cancel").status).toBe("cancelled"));
+    // Long enough for a continuation that ignored the cancel to have opened
+    // an evaluator run; nothing here is waiting on a timer.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "late-cancel");
+    expect(cardRuns.map((run) => run.kind)).toEqual(["loop"]);
+    expect(getCard("late-cancel").status).toBe("backlog");
+  });
+
   it("moves a Backlog card to the end of Todo without starting it when auto-mode is off", () => {
     card("queued-before", "todo");
     db.update(cards).set({ position: 4 }).where(eq(cards.id, "queued-before")).run();

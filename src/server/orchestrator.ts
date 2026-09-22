@@ -988,7 +988,11 @@ export class Orchestrator {
     this.controllers.set(runId, controller);
     const active = () => this.isRunActive(runId, cardId, controller.signal);
     const fail = (reason: string, status: FinishStatus = "failed") => {
-      this.finishRun(runId, status, reason);
+      // finishRun is false when something else already finalized this run
+      // and moved the card: a cancel, a reset, a disk-watchdog trip. A stale
+      // continuation must not then push a card that was re-queued — or is
+      // running a NEW loop by now — into Needs Attention.
+      if (!this.finishRun(runId, status, reason)) return;
       this.moveCard(cardId, "looping", "needs_attention", reason);
     };
 
@@ -1150,7 +1154,9 @@ export class Orchestrator {
           clearTimeout(slowTimer);
         }
 
-        if (controller.signal.aborted) return; // cancelCard already finalized
+        // cancelCard already finalized, or the card moved on: nothing below
+        // may touch a run that is no longer the live loop.
+        if (!active()) return;
 
         const failed = Boolean(result.error) || result.code !== 0;
         db.update(iterations)
@@ -1302,11 +1308,13 @@ export class Orchestrator {
               continue;
             }
           }
-          this.finishRun(runId, "completed", "done-signal");
+          // Both gated: a cancel or reset that landed during the awaited
+          // bookkeeping above has already finalized this run and moved the
+          // card, and must not be followed by an evaluator run for it.
+          if (!this.finishRun(runId, "completed", "done-signal")) return;
           // Phase 3: every DONE goes through the evaluator before a human
           // sees it. An evaluator crash is a loud failure, not a pass-through.
-          this.moveCard(cardId, "looping", "evaluating");
-          this.startStage("evaluating", cardId);
+          if (this.moveCard(cardId, "looping", "evaluating")) this.startStage("evaluating", cardId);
           return;
         }
         if (result.timedOut) {
