@@ -311,8 +311,12 @@ After an install, the orchestrator enumerates every `preinstall`/`install`/
 trusting the env or command string, since CLI flags override env) and diffs it
 against a per-repo `approvedInstallScripts` list keyed on `{name, version,
 scriptHash}`. Anything unapproved halts the run to Needs Attention with the
-verbatim script body; approval runs `npm rebuild` per package and **resumes the
-paused run in place** (not a requeue). See
+verbatim script body; approval runs `npm rebuild` per package **inside the
+run's sandbox** (the approved script bodies are what the human read; the
+worktree's `.npmrc` and the rest of the tree are agent-authored and get no more
+trust at approval than during the iteration) and **resumes the paused run in
+place** (not a requeue). A native build that fetches Node headers needs
+`nodejs.org` in `sandboxNetworkAllowlist`. See
 [`installGate.ts`](../src/server/installGate.ts). This is a supply-chain
 *awareness* control, not a containment one — and not a model-visible prompt.
 
