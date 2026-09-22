@@ -8,6 +8,8 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import path from "node:path";
+
 import { guardPath } from "../sandbox/pathGuard";
 
 /**
@@ -23,7 +25,10 @@ import { guardPath } from "../sandbox/pathGuard";
  *   so a missing path needs no check.
  * - **Mutating** (`write`/`edit`): the path checks against write roots, which
  *   are always a subset of the read roots, so no separate read check is needed
- *   for the edit tool's read-then-write.
+ *   for the edit tool's read-then-write. `<cwd>/.git` is carved out of every
+ *   write root: in a linked worktree it is the file naming the gitdir, and a
+ *   rewritten pointer redirects every host-side git call (L1 denies the same
+ *   path to agent bash — see `buildFilesystemConfig`).
  */
 
 type PathArgKind = "read" | "write";
@@ -41,6 +46,7 @@ function guard(
   cwd: string,
 ): ToolDefinition {
   const delegate = def.execute.bind(def);
+  const writeDenied = [path.join(cwd, ".git")];
   return {
     ...def,
     // async so a guard rejection surfaces as a rejected promise, not a
@@ -50,7 +56,8 @@ function guard(
       for (const { arg, kind } of argSpecs) {
         const value = p[arg];
         if (typeof value === "string" && value.length > 0) {
-          guardPath(value, kind === "write" ? writeRoots : readRoots, cwd);
+          if (kind === "write") guardPath(value, writeRoots, cwd, writeDenied);
+          else guardPath(value, readRoots, cwd);
         }
       }
       return delegate(toolCallId, params, signal, onUpdate, ctx);

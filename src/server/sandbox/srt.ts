@@ -208,6 +208,12 @@ export function buildFilesystemConfig(opts: {
     allowRead: dropRootsThatWouldReopen(rawAllowRead, [HOME, DATA_DIR, WORKTREES_DIR]),
     allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, opts.gitCommonDir],
     denyWrite: [
+      // A linked worktree's `.git` is a FILE naming its gitdir, and it sits
+      // inside the worktree write-allow above. Rewriting it to point at a
+      // gitdir the agent populated (with its own config, hooks, fsmonitor)
+      // makes every host-side git call in the worktree trust that gitdir.
+      // srt's own `.git` protection skips the file case, so it goes here.
+      path.join(opts.worktree, ".git"),
       path.join(opts.gitCommonDir, "hooks"),
       path.join(opts.gitCommonDir, "config"),
       // Every ref and checkout pointer. The orchestrator makes each commit

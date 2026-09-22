@@ -26,6 +26,9 @@ fs.mkdirSync(path.join(wt, ".ralph"), { recursive: true });
 fs.mkdirSync(evil, { recursive: true });
 fs.mkdirSync(path.join(home, ".ssh"), { recursive: true });
 fs.writeFileSync(path.join(wt, "src", "app.ts"), "export const x = 1;\n");
+// A linked worktree's `.git` is a pointer FILE, not a directory.
+const gitPointer = "gitdir: /repo/.git/worktrees/wt";
+fs.writeFileSync(path.join(wt, ".git"), gitPointer);
 fs.writeFileSync(path.join(evil, "loot.ts"), "stolen");
 const secret = path.join(tmp, "secret.env");
 fs.writeFileSync(secret, "API_KEY=supersecret");
@@ -50,6 +53,7 @@ function toolFor(role: AgentRole, name: string): ToolDefinition {
 const run = (t: ToolDefinition, params: unknown) =>
   t.execute("id", params as never, undefined, undefined, {} as never);
 const BOUNDARY = /path escapes this run's boundary/;
+const DENIED = /which this role may never write to/;
 
 it("wraps exactly pi's six file tools, keeping their built-in names", () => {
   const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
@@ -123,6 +127,23 @@ describe.each(["loop", "evaluator"] as const)(
     it("blocks reads outside the worktree and through the planted symlink", async () => {
       await expect(run(toolFor(role, "read"), { path: secret })).rejects.toThrow(BOUNDARY);
       await expect(run(toolFor(role, "read"), { path: "escape-link" })).rejects.toThrow(BOUNDARY);
+    });
+    it("blocks rewriting the worktree's .git pointer, though the worktree is the write root", async () => {
+      await expect(
+        run(toolFor(role, "write"), { path: ".git", content: "gitdir: /tmp/agent-owned" }),
+      ).rejects.toThrow(DENIED);
+      await expect(
+        run(toolFor(role, "edit"), {
+          path: ".git",
+          edits: [{ oldText: "/repo/.git", newText: "/tmp/agent-owned" }],
+        }),
+      ).rejects.toThrow(DENIED);
+      await expect(
+        run(toolFor(role, "write"), { path: ".git/config", content: "[core]\n\tfsmonitor = x" }),
+      ).rejects.toThrow(DENIED);
+      expect(fs.readFileSync(path.join(wt, ".git"), "utf8")).toBe(gitPointer);
+      // Reading it stays allowed: the pointer is not a secret.
+      await expect(run(toolFor(role, "read"), { path: ".git" })).resolves.toBeDefined();
     });
     it("blocks grep/find rooted outside the worktree, allows the default (cwd)", async () => {
       await expect(run(toolFor(role, "grep"), { pattern: "KEY", path: tmp })).rejects.toThrow(BOUNDARY);

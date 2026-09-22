@@ -131,6 +131,7 @@ describe("buildFilesystemConfig", () => {
   it("carves the hook/config and ref vectors out of the git-write allow", () => {
     // The `*` patterns are macOS-only. See gitWorktreeDenies.
     expect(cfg.denyWrite).toEqual([
+      "/data/worktrees/run-1/.git",
       "/data/repo/.git/hooks",
       "/data/repo/.git/config",
       "/data/repo/.git/refs",
@@ -309,10 +310,17 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
   let worktree: string;
   let outside: string;
 
+  // What a real linked worktree always carries by the time a run config is
+  // built: `.git` as a pointer FILE. It is on the write-deny list, and bwrap
+  // stubs a missing deny path with a read-only placeholder that outlives the
+  // command, so it has to exist before the first sandboxed command runs.
+  const gitPointer = "gitdir: /repo/.git/worktrees/wt\n";
+
   beforeAll(async () => {
     await initializeSandboxRuntimeOnce();
     worktree = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-"));
     outside = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-outside-"));
+    fs.writeFileSync(path.join(worktree, ".git"), gitPointer);
   });
 
   afterAll(() => {
@@ -371,6 +379,22 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
     const denied = await wrapBashCommand(`echo hi > ${outside}/bad.txt`, config());
     await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
+  });
+
+  it("wrapBashCommand denies rewriting the worktree's .git pointer file, though the worktree is writable", async () => {
+    // A linked worktree's `.git` is a file naming its gitdir. Repointing it at
+    // an agent-populated gitdir would make every host-side git call in the
+    // worktree run that gitdir's fsmonitor and hooks (reproduced pre-fix).
+    const pointer = path.join(worktree, ".git");
+
+    const denied = await wrapBashCommand(`echo 'gitdir: ${worktree}/agent-owned' > ${pointer}`, config());
+    await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
+    expect(fs.readFileSync(pointer, "utf8")).toBe(gitPointer);
+
+    // Reads stay open: agent git has to follow the pointer.
+    const read = await wrapBashCommand(`cat ${pointer}`, config());
+    const { stdout } = await execFileAsync("/bin/sh", ["-c", read]);
+    expect(stdout).toBe(gitPointer);
   });
 
   it("serializes, rather than rejects, concurrent calls whose configs differ only in filesystem paths", async () => {
