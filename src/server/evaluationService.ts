@@ -132,8 +132,7 @@ export class EvaluationService {
       if (controller.signal.aborted) return; // cancelCard already finalized
       if (sandboxError) return fail(sandboxError);
 
-      const headBefore = await head();
-      const sourceStatusBefore = await sourceStatus();
+      const [headBefore, sourceStatusBefore] = await Promise.all([head(), sourceStatus()]);
       const result = await runWithTranscript({
         runId,
         file: "evaluate.jsonl",
@@ -169,11 +168,12 @@ export class EvaluationService {
       // Spec 14: the judge provably cannot edit the implementation it judged.
       // It never commits (the orchestrator does, below), and its uncommitted
       // changes are narrowed to the doc allowlist.
-      if ((await head()) !== headBefore) {
+      const [headAfter, sourceStatusAfter] = await Promise.all([head(), sourceStatus()]);
+      if (headAfter !== headBefore) {
         return fail("evaluator committed to Git history; verdict rejected");
       }
       const changedBefore = new Set(changedPaths(sourceStatusBefore));
-      const illegalPaths = changedPaths(await sourceStatus()).filter(
+      const illegalPaths = changedPaths(sourceStatusAfter).filter(
         (p) => !changedBefore.has(p) && !isDocPath(p),
       );
       if (illegalPaths.length > 0) {

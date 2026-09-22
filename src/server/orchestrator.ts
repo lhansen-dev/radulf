@@ -1032,8 +1032,8 @@ export class Orchestrator {
           .get();
         emitEvent("iteration.started", { cardId, runId, payload: { n, maxIterations } });
 
-        const before = await buildProgressState(worktreePath, planPath);
         const preIteration = await captureIterationState(worktreePath);
+        const before = await buildProgressState(worktreePath, planPath, preIteration);
         const promptMd = fs.readFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), "utf8");
         const budgetMs = iterationBudgetMs(hardTimeoutMs, productiveMs);
         // Soft signal only — spec 11 forbids terminating an iteration merely

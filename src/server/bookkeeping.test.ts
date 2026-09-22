@@ -164,6 +164,9 @@ describe("buildProgressState", () => {
     const head = await git(dir, "rev-parse", "HEAD");
     expect(await buildProgressState(dir, path.join(dir, "PLAN.md"))).toBe(`${head}\n\n${PLAN}`);
     expect(await buildProgressState(dir, path.join(dir, "missing.md"))).toBe(`${head}\n\n`);
+    // A capture taken at the same boundary reads identically to a fresh one.
+    const captured = await captureIterationState(dir);
+    expect(await buildProgressState(dir, path.join(dir, "PLAN.md"), captured)).toBe(`${head}\n\n${PLAN}`);
   });
 
   it("places dirty status between HEAD and the checklist", async () => {

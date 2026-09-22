@@ -193,14 +193,17 @@ export function readIterationDone(ralphDir: string): string | null {
  * "no activity" — and the content hash matters because porcelain lists only
  * paths: once a file is modified, further edits to it leave the status
  * output byte-identical.
+ *
+ * Pass `state` when the caller has already captured HEAD and status at this
+ * same boundary, so the two git reads are spawned once rather than twice.
  */
 export async function buildProgressState(
   worktreePath: string,
   planPath: string,
+  state?: PreIterationState,
 ): Promise<string> {
-  const head = (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
+  const { head, status } = state ?? (await captureIterationState(worktreePath));
   const checklist = readFileIfExists(planPath);
-  const status = (await tryGit(worktreePath, "status", "--porcelain")).out;
   const dirty = status ? `${status}\n${await dirtyContentHash(worktreePath)}` : "";
   return `${head}\n${dirty}\n${checklist}`;
 }
@@ -211,11 +214,12 @@ export async function buildProgressState(
  */
 async function dirtyContentHash(worktreePath: string): Promise<string> {
   const hash = crypto.createHash("sha256");
-  hash.update(
-    (await tryGit(worktreePath, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD")).out,
-  );
-  const untracked = (await tryGit(worktreePath, "ls-files", "--others", "--exclude-standard", "-z")).out;
-  for (const rel of untracked.split("\0").filter(Boolean)) {
+  const [diff, untracked] = await Promise.all([
+    tryGit(worktreePath, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
+    tryGit(worktreePath, "ls-files", "--others", "--exclude-standard", "-z"),
+  ]);
+  hash.update(diff.out);
+  for (const rel of untracked.out.split("\0").filter(Boolean)) {
     const abs = path.join(/* turbopackIgnore: true */ worktreePath, rel);
     hash.update(`\0${rel}\0`);
     try {
@@ -242,10 +246,11 @@ export type PreIterationState = {
 export async function captureIterationState(
   worktreePath: string,
 ): Promise<PreIterationState> {
-  return {
-    head: (await tryGit(worktreePath, "rev-parse", "HEAD")).out,
-    status: (await tryGit(worktreePath, "status", "--porcelain")).out,
-  };
+  const [head, status] = await Promise.all([
+    tryGit(worktreePath, "rev-parse", "HEAD"),
+    tryGit(worktreePath, "status", "--porcelain"),
+  ]);
+  return { head: head.out, status: status.out };
 }
 
 /** The ITERATION_DONE signal itself must not count as a work product. */
