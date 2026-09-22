@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 import { git, initScratchRepo } from "@/testUtils/gitRepo";
@@ -11,8 +12,9 @@ vi.mock("@/server/orchestrator", () => ({
 
 setupTestDataDir("radulf-cards-route-");
 
-const { db, cards, repos, now } = await import("@/db");
-const { POST } = await import("./route");
+const { db, cards, repos, runs, now } = await import("@/db");
+const { planStatePath } = await import("@/server/bookkeeping");
+const { GET, POST } = await import("./route");
 
 function post(body: unknown) {
   return new Request("http://localhost/api/cards", {
@@ -39,6 +41,16 @@ beforeEach(() => {
   db.delete(cards).run();
   vi.clearAllMocks();
 });
+
+const PLAN = `# Plan
+
+## Tasks
+
+- [x] Read the existing parser
+- [x] Add the flag
+- [ ] Wire the board badge
+- [ ] Write the test
+`;
 
 afterAll(() => {
   fs.rmSync(repo, { recursive: true, force: true });
@@ -70,5 +82,44 @@ describe("POST /api/cards", () => {
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(/does not exist/);
+  });
+});
+
+describe("GET /api/cards", () => {
+  it("says which checklist task a looping card is on and how many are left", async () => {
+    db.insert(cards)
+      .values({
+        id: "card-1",
+        repoId: "repo-1",
+        title: "Expose each loop's task item",
+        status: "looping",
+        createdAt: now(),
+        updatedAt: now(),
+      })
+      .run();
+    db.insert(runs)
+      .values({
+        id: "run-1",
+        cardId: "card-1",
+        kind: "loop",
+        status: "running",
+        branch: "ralph/card-1",
+        worktreePath: "/tmp/wt",
+        startedAt: now(),
+      })
+      .run();
+    fs.mkdirSync(path.dirname(planStatePath("card-1")), { recursive: true });
+    fs.writeFileSync(planStatePath("card-1"), PLAN);
+
+    const [card] = await (await GET()).json();
+
+    // Upstream issue 34: the task text alone said what the loop was doing,
+    // never how much was left. The current task is unfinished, so two remain.
+    expect(card.latestRun.currentTask).toEqual({
+      number: 3,
+      count: 4,
+      left: 2,
+      text: "Wire the board badge",
+    });
   });
 });

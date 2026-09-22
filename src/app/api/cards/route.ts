@@ -12,6 +12,24 @@ import { parseCreateCard } from "@/server/cardValidation";
 import { emitEvent } from "@/server/events";
 import { json, err, handle } from "../_lib";
 
+/**
+ * Where a looping card is in its checklist (upstream issue 34). The board used
+ * to show the task's text alone, which answers "what is it doing" but not "how
+ * much is left" — the card page has carried both per iteration since plan
+ * versions landed, and a board watching several repos is where the question
+ * actually gets asked. `left` counts the current task, which is not finished.
+ */
+function currentTask(cardId: string) {
+  const task = firstUnchecked(readPlanState(cardId) ?? "");
+  if (!task) return null;
+  return {
+    number: task.taskNumber,
+    count: task.taskCount,
+    left: task.taskCount - task.taskNumber + 1,
+    text: task.item.text,
+  };
+}
+
 /** Board payload: every card plus what its column badge needs. */
 export async function GET() {
   const settings = getSettings();
@@ -44,9 +62,7 @@ export async function GET() {
             iterationsDone: latestRun.iterationsDone,
             exitReason: latestRun.exitReason,
             startedAt: latestRun.startedAt,
-            currentTask: card.status === "looping"
-              ? firstUnchecked(readPlanState(card.id) ?? "")?.item.text ?? null
-              : null,
+            currentTask: card.status === "looping" ? currentTask(card.id) : null,
           }
         : null,
       maxIterationsResolved: card.maxIterations ?? settings.defaultMaxIterations,
@@ -95,6 +111,7 @@ export async function POST(req: Request) {
         loopModel: body.loopModel,
         evaluatorModel: body.evaluatorModel,
         reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation ? 1 : 0,
+        grillMe: body.grillMe ? 1 : 0,
         autoApprove: body.autoApprove ? 1 : 0,
         openPr: body.openPr ? 1 : 0,
         baseBranch: body.baseBranch,
