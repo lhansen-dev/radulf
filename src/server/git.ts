@@ -20,6 +20,18 @@ const GIT_REMOTE_TIMEOUT_MS = 10 * 60_000;
 
 type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
 
+// Every git call in this module runs unsandboxed, as the server user, and
+// most of them run inside a worktree the agent has just been writing to. Git
+// executes hooks from `core.hooksPath` — which a repo may set to a RELATIVE
+// path (husky writes `core.hooksPath = .husky/_` into the shared config), and
+// git resolves that against the worktree root, so the agent's own worktree
+// supplies the script the host's `git commit` then runs. `core.fsmonitor`
+// names a command `git status` runs on every invocation. Pinning both here,
+// at highest precedence, means no host-side git ever executes anything a
+// repo or a worktree can name. The cost: the operator's own hooks do not run
+// on Radulf's merge commits either. The reviewed diff is the gate for those.
+const HOST_GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+
 /** Run `git -C cwd ...args` under `execBounded`'s two-signal timeout,
  * rejecting on any failure with the child's output attached to the error. */
 async function execGit(
@@ -28,7 +40,7 @@ async function execGit(
   options: ExecGitOptions = {}
 ): Promise<{ stdout: string; stderr: string }> {
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
-  const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...args], {
+  const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...HOST_GIT_CONFIG, ...args], {
     timeoutMs,
     maxBuffer: MAX_BUFFER,
     ...(options.env ? { env: options.env } : {}),

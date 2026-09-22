@@ -6,6 +6,7 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 import {
   createWorktree,
+  git as hostGit,
   hasCommits,
   isRalphBranch,
   isValidBranchName,
@@ -75,6 +76,37 @@ describe("repository inspection", () => {
       );
     } finally {
       git(repo, "worktree", "remove", "--force", wt);
+    }
+  });
+
+  it("host-side git runs neither hooks nor fsmonitor, even from a relative hooksPath", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-hooks-wt-${process.pid}`);
+    const marker = path.join(os.tmpdir(), `ralph-hook-ran-${process.pid}`);
+    fs.rmSync(marker, { force: true });
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-hooks");
+    try {
+      // husky's shape: a relative hooksPath in the shared config, which git
+      // resolves against the worktree root — so the agent's worktree supplies
+      // the script that the orchestrator's own commit would otherwise run.
+      const script = `#!/bin/sh\ntouch '${marker}'\n`;
+      fs.mkdirSync(path.join(wt, ".hooks"), { recursive: true });
+      fs.writeFileSync(path.join(wt, ".hooks", "pre-commit"), script, { mode: 0o755 });
+      fs.writeFileSync(path.join(wt, ".hooks", "fsmon"), script, { mode: 0o755 });
+      git(repo, "config", "core.hooksPath", ".hooks");
+      git(repo, "config", "core.fsmonitor", path.join(wt, ".hooks", "fsmon"));
+      fs.writeFileSync(path.join(wt, "change.txt"), "x");
+
+      expect(await worktreeIsDirty(wt)).toBe(true); // git status: fsmonitor's trigger
+      await hostGit(wt, "add", "-A");
+      await hostGit(wt, "commit", "-m", "host commit"); // pre-commit's trigger
+
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      git(repo, "config", "--unset", "core.hooksPath");
+      git(repo, "config", "--unset", "core.fsmonitor");
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-hooks");
+      fs.rmSync(marker, { force: true });
     }
   });
 
