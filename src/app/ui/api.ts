@@ -25,7 +25,7 @@ export type BoardCard = {
     status: string;
     iterationsDone: number;
     exitReason: string | null;
-    currentTask: string | null;
+    currentTask: { number: number; count: number; left: number; text: string } | null;
     startedAt: string;
   } | null;
   maxIterationsResolved: number;

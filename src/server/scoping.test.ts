@@ -25,6 +25,8 @@ const {
   listScopingMessages,
   parseScopedCardProposal,
   proposeScopedCard,
+  parsePlanProposal,
+  parseSplitProposal,
   renderScopingPrompt,
   scopingTurn,
 } = await import("./scoping");
@@ -55,6 +57,97 @@ describe("renderScopingPrompt", () => {
     expect(prompt).toContain("TITLE: <one line");
     expect(prompt).toContain("DESCRIPTION:\n");
     expect(prompt).toContain("## Acceptance criteria");
+  });
+
+  it("paces the interview conversationally unless the card asks to be grilled", () => {
+    expect(renderScopingPrompt(card, [], "reply")).toContain("one to three high-value questions");
+
+    const grilled = renderScopingPrompt({ ...card, grillMe: 1 }, [], "reply");
+
+    // Upstream issue 33: the grilling protocol, not a few questions a turn.
+    expect(grilled).not.toContain("one to three high-value questions");
+    expect(grilled).toContain("DESIGN TREE");
+    expect(grilled).toContain("FRONTIER");
+    expect(grilled).toContain("**Q1**");
+    // Still the same session: repo-grounded, and it still ends with a card.
+    expect(grilled).toContain("read-only tools");
+    expect(grilled).toContain("offer to write the scoped card");
+  });
+});
+
+describe("parseSplitProposal", () => {
+  it("splits the numbered blocks into ordered cards", () => {
+    const cards = parseSplitProposal(
+      [
+        "CARD 1",
+        "TITLE: Add the login rate limiter",
+        "DESCRIPTION:",
+        "## Problem",
+        "Brute force. Does NOT touch the UI.",
+        "",
+        "CARD 2",
+        "TITLE: Surface the lockout in the login form",
+        "DESCRIPTION:",
+        "## Problem",
+        "Depends on card 1.",
+      ].join("\n"),
+      "Rate limiting",
+    );
+
+    expect(cards).toEqual([
+      {
+        title: "Add the login rate limiter",
+        description: "## Problem\nBrute force. Does NOT touch the UI.",
+      },
+      {
+        title: "Surface the lockout in the login form",
+        description: "## Problem\nDepends on card 1.",
+      },
+    ]);
+  });
+
+  it("drops preamble, falls back per card on a missing title, and drops empty blocks", () => {
+    const cards = parseSplitProposal(
+      "Here is the split:\n\nCARD 1\nDESCRIPTION:\nFirst piece.\n\nCARD 2\n\nCARD 3\nTITLE: Third\nDESCRIPTION:\nThird piece.",
+      "Rate limiting",
+    );
+
+    expect(cards).toEqual([
+      { title: "Rate limiting (1)", description: "First piece." },
+      { title: "Third", description: "Third piece." },
+    ]);
+    // The blank CARD 2 block is gone, so the fallback numbering follows the
+    // cards that survived rather than the model's own numbering.
+  });
+
+  it("returns nothing when the reply carries no card blocks at all", () => {
+    expect(parseSplitProposal("I do not think this needs splitting.", "T")).toEqual([]);
+  });
+});
+
+describe("parsePlanProposal", () => {
+  const plan = "```PLAN.md\n# Rate limiting\n\n## Tasks\n\n- [ ] Add the bucket\n```";
+  const prompt = "```PROMPT.md\nNext.js app. `make check` is the gate.\n```";
+  const criteria = "```CRITERIA.md\n- [ ] `make test` exits 0\n```";
+  const reply = [plan, prompt, criteria].join("\n\n");
+
+  it("takes the three artifacts by filename, not by position", () => {
+    const shuffled = [criteria, plan, prompt].join("\n\n");
+
+    expect(parsePlanProposal(shuffled)).toEqual({
+      planMd: "# Rate limiting\n\n## Tasks\n\n- [ ] Add the bucket",
+      promptMd: "Next.js app. `make check` is the gate.",
+      acceptanceCriteria: "- [ ] `make test` exits 0",
+    });
+  });
+
+  it("reads the three in the order it was asked for too", () => {
+    expect(parsePlanProposal(reply)?.promptMd).toBe("Next.js app. `make check` is the gate.");
+  });
+
+  it("refuses a partial answer, because there is no fallback prompt", () => {
+    expect(parsePlanProposal([plan, criteria].join("\n\n"))).toBeNull();
+    expect(parsePlanProposal("no fences at all")).toBeNull();
   });
 });
 

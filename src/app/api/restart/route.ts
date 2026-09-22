@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { db, cards, now } from "@/db";
 import { getOrchestrator } from "@/server/orchestrator";
+import { sleep } from "@/shared/sleep";
 import { json, handle } from "../_lib";
 
 // `next dev`'s CLI parent respawns the server child when it exits with this
@@ -11,9 +12,30 @@ const NEXT_RESTART_EXIT_CODE = 77;
 
 const IN_PROGRESS = ["planning", "ready", "looping", "evaluating"] as const;
 
+/** Long enough for the response to reach the browser before the socket dies. */
+const RESPONSE_FLUSH_MS = 500;
+/**
+ * How long to wait for the cancelled runs to actually be gone.
+ *
+ * `cancelCard` aborts the harness; the agent it spawned is a process tree of
+ * its own, and on a host install nothing kills that tree — it unwinds when
+ * the abort reaches it. A flat half-second was not that wait: the process
+ * exited while a `claude` was still writing to a worktree, `next dev`
+ * respawned immediately, and the replacement's `recover()` reconciled a
+ * worktree that a surviving agent was still editing. Wait for the
+ * orchestrator to report itself idle instead, bounded so a wedged child
+ * cannot make Restart a button that does nothing.
+ */
+const REAP_TIMEOUT_MS = 15_000;
+const REAP_POLL_MS = 250;
+
 export async function POST() {
   return handle(async () => {
     const orch = getOrchestrator();
+    // Stop the pump before the sweep: cancelCard pumps the queue itself, and
+    // a promotion landing between the sweep and the exit is a run started by
+    // a process that is about to die.
+    orch.startDraining();
     // Cancel every In Progress card back to Backlog before dying, so nothing is
     // mid-run when the process exits. This route typically runs while the
     // live schema is OLDER than the code (that's what restarts are for), so
@@ -41,8 +63,17 @@ export async function POST() {
         }
       }
     }
-    // Let the response flush and the aborted claude children die first.
-    setTimeout(() => process.exit(NEXT_RESTART_EXIT_CODE), 500);
+    // Let the response flush, then wait for the aborted agents to be gone.
+    setTimeout(() => void exitWhenReaped(orch), RESPONSE_FLUSH_MS);
     return json({ ok: true });
   });
+}
+
+async function exitWhenReaped(orch: { hasInFlightWork(): boolean }): Promise<void> {
+  const deadline = Date.now() + REAP_TIMEOUT_MS;
+  while (orch.hasInFlightWork() && Date.now() < deadline) await sleep(REAP_POLL_MS);
+  if (orch.hasInFlightWork()) {
+    console.log("[radulf] restart: a run is still in flight after the reap wait — exiting anyway");
+  }
+  process.exit(NEXT_RESTART_EXIT_CODE);
 }

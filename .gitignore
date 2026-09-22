@@ -41,13 +41,14 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# radulf runtime data. worktrees/, plans/ and runtmp/ are siblings of data/ by
-# design (spec 14: the sandbox denies data/ with no carve-out), so each needs its
-# own entry — with the defaults they are created in the repo root.
+# radulf runtime data. worktrees/, plans/, runtmp/ and repos/ are siblings of
+# data/ by design (spec 14: the sandbox denies data/ with no carve-out), so each
+# needs its own entry — with the defaults they are created in the repo root.
 /data
 /worktrees
 /plans
 /runtmp
+/repos
 
 .DS_Store
 

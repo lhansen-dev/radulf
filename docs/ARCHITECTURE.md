@@ -64,7 +64,7 @@ session. The role is what decides the tool set — see the capability split belo
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
-| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)` | 5 min per turn |
+| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)`, `proposeSplit(cardId)`, `proposeScopedPlan(cardId)` | 5 min per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
 | Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
@@ -74,6 +74,23 @@ API route, outside the orchestrator's slots, as a read-only session against the
 repository checkout. Its thread lives in `scoping_messages` and is rendered
 into the planner's prompt; a planner run that raises `QUESTIONS.md` appends
 them to the same thread.
+
+A session ends by producing one of three concrete things, and the last two are
+the orchestrator's to apply because they change card state:
+
+| Output | Route | Applied by |
+|---|---|---|
+| A scoped card | `POST /api/cards/:id/scoping/proposal` | the operator, as a card `PATCH` |
+| An ordered split | `POST /api/cards/:id/scoping/split` | `applyScopingSplit` — the card becomes the first piece, the rest are queued after it |
+| The plan itself | `POST /api/cards/:id/scoping/plan` | `adoptScopingPlan` — a plan row stamped `origin: "scoping"`, no planning run |
+
+A split is a proposal and never an action: the same POST with a `cards` body
+applies the operator's own edited version of it. It is refused once the card
+has a plan, which would otherwise leave the pieces running a plan for the
+scope they no longer have. A scoping-authored plan needs the card's
+`scopingAuthorsPlan` flag and still honours `reviewPlanBeforeImplementation`,
+so it is the plan-review gate, not a second approval step, that puts a human
+in front of it.
 
 The loop is not a separate service — it is the orchestrator's own method,
 because it is the thing the pipeline slots exist to meter.
@@ -154,6 +171,63 @@ One `RunSandboxContext` is created per run by the entry point and cleaned up in
 its `finally`; it threads into the pi session's bash spawn hook via
 `RunHarnessOpts.runContext`.
 
+## Provider logins
+
+`src/server/providerLogin.ts` drives `ModelRuntime.login` from a route so a
+subscription can be connected from Settings rather than from a TUI over
+`docker exec` (spec 23). pi's login takes an `AuthInteraction`, which is two
+callbacks: `notify` for what the operator should see and `prompt` for what
+they must answer. The TUI is one implementation; this module is another.
+
+A session is a held promise. `login()` runs for the whole flow, and each
+`prompt()` parks on a promise the module resolves when the browser posts an
+answer, so at most one question is outstanding. Each prompt carries a fresh
+token, because an answer that arrives after the flow moved on must not resolve
+whatever replaced its question, and a prompt can be **withdrawn** rather than
+answered: on a host install the loopback callback can win the race against the
+paste box, and pi aborts the prompt it was offering.
+
+Read back by polling, not over the SSE bus, which every open tab receives and
+which must never carry an `auth_url` and its PKCE state. Sessions are
+in-memory, expire on their own, and are limited to one per provider, because
+the Anthropic flow binds a fixed callback port. Radulf never sees a token: pi
+writes and refreshes its own `auth.json`.
+
+## Card export and import
+
+`src/server/cardTransfer.ts` moves a card between installs as a versioned
+JSON file. What travels is the card's intent: its title, description, the
+per-card settings, and its scoping thread, which spec 17 calls the durable
+record of why the card is shaped the way it is. What does not travel is
+anything that happened — runs, iterations, transcripts, reviews and worktree
+paths describe one machine's execution. Plans are left out on purpose: a plan
+is written against one checkout at one commit, so importing one would land a
+card claiming to be planned for a repository the plan has never seen.
+
+An import always creates fresh ids in Backlog, and the request, not the file,
+names the target repository. A `baseBranch` the target does not have falls
+back to its default with a note in the response, rather than failing the whole
+file over a branch name that only meant something where it came from.
+
+## Scheduling
+
+`src/server/schedules.ts` is the whole scheduler (spec 22), ticked once a
+minute from `src/instrumentation.ts`. A schedule starts only what a button
+starts, by the path a button takes: `queue-drain` calls `startCard` on every
+card waiting in the Queue, and `improvement-run` calls `createImprovementRun`
+with the arguments stored on the schedule. Every cap those paths enforce still
+applies, and no schedule merges anything.
+
+Expressions are five-field cron, server-local, parsed by
+`src/server/cron.ts` — written here rather than taken from npm, and the one
+place the day-of-month/day-of-week OR rule lives. `fireDueSchedules` compares
+`lastFiredAt` at minute resolution, so a tick that runs twice in a minute
+cannot start the same work twice, and a tick the server was down for is missed
+rather than replayed. A firing that throws is recorded on the schedule and
+emitted as `schedule.fired`; the schedule stays enabled, because a provider
+outage must not silently cancel the cadence that would have picked the work
+back up.
+
 ## Git
 
 `src/server/git.ts` wraps every git call. Each run gets a worktree on its own
@@ -175,9 +249,9 @@ an unrecoverable failure.
 ## Persistence
 
 `src/db/schema.ts`, Drizzle over SQLite, created on first run with no manual
-migration step. Eleven tables: `repos`, `cards`, `plans`, `scopingMessages`,
-`runs`, `iterations`, `reviews`, `events`, `improvementRuns`, `settings`,
-`worktrees`.
+migration step. Twelve tables: `repos`, `cards`, `plans`, `scopingMessages`,
+`runs`, `iterations`, `reviews`, `events`, `improvementRuns`, `schedules`,
+`settings`, `worktrees`.
 
 Transcripts are **not** in the database — they are JSONL files on disk, read in
 chunks by `src/server/transcript.ts` (`TRANSCRIPT_CHUNK_BYTES`, 512 KB). A long

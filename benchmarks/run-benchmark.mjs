@@ -220,6 +220,8 @@ Options:
   --planner-model <name>    Planner model (default: loop model)
   --runs <n>                Number of benchmark runs (default: 3)
   --auth-cookie <value>     Session cookie value for authentication
+                            (prefer RADULF_BENCH_AUTH_COOKIE: argv is
+                            world-readable through ps for the whole run)
   --password <value>        Password to POST /api/auth/login and read Set-Cookie
   --max-iterations <n>      Optional card maxIterations override
   --timeout-minutes <n>     Optional card timeoutMinutes override
@@ -261,7 +263,7 @@ Options:
     model,
     planner_model = model,
     runs = "3",
-    auth_cookie,
+    auth_cookie = process.env.RADULF_BENCH_AUTH_COOKIE,
     password,
     max_iterations,
     timeout_minutes,
@@ -293,7 +295,9 @@ Options:
   if (!repo) errors.push("--repo is required");
   if (!provider) errors.push("--provider is required");
   if (!model) errors.push("--model is required");
-  if (!auth_cookie && !password) errors.push("either --auth-cookie or --password is required");
+  if (!auth_cookie && !password) {
+    errors.push("either --auth-cookie (or RADULF_BENCH_AUTH_COOKIE) or --password is required");
+  }
   if (errors.length > 0) {
     for (const e of errors) console.error(`Error: ${e}`);
     console.error("");

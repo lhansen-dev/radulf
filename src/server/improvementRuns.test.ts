@@ -293,6 +293,33 @@ describe("createImprovementRun", () => {
     expect(mocks.git).toHaveBeenCalledWith("/tmp/repo-1", "branch", row.featureBranch, "main");
     expect(Date.parse(row.deadlineAt)).toBeGreaterThan(Date.now() + 44 * 60_000);
   });
+
+  it("gives one of two simultaneous requests the slot and the other the error", async () => {
+    // The active-run check used to sit above an `await` (the branch-existence
+    // check), so both requests passed it before either wrote a row.
+    const create = () =>
+      createImprovementRun({ repoId: "repo-1", baseBranch: "main", budgetMinutes: 30 });
+    const settled = await Promise.allSettled([create(), create()]);
+
+    db.update(improvementRuns).set({ status: "stopped", endedAt: now() }).run();
+
+    expect(settled.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = settled.find((r) => r.status === "rejected");
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      message: expect.stringMatching(/already active/),
+    });
+    expect(db.select().from(improvementRuns).all()).toHaveLength(1);
+  });
+
+  it("gives the slot back when the feature branch cannot be cut", async () => {
+    mocks.git.mockRejectedValueOnce(new Error("fatal: not a valid object name"));
+
+    await expect(
+      createImprovementRun({ repoId: "repo-1", baseBranch: "main", budgetMinutes: 30 }),
+    ).rejects.toThrow(/not a valid object name/);
+
+    expect(db.select().from(improvementRuns).all()).toHaveLength(0);
+  });
 });
 
 describe("stopImprovementRun", () => {

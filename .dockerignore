@@ -11,6 +11,7 @@ data
 worktrees
 plans
 runtmp
+repos
 .env*
 
 # Agent, design-tool, and CI scaffolding the build does not read.

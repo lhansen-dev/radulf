@@ -68,6 +68,20 @@ export const cards = sqliteTable(
     reviewPlanBeforeImplementation: integer("review_plan_before_implementation")
       .notNull()
       .default(0),
+    // Upstream issue 33: run this card's scoping session (spec 17) as a
+    // relentless interview rather than a few questions a turn. The session
+    // maps the card as a design tree and asks each settled frontier in one
+    // numbered round, following the `grilling` skill in mattpocock/skills.
+    // Per-card opt-in with no global counterpart: it buys a much longer
+    // conversation, which is the point on a vague card and pure cost on a
+    // clear one.
+    grillMe: integer("grill_me").notNull().default(0),
+    // Spec 17: let this card's scoping session write PLAN.md, PROMPT.md and
+    // CRITERIA.md itself and skip the planning stage. Default off, because
+    // planning stays the one path that produces a plan; the flag exists for
+    // when the planner is the weakest link in the pipeline, where being
+    // forced through it is the failure mode rather than the safeguard.
+    scopingAuthorsPlan: integer("scoping_authors_plan").notNull().default(0),
     // When set, an evaluator `approve` verdict skips the human In Review gate
     // and merges straight through the same load-bearing review path. Trusts the
     // evaluator. A per-card opt-in that holds even when the global `autoApprove`
@@ -97,6 +111,10 @@ export const cards = sqliteTable(
   ],
 );
 
+/** Spec 17: which role wrote a plan. Rows predating the column are planning
+ * runs, which is what the default records. */
+export type PlanOrigin = "planner" | "scoping";
+
 export const plans = sqliteTable("plans", {
   id: text("id").primaryKey(),
   cardId: text("card_id")
@@ -107,6 +125,9 @@ export const plans = sqliteTable("plans", {
   promptMd: text("prompt_md").notNull(),
   acceptanceCriteria: text("acceptance_criteria").notNull(),
   feedback: text("feedback"),
+  // Spec 17: "A card that carries its own plan is stamped as such on the plan
+  // row, so the origin of any plan is always recoverable."
+  origin: text("origin").$type<PlanOrigin>().notNull().default("planner"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("plans_card_version_idx").on(table.cardId, table.version)]);
 
@@ -117,7 +138,8 @@ export const plans = sqliteTable("plans", {
  * context, and it is the durable record of why the card is shaped the way it
  * is.
  */
-export type ScopingRole = "user" | "assistant" | "planner" | "loop";
+export const SCOPING_ROLES = ["user", "assistant", "planner", "loop"] as const;
+export type ScopingRole = (typeof SCOPING_ROLES)[number];
 
 export const scopingMessages = sqliteTable(
   "scoping_messages",
@@ -327,6 +349,39 @@ export const improvementRuns = sqliteTable(
     endedAt: text("ended_at"),
   },
   (table) => [index("improvement_runs_repo_status_idx").on(table.repoId, table.status)],
+);
+
+/**
+ * Spec 22: the two things a schedule may start. Not a plugin point — a third
+ * kind is a decision, not a configuration.
+ */
+export const SCHEDULE_KINDS = ["queue-drain", "improvement-run"] as const;
+export type ScheduleKind = (typeof SCHEDULE_KINDS)[number];
+
+export const schedules = sqliteTable(
+  "schedules",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").$type<ScheduleKind>().notNull(),
+    // Null means every repo, and is only legal for a queue drain: an
+    // improvement run is per repo by construction (spec 06 decision 6).
+    repoId: text("repo_id").references(() => repos.id, { onDelete: "cascade" }),
+    // Five fields, server-local, parsed by src/server/cron.ts.
+    cron: text("cron").notNull(),
+    enabled: integer("enabled").notNull().default(1),
+    // An improvement run's argument list as JSON rather than a column each:
+    // spec 06 owns that list and keeps changing it, and a column per
+    // parameter would make this table a mirror of improvement_runs.
+    config: text("config").notNull().default("{}"),
+    lastFiredAt: text("last_fired_at"),
+    // What the last firing did, or why it did nothing. Kept so a schedule
+    // that is quietly failing is visible without reading the server log.
+    lastResult: text("last_result"),
+    lastError: text("last_error"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("schedules_enabled_idx").on(table.enabled)],
 );
 
 export const settings = sqliteTable("settings", {

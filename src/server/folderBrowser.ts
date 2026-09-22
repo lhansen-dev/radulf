@@ -56,6 +56,24 @@ export function browsableRoot(configured: string): string {
   return realpathBestEffort(trimmed || os.homedir());
 }
 
+/**
+ * The real path of `target`, or a ClientError when it is not inside the
+ * browsable root.
+ *
+ * Every HTTP surface that names a path on the machine running Radulf shares
+ * this confinement, not just the listing endpoint: the picker only ever offers
+ * paths inside the root, so a request naming one outside it did not come from
+ * the picker. Resolved through symlinks first, so a link inside the root
+ * pointing at `/etc` is not a way out of it.
+ */
+export function assertInsideBrowsableRoot(target: string, configuredRoot: string): string {
+  const resolved = realpathBestEffort(target);
+  if (!isInsideOrEqual(resolved, browsableRoot(configuredRoot))) {
+    throw new ClientError("that folder is outside the browsable root");
+  }
+  return resolved;
+}
+
 /** True when `dir` carries a `.git` entry, of either kind: a directory for a
  * normal clone, a file for a linked worktree. */
 function looksLikeGitRepo(dir: string): boolean {

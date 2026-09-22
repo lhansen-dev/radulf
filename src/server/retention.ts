@@ -19,13 +19,32 @@ export function runTranscriptDir(runId: string): string {
   return path.join(/* turbopackIgnore: true */ TRANSCRIPTS_DIR, runId);
 }
 
-export function removeRunTranscripts(runIds: string[]): number {
+/**
+ * `rm -rf` a tree, reporting whether there was one. False on ENOENT, and
+ * anything else still throws, exactly as the `existsSync` + `rmSync(force)`
+ * pair it replaces did.
+ *
+ * Asynchronous because these trees are not small: a chatty run's transcripts
+ * are thousands of JSONL files, and a worktree is a whole checkout. Done
+ * synchronously that unlink storm is the entire event loop — every SSE
+ * heartbeat, every orchestrator timer and every request stalled behind the
+ * deletion of a run nobody is looking at. The sweep runs unattended on a
+ * daily timer, so nothing is waiting on it to finish sooner.
+ */
+async function removeTree(target: string): Promise<boolean> {
+  try {
+    await fs.promises.rm(/* turbopackIgnore: true */ target, { recursive: true });
+    return true;
+  } catch (cause) {
+    if ((cause as { code?: string }).code === "ENOENT") return false;
+    throw cause;
+  }
+}
+
+export async function removeRunTranscripts(runIds: string[]): Promise<number> {
   let removed = 0;
   for (const runId of new Set(runIds)) {
-    const transcriptDir = runTranscriptDir(runId);
-    if (!fs.existsSync(/* turbopackIgnore: true */ transcriptDir)) continue;
-    fs.rmSync(/* turbopackIgnore: true */ transcriptDir, { recursive: true, force: true });
-    removed += 1;
+    if (await removeTree(runTranscriptDir(runId))) removed += 1;
   }
   return removed;
 }
@@ -44,7 +63,7 @@ export type CardArtifacts = {
 export async function removeCardArtifacts(repoPath: string, artifacts: CardArtifacts): Promise<void> {
   const { cardId, worktreeRun, runIds } = artifacts;
   if (worktreeRun) await removeWorktree(repoPath, worktreeRun.worktreePath, worktreeRun.branch);
-  removeRunTranscripts(runIds);
+  await removeRunTranscripts(runIds);
   fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
 }
 
@@ -55,7 +74,7 @@ export async function removeCardArtifacts(repoPath: string, artifacts: CardArtif
  * reuses its runs' worktree and finds it again through those rows
  * (latestWorktreeRun), and its events still hold state the UI and the stale
  * sweep read back. Card-less events age out on the cutoff alone. */
-export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
+export async function pruneRuntimeHistory(olderThanDays: number): Promise<CleanupResult> {
   if (!Number.isInteger(olderThanDays) || olderThanDays < 1 || olderThanDays > 3_650) {
     throw new ClientError("olderThanDays must be an integer between 1 and 3650");
   }
@@ -74,7 +93,7 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
     )
     .all();
   const runIds = oldRuns.map((run) => run.id);
-  let transcriptEntriesDeleted = removeRunTranscripts(runIds);
+  let transcriptEntriesDeleted = await removeRunTranscripts(runIds);
 
   // Close the worktree-directory leak: a crashed run gets endedAt stamped by
   // recover() same as any normal finish, ages past the cutoff, and its row
@@ -89,8 +108,7 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
   let worktreesRemoved = 0;
   for (const worktreePath of new Set(oldRuns.map((run) => run.worktreePath))) {
     if (retainedPaths.has(worktreePath)) continue;
-    if (!fs.existsSync(/* turbopackIgnore: true */ worktreePath)) continue;
-    fs.rmSync(/* turbopackIgnore: true */ worktreePath, { recursive: true, force: true });
+    if (!(await removeTree(worktreePath))) continue;
     markWorktreeRemoved(worktreePath);
     worktreesRemoved += 1;
   }
@@ -124,18 +142,25 @@ export function pruneRuntimeHistory(olderThanDays: number): CleanupResult {
     .run().changes;
 
   const liveRunIds = new Set(db.select({ id: runs.id }).from(runs).all().map((run) => run.id));
-  if (fs.existsSync(/* turbopackIgnore: true */ TRANSCRIPTS_DIR)) {
-    for (const entry of fs.readdirSync(/* turbopackIgnore: true */ TRANSCRIPTS_DIR, {
-      withFileTypes: true,
-    })) {
-      if (entry.isDirectory() && liveRunIds.has(entry.name)) continue;
-      const entryPath = path.join(/* turbopackIgnore: true */ TRANSCRIPTS_DIR, entry.name);
-      const stat = fs.statSync(/* turbopackIgnore: true */ entryPath);
-      if (stat.mtimeMs >= cutoffMs) continue;
-      fs.rmSync(/* turbopackIgnore: true */ entryPath, { recursive: true, force: true });
-      transcriptEntriesDeleted += 1;
-    }
+  for (const entry of await readTranscriptEntries()) {
+    if (entry.isDirectory() && liveRunIds.has(entry.name)) continue;
+    const entryPath = path.join(/* turbopackIgnore: true */ TRANSCRIPTS_DIR, entry.name);
+    const stat = await fs.promises.stat(/* turbopackIgnore: true */ entryPath);
+    if (stat.mtimeMs >= cutoffMs) continue;
+    if (await removeTree(entryPath)) transcriptEntriesDeleted += 1;
   }
 
   return { runsDeleted: runIds.length, eventsDeleted, transcriptEntriesDeleted, worktreesRemoved };
+}
+
+/** The transcripts root's children, or none when it does not exist yet. */
+async function readTranscriptEntries(): Promise<fs.Dirent[]> {
+  try {
+    return await fs.promises.readdir(/* turbopackIgnore: true */ TRANSCRIPTS_DIR, {
+      withFileTypes: true,
+    });
+  } catch (cause) {
+    if ((cause as { code?: string }).code === "ENOENT") return [];
+    throw cause;
+  }
 }

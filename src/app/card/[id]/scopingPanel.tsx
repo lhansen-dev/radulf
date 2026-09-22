@@ -3,12 +3,12 @@ import { useState } from "react";
 import { api } from "../../ui/api";
 import { Markdown } from "../../ui/markdown";
 import type { ScopingMessage } from "./useCardDetail";
+import { SCOPABLE_STATUSES } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
 
-/** Statuses in which the thread can still change what gets planned. */
-const SCOPABLE = new Set(["backlog", "todo", "needs_attention"]);
+type SplitCard = { title: string; description: string };
 
-type Busy = "send" | "answer" | "propose" | "apply" | null;
+type Busy = "send" | "answer" | "propose" | "apply" | "split" | "plan" | null;
 
 /**
  * The card's scoping thread (spec 17): the operator, an assistant that reads
@@ -20,11 +20,14 @@ type Busy = "send" | "answer" | "propose" | "apply" | null;
 export function ScopingPanel({
   cardId,
   status,
+  scopingAuthorsPlan = false,
   messages,
   onChanged,
 }: {
   cardId: string;
   status: string;
+  /** The card let its session write the plan itself (spec 17). */
+  scopingAuthorsPlan?: boolean;
   messages: ScopingMessage[];
   onChanged: () => void;
 }) {
@@ -32,7 +35,9 @@ export function ScopingPanel({
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState("");
   const [proposal, setProposal] = useState<{ title: string; description: string } | null>(null);
-  const open = SCOPABLE.has(status);
+  const [split, setSplit] = useState<SplitCard[] | null>(null);
+  const [notice, setNotice] = useState("");
+  const open = SCOPABLE_STATUSES.includes(status as never);
   // The planner asked, or the loop stopped on a blocker: either way an answer
   // here is what "plan again" re-plans from.
   const awaitingAnswer = status === "needs_attention" && messages.some((m) => m.role === "planner" || m.role === "loop");
@@ -78,8 +83,31 @@ export function ScopingPanel({
     setProposal(null);
     onChanged();
   });
+  // Spec 17: a split is a proposal, never an action — proposeSplit only
+  // returns the pieces, and applySplit is this second, separate click.
+  const proposeSplitCards = () => run("split", async () => {
+    const result = await api<{ cards: SplitCard[] }>(`/api/cards/${cardId}/scoping/split`, { json: {} });
+    setSplit(result.cards);
+    onChanged();
+  });
+  const applySplit = () => run("apply", async () => {
+    if (!split) return;
+    await api(`/api/cards/${cardId}/scoping/split`, { json: { cards: split } });
+    setSplit(null);
+    setNotice(`Queued as ${split.length} cards, in order. This card is the first.`);
+    onChanged();
+  });
+  const writePlan = () => run("plan", async () => {
+    const result = await api<{ version: number; status: string }>(`/api/cards/${cardId}/scoping/plan`, { json: {} });
+    setNotice(
+      result.status === "plan_review"
+        ? `Plan v${result.version} written and waiting for your review.`
+        : `Plan v${result.version} written — the card is ready to run.`,
+    );
+    onChanged();
+  });
 
-  const waiting = busy === "send" || busy === "propose";
+  const waiting = busy === "send" || busy === "propose" || busy === "split" || busy === "plan";
   const fieldCls = "w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm";
   const buttonCls = "min-h-11 rounded-lg px-3 text-sm disabled:opacity-40";
 
@@ -117,7 +145,7 @@ export function ScopingPanel({
         </ol>
       )}
 
-      {open && !proposal && (
+      {open && !proposal && !split && (
         <>
           <textarea
             aria-label="Your message"
@@ -146,9 +174,17 @@ export function ScopingPanel({
                 {busy === "answer" ? "Planning…" : "Answer and plan again"}
               </button>
             )}
-            <button type="button" onClick={propose} disabled={busy !== null} className={`${buttonCls} ml-auto bg-foreground/10`}>
+            <button type="button" onClick={proposeSplitCards} disabled={busy !== null} className={`${buttonCls} ml-auto bg-foreground/10`}>
+              {busy === "split" ? "Splitting…" : "Propose a split"}
+            </button>
+            <button type="button" onClick={propose} disabled={busy !== null} className={`${buttonCls} bg-foreground/10`}>
               {busy === "propose" ? "Writing…" : "Draft the scoped task"}
             </button>
+            {scopingAuthorsPlan && (
+              <button type="button" onClick={writePlan} disabled={busy !== null} className={`${buttonCls} bg-cyan-800/40 font-medium text-cyan-100`}>
+                {busy === "plan" ? "Planning…" : "Write the plan"}
+              </button>
+            )}
           </div>
           {waiting && <p role="status" className="text-xs text-foreground/50">Reading the repository — this can take a minute.</p>}
         </>
@@ -174,6 +210,61 @@ export function ScopingPanel({
         </div>
       )}
 
+      {split && (
+        <div className="flex flex-col gap-3 rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3">
+          <p className="text-sm font-medium text-cyan-300">
+            Proposed split into {split.length} cards — edit anything, then apply
+          </p>
+          <p className="text-xs text-foreground/55">
+            Applying queues them in this order. This card becomes the first one and keeps the
+            thread; the rest are new cards with its settings.
+          </p>
+          {split.map((item, i) => (
+            <div key={i} className="flex flex-col gap-2 rounded-lg bg-foreground/[0.03] p-2.5">
+              <label className="block text-xs text-foreground/70">
+                {i + 1}. Title
+                <input
+                  value={item.title}
+                  onChange={(e) => setSplit(split.map((c, j) => (j === i ? { ...c, title: e.target.value } : c)))}
+                  className={`mt-1 ${fieldCls}`}
+                />
+              </label>
+              <label className="block text-xs text-foreground/70">
+                Description
+                <textarea
+                  value={item.description}
+                  onChange={(e) => setSplit(split.map((c, j) => (j === i ? { ...c, description: e.target.value } : c)))}
+                  rows={8}
+                  className={`mt-1 font-mono ${fieldCls}`}
+                />
+              </label>
+              {split.length > 2 && (
+                <button
+                  type="button"
+                  onClick={() => setSplit(split.filter((_, j) => j !== i))}
+                  disabled={busy !== null}
+                  className="self-end text-xs text-foreground/50 hover:text-red-300"
+                >
+                  Drop this card
+                </button>
+              )}
+            </div>
+          ))}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setSplit(null)} disabled={busy !== null} className={`${buttonCls} text-foreground/60`}>Discard</button>
+            <button
+              type="button"
+              onClick={applySplit}
+              disabled={busy !== null || split.some((c) => !c.title.trim())}
+              className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}
+            >
+              {busy === "apply" ? "Queueing…" : `Queue ${split.length} cards`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {notice && <p role="status" className="text-sm text-cyan-300">{notice}</p>}
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
     </section>
   );

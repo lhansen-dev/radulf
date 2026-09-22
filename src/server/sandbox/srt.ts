@@ -13,7 +13,7 @@ import {
 import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 
-import { DATA_DIR, WORKTREES_DIR } from "@/db";
+import { CLONES_DIR, DATA_DIR, WORKTREES_DIR } from "@/db";
 import { errorMessage } from "@/shared/errorMessage";
 import { git } from "../git";
 import { isInsideOrEqual } from "./pathGuard";
@@ -200,7 +200,9 @@ export function buildFilesystemConfig(opts: {
   tmpdir: string;
   cacheRoot: string;
 }): FilesystemConfig {
-  const protectedRoots = [HOME, DATA_DIR, WORKTREES_DIR];
+  // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
+  // run's own shared .git is re-allowed through opts.gitCommonDir below.
+  const protectedRoots = [HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR];
   const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
     opts.worktree,
@@ -216,7 +218,7 @@ export function buildFilesystemConfig(opts: {
     denyRead,
     // PATH-derived roots are untrusted input to this filter — a shallow PATH
     // entry (`/bin`, whose dirname is `/`) must never silently re-open the
-    // deny list. `HOME`/`DATA_DIR`/`WORKTREES_DIR` themselves are checked
+    // deny list. `HOME`/`DATA_DIR`/`WORKTREES_DIR`/`CLONES_DIR` themselves are checked
     // (not just their listed backstop children) because an allow entry
     // doesn't need to name a deny target exactly to reopen it — containing
     // it is enough, per srt's recursive subpath matching.
@@ -402,24 +404,22 @@ export function resetSandboxRuntimeForTests(): void {
 }
 
 /**
- * Serializing queue for `wrapBashCommand` (PLAN.md Phase 18.2, superseding
- * Phase 4's hard-throw guard below). `sandboxQueueTail` is a promise-chain
- * mutex: each call captures the current tail, replaces it with its own
- * "done" promise, then awaits the tail it captured — so calls run their
- * wrap-and-`updateConfig` step one at a time, in arrival order, without
- * rejecting any of them. `queueDepth`/`queuedConfig` exist only for the
- * narrower safety check kept below: don't delete either without first
- * making network policy genuinely per-call (today it's derived from the
- * Settings snapshot each run takes at start, so it differs across calls
- * only when the allowlist setting changes between two overlapping runs —
- * see the check itself).
+ * Serializing queue for the wrap-and-`updateConfig` step (PLAN.md Phase 18.2,
+ * superseding Phase 4's hard-throw guard below). `sandboxQueueTail` is a
+ * promise-chain mutex: each call captures the current tail, replaces it with
+ * its own "done" promise, then awaits the tail it captured — so calls take
+ * that step one at a time, in arrival order, without rejecting any of them.
+ *
+ * Only that step is serialized. Two commands that agree on network policy run
+ * concurrently, which is what one-loop-per-repo (Phase 10) needs: an
+ * `npm install` in one repo must not block every bash command in another for
+ * minutes. What keeps them safe is the claim below, not this queue.
  */
 let sandboxQueueTail: Promise<void> = Promise.resolve();
-let queueDepth = 0;
 
 /**
  * The only slice of `SandboxRuntimeConfig` that `updateConfig()` actually
- * mutates process-wide (see `wrapBashCommand`'s doc comment). Deliberately
+ * mutates process-wide (see `runSandboxedCommand`'s doc comment). Deliberately
  * excludes `filesystem`: that's per-call `customConfig` built fresh from
  * per-run paths (`buildFilesystemConfig`'s `worktree`/`tmpdir`/`cacheRoot`/
  * `gitCommonDir`), unique to every run by construction (PLAN.md Phase 19.1
@@ -438,7 +438,22 @@ function networkPolicySlice(runConfig: SandboxRuntimeConfig): NetworkPolicySlice
   };
 }
 
-let queuedConfig: NetworkPolicySlice | null = null;
+/**
+ * The network policy the egress proxy is enforcing right now, and how many
+ * sandboxed commands are relying on it.
+ *
+ * Held from before a command is wrapped until after it has *finished
+ * running*, because the proxy filters a request against session-level config
+ * at the moment the request is made. The pair used to be released when
+ * `wrapWithSandbox` returned, which is the wrong end of the command: a run
+ * whose `npm install` had just been wrapped was left with a count of zero, so
+ * a second run starting with a different allowlist passed the check below and
+ * called `updateConfig()` — and the first run's install then spent its whole
+ * length filtered against the second run's policy. The window was the entire
+ * execution, which is where all the network traffic is.
+ */
+let activePolicy: NetworkPolicySlice | null = null;
+let activeCommands = 0;
 
 /** Order-independent-on-keys, order-dependent-on-arrays structural equality
  * over plain JSON-shaped values — enough for a `NetworkPolicySlice` (strings,
@@ -467,8 +482,14 @@ function sandboxConfigsEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
- * `SandboxManager.wrapWithSandbox` returns the srt-wrapped command string —
- * ready to hand to a shell exactly like the unwrapped command was.
+ * Run `command` inside the run's sandbox policy: wrap it, hand the wrapped
+ * string to `execute`, and keep the process-wide network policy claimed for
+ * as long as `execute` is running.
+ *
+ * `execute` receives the srt-wrapped command string, ready for a shell
+ * exactly like the unwrapped command was. Every sandboxed command in the
+ * process goes through here rather than wrapping and executing in two steps,
+ * because the second step is the one the network policy has to cover.
  *
  * **Load-bearing quirk, found via the spec 14 Phase 6 positive control (a
  * real `npm install` was denied with `blocked-by-allowlist` even though the
@@ -488,10 +509,11 @@ function sandboxConfigsEqual(a: unknown, b: unknown): boolean {
  * still must be, since two interleaved `updateConfig()` calls could apply
  * the wrong run's network allowlist to the other's request.
  */
-export async function wrapBashCommand(
+export async function runSandboxedCommand<T>(
   command: string,
   runConfig: SandboxRuntimeConfig,
-): Promise<string> {
+  execute: (wrapped: string) => Promise<T>,
+): Promise<T> {
   // Real (not hardcoded-"always equal") safety check. Every run derives its
   // network policy from the Settings snapshot taken at its start
   // (context.ts), so two overlapping runs differ only when an operator edits
@@ -501,15 +523,28 @@ export async function wrapBashCommand(
   // (PLAN.md Phase 19.1) — the per-run filesystem config is expected to
   // differ on every call and must never factor in.
   const incomingPolicy = networkPolicySlice(runConfig);
-  if (queueDepth > 0 && queuedConfig !== null && !sandboxConfigsEqual(queuedConfig, incomingPolicy)) {
+  if (activeCommands > 0 && activePolicy !== null && !sandboxConfigsEqual(activePolicy, incomingPolicy)) {
     throw new Error(
-      "sandbox network policy is process-wide (see wrapBashCommand's doc comment) — a concurrent " +
-        "sandboxed call is using a DIFFERENT network policy; applying this one now would silently " +
-        "clobber it, so refusing to start it",
+      "sandbox network policy is process-wide (see runSandboxedCommand's doc comment) — a " +
+        "concurrent sandboxed command is using a DIFFERENT network policy; applying this one now " +
+        "would silently clobber it, so refusing to start it",
     );
   }
-  queuedConfig = incomingPolicy;
-  queueDepth++;
+  activePolicy = incomingPolicy;
+  activeCommands++;
+  try {
+    return await execute(await wrapUnderPolicy(command, runConfig));
+  } finally {
+    activeCommands--;
+  }
+}
+
+/** The serialized half: apply this run's config process-wide and wrap under
+ * it, with no other call able to do either in between. */
+async function wrapUnderPolicy(
+  command: string,
+  runConfig: SandboxRuntimeConfig,
+): Promise<string> {
   const myTurn = sandboxQueueTail;
   const { promise: myDone, resolve: releaseMyTurn } = Promise.withResolvers<void>();
   sandboxQueueTail = myDone;
@@ -518,7 +553,6 @@ export async function wrapBashCommand(
     SandboxManager.updateConfig(runConfig);
     return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
   } finally {
-    queueDepth--;
     releaseMyTurn();
   }
 }
@@ -536,8 +570,9 @@ export function createSandboxedBashOperations(runConfig: SandboxRuntimeConfig): 
   const local = createLocalBashOperations();
   return {
     async exec(command, cwd, options) {
-      const wrapped = await wrapBashCommand(command, runConfig);
-      return local.exec(wrapped, cwd, options);
+      return runSandboxedCommand(command, runConfig, (wrapped) =>
+        local.exec(wrapped, cwd, options),
+      );
     },
   };
 }

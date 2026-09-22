@@ -520,6 +520,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   const state = statusDetails(card);
   const repo = repos.find((r) => r.id === card.repoId);
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
+  const currentTask = card.latestRun?.currentTask ?? null;
   const href = card.status === "review" ? `/review/${card.id}` : `/card/${card.id}`;
   const pullBack = () => {
     const active = RUNNING_STATUSES.includes(card.status);
@@ -558,7 +559,15 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
           <span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span> · {position ? `Queue position ${position}` : state.detail}
         </p>
-        {card.status === "looping" && <p className="mt-0.5 truncate text-xs text-foreground/40">{card.latestRun?.currentTask ? `Current task: ${card.latestRun.currentTask}` : `Latest activity: ${card.latestRun?.exitReason || "Ralph is working through the current iteration"}`}</p>}
+        {card.status === "looping" && (currentTask ? (
+          <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-xs text-foreground/40">
+            <span className="font-medium text-foreground/70">Task {currentTask.number}/{currentTask.count}</span>
+            <span>{currentTask.left === 1 ? "last one" : `${currentTask.left} left`}</span>
+            <span className="basis-full truncate">{currentTask.text}</span>
+          </p>
+        ) : (
+          <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "Ralph is working through the current iteration"}</p>
+        ))}
         {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-foreground/40">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
         {card.status === "needs_attention" && state.detail.length > 70 && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
         {(onMove || card.status !== "todo") && (

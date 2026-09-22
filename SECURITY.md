@@ -72,14 +72,29 @@ header at all (curl, scripts, the app itself) are unaffected.
 
 Provider API keys (OpenRouter, oMLX, Brave) are write-only over HTTP:
 `GET /api/settings` renders any key that is set as `••••••••`, and sending that
-marker back leaves the stored value untouched. They are still stored in
-cleartext in the SQLite DB under `data/` — that file is as sensitive as the keys
-in it, and the sandbox denies agent access to `data/` wholesale.
+marker back leaves the stored value untouched. At rest they are encrypted with
+AES-256-GCM under a key derived from `data/auth-secret`
+(`src/server/settingsCrypto.ts`). That secret sits beside the database it
+protects, so this is not protection against anyone who can read `data/` — that
+directory is as sensitive as the keys in it, and the sandbox denies agent
+access to it wholesale. What it does cover is a copy of the database alone: a
+`make db-backup` snapshot, a stray `radulf.db` in a bug report, a restore from
+a volume backup taken without the secret. Rows written before that encryption
+existed stay readable and are re-encrypted on their next write.
 
 Session cookies are HMAC-signed with the secret in `data/auth-secret`. There is
 no server-side session store, so the kill switch for a leaked cookie is rotating
 that secret: delete `data/auth-secret` and restart — every outstanding session
-becomes invalid at once.
+becomes invalid at once. **That also makes every stored provider key
+undecryptable**, because both uses derive from the same file. Radulf then logs
+`could not be decrypted` for each affected key and reads it as unset; re-enter
+the keys in Settings afterwards.
+
+`data/auth-secret` and `data/radulf.db` are written `0600`, and an install that
+predates that is tightened in place at boot. Both files were previously created
+at whatever the umask allowed, which on a stock host is `0644`: the
+session-signing key and every provider key and transcript, readable by every
+other account on the machine.
 
 ## Supported versions
 

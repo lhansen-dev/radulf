@@ -19,7 +19,14 @@ beforeEach(() => {
     calls.push({ url, init });
     const body = url.endsWith("/scoping/proposal")
       ? { title: "Lock login after five failures", description: "## Problem\nBrute force.", messages: [] }
-      : { messages: [] };
+      : url.endsWith("/scoping/split")
+        ? { cards: [
+            { title: "Add the limiter", description: "## Problem\nBrute force." },
+            { title: "Surface the lockout", description: "## Problem\nDepends on card 1." },
+          ] }
+        : url.endsWith("/scoping/plan")
+          ? { version: 1, status: "ready" }
+          : { messages: [] };
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
   }) as unknown as typeof fetch;
 });
@@ -112,6 +119,49 @@ describe("ScopingPanel", () => {
 
     const { container } = render(<ScopingPanel cardId="c1" status="looping" messages={[]} onChanged={() => {}} />);
     expect(container.innerHTML).toBe("");
+  });
+
+  it("proposes a split, lets it be edited, and applies the edited version", async () => {
+    // Spec 17: the split is a proposal. The first click only asks for it.
+    const onChanged = vi.fn();
+    render(<ScopingPanel cardId="c1" status="backlog" messages={thread} onChanged={onChanged} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Propose a split" }));
+
+    const firstTitle = (await screen.findByLabelText("1. Title")) as HTMLInputElement;
+    expect(firstTitle.value).toBe("Add the limiter");
+    expect(calls).toHaveLength(1);
+    expect(json(0)).toEqual({});
+    // Nothing is applied until the operator says so, and the composer is out
+    // of the way while a proposal is open.
+    expect(screen.queryByLabelText("Your message")).toBeNull();
+
+    fireEvent.change(firstTitle, { target: { value: "Add the login limiter" } });
+    fireEvent.click(screen.getByRole("button", { name: "Queue 2 cards" }));
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].url).toBe("/api/cards/c1/scoping/split");
+    expect(json(1)).toEqual({
+      cards: [
+        { title: "Add the login limiter", description: "## Problem\nBrute force." },
+        { title: "Surface the lockout", description: "## Problem\nDepends on card 1." },
+      ],
+    });
+    expect(await screen.findByText(/Queued as 2 cards, in order/)).toBeTruthy();
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("offers the plan button only to a card that opted in, and reports where it landed", async () => {
+    render(<ScopingPanel cardId="c1" status="backlog" messages={thread} onChanged={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Write the plan" })).toBeNull();
+    cleanup();
+
+    render(<ScopingPanel cardId="c1" status="backlog" scopingAuthorsPlan messages={thread} onChanged={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Write the plan" }));
+
+    // The waiting line also has role="status", so match on the text.
+    expect(await screen.findByText(/Plan v1 written .* ready to run/)).toBeTruthy();
+    expect(calls[0].url).toBe("/api/cards/c1/scoping/plan");
   });
 
   it("surfaces a failed turn without losing the draft", async () => {

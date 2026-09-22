@@ -48,6 +48,7 @@ export function PlanVersions({
 
       <p className="text-xs text-foreground/50">
         Plan v{plan.version} · written {timeAgo(plan.createdAt)} ago
+        {plan.origin === "scoping" && " · by the scoping session, skipping the planner"}
       </p>
 
       {plan.feedback && (

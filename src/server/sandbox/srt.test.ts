@@ -22,7 +22,7 @@ import {
   systemReadRoots,
   toolchainHomeReAllows,
   toolchainReadRootsFromPath,
-  wrapBashCommand,
+  runSandboxedCommand,
 } from "./srt";
 
 const execFileAsync = promisify(execFile);
@@ -347,7 +347,7 @@ describe("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)",
   });
 });
 
-describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed process)", () => {
+describe("runSandboxedCommand / createSandboxedBashOperations (real sandboxed process)", () => {
   let worktree: string;
   let outside: string;
 
@@ -412,29 +412,28 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
     }
   });
 
-  it("wrapBashCommand allows a write inside the worktree and denies one outside it", async () => {
-    const ok = await wrapBashCommand(`echo hi > ${worktree}/ok.txt`, config());
-    await execFileAsync("/bin/sh", ["-c", ok]);
+  const sh = (cmd: string) =>
+    runSandboxedCommand(cmd, config(), (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]));
+
+  it("runSandboxedCommand allows a write inside the worktree and denies one outside it", async () => {
+    await sh(`echo hi > ${worktree}/ok.txt`);
     expect(fs.existsSync(path.join(worktree, "ok.txt"))).toBe(true);
 
-    const denied = await wrapBashCommand(`echo hi > ${outside}/bad.txt`, config());
-    await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
+    await expect(sh(`echo hi > ${outside}/bad.txt`)).rejects.toThrow();
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
   });
 
-  it("wrapBashCommand denies rewriting the worktree's .git pointer file, though the worktree is writable", async () => {
+  it("runSandboxedCommand denies rewriting the worktree's .git pointer file, though the worktree is writable", async () => {
     // A linked worktree's `.git` is a file naming its gitdir. Repointing it at
     // an agent-populated gitdir would make every host-side git call in the
     // worktree run that gitdir's fsmonitor and hooks (reproduced pre-fix).
     const pointer = path.join(worktree, ".git");
 
-    const denied = await wrapBashCommand(`echo 'gitdir: ${worktree}/agent-owned' > ${pointer}`, config());
-    await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
+    await expect(sh(`echo 'gitdir: ${worktree}/agent-owned' > ${pointer}`)).rejects.toThrow();
     expect(fs.readFileSync(pointer, "utf8")).toBe(gitPointer);
 
     // Reads stay open: agent git has to follow the pointer.
-    const read = await wrapBashCommand(`cat ${pointer}`, config());
-    const { stdout } = await execFileAsync("/bin/sh", ["-c", read]);
+    const { stdout } = await sh(`cat ${pointer}`);
     expect(stdout).toBe(gitPointer);
   });
 
@@ -488,21 +487,31 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
         });
       try {
         const [first, second] = await Promise.all([
-          wrapBashCommand(`echo hi > ${worktreeA}/concurrent-first.txt`, cfgA),
-          wrapBashCommand(`echo hi > ${worktreeB}/concurrent-second.txt`, cfgB),
+          runSandboxedCommand(`echo hi > ${worktreeA}/concurrent-first.txt`, cfgA, async (w) => {
+            events.push("exec-a");
+            return w;
+          }),
+          runSandboxedCommand(`echo hi > ${worktreeB}/concurrent-second.txt`, cfgB, async (w) => {
+            events.push("exec-b");
+            return w;
+          }),
         ]);
         expect(first).toEqual(expect.any(String));
         expect(second).toEqual(expect.any(String));
         // Each call's updateConfig is immediately followed by ITS OWN
         // wrapWithSandbox completion before the other call's updateConfig
         // ever runs — proves the two calls' wrap-and-updateConfig steps never
-        // interleave, even though neither call was rejected.
-        expect(events).toEqual([
+        // interleave, even though neither call was rejected. The executions
+        // are NOT serialized against each other: two repos agreeing on
+        // network policy must not queue behind each other's commands.
+        expect(events.filter((e) => e !== "exec-a" && e !== "exec-b")).toEqual([
           "updateConfig",
           "wrapWithSandbox-done",
           "updateConfig",
           "wrapWithSandbox-done",
         ]);
+        expect(events).toContain("exec-a");
+        expect(events).toContain("exec-b");
       } finally {
         updateConfigSpy.mockRestore();
         wrapSpy.mockRestore();
@@ -519,15 +528,43 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
       ...cfgA,
       network: { ...cfgA.network, allowedDomains: [...cfgA.network.allowedDomains, "example.com"] },
     };
-    // Fired without awaiting: wrapBashCommand runs synchronously up to its
-    // first `await`, so cfgA's call has already claimed the queue slot by
+    // Fired without awaiting: runSandboxedCommand runs synchronously up to
+    // its first `await`, so cfgA's call has already claimed the policy by
     // the time cfgB's call's synchronous guard check runs — no mocking
     // needed to observe the race.
-    const first = wrapBashCommand(`echo hi > ${worktree}/concurrent-diff-a.txt`, cfgA);
+    const first = sh(`echo hi > ${worktree}/concurrent-diff-a.txt`);
     await expect(
-      wrapBashCommand(`echo hi > ${worktree}/concurrent-diff-b.txt`, cfgB),
+      runSandboxedCommand(`echo hi > ${worktree}/concurrent-diff-b.txt`, cfgB, async (w) => w),
     ).rejects.toThrow(/DIFFERENT network policy/);
-    await expect(first).resolves.toEqual(expect.any(String));
+    await first;
+  });
+
+  it("holds the policy for as long as the command runs, not just its wrap", async () => {
+    // The claim used to be released when wrapWithSandbox returned, so a
+    // command that had been wrapped and was still running counted for
+    // nothing: a second run with a different allowlist sailed past the guard
+    // and called updateConfig(), and the first run's whole execution — which
+    // is where all of its network traffic is — was filtered against the
+    // second run's policy.
+    const cfgA = config();
+    const cfgB = {
+      ...cfgA,
+      network: { ...cfgA.network, allowedDomains: [...cfgA.network.allowedDomains, "example.com"] },
+    };
+    const wrapped = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const running = runSandboxedCommand(`echo hi`, cfgA, async () => {
+      wrapped.resolve();
+      await release.promise;
+    });
+    await wrapped.promise; // past the wrap, inside the execution
+
+    await expect(
+      runSandboxedCommand(`echo hi`, cfgB, async (w) => w),
+    ).rejects.toThrow(/DIFFERENT network policy/);
+
+    release.resolve();
+    await running;
   });
 
   it("createSandboxedBashOperations.exec runs the command sandboxed via pi's own local exec", async () => {
@@ -559,7 +596,7 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
   let gitCommonDir: string;
 
   async function run(cmd: string) {
-    const wrapped = await wrapBashCommand(
+    return runSandboxedCommand(
       cmd,
       buildRunSandboxConfig({
         worktree,
@@ -568,8 +605,8 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
         cacheRoot: worktree,
         networkAllowlistText: "",
       }),
+      (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]),
     );
-    return execFileAsync("/bin/sh", ["-c", wrapped]);
   }
 
   beforeAll(async () => {
@@ -652,7 +689,7 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
     // updateConfig() time, never against wrapWithSandbox's per-call
     // customConfig.network (confirmed by reading srt's own
     // filterNetworkRequest, which closes over the session-level `config`
-    // variable, not an argument). `wrapBashCommand` now calls
+    // variable, not an argument). `runSandboxedCommand` now calls
     // `SandboxManager.updateConfig()` before wrapping — this proves the
     // default allowlist actually reaches the real npm registry end to end.
     const result = await run(

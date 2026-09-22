@@ -42,19 +42,19 @@ import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
-import { getCard, requireCard } from "./cards";
+import { getCard, requireCard, type Card } from "./cards";
 import { getRepo, requireRepo } from "./repos";
 import { groupBy } from "./queryGrouping";
-import { PlanningService, pendingReplanFeedback } from "./planningService";
+import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService } from "./reviewService";
 import { ClientError } from "./clientError";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
-import { RUNNING_STATUSES } from "@/shared/cardStatus";
+import { RUNNING_STATUSES, SCOPABLE_STATUSES } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
-import { addScopingMessage } from "./scoping";
+import { addScopingMessage, proposeScopedPlan, proposeSplit, type SplitCard } from "./scoping";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
 import {
@@ -632,6 +632,130 @@ export class Orchestrator {
     }
     emitEvent("card.moved", { cardId, payload: { from: "backlog", to: "todo", reason: "queued" } });
     this.pump();
+  }
+
+  /**
+   * Spec 17: let the card's scoping session write the plan and skip the
+   * planning stage.
+   *
+   * No run and no worktree: `startLoop` builds the worktree it needs and
+   * installs the plan's artifacts into it from the plan row, so a plan that
+   * arrives without a planning run behind it is enough on its own. The card
+   * then lands exactly where a planning run would have left it, which is what
+   * keeps `reviewPlanBeforeImplementation` meaningful for these cards too.
+   */
+  async adoptScopingPlan(cardId: string): Promise<{ version: number; status: CardStatus }> {
+    const card = requireCard(cardId);
+    if (!SCOPABLE_STATUSES.includes(card.status)) {
+      throw new ClientError(`cannot write a plan for a card in status ${card.status}`);
+    }
+    const artifacts = await proposeScopedPlan(cardId);
+    if (!firstUnchecked(artifacts.planMd)) {
+      throw new ClientError("the plan's checklist is unparseable or has no unchecked tasks");
+    }
+    const { version } = writePlanRow(cardId, artifacts, { origin: "scoping" });
+    const destination = planningDestination(card);
+    this.moveCard(cardId, card.status, destination, "plan written while scoping");
+    this.pump();
+    return { version, status: destination };
+  }
+
+  /**
+   * Spec 17: ask the session to break the card into ordered pieces. A
+   * proposal only — `applyScopingSplit` is the separate, operator-driven step.
+   */
+  proposeScopingSplit(cardId: string) {
+    return proposeSplit(cardId);
+  }
+
+  /**
+   * Apply an approved split: the card becomes the first piece and the rest
+   * follow it, in order, in the queue.
+   *
+   * The queue is Radulf's one position-ordered column, so it is where the
+   * sequence the session found is actually expressed rather than merely
+   * recorded. The whole set is appended to the end of it in order: the card's
+   * scope has just changed completely, so an old queue position is not worth
+   * preserving, and appending needs no fractional arithmetic and can collide
+   * with nothing.
+   *
+   * Refused once the card has a plan. Rewriting a planned card's description
+   * would leave it running a plan for the scope it no longer has; Reset
+   * clears the plans and is the way through.
+   */
+  applyScopingSplit(cardId: string, items: SplitCard[]): Card[] {
+    const card = requireCard(cardId);
+    if (!SCOPABLE_STATUSES.includes(card.status)) {
+      throw new ClientError(`cannot split a card in status ${card.status}`);
+    }
+    if (items.length < 2) throw new ClientError("a split needs two or more cards");
+    if (items.some((item) => !item.title.trim())) throw new ClientError("every card needs a title");
+    if (this.latestPlan(cardId)) {
+      throw new ClientError(
+        "this card is already planned, so splitting it now would leave the pieces running a plan " +
+          "for the scope they no longer have — reset the card first",
+      );
+    }
+    const split = db.transaction((tx) => {
+      const base =
+        (tx.select({ max: max(cards.position) }).from(cards).where(eq(cards.status, "todo")).get()
+          ?.max ?? 0) + 1;
+      const rows: Card[] = [
+        tx
+          .update(cards)
+          .set({
+            title: items[0].title.trim(),
+            description: items[0].description,
+            status: "todo",
+            position: base,
+            startedAt: null,
+            updatedAt: now(),
+          })
+          .where(eq(cards.id, cardId))
+          .returning()
+          .get(),
+      ];
+      // The siblings inherit every per-card setting, including the scoping
+      // flags: the operator chose them for this work, and the work is the
+      // same work.
+      for (const [offset, item] of items.slice(1).entries()) {
+        rows.push(
+          tx
+            .insert(cards)
+            .values({
+              id: nanoid(),
+              repoId: card.repoId,
+              title: item.title.trim(),
+              description: item.description,
+              status: "todo",
+              position: base + offset + 1,
+              baseBranch: card.baseBranch,
+              source: card.source,
+              maxIterations: card.maxIterations,
+              timeoutMinutes: card.timeoutMinutes,
+              reviewPlanBeforeImplementation: card.reviewPlanBeforeImplementation,
+              autoApprove: card.autoApprove,
+              openPr: card.openPr,
+              grillMe: card.grillMe,
+              scopingAuthorsPlan: card.scopingAuthorsPlan,
+              plannerModel: card.plannerModel,
+              loopModel: card.loopModel,
+              evaluatorModel: card.evaluatorModel,
+              createdAt: now(),
+              updatedAt: now(),
+            })
+            .returning()
+            .get(),
+        );
+      }
+      return rows;
+    });
+    emitEvent("card.split", {
+      cardId,
+      payload: { cardIds: split.map((row) => row.id), from: card.status },
+    });
+    this.pump();
+    return split;
   }
 
   pauseCard(cardId: string) {
@@ -1663,7 +1787,7 @@ export class Orchestrator {
       }
       removeBaseline(run.id);
     }
-    removeRunTranscripts(allRuns.map((run) => run.id));
+    await removeRunTranscripts(allRuns.map((run) => run.id));
 
     // Runs cascade to iterations + reviews.
     db.delete(runs).where(eq(runs.cardId, cardId)).run();

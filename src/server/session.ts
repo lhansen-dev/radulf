@@ -87,6 +87,37 @@ export function isAllowedOrigin(origin: string | null, host: string): boolean {
 }
 
 /**
+ * Whether the session cookie should carry `Secure`.
+ *
+ * `new URL(request.url).protocol` is not the answer on its own: like the
+ * redirect base above, `request.url` in a Route Handler carries the address
+ * the server is bound to, and a TLS-terminating reverse proxy talks plain
+ * HTTP to it. Keying off it alone issued a 30-day session cookie with no
+ * `Secure` flag to every browser behind such a proxy, so any later plain-HTTP
+ * request to the same host — a typo'd URL, a downgrade an attacker can force
+ * — puts the session on the wire.
+ *
+ * The browser's own `Origin` is the authority when there is one: it names the
+ * scheme the browser used, the proxy already had to be crossed for the
+ * request to arrive, and the CSRF check above has confirmed it names this
+ * deployment. `x-forwarded-proto` covers the non-browser caller that sends no
+ * `Origin`. Neither can be used to *remove* `Secure` that the bind address
+ * would have set, so a forged header buys nothing.
+ */
+export function requestIsSecure(request: Request): boolean {
+  if (new URL(request.url).protocol === "https:") return true;
+  const origin = request.headers.get("origin");
+  if (origin && isAllowedOrigin(origin, requestHost(request))) {
+    try {
+      return new URL(origin).protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+  return request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() === "https";
+}
+
+/**
  * Base URL a Route Handler should build its redirects against.
  *
  * `request.url` in a Route Handler carries the address the server is bound to,

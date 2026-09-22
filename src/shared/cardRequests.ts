@@ -8,6 +8,8 @@ export type CreateCardRequest = {
   maxIterations: string | number;
   timeoutMinutes: string | number;
   reviewPlanBeforeImplementation: boolean;
+  grillMe: boolean;
+  scopingAuthorsPlan: boolean;
   autoApprove: boolean;
   openPr: boolean;
   baseBranch: string | null;

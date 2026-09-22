@@ -1,14 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ClientError } from "./clientError";
-import { browsableRoot } from "./folderBrowser";
+import { assertInsideBrowsableRoot } from "./folderBrowser";
 import { tryGit } from "./git";
-import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
 import { errorMessage } from "@/shared/errorMessage";
 
 /** A folder name and nothing more: no separators, not hidden, and nothing git
  * or a shell would read as an option. */
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** ClientError unless `name` is a plain folder name. Shared with cloning. */
+export function assertRepoName(name: string): void {
+  if (!REPO_NAME.test(name)) {
+    throw new ClientError(
+      "repository name must start with a letter or digit and contain only letters, digits, dots, dashes and underscores",
+    );
+  }
+}
 
 const INITIAL_BRANCH = "main";
 
@@ -25,14 +33,8 @@ export async function initRepository(
   name: string,
   configuredRoot: string,
 ): Promise<{ path: string; defaultBranch: string }> {
-  if (!REPO_NAME.test(name)) {
-    throw new ClientError(
-      "repository name must start with a letter or digit and contain only letters, digits, dots, dashes and underscores",
-    );
-  }
-  const root = browsableRoot(configuredRoot);
-  const parent = realpathBestEffort(parentPath);
-  if (!isInsideOrEqual(parent, root)) throw new ClientError("that folder is outside the browsable root");
+  assertRepoName(name);
+  const parent = assertInsideBrowsableRoot(parentPath, configuredRoot);
   let parentStat: fs.Stats;
   try {
     parentStat = fs.statSync(parent);

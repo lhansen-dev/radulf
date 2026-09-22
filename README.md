@@ -127,8 +127,8 @@ cd radulf
 # 2 · Install
 make install
 
-# 3 · Log in a provider (opens pi — type /login, then Ctrl+C)
-make login
+# 3 · Log in a provider (or do it in Settings → Providers & keys)
+make login   # opens pi — type /login, then Ctrl+C
 
 # 4 · Run
 make dev
@@ -159,7 +159,13 @@ handled by Docker instead of a service unit.
 ### Before your first loop: log in a provider
 
 Radulf needs at least one provider. For the subscription providers, this is a **one-time**
-interactive login through pi's own UI, pointed at Radulf's agent dir:
+login. Do it in the app: **Settings → Providers & keys → Sign in**, which runs pi's own
+login flow and shows you what it asks for — a link to open and a code to paste back for
+Claude and Codex, a device code for Copilot ([spec 23](specs/23-provider-login-in-app.md)).
+It expects your browser to be on another machine, so it works the same on a server or in
+Docker as on a laptop.
+
+A terminal still works, and is the only option with no browser to hand:
 
 ```bash
 make login   # opens pi → type /login → pick Claude, ChatGPT, or Copilot
@@ -189,14 +195,14 @@ page (an OpenRouter API key, or the local server's base URL). See [Requirements]
 
 | Provider | Auth | Where | Notes |
 |----------|------|-------|-------|
-| 🟣 **Claude** (default) | `make login` → `/login` | Claude Pro/Max subscription | Third-party harness usage billed per token as extra usage |
-| 🟢 **ChatGPT (Codex)** | `make login` → `/login` | ChatGPT Plus/Pro subscription | — |
-| ⚫ **GitHub Copilot** | `make login` → `/login` | GitHub Copilot subscription | — |
+| 🟣 **Claude** (default) | Settings → Sign in | Claude Pro/Max subscription | Third-party harness usage billed per token as extra usage |
+| 🟢 **ChatGPT (Codex)** | Settings → Sign in | ChatGPT Plus/Pro subscription | — |
+| ⚫ **GitHub Copilot** | Settings → Sign in | GitHub Copilot subscription | — |
 | 🔵 **OpenRouter** | API key | remote | Bring your own model. Set in Settings — no login |
 | 🟠 **Local / self-hosted** | base URL | wherever you run it | Any OpenAI-compatible server: oMLX, vLLM, LM Studio. Optional. Set base URL in Settings — no login |
 
-> `make login` is a one-time interactive step for the subscription providers; `/login`
-> is typed inside pi. Full detail in [`PROVIDERS.md`](docs/PROVIDERS.md).
+> A one-time step per subscription provider, from **Settings → Providers & keys**, or
+> from a terminal with `make login`. Full detail in [`PROVIDERS.md`](docs/PROVIDERS.md).
 
 ### Disk limits ([spec 14](specs/14-sandboxing.md))
 

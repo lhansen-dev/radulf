@@ -39,7 +39,14 @@ by Docker.
 
 Radulf needs at least one provider before it can run anything. For the
 subscription providers (Claude, ChatGPT, GitHub Copilot) this is a one-time
-interactive login pointed at Radulf's own agent directory:
+login, and the easiest place to do it is the app: open
+**Settings → Providers & keys** and press **Sign in**. Radulf runs pi's own
+login flow and shows you what it asks for, which is a link to open plus a box
+to paste the resulting code into, or a device code to enter. Your browser does
+not have to be on the machine running Radulf, so this is the same three clicks
+on a laptop, a server, or in Docker.
+
+A terminal still works, and is what to use when there is no browser to hand:
 
 ```bash
 make login
@@ -63,7 +70,10 @@ OpenRouter and a local server need no login at all — set an API key or a base 
    pick **Add a repository…** in the repository dropdown when creating a task.
    Browse to the folder (entries carrying a `.git` are marked, and offer
    **Select** directly), or type an absolute path. Set the default branch, or
-   leave it blank to auto-detect. Radulf never writes to this checkout except
+   leave it blank to auto-detect. A repository that is not on this machine yet
+   goes in through **Clone from URL** instead: Radulf clones it into a `repos/`
+   directory beside `data/` and registers the result, default branch and all.
+   Radulf never writes to this checkout except
    when merging an approved card.
 
    Starting from nothing? Browse to the parent folder, type a name under

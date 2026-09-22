@@ -10,7 +10,7 @@
  * so the secret is available before any requests arrive.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "@/db";
 
@@ -28,7 +28,19 @@ export function ensureAuthSecret(): void {
   } else {
     secret = randomBytes(32).toString("hex");
     mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(secretFile, secret, "utf-8");
+    // 0600 at creation: this is both the session-signing key and the root the
+    // settings encryption derives from, and a stock umask would have left it
+    // 0644 — readable by every other account on the host.
+    writeFileSync(secretFile, secret, { encoding: "utf-8", mode: 0o600 });
+  }
+  // An install that predates the mode above still has a world-readable secret,
+  // so tighten it in place. Never fatal: under a container that runs as a
+  // different uid over the same volume the file is not ours to chmod, and it
+  // is still perfectly readable.
+  try {
+    chmodSync(secretFile, 0o600);
+  } catch {
+    // not ours to tighten
   }
 
   process.env.RADULF_AUTH_SECRET = secret;

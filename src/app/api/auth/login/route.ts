@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import {
   signSession,
   redirectBase,
+  requestIsSecure,
   SESSION_COOKIE,
   SESSION_MAX_AGE_MS,
 } from "@/server/session";
@@ -93,7 +94,7 @@ export async function POST(request: Request) {
   const response = NextResponse.redirect(new URL("/", redirectBase(request)));
   response.cookies.set(SESSION_COOKIE, value, {
     httpOnly: true,
-    secure: new URL(request.url).protocol === "https:",
+    secure: requestIsSecure(request),
     sameSite: "lax",
     path: "/",
     maxAge: Math.floor(SESSION_MAX_AGE_MS / 1_000),

@@ -37,11 +37,12 @@ itself (the backlog below becomes cards).
 2. **Provider preflight** — health-check + model check (e.g. oMLX up and
    serving the model) before a loop starts.
 3. **Metrics** — token/latency per iteration, run-history views.
-4. **Scheduling** — crons for queue-draining and Improvement Runs, opt-in (06).
+4. ~~**Scheduling** — crons for queue-draining and Improvement Runs, opt-in (06).~~
+   — **shipped** as [22-scheduled-work.md](22-scheduled-work.md).
 5. **Hosting & auth** — expose at `radulf.example.com` with
    single-password login (08); cluster manifests managed via GitOps.
-6. **Polish** — transcript search, better stall heuristics, card
-   export/import, packaging under launchd.
+6. **Polish** — ~~transcript search~~ **shipped**, better stall heuristics,
+   ~~card export/import~~ **shipped**, packaging under launchd.
 7. **Deferred bets** — pluggable runners (Ollama), ~~GitHub PR mode~~ —
    **shipped** as [15-github-pr-delivery.md](15-github-pr-delivery.md).
    - ~~Codex CLI harness for a ChatGPT-subscription provider~~ — **shipped** as

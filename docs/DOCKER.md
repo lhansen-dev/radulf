@@ -39,19 +39,19 @@ result.
 ```bash
 git clone https://github.com/lhansen-dev/radulf.git
 cd radulf
-echo 'RADULF_REPOS_DIR=/srv/repos' > .env     # host dir holding the repos Radulf works on
 cp .env.example .env.local                    # optional: auth, origin, provider keys
 docker compose up -d --build
 docker compose logs -f radulf                 # wait for "Ready", check for sandbox errors
 ```
 
-Then open <http://localhost:3000>.
+Then open <http://localhost:3000> and add a repository by URL, see
+[Repositories](#repositories).
 
-Two env files do two different jobs:
+Two env files do two different jobs, and both are optional:
 
 | File | Read by | Holds |
 |------|---------|-------|
-| `.env` | `docker compose`, for the `${...}` references in `compose.yaml` | `RADULF_REPOS_DIR` **required**. `RADULF_BIND` and `RADULF_PORT`, both optional. |
+| `.env` | `docker compose`, for the `${...}` references in `compose.yaml` | `RADULF_BIND`, `RADULF_PORT`, and `RADULF_REPOS_DIR` for checkouts that already live on the host. |
 | `.env.local` | The app, unchanged, the same file a host install uses | Everything [`.env.example`](../.env.example) lists: auth hash, allowed origin, proxy header, OpenRouter key. |
 
 Both are gitignored. `RADULF_DATA_DIR` in `.env.local` is ignored under compose:
@@ -72,6 +72,7 @@ Everything that must outlive a container is under one named volume,
 | Path | Contents |
 |------|----------|
 | `data/` | SQLite database, transcripts, `auth-secret`, and `pi-agent/` with the subscription logins. Denied to agent bash. |
+| `repos/` | Repositories added by URL. Radulf clones them here. Denied to agent bash like `data/`; a run reaches its own repo's `.git` through the same carve-out as on a host. |
 | `worktrees/`, `plans/`, `runtmp/` | Per-run agent output, derived as siblings of `data/` exactly as on a host. |
 | `home/` | The container user's `$HOME`: `gh`'s login and any `.gitconfig`. Denied to agent bash, and on the sandbox's credential denylist. |
 
@@ -81,23 +82,48 @@ along with every card, transcript, and login. Back up first, see
 
 ## Repositories
 
-Radulf works on repositories it can see, so the host directory in
-`RADULF_REPOS_DIR` is bind-mounted at `/repos`. Register each one as
-`/repos/<name>`, or set **Settings → Repositories → Browsable root** to `/repos`
-so the folder picker starts there. The picker defaults to `$HOME`, which inside
-the container is the empty `home/` directory above.
+The usual way in a container is to add a repository by URL. Open
+**Settings → Repositories → Add repository**, or **Add a repository…** in the
+task dialog, and paste a clone URL into **Clone from URL**. Radulf clones it
+into `repos/` on the state volume and registers it. No mount, no restart. The
+name comes from the URL, the default branch from the remote, and because the
+clone has an `origin`, pull-request delivery is available for it straight away.
+
+Private repositories need the container user's own git credentials, which
+never reach agent bash. For HTTPS, log `gh` in once and let it act as git's
+credential helper:
+
+```bash
+docker compose exec -it radulf gh auth login
+docker compose exec -it radulf gh auth setup-git
+```
+
+Both persist in `home/` on the volume. For SSH URLs, put a key under
+`home/.ssh` on the volume instead. A clone that would prompt for a credential
+fails in seconds with git's message rather than hanging.
+
+Checkouts that already live on the host can still be mounted: set
+`RADULF_REPOS_DIR` in `.env` to the directory holding them, and they appear at
+`/repos`. Register each as `/repos/<name>`, or point
+**Settings → Repositories → Browsable root** at `/repos` so the folder picker
+starts there. Bind-mounted files must be owned by uid 1000, or git fails with
+`dubious ownership` on the first merge; either match the owner or set `user:`
+in a per-host override, see [Per-host overrides](#per-host-overrides).
 
 Registered paths are container paths. A database moved between a host install
 and a container install needs its repositories re-registered.
 
-The container user is uid 1000. Repositories owned by another uid fail with
-git's `dubious ownership` error on the first merge. Either match the owner or
-set `user:` in a per-host override, see [Per-host overrides](#per-host-overrides).
-
 ## Log in a provider
 
-The subscription providers need the same one-time interactive login as a host
-install, pointed at Radulf's own agent directory:
+Use the app: **Settings → Providers & keys**, then **Sign in**. Radulf drives
+pi's login itself (spec 23), so a container install needs no terminal for
+this. The flow expects the browser to be somewhere else, which under Docker it
+always is: Anthropic and Codex give you a link to open and a box to paste the
+resulting code or redirect URL into, and Copilot gives you a device code to
+enter on GitHub. Nothing extra needs publishing, because the authorizing
+happens in your own browser rather than against the container's loopback.
+
+A terminal still works, and is the only option with no browser to hand:
 
 ```bash
 docker compose exec -it radulf radulf-login
@@ -120,8 +146,8 @@ authenticated inside the container. Two ways, both invisible to agent bash
 because its environment is an allowlist:
 
 - **A token.** Add `GH_TOKEN=...` to `.env.local`. Nothing is written to disk.
-- **An interactive login.** Run `docker compose exec -it radulf gh auth login`.
-  The credential persists in `home/` on the volume.
+- **An interactive login.** The same `gh auth login` as under
+  [Repositories](#repositories). The credential persists in `home/` on the volume.
 
 ## Per-host overrides
 
@@ -220,7 +246,7 @@ trade. It removes the layer that actually contains the agent.
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| `required variable RADULF_REPOS_DIR is missing a value` | `.env` is missing or does not set it. Point it at the host directory holding your repositories. |
+| `git clone failed: ... could not read Username` or `Permission denied (publickey)` | The container has no credential for that remote. See [Repositories](#repositories). |
 | Boot log says `sandbox preflight failed` with a `bwrap` error | One of the three `security_opt` entries is not in effect. Run `docker compose config` and check they render. Each missing one has its own message: `No permissions to create new namespace` is seccomp, `Failed to make / slave` is AppArmor, `Can't mount proc on /newroot/proc` is the masked system paths. |
 | `fatal: detected dubious ownership in repository` | The repository is not owned by uid 1000. See [Repositories](#repositories). |
 | Login page never accepts the password | The hash in `.env.local` was not single-quoted and compose expanded its `$` segments. |

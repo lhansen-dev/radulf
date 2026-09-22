@@ -17,10 +17,14 @@ import { POST as logout } from "./logout/route";
 const PASSWORD = "correct horse battery staple";
 const SECRET = "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
 
-function loginRequest(password: string, url = "http://localhost/api/auth/login") {
+function loginRequest(
+  password: string,
+  url = "http://localhost/api/auth/login",
+  headers: Record<string, string> = {},
+) {
   return new Request(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify({ password }),
   });
 }
@@ -161,6 +165,25 @@ describe("authentication routes", () => {
 
     const httpsResponse = await login(loginRequest(PASSWORD, "https://radulf.example/api/auth/login"));
     expect(httpsResponse.headers.get("set-cookie")).toContain("Secure");
+  });
+
+  it("marks the cookie Secure behind a TLS proxy that speaks plain HTTP to the app", async () => {
+    // What a reverse proxy produces: the app is bound to plain HTTP, so
+    // request.url says http, while the browser used https.
+    const viaOrigin = await login(
+      loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
+        origin: "https://radulf.example",
+      }),
+    );
+    expect(viaOrigin.headers.get("set-cookie")).toContain("Secure");
+
+    // A caller that sends no Origin at all leaves the forwarded scheme.
+    const viaForwarded = await login(
+      loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
+        "x-forwarded-proto": "https",
+      }),
+    );
+    expect(viaForwarded.headers.get("set-cookie")).toContain("Secure");
   });
 
   it("uses forwarded addresses only through an explicitly trusted proxy header", () => {

