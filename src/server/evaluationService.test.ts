@@ -271,6 +271,27 @@ describe("EvaluationService.runEvaluator", () => {
     expect(deps.approveReview).not.toHaveBeenCalled();
   });
 
+  it("starts no harness for a card that left evaluating before its run row existed", async () => {
+    seedCard("card-left-early");
+    const planId = seedPlan("card-left-early");
+    seedLoopRun("card-left-early", planId);
+    // A cancel that landed during the awaited sandbox and integrity setup:
+    // the card is already back in Backlog when the run row is written.
+    db.update(cards).set({ status: "backlog" }).where(eq(cards.id, "card-left-early")).run();
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-left-early");
+
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "cancelled",
+      "card left evaluating before the run started",
+    );
+    expect(deps.moveCard).not.toHaveBeenCalled();
+    expect(deps.pump).toHaveBeenCalled();
+  });
+
   it("rejects the verdict when the evaluator moved the worktree off the run branch", async () => {
     seedCard("card-off-branch");
     const planId = seedPlan("card-off-branch");

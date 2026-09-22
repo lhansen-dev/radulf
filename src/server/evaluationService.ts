@@ -126,6 +126,14 @@ export class EvaluationService {
       (await tryGit(worktreePath, "status", "--porcelain", "--", ".", ":(exclude).ralph")).out;
     const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
     try {
+      // The awaited sandbox and integrity setup above open a window where the
+      // user can cancel before this run row existed. cancelActiveRun found
+      // nothing to abort then, so check here and never start a harness for
+      // a card that already left.
+      if (deps.getCard(cardId)?.status !== "evaluating") {
+        deps.finishRun(runId, "cancelled", "card left evaluating before the run started");
+        return;
+      }
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
       const sandboxError = await sandboxUnavailableReason(settings);
