@@ -49,6 +49,7 @@ import { EvaluationService, clearEvaluationArtifact } from "./evaluationService"
 import { ReviewService } from "./reviewService";
 import { ClientError } from "./clientError";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
+import { scriptKey } from "@/shared/installScripts";
 import { addScopingMessage } from "./scoping";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
@@ -184,8 +185,6 @@ function recordTaskCompleted(iterationId: number, planPath: string, taskNumber: 
     .where(eq(iterations.id, iterationId))
     .run();
 }
-
-const scriptKey = (p: ApprovedInstallScript) => `${p.name}@${p.version}#${p.scriptHash}`;
 
 function approvedScripts(repo: typeof repos.$inferSelect): ApprovedInstallScript[] {
   try {

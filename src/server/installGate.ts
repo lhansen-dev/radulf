@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ApprovedInstallScript } from "@/db";
+import { scriptKey } from "@/shared/installScripts";
 
 const execFileAsync = promisify(execFile);
 
@@ -137,7 +138,7 @@ export function collectLifecycleScripts(rootDir: string): LifecycleScriptPackage
   };
   const visitPackage = (pkgDir: string) => {
     const pkg = readPackageScripts(pkgDir);
-    if (pkg) found.set(`${pkg.name}@${pkg.version}#${pkg.scriptHash}`, pkg);
+    if (pkg) found.set(scriptKey(pkg), pkg);
     const nested = path.join(/* turbopackIgnore: true */ pkgDir, "node_modules");
     if (fs.existsSync(/* turbopackIgnore: true */ nested)) scanNodeModules(nested);
   };
@@ -151,8 +152,8 @@ export function unapprovedScripts(
   found: LifecycleScriptPackage[],
   approved: ApprovedInstallScript[],
 ): LifecycleScriptPackage[] {
-  const keys = new Set(approved.map((a) => `${a.name}@${a.version}#${a.scriptHash}`));
-  return found.filter((p) => !keys.has(`${p.name}@${p.version}#${p.scriptHash}`));
+  const keys = new Set(approved.map(scriptKey));
+  return found.filter((p) => !keys.has(scriptKey(p)));
 }
 
 const LOCKFILE_NAMES = [
