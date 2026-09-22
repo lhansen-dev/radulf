@@ -1395,7 +1395,7 @@ export class Orchestrator {
   }): Promise<boolean> {
     const repo = getRepo(opts.repoId);
     if (!repo) return false;
-    const unapproved = unapprovedScripts(collectLifecycleScripts(opts.worktreePath), approvedScripts(repo));
+    const unapproved = unapprovedScripts(await collectLifecycleScripts(opts.worktreePath), approvedScripts(repo));
     if (unapproved.length === 0) return false;
 
     emitEvent("install.gate", {
@@ -1434,7 +1434,7 @@ export class Orchestrator {
     // the full {name, version, scriptHash} triple — a stale UI payload must
     // not approve a script body the human never saw.
     const requested = new Set(packages.map(scriptKey));
-    const present = collectLifecycleScripts(run.worktreePath).filter((p) => requested.has(scriptKey(p)));
+    const present = (await collectLifecycleScripts(run.worktreePath)).filter((p) => requested.has(scriptKey(p)));
     if (present.length === 0) {
       throw new ClientError(
         "none of the requested packages match the worktree's resolved tree — re-open the card to see the current gate state",

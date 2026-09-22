@@ -81,10 +81,12 @@ export function findNodeModulesRoots(rootDir: string, maxDepth = 4): string[] {
   return roots;
 }
 
-function readPackageScripts(pkgDir: string): LifecycleScriptPackage | null {
+async function readPackageScripts(pkgDir: string): Promise<LifecycleScriptPackage | null> {
   let parsed: { name?: unknown; version?: unknown; scripts?: unknown };
   try {
-    parsed = JSON.parse(fs.readFileSync(path.join(/* turbopackIgnore: true */ pkgDir, "package.json"), "utf8"));
+    parsed = JSON.parse(
+      await fs.promises.readFile(path.join(/* turbopackIgnore: true */ pkgDir, "package.json"), "utf8"),
+    );
   } catch {
     return null;
   }
@@ -107,42 +109,40 @@ function readPackageScripts(pkgDir: string): LifecycleScriptPackage | null {
 }
 
 /** Enumerate every installed package (in every node_modules root under
- * `rootDir`) that declares a lifecycle script. */
-export function collectLifecycleScripts(rootDir: string): LifecycleScriptPackage[] {
+ * `rootDir`) that declares a lifecycle script. Reads every package.json in
+ * the tree, so it is async: it runs on the loop path and on the approval
+ * request, and neither should block the event loop for the walk. */
+export async function collectLifecycleScripts(rootDir: string): Promise<LifecycleScriptPackage[]> {
   const found = new Map<string, LifecycleScriptPackage>();
-  const scanNodeModules = (nmDir: string) => {
-    let entries: fs.Dirent[];
+  /** Directory entries, or none when the path is unreadable or not a directory. */
+  const readDir = async (dir: string): Promise<fs.Dirent[]> => {
     try {
-      entries = fs.readdirSync(/* turbopackIgnore: true */ nmDir, { withFileTypes: true });
+      return await fs.promises.readdir(/* turbopackIgnore: true */ dir, { withFileTypes: true });
     } catch {
-      return;
+      return [];
     }
-    for (const entry of entries) {
+  };
+  const scanNodeModules = async (nmDir: string) => {
+    for (const entry of await readDir(nmDir)) {
       if (!entry.isDirectory() || entry.name === ".bin") continue;
       const full = path.join(/* turbopackIgnore: true */ nmDir, entry.name);
       if (entry.name.startsWith("@")) {
-        let scoped: fs.Dirent[] = [];
-        try {
-          scoped = fs.readdirSync(/* turbopackIgnore: true */ full, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const sub of scoped) {
-          if (sub.isDirectory()) visitPackage(path.join(/* turbopackIgnore: true */ full, sub.name));
+        for (const sub of await readDir(full)) {
+          if (sub.isDirectory()) await visitPackage(path.join(/* turbopackIgnore: true */ full, sub.name));
         }
         continue;
       }
       if (entry.name.startsWith(".")) continue;
-      visitPackage(full);
+      await visitPackage(full);
     }
   };
-  const visitPackage = (pkgDir: string) => {
-    const pkg = readPackageScripts(pkgDir);
+  const visitPackage = async (pkgDir: string) => {
+    const pkg = await readPackageScripts(pkgDir);
     if (pkg) found.set(scriptKey(pkg), pkg);
-    const nested = path.join(/* turbopackIgnore: true */ pkgDir, "node_modules");
-    if (fs.existsSync(/* turbopackIgnore: true */ nested)) scanNodeModules(nested);
+    // A package with no nested node_modules reads as an empty directory.
+    await scanNodeModules(path.join(/* turbopackIgnore: true */ pkgDir, "node_modules"));
   };
-  for (const nm of findNodeModulesRoots(rootDir)) scanNodeModules(nm);
+  for (const nm of findNodeModulesRoots(rootDir)) await scanNodeModules(nm);
   return [...found.values()];
 }
 
