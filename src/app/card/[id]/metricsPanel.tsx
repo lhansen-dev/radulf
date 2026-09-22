@@ -1,5 +1,5 @@
 "use client";
-import { formatDuration } from "./formatDuration";
+import { formatDuration } from "../../ui/formatDuration";
 import { formatCostUsd, sumCostUsd } from "../../ui/formatCost";
 import { useNow } from "../../ui/useNow";
 

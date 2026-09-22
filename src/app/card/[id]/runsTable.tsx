@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MetricsPanel, type Iteration, type Run } from "./metricsPanel";
-import { formatDurationMs } from "./formatDuration";
+import { formatDurationMs } from "../../ui/formatDuration";
 import { reasoningLevelForKind } from "./reasoningLevel";
 import { iterationTask, type IterationTask } from "./iterationTask";
 import type { CardDetailData, Plan } from "./useCardDetail";
