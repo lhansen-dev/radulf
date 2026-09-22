@@ -69,21 +69,31 @@ let sharedStream: EventSource | null = null;
 let sharedConnected: boolean | null = null;
 const subscribers = new Set<StreamSubscriber>();
 
+// One subscriber's throwing callback must not starve the others of the frame;
+// a per-subscriber stream used to swallow it the same way.
+function dispatch(fn: () => void): void {
+  try {
+    fn();
+  } catch {
+    // ignore
+  }
+}
+
 function subscribeToStream(subscriber: StreamSubscriber): () => void {
   subscribers.add(subscriber);
   if (sharedStream) {
     // A late subscriber gets the same open/error callback its own stream
     // would have fired by now.
-    if (sharedConnected !== null) subscriber.onConnectionChange(sharedConnected);
+    if (sharedConnected !== null) dispatch(() => subscriber.onConnectionChange(sharedConnected!));
   } else {
     const es = new EventSource("/api/events/stream");
     es.onopen = () => {
       sharedConnected = true;
-      subscribers.forEach((s) => s.onConnectionChange(true));
+      subscribers.forEach((s) => dispatch(() => s.onConnectionChange(true)));
     };
     es.onerror = () => {
       sharedConnected = false;
-      subscribers.forEach((s) => s.onConnectionChange(false));
+      subscribers.forEach((s) => dispatch(() => s.onConnectionChange(false)));
     };
     es.onmessage = (msg) => {
       let event: StreamEvent;
@@ -92,7 +102,7 @@ function subscribeToStream(subscriber: StreamSubscriber): () => void {
       } catch {
         return; // ignore malformed frames
       }
-      subscribers.forEach((s) => s.onEvent(event));
+      subscribers.forEach((s) => dispatch(() => s.onEvent(event)));
     };
     sharedStream = es;
   }

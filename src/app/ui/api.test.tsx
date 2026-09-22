@@ -62,4 +62,14 @@ describe("useEventStream", () => {
     expect(MockEventSource.instances).toHaveLength(1);
     expect(late).toHaveBeenCalledWith(false);
   });
+
+  it("still delivers a frame to the other subscribers when one callback throws", () => {
+    renderHook(() => useEventStream(() => { throw new Error("boom"); }));
+    const second = vi.fn();
+    renderHook(() => useEventStream(second));
+    const es = MockEventSource.instances[0];
+    const event = { type: "card.moved", cardId: "c1" };
+    act(() => es.onmessage?.({ data: JSON.stringify(event) } as MessageEvent));
+    expect(second).toHaveBeenCalledWith(event);
+  });
 });
