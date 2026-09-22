@@ -1644,6 +1644,14 @@ export class Orchestrator {
 
   async resetCard(cardId: string) {
     const card = requireCard(cardId);
+    // The UI offers a reset from exactly these; hold the route to the same
+    // rule. A reset mid-run deletes the run rows and plan under a loop whose
+    // awaited continuation is still writing to them, and a reset during the
+    // `reviewing` claim deletes the run row the merge is about to record its
+    // review against, after the merge has already landed on the base branch.
+    if (!["needs_attention", "review", "plan_review"].includes(card.status)) {
+      throw new ClientError(`cannot reset card in status ${card.status}`, 409);
+    }
     const repo = requireRepo(card.repoId);
     this.endActiveRun(cardId, "cancelled", "reset by user");
 

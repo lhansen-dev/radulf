@@ -2674,6 +2674,24 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(runs).all()).toHaveLength(0);
     });
 
+    it("refuses to reset a card that is running or holds the review claim", async () => {
+      // The route accepted any status, so a reset could race a loop's
+      // continuation or the merge inside approveClaimedRun.
+      card("reset-running", "looping");
+      plan("reset-running");
+      completedRun("reset-running", "reset-running-run", { status: "running" });
+      card("reset-claimed", "reviewing");
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      await expect(orchestrator.resetCard("reset-running")).rejects.toMatchObject({
+        status: 409,
+        message: "cannot reset card in status looping",
+      });
+      await expect(orchestrator.resetCard("reset-claimed")).rejects.toMatchObject({ status: 409 });
+      expect(getRun("reset-running").status).toBe("running");
+      expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    });
+
     it("prunes aged terminal rows and orphan transcripts while preserving active history", () => {
       card("old-history", "done");
       plan("old-history");
