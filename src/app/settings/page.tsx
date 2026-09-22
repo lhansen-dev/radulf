@@ -817,23 +817,29 @@ function AgentSection({
   // setState only happens in the promise callbacks, never synchronously,
   // so this is safe to call from the effect below.
   // `force` is only ever set by the "Load models" button — see the route.
-  const load = useCallback((p: string, force = false) => {
+  const load = useCallback((p: string, force = false, isLive: () => boolean = () => true) => {
     return api<{ models: ProviderModel[] }>(`/api/providers/${p}/models${force ? "?refresh=1" : ""}`)
       .then((r) => {
+        if (!isLive()) return;
         setModels(r.models);
         setStatus(r.models.length > 0
           ? `✓ ${r.models.length} model${r.models.length === 1 ? "" : "s"}`
           : "No models found. Check your provider connection or enter a model id.");
       })
       .catch((e) => {
+        if (!isLive()) return;
         setModels([]);
         setStatus(`✗ ${errorMessage(e)}`);
       });
   }, []);
 
-  // Refresh the picker whenever the provider changes.
+  // Refresh the picker whenever the provider changes. Guard against a slow
+  // provider's listing (e.g. openrouter's hundreds of models) landing after
+  // the user has already switched this role to a different provider.
   useEffect(() => {
-    void load(provider);
+    let live = true;
+    void load(provider, false, () => live);
+    return () => { live = false; };
   }, [provider, load]);
 
   const selectedModel = models.find((m) => m.value === model);

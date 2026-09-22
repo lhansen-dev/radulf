@@ -36,10 +36,14 @@ export function useBranches(repoId: string, onLoaded?: (branches: string[]) => v
   useEffect(() => { onLoadedRef.current = onLoaded; });
   useEffect(() => {
     if (!repoId) return;
-    const apply = (list: string[]) => { setBranches(list); onLoadedRef.current?.(list); };
+    let live = true;
+    // A late response for a repo the user has since switched away from must not
+    // overwrite the branch list or fire onLoaded for the now-current repo.
+    const apply = (list: string[]) => { if (!live) return; setBranches(list); onLoadedRef.current?.(list); };
     api<string[]>(`/api/repos/${repoId}/branches`)
       .then((data) => apply(Array.isArray(data) ? data : []))
       .catch(() => apply([]));
+    return () => { live = false; };
   }, [repoId]);
   return [branches, setBranches] as const;
 }

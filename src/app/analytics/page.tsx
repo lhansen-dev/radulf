@@ -18,14 +18,18 @@ export default function AnalyticsPage() {
   const [model, setModel] = useState("");
 
   useEffect(() => {
+    let live = true;
+    // Filters can change again before a request resolves; a stale response
+    // must not overwrite data for filters the dropdowns no longer show.
     const qs = new URLSearchParams();
     if (range !== "all") qs.set("range", range);
     if (provider) qs.set("provider", provider);
     if (model) qs.set("model", model);
     const query = qs.toString();
     api<AnalyticsResponse>(`/api/analytics${query ? `?${query}` : ""}`)
-      .then(setData)
-      .catch((e) => setError(errorMessage(e)));
+      .then((r) => { if (live) setData(r); })
+      .catch((e) => { if (live) setError(errorMessage(e)); });
+    return () => { live = false; };
   }, [range, provider, model]);
 
   if (error) {
