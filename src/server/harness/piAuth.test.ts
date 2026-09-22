@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const checkAuth = vi.fn();
 const getAvailable = vi.fn();
@@ -20,16 +20,14 @@ vi.mock("@earendil-works/pi-coding-agent", async (importActual) => {
   };
 });
 
+// getModelRuntime() mkdirs the agent dir under DATA_DIR, which @/db fixes at
+// import time — point it at a throwaway dir before loading pi.ts, so the dir
+// stays out of the repo.
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-pi-auth-"));
+process.env.RADULF_DATA_DIR = dataDir;
 const { listAuthedModels, resetModelRuntime, resolveModel } = await import("./pi");
 
-let dataDir: string;
-let previousDataDir: string | undefined;
-
 beforeEach(() => {
-  // getModelRuntime() mkdirs the agent dir; keep that out of the repo.
-  previousDataDir = process.env.RADULF_DATA_DIR;
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-pi-auth-"));
-  process.env.RADULF_DATA_DIR = dataDir;
   resetModelRuntime();
   checkAuth.mockReset();
   getAvailable.mockReset();
@@ -38,10 +36,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (previousDataDir === undefined) delete process.env.RADULF_DATA_DIR;
-  else process.env.RADULF_DATA_DIR = previousDataDir;
-  fs.rmSync(dataDir, { recursive: true, force: true });
   resetModelRuntime();
+});
+
+afterAll(() => {
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  delete process.env.RADULF_DATA_DIR;
 });
 
 describe("listAuthedModels — logged out vs. empty catalog", () => {

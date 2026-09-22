@@ -13,6 +13,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import { DATA_DIR } from "@/db";
 import { listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
 import type { ProviderId } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
@@ -75,10 +76,6 @@ const PI_PROVIDER: Record<ProviderId, string> = {
 // Persistent, Radulf-owned pi agent dir (spec 13)
 // ---------------------------------------------------------------------------
 
-function radulfDataDir(): string {
-  return process.env.RADULF_DATA_DIR ?? path.join(process.cwd(), "data");
-}
-
 /**
  * One Radulf-owned pi agent dir, shared by every run. Holds `auth.json` (the
  * subscription logins established once via `make login` → `/login`, which points
@@ -89,7 +86,7 @@ function radulfDataDir(): string {
  * enforced by the session options, not by an empty dir.
  */
 export function piAgentDir(): string {
-  return path.join(radulfDataDir(), "pi-agent");
+  return path.join(DATA_DIR, "pi-agent");
 }
 
 /**
