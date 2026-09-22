@@ -222,6 +222,17 @@ describe("hasIterationWorkProduct", () => {
     expect(await hasIterationWorkProduct(dir, pre)).toBe(true);
   });
 
+  it("counts a file whose path merely contains ITERATION_DONE as work, unlike the real signal", async () => {
+    const dir = await initRepo();
+    const pre = await captureIterationState(dir);
+    fs.writeFileSync(path.join(dir, "ITERATION_DONE"), "did the thing");
+    expect(await hasIterationWorkProduct(dir, pre)).toBe(false);
+
+    fs.mkdirSync(path.join(dir, "docs"));
+    fs.writeFileSync(path.join(dir, "docs", "ITERATION_DONE_PROTOCOL.md"), "unrelated doc");
+    expect(await hasIterationWorkProduct(dir, pre)).toBe(true);
+  });
+
   it("sees a new commit even with a clean worktree", async () => {
     const dir = await initRepo();
     const pre = await captureIterationState(dir);
