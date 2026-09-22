@@ -53,3 +53,14 @@ next-env.d.ts
 
 # local investigation/planning notes — not user-facing docs
 /PLAN.md
+
+# Impeccable design tooling. Shared config and the DESIGN.md sidecar are tracked;
+# per-developer and per-session state is not.
+.impeccable/config.local.json
+.impeccable/live/sessions/
+.impeccable/live/inject-journal.json
+.impeccable/live/roots.json
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/critique/
+.impeccable/build/
