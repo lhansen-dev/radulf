@@ -12,8 +12,7 @@ import { bus, emitEvent, type RalphEvent } from "./events";
 import { getSettings } from "./settings";
 import { normalizeProvider } from "./providers";
 import { getOrchestrator } from "./orchestrator";
-import { proposeOneImprovement } from "./improvementProposer";
-import type { Proposal } from "./pm";
+import { proposeOneImprovement, type Proposal } from "./improvementProposer";
 import { assertBranchExists, git, isRalphBranch } from "./git";
 import { ClientError } from "./clientError";
 import { getCard } from "./cards";
@@ -335,7 +334,7 @@ async function runDriverLoop(runId: string): Promise<void> {
           plannerProvider: normalizeProvider(settings.plannerProvider, "anthropic"),
           plannerModel: run.plannerModel || settings.plannerModel,
           plannerReasoningLevel: run.plannerReasoning || settings.plannerReasoningLevel,
-          s: settings,
+          template: settings.improvePromptTemplate,
         });
       } catch {
         proposal = null;
