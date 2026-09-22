@@ -3,7 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ApprovedInstallScript } from "@/db";
 import { scriptKey } from "@/shared/installScripts";
+import { errorMessage } from "@/shared/errorMessage";
 import { execBounded } from "./exec";
+import type { RunSandboxContext } from "./sandbox/context";
+import { wrapBashCommand } from "./sandbox/srt";
 
 /**
  * The install-script gate (spec 14) — a supply-chain AWARENESS control, not a
@@ -191,37 +194,74 @@ export function lockfileFingerprint(rootDir: string): string {
 // legitimately compile native code, so the bound is generous: minutes, not
 // seconds.
 const REBUILD_TIMEOUT_MS = 5 * 60_000;
+const REBUILD_MAX_BUFFER = 16 * 1024 * 1024;
+
+export type NpmRunner = (args: string[], cwd: string) => Promise<{ ok: boolean; out: string }>;
+
+function shellQuote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
 
 /**
- * Run `npm rebuild <pkg>` for the approved packages ONLY (per-package
- * granularity) — this executes the now-approved scripts. Trusted orchestrator
- * step, like the merge.
+ * An `npm` runner confined exactly as the agent's own bash is: the run's
+ * allowlist env, its command preamble, and its L1 policy when the sandbox is
+ * on. The approved script bodies are what the human read. Everything AROUND
+ * them is agent-authored and earns no more trust at approval than it had
+ * during the iteration that wrote it: the worktree's `.npmrc` (reproduced
+ * pre-fix, `script-shell=` ran an agent script on the host in place of `sh`
+ * for an approved package), `node-options`, the rest of the resolved tree.
+ *
+ * `--ignore-scripts=false` because the agent env sets
+ * `npm_config_ignore_scripts=true`, and running the approved scripts is the
+ * point. A CLI flag outranks env config — the same precedence the gate's
+ * detection is built on.
  */
-export async function rebuildPackages(
-  worktreePath: string,
-  names: string[],
-  runNpm: (
-    args: string[],
-    cwd: string,
-  ) => Promise<{ ok: boolean; out: string }> = async (args, cwd) => {
-    const { err, stdout, stderr, timedOut } = await execBounded("npm", args, {
+export function sandboxedNpmRunner(ctx: RunSandboxContext): NpmRunner {
+  return async (args, cwd) => {
+    const command = ["npm", ...args, "--ignore-scripts=false"].map(shellQuote).join(" ");
+    // Same joining as the acceptance probe: the preamble's lines end in
+    // `|| true`, so the command must start a line of its own.
+    const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
+    let toRun = prefixed;
+    if (ctx.srtConfig) {
+      try {
+        toRun = await wrapBashCommand(prefixed, ctx.srtConfig);
+      } catch (e) {
+        // Could not contain it, so do not run it.
+        return { ok: false, out: `could not sandbox npm rebuild: ${errorMessage(e)}` };
+      }
+    }
+    // execBounded rather than a bare exec: SIGTERM at the bound, SIGKILL
+    // after, stdin closed — a postinstall that prompts or hangs fails instead
+    // of wedging the approval route.
+    const { err, stdout, stderr, timedOut } = await execBounded("/bin/sh", ["-c", toRun], {
       cwd,
-      maxBuffer: 16 * 1024 * 1024,
+      env: ctx.env,
       timeoutMs: REBUILD_TIMEOUT_MS,
+      maxBuffer: REBUILD_MAX_BUFFER,
     });
-    if (!err) return { ok: true, out: (stdout + stderr).trim() };
+    const out = (stdout + stderr).trim();
+    if (!err) return { ok: true, out };
     if (timedOut) {
       // Name the timeout instead of surfacing an opaque "Command failed" —
       // an operator seeing that with no reason is exactly the failure mode
       // `timedOut` exists to prevent.
       const msg = `npm ${args.join(" ")} timed out after ${REBUILD_TIMEOUT_MS}ms`;
-      return { ok: false, out: ((stdout + stderr).trim() ? `${(stdout + stderr).trim()}\n${msg}` : msg) };
+      return { ok: false, out: out ? `${out}\n${msg}` : msg };
     }
-    return {
-      ok: false,
-      out: ((stdout ?? "") + (stderr ?? "") || err.message || "npm rebuild failed").trim(),
-    };
-  },
+    return { ok: false, out: out || err.message || "npm rebuild failed" };
+  };
+}
+
+/**
+ * Run `npm rebuild <pkg>` for the approved packages ONLY (per-package
+ * granularity) — this executes the now-approved scripts, through `runNpm`,
+ * which in production is `sandboxedNpmRunner`.
+ */
+export async function rebuildPackages(
+  worktreePath: string,
+  names: string[],
+  runNpm: NpmRunner,
 ): Promise<{ ok: boolean; out: string }> {
   const outputs: string[] = [];
   for (const name of names) {

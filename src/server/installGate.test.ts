@@ -7,9 +7,11 @@ import {
   findNodeModulesRoots,
   lockfileFingerprint,
   rebuildPackages,
+  sandboxedNpmRunner,
   scriptHashFor,
   unapprovedScripts,
 } from "./installGate";
+import type { RunSandboxContext } from "./sandbox/context";
 
 let tmp: string | undefined;
 function worktree(): string {
@@ -130,5 +132,40 @@ describe("install-script gate (spec 14 1h)", () => {
     }));
     expect(timedOut.ok).toBe(false);
     expect(timedOut.out).toContain("timed out");
+  });
+
+  it("sandboxedNpmRunner runs npm under the run's env and preamble, re-enabling scripts", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-npm-runner-"));
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    // A stand-in npm that reports how it was invoked. The run env carries
+    // the agent's ignore-scripts, which the runner must override on the CLI.
+    const stub = path.join(bin, "npm");
+    fs.writeFileSync(
+      stub,
+      '#!/bin/sh\necho "args: $*"\necho "ignore-env: $npm_config_ignore_scripts"\necho "cwd: $(pwd)"\necho "preamble: $RADULF_TEST_PREAMBLE"\n',
+      { mode: 0o755 },
+    );
+    const ctx = {
+      commandPrefix: "export RADULF_TEST_PREAMBLE=ran || true",
+      env: { PATH: `${bin}:/usr/bin:/bin`, npm_config_ignore_scripts: "true" },
+      srtConfig: undefined,
+    } as unknown as RunSandboxContext;
+    try {
+      const result = await sandboxedNpmRunner(ctx)(["rebuild", "native-pkg"], dir);
+      expect(result.ok).toBe(true);
+      expect(result.out).toContain("args: rebuild native-pkg --ignore-scripts=false");
+      expect(result.out).toContain("ignore-env: true");
+      expect(result.out).toContain(`cwd: ${fs.realpathSync(dir)}`);
+      expect(result.out).toContain("preamble: ran");
+
+      fs.writeFileSync(stub, "#!/bin/sh\necho 'gyp ERR!' >&2\nexit 1\n", { mode: 0o755 });
+      expect(await sandboxedNpmRunner(ctx)(["rebuild", "native-pkg"], dir)).toEqual({
+        ok: false,
+        out: "gyp ERR!",
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

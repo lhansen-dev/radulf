@@ -68,6 +68,7 @@ import {
   collectLifecycleScripts,
   lockfileFingerprint,
   rebuildPackages,
+  sandboxedNpmRunner,
   unapprovedScripts,
 } from "./installGate";
 import {
@@ -1522,7 +1523,24 @@ export class Orchestrator {
       );
     }
 
-    const rebuild = await rebuildPackages(run.worktreePath, [...new Set(present.map((p) => p.name))]);
+    // The rebuild runs the approved scripts inside the same containment the
+    // agent had, not on the host: the worktree's `.npmrc` and the rest of the
+    // tree are agent-authored. Same fail-loud rule as a run: never fall back
+    // to an unsandboxed rebuild because the runtime is broken.
+    const settings = getSettings();
+    const sandboxError = await sandboxUnavailableReason(settings);
+    if (sandboxError) throw new ClientError(sandboxError);
+    const ctx = await createRunSandbox(`${run.id}-rebuild`, { cwd: run.worktreePath, s: settings });
+    let rebuild: { ok: boolean; out: string };
+    try {
+      rebuild = await rebuildPackages(
+        run.worktreePath,
+        [...new Set(present.map((p) => p.name))],
+        sandboxedNpmRunner(ctx),
+      );
+    } finally {
+      await ctx.cleanup();
+    }
     if (!rebuild.ok) throw new ClientError(`npm rebuild failed: ${rebuild.out.slice(0, 500)}`);
 
     // Transaction, and re-read inside it: with more than one card in flight
@@ -1547,7 +1565,12 @@ export class Orchestrator {
     emitEvent("install.approved", {
       cardId,
       runId: run.id,
-      payload: { packages: present.map((p) => `${p.name}@${p.version}`) },
+      payload: {
+        packages: present.map((p) => `${p.name}@${p.version}`),
+        // Same stamp a run row carries, so "did the approved scripts run
+        // contained" is answerable from the card's history.
+        sandboxed: ctx.srtConfig !== undefined,
+      },
     });
 
     // Resume in place. A checklist with no unchecked task means the gate

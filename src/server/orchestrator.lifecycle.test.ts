@@ -2250,7 +2250,11 @@ describe("Orchestrator cancellation lifecycle", () => {
       // straight to evaluation — never back to Todo, never a restart.
       await vi.waitFor(() => expect(getCard("gate-approve").status).toBe("review"));
 
-      expect(mocks.rebuildPackages).toHaveBeenCalledWith(expect.any(String), ["native-dep"]);
+      expect(mocks.rebuildPackages).toHaveBeenCalledWith(
+        expect.any(String),
+        ["native-dep"],
+        expect.any(Function),
+      );
       const repoRow = db.select().from(repos).all().find((row) => row.id === "repo-1")!;
       expect(JSON.parse(repoRow.approvedInstallScripts)).toEqual([
         { name: "native-dep", version: "1.2.3", scriptHash: packages[0].scriptHash },
