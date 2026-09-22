@@ -22,6 +22,8 @@ import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from
 import { RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
 import { parsePayload } from "@/shared/eventPayload";
 import { errorMessage } from "@/shared/errorMessage";
+import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
+import { scriptKey } from "@/shared/installScripts";
 
 const TABS = ["Task", "Activity"] as const;
 
@@ -73,7 +75,7 @@ export default function CardDetail() {
   const evaluatorCleared =
     !latestEvaluatorRun ||
     (latestEvaluatorRun.status === "completed" &&
-      ["approve", "revise — revision limit reached"].includes(latestEvaluatorRun.exitReason ?? ""));
+      (EVALUATOR_CLEARED_EXITS as readonly string[]).includes(latestEvaluatorRun.exitReason ?? ""));
   const canRetryMerge = latestLoopRun?.status === "completed" && evaluatorCleared;
   const failedStep = retryableFailedStep(runs);
   const canRetryFailedStep = Boolean(failedStep && card.status === "needs_attention");
@@ -426,11 +428,11 @@ function InstallGateBanner({
   onApproved: () => void;
 }) {
   const [checked, setChecked] = useState<Record<string, boolean>>(
-    Object.fromEntries(packages.map((p) => [`${p.name}@${p.version}#${p.scriptHash}`, true])),
+    Object.fromEntries(packages.map((p) => [scriptKey(p), true])),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const selected = packages.filter((p) => checked[`${p.name}@${p.version}#${p.scriptHash}`]);
+  const selected = packages.filter((p) => checked[scriptKey(p)]);
 
   async function approve() {
     setBusy(true);
@@ -457,7 +459,7 @@ function InstallGateBanner({
       </p>
       <div className="flex flex-col gap-2">
         {packages.map((p) => {
-          const key = `${p.name}@${p.version}#${p.scriptHash}`;
+          const key = scriptKey(p);
           return (
             <label key={key} className="flex items-start gap-2 text-sm">
               <input
