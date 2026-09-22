@@ -12,7 +12,7 @@ const { githubStatus } = await import("./github");
 
 /** Stand in for execFile: resolve `gh auth status` with the given stderr, or
  * fail it — with `code` set the way execFile reports a spawn failure. */
-function ghReturns(handler: () => { fail?: boolean; code?: string; out?: string }) {
+function ghReturns(handler: () => { fail?: boolean; code?: string | number; out?: string }) {
   mocks.execFile.mockImplementation(
     (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
       const { fail, code, out = "" } = handler();
@@ -53,8 +53,12 @@ describe("githubStatus", () => {
     ghReturns(() => ({ fail: true, code: "ENOENT" }));
     expect(await githubStatus({ refresh: true })).toMatchObject({ ok: false, reason: "missing" });
 
-    // `gh` runs but `auth status` exits non-zero.
-    ghReturns(() => ({ fail: true }));
+    // A `gh` that exists but is not executable also fails at spawn, as EACCES.
+    ghReturns(() => ({ fail: true, code: "EACCES" }));
+    expect(await githubStatus({ refresh: true })).toMatchObject({ ok: false, reason: "missing" });
+
+    // `gh` runs but `auth status` exits non-zero: a numeric exit status.
+    ghReturns(() => ({ fail: true, code: 1 }));
     expect(await githubStatus({ refresh: true })).toMatchObject({
       ok: false,
       reason: "unauthenticated",

@@ -52,8 +52,8 @@ async function run(
   return {
     ok: false,
     out: timedOut ? `gh ${args[0]} timed out after ${options.timeoutMs}ms` : out || err.message,
-    // A non-zero exit arrives as a number; a spawn failure (no `gh` on PATH)
-    // arrives as the string "ENOENT".
+    // A non-zero exit arrives as a number; a spawn failure arrives as a
+    // string such as "ENOENT" (no `gh` on PATH) or "EACCES" (not executable).
     code: err.code ?? undefined,
   };
 }
@@ -76,11 +76,11 @@ export async function githubStatus(options: { refresh?: boolean } = {}): Promise
   if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
   const auth = await run(["auth", "status"], { timeoutMs: GH_TIMEOUT_MS });
   let status: GithubStatus;
-  if (auth.code === "ENOENT") {
+  if (typeof auth.code === "string") {
     status = {
       ok: false,
       reason: "missing",
-      detail: "the GitHub CLI (`gh`) is not installed or not on PATH",
+      detail: "the GitHub CLI (`gh`) is not installed, not on PATH, or not executable",
     };
   } else if (!auth.ok) {
     status = {
