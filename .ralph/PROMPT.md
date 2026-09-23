@@ -1,4 +1,4 @@
-You are working on: Radulf — boot `web` and `worker` process roles (selected by `RADULF_ROLES`, default both) from one boot module outside Next.js, with a plain Node worker entry point, concurrency-safe migrations and auth-secret creation, and a two-process check run from `make`.
+You are working on: finishing the web/worker role split (`RADULF_ROLES`) so that `make lint` passes and a web-only process never drives improvement runs (the worker adopts them from its pump timer), plus reconciling the docs that still name `src/instrumentation.ts` as the boot site.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,19 +36,19 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Project hints:
-- This is a Next.js 16 + TypeScript repo; the Makefile is the single source
-  of truth for tooling (no package.json scripts). `make` puts
-  `node_modules/.bin` on PATH; for a single test file `npx vitest run <file>`
-  (or `node_modules/.bin/vitest run <file>`) is the right targeted check.
-- Nothing under `src/server/**`, `src/db/**`, or `src/worker.ts` may import
-  from `next`. Do not modify `src/server/harness/**`, `src/server/sandbox/**`,
-  `Dockerfile`, `compose.yaml`, or the `dev` / `start` Make targets.
-- Existing tests build orchestrators with `new Orchestrator({ autoStart: false })`
-  and must keep working unchanged; new behaviour goes behind new options/roles.
-- Match the existing style: 2-space indent, double quotes, trailing commas,
-  comments that explain *why*. Read the file you are about to edit first; grep
-  for the exact names the task mentions rather than guessing signatures.
-- Test files that need the database call `setupTestDataDir(...)` from
-  `@/testUtils/testDataDir` at module top level and then `await import("@/db")`
-  — copy the pattern from the scaffold the task points you at.
+Task-specific hints:
+- The implementation of the role split already exists on this branch
+  (`src/server/roles.ts`, `src/server/boot.ts`, `src/worker.ts`,
+  `src/server/splitProcesses.test.ts`). Read the exact file(s) your task names
+  before editing; make the minimal change described.
+- `hasRole(role)` in `src/server/roles.ts` reads `process.env.RADULF_ROLES`
+  fresh on every call; unset means both roles. Tests that set it must restore
+  it afterwards.
+- Never add `any` or `eslint-disable` comments; the repo's ESLint config
+  forbids explicit `any` in test files too.
+- Do not change `src/server/harness/**`, `src/server/sandbox/**`,
+  `Dockerfile`, or `compose.yaml`.
+- Do not override `TMPDIR` and never point temp dirs inside the worktree;
+  `/tmp` is read-only in this sandbox.
+- Run only the single check named in your task; never `make test`, `make check`,
+  or a bare `npx vitest run`.
