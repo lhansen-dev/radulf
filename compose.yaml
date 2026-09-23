@@ -23,6 +23,15 @@ services:
       # only with RADULF_AUTH_PASSWORD_HASH set in .env.local, the same rule
       # the Makefile applies to `make start` (SECURITY.md).
       - "${RADULF_BIND:-127.0.0.1}:${RADULF_PORT:-3000}:3000"
+      # pi's OAuth callback servers, for a browser running on the Docker host.
+      # Both flows redirect to a fixed `http://localhost:<port>`, which in that
+      # browser is the host, not the container, so without these the redirect
+      # reaches nothing and the login falls back to the paste box. Always
+      # loopback: the browser is the only client, and these hold the host's
+      # ports even while no login is running, so a host install of pi cannot
+      # log in at the same time.
+      - "127.0.0.1:53692:53692"   # Anthropic
+      - "127.0.0.1:1455:1455"     # OpenAI (Codex)
     # Lets a provider running on the Docker host (oMLX, LM Studio, vLLM) be
     # reached from inside the container as http://host.docker.internal:<port>.
     extra_hosts:
@@ -36,6 +45,11 @@ services:
       # env_file.
       RADULF_DATA_DIR: /var/lib/radulf/data
       HOME: /var/lib/radulf/home
+      # pi binds its OAuth callback to 127.0.0.1, which Docker cannot forward
+      # to; the published ports above need an interface the host can reach.
+      # Exposed to this compose network only while a login is running, and the
+      # callback refuses any request whose `state` is not the one it issued.
+      PI_OAUTH_CALLBACK_HOST: 0.0.0.0
     volumes:
       - radulf-state:/var/lib/radulf
       # Optional: checkouts that already live on this host. Set
