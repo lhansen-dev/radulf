@@ -159,6 +159,46 @@ describe("ProviderLoginSection", () => {
     expect(body(calls.findIndex((c) => c.url === "/api/provider-login/s1"))).toEqual({ token: "t1", value: "key" });
   });
 
+  it("lets a text prompt be answered with nothing", async () => {
+    loginState = {
+      id: "s1",
+      providerId: "github-copilot",
+      status: "prompting",
+      events: [],
+      // pi's own wording: blank means github.com, so Continue has to be live
+      // on an untouched field.
+      prompt: { token: "t1", kind: "text", message: "GitHub Enterprise URL/domain (blank for github.com)" },
+      error: null,
+    };
+    render(<ProviderLoginSection />);
+
+    await clickIn("GitHub Copilot", "Sign in");
+
+    const submit = await screen.findByRole("button", { name: "Continue" });
+    expect((submit as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(calls.some((c) => c.url === "/api/provider-login/s1")).toBe(true));
+    expect(body(calls.findIndex((c) => c.url === "/api/provider-login/s1"))).toEqual({ token: "t1", value: "" });
+  });
+
+  it("still requires a value for the other prompt kinds", async () => {
+    loginState = {
+      id: "s1",
+      providerId: "anthropic",
+      status: "prompting",
+      events: [],
+      prompt: { token: "t1", kind: "manual_code", message: "paste the code" },
+      error: null,
+    };
+    render(<ProviderLoginSection />);
+
+    await clickIn("Anthropic", "Sign in");
+
+    const submit = await screen.findByRole("button", { name: "Continue" });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("masks a secret prompt", async () => {
     loginState = {
       id: "s1",
