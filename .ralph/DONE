@@ -1,0 +1,7 @@
+Boot `web` and `worker` roles from one boot module with a two-process `make check-split` gate
+
+- `RADULF_ROLES` (default `web,worker`) selects which roles a process boots; a plain Node entry `src/worker.ts` (bundled to `dist/worker.mjs` by `make build-worker`) runs the worker role outside Next.js, and nothing under `src/server/**`, `src/db/**`, or `src/worker.ts` imports from `next`.
+- Migrations and auth-secret creation are concurrency-safe, so a web-only and a worker-only process can race on a fresh, empty data directory without `SQLITE_BUSY`/`EEXIST` and without applying a migration twice.
+- The web-only role runs a passive orchestrator: it queues cards and stamps `startedAt` but never runs a pi stage; the worker's timer pump picks the work up.
+- `src/server/splitProcesses.test.ts` (run only via `make check-split`, `RADULF_SPLIT_CHECK=1`) spawns `next dev` (web, no `RADULF_MOCK_LLM`) and `dist/worker.mjs` (worker, mock LLM) against one temp data dir and checks: both roles boot at once with one fully migrated DB and one auth secret; a card driven over the web API from Todo → In Progress reaches In Review with one completed plan/loop/evaluate run each (loop: 2 iterations, `done-signal`; evaluate: `approve`) and the web log never shows "mock provider is disabled", proving every stage ran in the worker; SIGTERM drains the worker cleanly with exit code 0.
+- Key files: `src/worker.ts`, boot module and role selection under `src/server/`, `src/server/splitProcesses.test.ts`, `Makefile` (`worker`, `build-worker`, `check-split`, `check`).
