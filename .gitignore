@@ -19,6 +19,8 @@
 
 # production
 /build
+# worker bundle (make build-worker)
+/dist
 
 # misc
 .DS_Store
