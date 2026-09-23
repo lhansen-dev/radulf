@@ -50,6 +50,7 @@ import { PlanningService, pendingReplanFeedback, planningDestination, writePlanR
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService, type ConfigApproval } from "./reviewService";
 import { ClientError } from "./clientError";
+import { hasRole } from "./roles";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
@@ -259,8 +260,17 @@ export class Orchestrator {
   /** Spec 18 §5 sweep timer, held so startDraining() can stop it. */
   private attentionTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(options: { autoStart?: boolean } = {}) {
-    if (options.autoStart !== false) {
+  /** A passive orchestrator is what a process with only the `web` role gets
+   * (spec 25). It moves cards for operator actions but never runs boot
+   * recovery, never pumps the queue, never starts a stage and never
+   * constructs a pi session; a worker process picks the work up from the
+   * database. Two processes both recovering or pumping would otherwise race
+   * over the same runs. */
+  private readonly passive: boolean;
+
+  constructor(options: { autoStart?: boolean; passive?: boolean } = {}) {
+    this.passive = options.passive === true;
+    if (options.autoStart !== false && !this.passive) {
       this.recover();
       this.pump();
       // Guarded: a throw from a timer callback is an uncaught exception, and
@@ -616,10 +626,15 @@ export class Orchestrator {
       // feedback (a rejection or an evaluator revise) re-plans first.
       this.moveCard(cardId, card.status, "ready");
       this.pump();
-    } else if (this.pipelineBusy(card.repoId)) {
+    } else if (this.passive || this.pipelineBusy(card.repoId)) {
       // One ticket runs at a time. The startedAt set above marks this a manual
       // start; land it back in todo (pump only scans todo for planning) so it
-      // is picked up, oldest manual start first, when the pipeline frees.
+      // is picked up, oldest manual start first, when the pipeline frees. A
+      // passive (web-only) process takes the same path unconditionally: it
+      // never starts a stage itself, and the worker's pump plans manual
+      // starts oldest-first even with autoMode off, so the stamp is enough.
+      // (A passive pump() is a no-op, so the restart branch above just moves
+      // the card to ready for the worker to pick up.)
       if (card.status !== "todo") {
         this.moveCard(cardId, card.status, "todo", "queued for planning");
       }
@@ -878,6 +893,9 @@ export class Orchestrator {
       return { ok: true, step };
     }
 
+    if (this.passive) {
+      throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
+    }
     if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
     const [stage, agent] = step === "plan"
       ? (["planning", "planner"] as const)
@@ -989,7 +1007,7 @@ export class Orchestrator {
    * nothing new starts while a card there is planning, looping, or
    * evaluating. Unrelated repos never wait on each other. */
   pump() {
-    if (this.draining) return;
+    if (this.draining || this.passive) return;
     // One settings read per pump: getSettings() reads and decrypts the whole
     // table, and the slot loop below used to call it again on every pass.
     const settings = getSettings();
@@ -1725,6 +1743,9 @@ export class Orchestrator {
       throw new ClientError(`cannot approve install scripts for a ${card.status} card`);
     }
     if (packages.length === 0) throw new ClientError("no packages to approve");
+    if (this.passive) {
+      throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
+    }
     const run = this.latestWorktreeRun(cardId);
     if (!run) throw new ClientError("card has no worktree left to resume");
     const repo = requireRepo(card.repoId);
@@ -1884,5 +1905,7 @@ export class Orchestrator {
 const g = globalThis as unknown as { __radulfOrchestrator?: Orchestrator };
 
 export function getOrchestrator(): Orchestrator {
-  return (g.__radulfOrchestrator ??= new Orchestrator());
+  // A web-only process gets a passive orchestrator: the worker owns recovery,
+  // the pump and every stage; this one only moves cards for operator actions.
+  return (g.__radulfOrchestrator ??= new Orchestrator(hasRole("worker") ? {} : { passive: true }));
 }
