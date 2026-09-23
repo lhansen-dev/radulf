@@ -17,6 +17,7 @@ import {
   type ImprovementRun,
   type Repo,
 } from "./ui/api";
+import { ActivityDot } from "./ui/liveActivity";
 import { NewTaskDialog } from "./ui/newTaskDialog";
 import { ImprovementRunDialog } from "./ui/improvementRunDialog";
 import { DetailsMenu } from "./ui/detailsMenu";
@@ -557,7 +558,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {ACTIVE_STATUSES.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
-          <span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span> · {position ? `Queue position ${position}` : state.detail}
+          <span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>} · {position ? `Queue position ${position}` : state.detail}
         </p>
         {card.status === "looping" && (currentTask ? (
           <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-xs text-foreground/40">

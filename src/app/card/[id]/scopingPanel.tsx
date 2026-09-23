@@ -1,14 +1,32 @@
 "use client";
 import { useState } from "react";
 import { api } from "../../ui/api";
+import { LiveActivity } from "../../ui/liveActivity";
 import { Markdown } from "../../ui/markdown";
-import type { ScopingMessage } from "./useCardDetail";
+import type { ScopingMessage, ScopingRequest, ScopingTurn } from "./useCardDetail";
 import { SCOPABLE_STATUSES } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
+import { scopingRunId } from "@/shared/scopingRunId";
 
 type SplitCard = { title: string; description: string };
 
 type Busy = "send" | "answer" | "propose" | "apply" | "split" | "plan" | null;
+
+/** The kinds of busy that hold a model session open, and what each asked for. */
+const TURN_REQUEST: Partial<Record<Exclude<Busy, null>, ScopingRequest>> = {
+  send: "reply",
+  propose: "proposal",
+  split: "split",
+  plan: "plan",
+};
+
+/** What the indicator says before the session's first push. */
+const TURN_LABELS: Record<ScopingRequest, string> = {
+  reply: "Reading the repository",
+  proposal: "Drafting the scoped task",
+  split: "Proposing a split",
+  plan: "Writing the plan",
+};
 
 /**
  * The card's scoping thread (spec 17): the operator, an assistant that reads
@@ -22,6 +40,7 @@ export function ScopingPanel({
   status,
   scopingAuthorsPlan = false,
   messages,
+  turn = null,
   onChanged,
 }: {
   cardId: string;
@@ -29,10 +48,15 @@ export function ScopingPanel({
   /** The card let its session write the plan itself (spec 17). */
   scopingAuthorsPlan?: boolean;
   messages: ScopingMessage[];
+  /** A turn the server reports in flight, whichever tab started it. */
+  turn?: ScopingTurn | null;
   onChanged: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
+  // When this tab's own turn began, for the elapsed time until the server's
+  // record of it (`turn`) arrives with the next refresh.
+  const [ownTurnStartedAt, setOwnTurnStartedAt] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [proposal, setProposal] = useState<{ title: string; description: string } | null>(null);
   const [split, setSplit] = useState<SplitCard[] | null>(null);
@@ -47,6 +71,7 @@ export function ScopingPanel({
   async function run(kind: Exclude<Busy, null>, fn: () => Promise<void>) {
     setBusy(kind);
     setError("");
+    if (TURN_REQUEST[kind]) setOwnTurnStartedAt(new Date().toISOString());
     try {
       await fn();
     } catch (e) {
@@ -107,7 +132,9 @@ export function ScopingPanel({
     onChanged();
   });
 
-  const waiting = busy === "send" || busy === "propose" || busy === "split" || busy === "plan";
+  // A model session is open: this tab's, or one the server reports.
+  const turnRequest: ScopingRequest | null = turn?.request ?? (busy && TURN_REQUEST[busy]) ?? null;
+  const running = busy !== null || turn !== null;
   const fieldCls = "w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm";
   const buttonCls = "min-h-11 rounded-lg px-3 text-sm disabled:opacity-40";
 
@@ -153,7 +180,7 @@ export function ScopingPanel({
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(); } }}
             rows={3}
-            disabled={busy !== null}
+            disabled={running}
             placeholder={
               loopBlocked
                 ? "Say what the loop was missing, or what to do instead…"
@@ -166,27 +193,33 @@ export function ScopingPanel({
             className={fieldCls}
           />
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={send} disabled={busy !== null || !draft.trim()} className={`${buttonCls} bg-foreground/10`}>
+            <button type="button" onClick={send} disabled={running || !draft.trim()} className={`${buttonCls} bg-foreground/10`}>
               {busy === "send" ? "Thinking…" : "Send"}
             </button>
             {awaitingAnswer && (
-              <button type="button" onClick={answerAndPlan} disabled={busy !== null || !draft.trim()} className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}>
+              <button type="button" onClick={answerAndPlan} disabled={running || !draft.trim()} className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}>
                 {busy === "answer" ? "Planning…" : "Answer and plan again"}
               </button>
             )}
-            <button type="button" onClick={proposeSplitCards} disabled={busy !== null} className={`${buttonCls} ml-auto bg-foreground/10`}>
+            <button type="button" onClick={proposeSplitCards} disabled={running} className={`${buttonCls} ml-auto bg-foreground/10`}>
               {busy === "split" ? "Splitting…" : "Propose a split"}
             </button>
-            <button type="button" onClick={propose} disabled={busy !== null} className={`${buttonCls} bg-foreground/10`}>
+            <button type="button" onClick={propose} disabled={running} className={`${buttonCls} bg-foreground/10`}>
               {busy === "propose" ? "Writing…" : "Draft the scoped task"}
             </button>
             {scopingAuthorsPlan && (
-              <button type="button" onClick={writePlan} disabled={busy !== null} className={`${buttonCls} bg-cyan-800/40 font-medium text-cyan-100`}>
+              <button type="button" onClick={writePlan} disabled={running} className={`${buttonCls} bg-cyan-800/40 font-medium text-cyan-100`}>
                 {busy === "plan" ? "Planning…" : "Write the plan"}
               </button>
             )}
           </div>
-          {waiting && <p role="status" className="text-xs text-foreground/50">Reading the repository — this can take a minute.</p>}
+          {turnRequest && (
+            <LiveActivity
+              runId={scopingRunId(cardId)}
+              startedAt={turn?.startedAt ?? ownTurnStartedAt}
+              idleLabel={TURN_LABELS[turnRequest]}
+            />
+          )}
         </>
       )}
 
@@ -202,8 +235,8 @@ export function ScopingPanel({
             <textarea value={proposal.description} onChange={(e) => setProposal({ ...proposal, description: e.target.value })} rows={14} className={`mt-1 font-mono ${fieldCls}`} />
           </label>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setProposal(null)} disabled={busy !== null} className={`${buttonCls} text-foreground/60`}>Discard</button>
-            <button type="button" onClick={apply} disabled={busy !== null || !proposal.title.trim()} className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}>
+            <button type="button" onClick={() => setProposal(null)} disabled={running} className={`${buttonCls} text-foreground/60`}>Discard</button>
+            <button type="button" onClick={apply} disabled={running || !proposal.title.trim()} className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}>
               {busy === "apply" ? "Saving…" : "Apply to task"}
             </button>
           </div>
@@ -242,7 +275,7 @@ export function ScopingPanel({
                 <button
                   type="button"
                   onClick={() => setSplit(split.filter((_, j) => j !== i))}
-                  disabled={busy !== null}
+                  disabled={running}
                   className="self-end text-xs text-foreground/50 hover:text-red-300"
                 >
                   Drop this card
@@ -251,11 +284,11 @@ export function ScopingPanel({
             </div>
           ))}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setSplit(null)} disabled={busy !== null} className={`${buttonCls} text-foreground/60`}>Discard</button>
+            <button type="button" onClick={() => setSplit(null)} disabled={running} className={`${buttonCls} text-foreground/60`}>Discard</button>
             <button
               type="button"
               onClick={applySplit}
-              disabled={busy !== null || split.some((c) => !c.title.trim())}
+              disabled={running || split.some((c) => !c.title.trim())}
               className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}
             >
               {busy === "apply" ? "Queueing…" : `Queue ${split.length} cards`}

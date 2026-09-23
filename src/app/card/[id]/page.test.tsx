@@ -360,7 +360,7 @@ describe("CardDetail", () => {
 
   // The plan lives on the Task tab, which is the default — no click needed.
   it.each([
-    ["planning", "Plan is running…"],
+    ["planning", "Plan is running"],
     ["todo", "No plan yet — start the task to run planning."],
   ])("shows a %s card with no plan as %j", async (status, text) => {
     cardStatus = status;

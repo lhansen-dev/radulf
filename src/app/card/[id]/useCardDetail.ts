@@ -26,6 +26,14 @@ export type ScopingMessage = {
   createdAt: string;
 };
 
+/** What a scoping turn was asked for (spec 17's three concrete outputs, plus
+ * the next message). */
+export type ScopingRequest = "reply" | "proposal" | "split" | "plan";
+
+/** A scoping turn in flight for the card: the server holds one per card, so
+ * this is set after a reload or in a second tab as well. */
+export type ScopingTurn = { request: ScopingRequest; startedAt: string };
+
 export type CardDetailData = {
   card: {
     id: string;
@@ -72,6 +80,8 @@ export type CardDetailData = {
   };
   /** The card's scoping thread, oldest first. Absent on older cached responses. */
   scoping?: ScopingMessage[];
+  /** The scoping turn running right now, if any. Absent on older cached responses. */
+  scopingTurn?: ScopingTurn | null;
 };
 
 /** Card detail data and card-scoped live refresh. */

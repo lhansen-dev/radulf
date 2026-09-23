@@ -4,10 +4,13 @@ import { nanoid } from "nanoid";
 import { db, now, scopingMessages, TRANSCRIPTS_DIR, type ScopingRole } from "@/db";
 import { ClientError } from "./clientError";
 import { requireCard as requireCardRow } from "./cards";
+import { emitEvent } from "./events";
 import { requireRepo } from "./repos";
 import { runHarness } from "./harness";
 import { normalizeProvider } from "./providers";
 import { getSettings } from "./settings";
+import { startTranscriptPush } from "./transcript";
+import { scopingRunId } from "@/shared/scopingRunId";
 
 export type ScopingMessage = typeof scopingMessages.$inferSelect;
 
@@ -255,24 +258,41 @@ function requireCard(cardId: string) {
   return { card, repo: requireRepo(card.repoId) };
 }
 
+/** A scoping turn in flight: what it was asked for, and since when. */
+export type ScopingTurnInFlight = { request: ScopingRequest; startedAt: string };
+
 /**
  * Cards with a scoping turn in flight. Scoping runs outside the pipeline
  * slots, so nothing else bounds it: every POST started another model session
  * against the repository for up to TURN_TIMEOUT_MS, however many were already
  * running for the same card. One turn per card at a time; the thread is
- * sequential anyway.
+ * sequential anyway. The entry is also how the card page learns a turn is
+ * running when it was not the one to start it: after a reload, or in a
+ * second tab.
  */
-const turnsInFlight = new Set<string>();
+const turnsInFlight = new Map<string, ScopingTurnInFlight>();
 
-async function oneTurnAtATime<T>(cardId: string, turn: () => Promise<T>): Promise<T> {
+export function scopingTurnInFlight(cardId: string): ScopingTurnInFlight | null {
+  return turnsInFlight.get(cardId) ?? null;
+}
+
+async function oneTurnAtATime<T>(
+  cardId: string,
+  request: ScopingRequest,
+  turn: () => Promise<T>,
+): Promise<T> {
   if (turnsInFlight.has(cardId)) {
     throw new ClientError("a scoping turn is already running for this card", 409);
   }
-  turnsInFlight.add(cardId);
+  turnsInFlight.set(cardId, { request, startedAt: now() });
+  // Both events refresh the card page: the start so a second tab sees the
+  // turn running, the finish so the reply lands without a manual reload.
+  emitEvent("scoping.started", { cardId, payload: { request } });
   try {
     return await turn();
   } finally {
     turnsInFlight.delete(cardId);
+    emitEvent("scoping.finished", { cardId, payload: { request } });
   }
 }
 
@@ -284,16 +304,25 @@ async function ask(
   request: ScopingRequest,
 ): Promise<string> {
   const settings = getSettings();
-  const result = await runHarness({
-    provider: normalizeProvider(settings.scopingProvider, "anthropic"),
-    model: settings.scopingModel,
-    reasoningLevel: settings.scopingReasoningLevel,
-    prompt: renderScopingPrompt(card, messages, request),
-    cwd: repo.path,
-    transcriptPath: path.join(TRANSCRIPTS_DIR, `scoping-${card.id}-${nanoid()}.jsonl`),
-    timeoutMs: TURN_TIMEOUT_MS,
-    readOnly: true,
-  });
+  const transcriptPath = path.join(TRANSCRIPTS_DIR, `scoping-${card.id}-${nanoid()}.jsonl`);
+  // Pushed live under the card's scoping run id, so the panel can say what
+  // the session is reading while the operator waits on the turn.
+  const stop = startTranscriptPush(transcriptPath, scopingRunId(card.id), 0);
+  let result: Awaited<ReturnType<typeof runHarness>>;
+  try {
+    result = await runHarness({
+      provider: normalizeProvider(settings.scopingProvider, "anthropic"),
+      model: settings.scopingModel,
+      reasoningLevel: settings.scopingReasoningLevel,
+      prompt: renderScopingPrompt(card, messages, request),
+      cwd: repo.path,
+      transcriptPath,
+      timeoutMs: TURN_TIMEOUT_MS,
+      readOnly: true,
+    });
+  } finally {
+    stop();
+  }
   if (result.error) throw new Error(result.error);
   if (result.timedOut) throw new Error("the scoping session timed out");
   if (!result.lastText) throw new Error("the scoping session returned an empty reply");
@@ -318,7 +347,7 @@ export async function scopingTurn(
     addScopingMessage(cardId, "user", text);
     return listScopingMessages(cardId);
   }
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "reply", async () => {
     addScopingMessage(cardId, "user", text);
     const reply = await ask(card, repo, listScopingMessages(cardId), "reply");
     addScopingMessage(cardId, "assistant", reply);
@@ -335,7 +364,7 @@ export async function proposeScopedCard(
   cardId: string,
 ): Promise<{ title: string; description: string; messages: ScopingMessage[] }> {
   const { card, repo } = requireCard(cardId);
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "proposal", async () => {
     const raw = await ask(card, repo, listScopingMessages(cardId), "proposal");
     addScopingMessage(cardId, "assistant", raw);
     return { ...parseScopedCardProposal(raw, card.title), messages: listScopingMessages(cardId) };
@@ -352,7 +381,7 @@ export async function proposeSplit(
   cardId: string,
 ): Promise<{ cards: SplitCard[]; messages: ScopingMessage[] }> {
   const { card, repo } = requireCard(cardId);
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "split", async () => {
     const raw = await ask(card, repo, listScopingMessages(cardId), "split");
     addScopingMessage(cardId, "assistant", raw);
     const split = parseSplitProposal(raw, card.title);
@@ -379,7 +408,7 @@ export async function proposeScopedPlan(
   if (!card.scopingAuthorsPlan) {
     throw new ClientError("this card does not let its scoping session write the plan");
   }
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "plan", async () => {
     const raw = await ask(card, repo, listScopingMessages(cardId), "plan");
     addScopingMessage(cardId, "assistant", raw);
     const artifacts = parsePlanProposal(raw);

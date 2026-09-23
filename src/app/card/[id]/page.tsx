@@ -10,6 +10,7 @@ import { DetailsMenu } from "../../ui/detailsMenu";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
+import { LiveActivity } from "../../ui/liveActivity";
 import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
@@ -365,7 +366,7 @@ export default function CardDetail() {
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
             {card.description || "(no description)"}
           </pre>
-          <ScopingPanel cardId={id} status={card.status} scopingAuthorsPlan={Boolean(card.scopingAuthorsPlan)} messages={scoping} onChanged={refetch} />
+          <ScopingPanel cardId={id} status={card.status} scopingAuthorsPlan={Boolean(card.scopingAuthorsPlan)} messages={scoping} turn={detail.scopingTurn ?? null} onChanged={refetch} />
           <div className="text-sm text-foreground/60">
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes
@@ -399,15 +400,25 @@ export default function CardDetail() {
             <h3 className={`text-sm font-medium mb-1 ${awaitingPlanApproval ? "text-cyan-300" : ""}`}>
               {awaitingPlanApproval ? "Generated plan — awaiting your approval" : "Plan"}
             </h3>
+            {/* What the planner is doing right now, from its live transcript:
+                a re-plan shows it above the plan it is replacing. */}
+            {card.status === "planning" && (
+              <LiveActivity
+                runId={latestPlanRun?.id ?? null}
+                startedAt={latestPlanRun?.startedAt}
+                idleLabel="Plan is running"
+                className="mb-2 text-sm"
+              />
+            )}
             {latestPlan ? (
               <>
                 <PlanModelBadge tag={planTag} />
                 <PlanVersions plans={plans} livePlan={detail.livePlan} />
               </>
             ) : (
-              <p className="text-foreground/50 text-sm">
-                {card.status === "planning" ? "Plan is running…" : "No plan yet — start the task to run planning."}
-              </p>
+              card.status !== "planning" && (
+                <p className="text-foreground/50 text-sm">No plan yet — start the task to run planning.</p>
+              )
             )}
           </div>
 

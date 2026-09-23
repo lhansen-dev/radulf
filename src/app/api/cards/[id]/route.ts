@@ -10,7 +10,7 @@ import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo, requireRepo } from "@/server/repos";
 import { groupBy } from "@/server/queryGrouping";
 import { removeCardArtifacts } from "@/server/retention";
-import { listScopingMessages } from "@/server/scoping";
+import { listScopingMessages, scopingTurnInFlight } from "@/server/scoping";
 import { getSettings } from "@/server/settings";
 import { RUNNING_STATUSES } from "@/shared/cardStatus";
 import { json, err, handle } from "../../_lib";
@@ -90,6 +90,7 @@ export async function GET(_req: Request, { params }: Ctx) {
   return json({
     card, repo, plans: cardPlans, livePlan, runs: cardRuns, events: cardEvents, models,
     scoping: listScopingMessages(id),
+    scopingTurn: scopingTurnInFlight(id),
   });
 }
 

@@ -20,17 +20,30 @@ export function describeToolCall(name: string, input: unknown): string {
     case "bash":
       raw = pick("command");
       break;
+    // pi's file tools (harness/pi.ts) take `path`; the other spellings are
+    // what older transcripts carry.
     case "read":
-      raw = pick("file_path", "filePath");
+      raw = pick("path", "file_path", "filePath");
       break;
     case "edit":
     case "multiedit":
     case "write":
-      raw = pick("file_path", "filePath");
+      raw = pick("path", "file_path", "filePath");
       break;
     case "grep":
     case "glob":
       raw = pick("pattern");
+      break;
+    // pi's read-only browse set (harness/pi.ts): find takes a glob and an
+    // optional root, ls a directory, web_search a query.
+    case "find":
+      raw = pick("pattern", "path");
+      break;
+    case "ls":
+      raw = pick("path");
+      break;
+    case "web_search":
+      raw = pick("query");
       break;
     case "webfetch":
       raw = pick("url");

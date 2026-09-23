@@ -1,8 +1,19 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ScopingPanel } from "./scopingPanel";
 import type { ScopingMessage } from "./useCardDetail";
+
+class MockEventSource {
+  onopen: (() => void) | null = null;
+  onerror: ((e: Event) => void) | null = null;
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  static instances: MockEventSource[] = [];
+  constructor() {
+    MockEventSource.instances.push(this);
+  }
+  close() {}
+}
 
 const thread: ScopingMessage[] = [
   { id: 1, role: "planner", content: "1. Per IP or per account?", createdAt: "" },
@@ -15,6 +26,8 @@ let calls: { url: string; init?: RequestInit }[];
 beforeEach(() => {
   cleanup();
   calls = [];
+  MockEventSource.instances = [];
+  globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
   globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
     calls.push({ url, init });
     const body = url.endsWith("/scoping/proposal")
@@ -162,6 +175,52 @@ describe("ScopingPanel", () => {
     // The waiting line also has role="status", so match on the text.
     expect(await screen.findByText(/Plan v1 written .* ready to run/)).toBeTruthy();
     expect(calls[0].url).toBe("/api/cards/c1/scoping/plan");
+  });
+
+  it("shows what the session is doing while a turn runs, from its live transcript", async () => {
+    let finish!: () => void;
+    globalThis.fetch = vi.fn(() => new Promise<Response>((resolve) => {
+      finish = () => resolve(new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    })) as unknown as typeof fetch;
+    render(<ScopingPanel cardId="c1" status="backlog" messages={[]} onChanged={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Your message"), { target: { value: "What does login touch?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    // Before the first push: the wait is named, and the controls are held.
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("Reading the repository");
+    expect((screen.getByRole("button", { name: "Propose a split" }) as HTMLButtonElement).disabled).toBe(true);
+
+    // A push under the card's scoping run id names the tool call; another run's does not.
+    const es = MockEventSource.instances.at(-1)!;
+    const push = (runId: string, lines: unknown[]) =>
+      act(() => es.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "transcript", runId, iteration: 0, fromCursor: 0, cursor: 1, lines }) })));
+    push("run-9", [{ t: "tool", name: "bash", input: { command: "rm -rf" } }]);
+    expect(status.textContent).not.toContain("bash");
+    push("scoping:c1", [{ t: "tool", name: "grep", input: { pattern: "loginRateLimit" } }]);
+    expect(status.textContent).toContain("grep loginRateLimit");
+    expect(status.textContent).toMatch(/\d+s ago/);
+
+    finish();
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  it("shows a turn another tab started, with its elapsed time, and holds the controls until it ends", () => {
+    render(
+      <ScopingPanel
+        cardId="c1"
+        status="backlog"
+        messages={[]}
+        turn={{ request: "split", startedAt: new Date(Date.now() - 65_000).toISOString() }}
+        onChanged={() => {}}
+      />,
+    );
+
+    const status = screen.getByRole("status");
+    expect(status.textContent).toContain("Proposing a split");
+    expect(status.textContent).toContain("1m 5s in");
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Draft the scoped task" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("surfaces a failed turn without losing the draft", async () => {
