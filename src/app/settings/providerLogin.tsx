@@ -242,6 +242,10 @@ function LoginFlow({
   onDone: () => void;
 }) {
   const prompt = login.prompt;
+  // pi asks GitHub Copilot's host as a text prompt meant to be left blank for
+  // github.com, so an empty answer has to be submittable. Every other kind
+  // names something there is no blank form of.
+  const answerable = prompt?.kind === "text" || answer.trim().length > 0;
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-accent/30 bg-accent/[0.04] p-4">
       <p className="text-sm font-medium">Connecting {login.providerId}</p>
@@ -307,7 +311,7 @@ function LoginFlow({
                 value={answer}
                 placeholder={prompt.placeholder}
                 onChange={(e) => setAnswer(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && answer.trim()) { e.preventDefault(); onSubmit(); } }}
+                onKeyDown={(e) => { if (e.key === "Enter" && answerable) { e.preventDefault(); onSubmit(); } }}
                 className={inputCls}
               />
             )}
@@ -321,7 +325,7 @@ function LoginFlow({
           <button
             type="button"
             onClick={onSubmit}
-            disabled={busy || !answer.trim()}
+            disabled={busy || !answerable}
             className="self-start rounded-lg bg-accent px-3.5 py-2 text-sm font-medium text-on-accent disabled:opacity-40"
           >
             Continue
