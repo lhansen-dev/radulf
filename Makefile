@@ -28,7 +28,7 @@ HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 
 PORT := 3000
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start lint typecheck test check login \
+.PHONY: help install dev build start lint typecheck test check check-split login \
         worker build-worker db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
@@ -83,7 +83,12 @@ typecheck: ## Type-check without emitting
 test: ## Run the test suite once
 	$(BIN)/vitest run
 
-check: test lint typecheck build ## Full gate: test + lint + typecheck + build (what CI runs)
+# Skipped by plain `make test` (describe.skipIf on RADULF_SPLIT_CHECK) because it
+# spawns a real `next dev` and a real worker process.
+check-split: ## Boot a web-only and a worker-only process against a temp data dir and drive a card through the web API
+	RADULF_SPLIT_CHECK=1 $(BIN)/vitest run src/server/splitProcesses.test.ts
+
+check: test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)
 
 db-generate: ## Generate a migration from schema changes
 	$(BIN)/drizzle-kit generate
