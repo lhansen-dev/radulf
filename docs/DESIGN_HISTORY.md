@@ -53,7 +53,7 @@ history inline.
 | [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current; amended by 19. See also the [Sandboxing guide](SANDBOXING.md) |
 | [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | Current; amends decision 6 |
 | [17 — Task scoping](../specs/17-task-scoping.md) | A repo-aware scoping thread on every card, closing the planner's questions loop | Current; extends 04, adds a fourth role to decision 3, replaces 10's planner chat. Fully built |
-| [18 — Loop failure modes](../specs/18-loop-failure-modes.md) | What the loop knows when an iteration ends badly, and what it does with it | Current; amends 11 |
+| [18 — Loop failure modes](../specs/18-loop-failure-modes.md) | What the loop knows when an iteration ends badly, and what it does with it | Current; amends 11, extended by 26 |
 | [19: Radulf's own refs](../specs/19-shared-git-ref-noise.md) | Why a sibling card's branch is not tampering, and what the run-end integrity check still compares | Current; amends 14 |
 | [20: More than one card at a time](../specs/20-concurrent-cards.md) | The per-repo concurrency cap, and telling the integrity check about the merges Radulf itself performs | Current; amends locked decision 5, completes 19; process-wide analysis amended by 25 |
 | [21: Registering a repository by URL](../specs/21-clone-on-register.md) | Cloning into Radulf's own repos dir when a URL is registered, so a server or container install needs no pre-mounted checkouts | Current; extends locked decision 1 |
@@ -61,6 +61,7 @@ history inline.
 | [23: Logging a provider in from the app](../specs/23-provider-login-in-app.md) | Driving pi's typed login interaction from a route, so a server or container install needs no TUI over `docker exec` | Current; narrows the "OAuth belongs in the terminal" posture to "drive a typed interface, shell out otherwise" |
 | [24: Epics](../specs/24-epics.md) | Breaking one ask into child tasks under a parent card, with a run mode the queue enforces, and Jira child issues as pieces | Current; extends 17, amends 20's scope note |
 | [25: Web and worker processes](../specs/25-web-and-worker-processes.md) | Splitting the one process into web and worker roles that share the database, so a web restart ends no run, several of each can run on one host, and a session crash stays in its worker | Current; amends 02's process model, 13's hosting note, and 20's process-wide analysis |
+| [26: Retries inherit the failed attempt](../specs/26-retries-inherit-the-failed-attempt.md) | Forwarding a killed planner or evaluator attempt's notes, transcript digest, and drafts into its retry, a deadline in the prompt, and honouring a complete result left on disk at a timeout | Current; extends 18 |
 
 ## Implementation plans
 
