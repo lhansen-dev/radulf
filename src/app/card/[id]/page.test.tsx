@@ -173,7 +173,12 @@ describe("CardDetail", () => {
   it("reviews current config before posting approval for the exact run and hash", async () => {
     cardStatus = "needs_attention";
     cardRuns = [{ ...cardRuns[0], kind: "loop" }];
-    cardEvents = [{ id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" }];
+    // The API returns events oldest first. An earlier delivery failure must
+    // not hide the newer config blocker (the live card's regression).
+    cardEvents = [
+      { id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ prFailed: "remote is not a GitHub host" }), createdAt: "" },
+      { id: 2, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" },
+    ];
     const originalFetch = globalThis.fetch;
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (input === "/api/cards/c1/review-config") {
@@ -191,6 +196,18 @@ describe("CardDetail", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/cards/c1/approve-config", expect.objectContaining({
       body: JSON.stringify({ runId: "r1", configHash: "a".repeat(64) }),
     })));
+  });
+
+  it("hides the old config blocker after config approval", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    cardEvents = [
+      { id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" },
+      { id: 2, runId: "r1", type: "repo.config_approved", payload: "{}", createdAt: "" },
+    ];
+    render(<CardDetail />);
+    await screen.findByRole("button", { name: "Retry merge" });
+    expect(screen.queryByRole("button", { name: "Review Git config" })).toBeNull();
   });
 
   it("shows the planner badge and each role's resolved provider, model, and reasoning level", async () => {

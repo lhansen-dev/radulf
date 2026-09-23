@@ -87,9 +87,9 @@ export default function CardDetail() {
     (latestEvaluatorRun.status === "completed" &&
       (EVALUATOR_CLEARED_EXITS as readonly string[]).includes(latestEvaluatorRun.exitReason ?? ""));
   const canRetryMerge = latestLoopRun?.status === "completed" && evaluatorCleared;
-  const latestIntegrityDecision = detail.events.find((event) =>
+  const latestIntegrityDecision = detail.events.filter((event) =>
     event.runId === latestLoopRun?.id && ["review.decided", "repo.config_approved"].includes(event.type),
-  );
+  ).at(-1);
   const configBlocked = card.status === "needs_attention" && canRetryMerge && latestIntegrityDecision &&
     String((parsePayload(latestIntegrityDecision.payload) as { integrityViolation?: string }).integrityViolation ?? "").includes(".git/config changed");
   const failedStep = retryableFailedStep(runs);
