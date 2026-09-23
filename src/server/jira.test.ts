@@ -136,6 +136,30 @@ describe("fetchJiraIssue", () => {
     await expect(fetchJiraIssue("DEV-1", configured)).rejects.toThrow(message);
   });
 
+  it("tells a rejected token apart from a missing issue, since Jira answers both with 404", async () => {
+    // Jira Cloud falls back to anonymous on a bad token: the issue lookup
+    // says 404, and only /myself admits the 401.
+    const fetchMock = vi.fn(async (url: string) =>
+      new Response("{}", { status: url.endsWith("/rest/api/2/myself") ? 401 : 404 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchJiraIssue("DEV-1", configured)).rejects.toThrow(/email or API token/);
+    expect(fetchMock.mock.calls.map(([url]) => String(url).split("/rest/")[1])).toEqual([
+      "api/2/issue/DEV-1?fields=summary,description",
+      "api/2/myself",
+    ]);
+  });
+
+  it("trims a token pasted with whitespace around it", async () => {
+    const fetchMock = stubFetch(200, { key: "DEV-1", fields: { summary: "s" } });
+    await fetchJiraIssue("DEV-1", { ...configured, jiraApiToken: "  tok\n" });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      `Basic ${Buffer.from("me@example.com:tok").toString("base64")}`,
+    );
+  });
+
   it("names the site when Jira is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("ECONNREFUSED"); }));
     await expect(fetchJiraIssue("DEV-1", configured)).rejects.toThrow(

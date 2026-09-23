@@ -36,24 +36,24 @@ export function parseJiraIssueRef(input: string): string | null {
 }
 
 function jiraConfigured(s: JiraSettings): boolean {
-  return Boolean(s.jiraBaseUrl.trim() && s.jiraEmail.trim() && s.jiraApiToken);
+  return Boolean(s.jiraBaseUrl.trim() && s.jiraEmail.trim() && s.jiraApiToken.trim());
 }
 
-export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<JiraIssue> {
-  if (!jiraConfigured(s)) {
-    throw new ClientError("Jira is not configured: add the base URL, account email and API token in Settings");
-  }
-  const key = parseJiraIssueRef(ref);
-  if (!key) throw new ClientError("that does not look like a Jira issue link or key");
-  const base = s.jiraBaseUrl.trim().replace(/\/+$/, "");
-  // REST v2 returns the description as wiki markup text, which reads well in
-  // a card; v3 would return Atlassian Document Format. Both are handled below.
-  const url = `${base}/rest/api/2/issue/${encodeURIComponent(key)}?fields=summary,description`;
-  let res: Response;
+function siteRoot(s: JiraSettings): string {
+  return s.jiraBaseUrl.trim().replace(/\/+$/, "");
+}
+
+const REJECTED = "Jira rejected the account email or API token in Settings";
+
+/** One authenticated GET against the site. Trimmed on both sides: a token
+ * pasted with a trailing newline is the same failure as a wrong one, and
+ * Jira reports neither clearly (see fetchJiraIssue). */
+async function jiraGet(s: JiraSettings, path: string): Promise<Response> {
+  const base = siteRoot(s);
   try {
-    res = await fetch(url, {
+    return await fetch(`${base}/${path}`, {
       headers: {
-        Authorization: `Basic ${Buffer.from(`${s.jiraEmail.trim()}:${s.jiraApiToken}`).toString("base64")}`,
+        Authorization: `Basic ${Buffer.from(`${s.jiraEmail.trim()}:${s.jiraApiToken.trim()}`).toString("base64")}`,
         Accept: "application/json",
       },
       signal: AbortSignal.timeout(10_000),
@@ -62,9 +62,29 @@ export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<Jira
   } catch (e) {
     throw new ClientError(`cannot reach Jira at ${base}: ${errorMessage(e)}`);
   }
-  if (res.status === 401) throw new ClientError("Jira rejected the account email or API token in Settings");
+}
+
+export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<JiraIssue> {
+  if (!jiraConfigured(s)) {
+    throw new ClientError("Jira is not configured: add the base URL, account email and API token in Settings");
+  }
+  const key = parseJiraIssueRef(ref);
+  if (!key) throw new ClientError("that does not look like a Jira issue link or key");
+  const base = siteRoot(s);
+  // REST v2 returns the description as wiki markup text, which reads well in
+  // a card; v3 would return Atlassian Document Format. Both are handled below.
+  const res = await jiraGet(s, `rest/api/2/issue/${encodeURIComponent(key)}?fields=summary,description`);
+  if (res.status === 401) throw new ClientError(REJECTED);
   if (res.status === 403) throw new ClientError(`Jira refused this account access to ${key}`);
-  if (res.status === 404) throw new ClientError(`${key} was not found in Jira, or this account cannot see it`);
+  if (res.status === 404) {
+    // Jira Cloud answers a rejected token here with 404, not 401: the request
+    // falls back to anonymous, and an anonymous user is told the issue does
+    // not exist. Only /myself says which of the two it was. Observed on
+    // 2026-09-23 against a real site, where a bad token made every issue
+    // "not found".
+    if ((await jiraGet(s, "rest/api/2/myself")).status === 401) throw new ClientError(REJECTED);
+    throw new ClientError(`${key} was not found in Jira, or this account cannot see it`);
+  }
   if (!res.ok) throw new ClientError(`Jira responded ${res.status} for ${key}`);
   const body = (await res.json()) as { key?: string; fields?: { summary?: unknown; description?: unknown } };
   const resolvedKey = typeof body.key === "string" && body.key ? body.key : key;
