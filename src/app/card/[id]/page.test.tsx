@@ -64,12 +64,16 @@ let cardRuns: Array<Record<string, unknown>> = [];
 let cardPlans: Array<Record<string, unknown>> = [];
 let cardEvents: Array<Record<string, unknown>> = [];
 let cardScoping: Array<Record<string, unknown>> = [];
+let cardChildren: Array<Record<string, unknown>> = [];
+let cardParent: Record<string, unknown> | null = null;
 
 beforeEach(() => {
   cleanup();
   cardStatus = "plan_review";
   cardEvents = [];
   cardScoping = [];
+  cardChildren = [];
+  cardParent = null;
   cardRuns = [
     {
       id: "r1",
@@ -144,6 +148,8 @@ beforeEach(() => {
             runs: cardRuns,
             events: cardEvents,
             scoping: cardScoping,
+            children: cardChildren,
+            parent: cardParent,
             models: {
               planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
               loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
@@ -356,6 +362,56 @@ describe("CardDetail", () => {
 
     await vi.waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]).toMatchObject({ plannerModel: null, loopModel: null, evaluatorModel: "haiku" });
+  });
+
+  it("shows an epic's tasks and progress, offers Start all and Pause all, and changes the run mode", async () => {
+    cardStatus = "backlog";
+    cardRuns = [];
+    cardPlans = [];
+    cardChildren = [
+      { id: "a", title: "Add the limiter", status: "done", position: 1, repoId: "r", startedAt: null, updatedAt: "" },
+      { id: "b", title: "Surface the lockout", status: "looping", position: 2, repoId: "r", startedAt: "", updatedAt: "" },
+      { id: "c", title: "Document it", status: "todo", position: 3, repoId: "r", startedAt: null, updatedAt: "" },
+    ];
+    const posts: string[] = [];
+    const patches: unknown[] = [];
+    const baseFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(url);
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      if (init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)));
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("confirm", () => true);
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("Epic · 1 of 3 tasks done")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Surface the lockout" }).getAttribute("href")).toBe("/card/b");
+    expect(screen.getByText("Running")).toBeTruthy();
+    // The epic never runs itself: the set's actions replace the card's.
+    expect(screen.queryByRole("button", { name: "Add to Todo" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Start all" }));
+    await waitFor(() => expect(posts).toContain("/api/cards/c1/start-all"));
+    fireEvent.click(screen.getByRole("button", { name: "Pause all" }));
+    await waitFor(() => expect(posts).toContain("/api/cards/c1/pause-all"));
+    fireEvent.change(screen.getByLabelText("Run mode"), { target: { value: "parallel" } });
+    await waitFor(() => expect(patches).toEqual([{ runMode: "parallel" }]));
+    vi.unstubAllGlobals();
+  });
+
+  it("names the epic a task belongs to", async () => {
+    cardParent = { id: "e1", title: "Harden login", runMode: "ordered" };
+
+    render(<CardDetail />);
+
+    expect((await screen.findByRole("link", { name: "Harden login" })).getAttribute("href")).toBe("/card/e1");
+    expect(screen.getByText(/its tasks run in order/)).toBeTruthy();
   });
 
   // The plan lives on the Task tab, which is the default — no click needed.

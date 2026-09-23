@@ -34,6 +34,17 @@ export type ScopingRequest = "reply" | "proposal" | "split" | "plan";
  * this is set after a reload or in a second tab as well. */
 export type ScopingTurn = { request: ScopingRequest; startedAt: string };
 
+/** Spec 24: one piece of an epic, as its page lists them. */
+export type ChildCard = {
+  id: string;
+  title: string;
+  status: string;
+  position: number;
+  repoId: string;
+  startedAt: string | null;
+  updatedAt: string;
+};
+
 export type CardDetailData = {
   card: {
     id: string;
@@ -53,6 +64,9 @@ export type CardDetailData = {
     startedAt: string | null;
     createdAt: string;
     baseBranch: string | null;
+    /** Spec 24. Absent on older cached responses. */
+    parentCardId?: string | null;
+    runMode?: "ordered" | "parallel" | null;
   };
   repo: { id: string; name: string; path: string; defaultBranch: string } | null;
   plans: Plan[];
@@ -82,6 +96,9 @@ export type CardDetailData = {
   scoping?: ScopingMessage[];
   /** The scoping turn running right now, if any. Absent on older cached responses. */
   scopingTurn?: ScopingTurn | null;
+  /** Spec 24: this card's pieces, in queue order, and the epic it belongs to. */
+  children?: ChildCard[];
+  parent?: { id: string; title: string; runMode: "ordered" | "parallel" | null } | null;
 };
 
 /** Card detail data and card-scoped live refresh. */

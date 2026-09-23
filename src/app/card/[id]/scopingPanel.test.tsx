@@ -30,7 +30,9 @@ beforeEach(() => {
   globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
   globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    const body = url.endsWith("/scoping/proposal")
+    const body = url === "/api/repos"
+      ? []
+      : url.endsWith("/scoping/proposal")
       ? { title: "Lock login after five failures", description: "## Problem\nBrute force.", messages: [] }
       : url.endsWith("/scoping/split")
         ? { cards: [
@@ -134,28 +136,29 @@ describe("ScopingPanel", () => {
     expect(container.innerHTML).toBe("");
   });
 
-  it("proposes a split, lets it be edited, and applies the edited version", async () => {
+  it("proposes a breakdown, lets it be edited, and applies the edited version", async () => {
     // Spec 17: the split is a proposal. The first click only asks for it.
     const onChanged = vi.fn();
-    render(<ScopingPanel cardId="c1" status="backlog" messages={thread} onChanged={onChanged} />);
+    render(<ScopingPanel cardId="c1" status="backlog" messages={thread} homeRepoId="r1" onChanged={onChanged} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Propose a split" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose a breakdown" }));
 
     const firstTitle = (await screen.findByLabelText("1. Title")) as HTMLInputElement;
     expect(firstTitle.value).toBe("Add the limiter");
-    expect(calls).toHaveLength(1);
-    expect(json(0)).toEqual({});
-    // Nothing is applied until the operator says so, and the composer is out
-    // of the way while a proposal is open.
+    const proposal = calls.find((call) => call.url === "/api/cards/c1/scoping/split")!;
+    expect(JSON.parse(String(proposal.init?.body))).toEqual({});
+    // Nothing is applied until the operator says so, the composer is out of
+    // the way while a proposal is open, and the session's run mode is preselected.
     expect(screen.queryByLabelText("Your message")).toBeNull();
+    expect((screen.getByLabelText("In order") as HTMLInputElement).checked).toBe(true);
 
     fireEvent.change(firstTitle, { target: { value: "Add the login limiter" } });
     fireEvent.click(screen.getByRole("button", { name: "Queue 2 tasks" }));
 
     // Spec 24: applying is the breakdown action, with the run mode proposed.
-    await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[1].url).toBe("/api/cards/c1/breakdown");
-    expect(json(1)).toEqual({
+    await waitFor(() => expect(calls.some((call) => call.url === "/api/cards/c1/breakdown")).toBe(true));
+    const apply = calls.find((call) => call.url === "/api/cards/c1/breakdown")!;
+    expect(JSON.parse(String(apply.init?.body))).toEqual({
       pieces: [
         { title: "Add the login limiter", description: "## Problem\nBrute force." },
         { title: "Surface the lockout", description: "## Problem\nDepends on card 1." },
@@ -164,6 +167,13 @@ describe("ScopingPanel", () => {
     });
     expect(await screen.findByText(/Queued 2 tasks under this epic, to run in order/)).toBeTruthy();
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("asks for a breakdown on its own when told to, and only once", async () => {
+    render(<ScopingPanel cardId="c1" status="backlog" messages={[]} autoPropose onChanged={() => {}} />);
+
+    expect(await screen.findByLabelText("1. Title")).toBeTruthy();
+    expect(calls.filter((call) => call.url === "/api/cards/c1/scoping/split")).toHaveLength(1);
   });
 
   it("offers the plan button only to a card that opted in, and reports where it landed", async () => {
@@ -191,7 +201,7 @@ describe("ScopingPanel", () => {
     // Before the first push: the wait is named, and the controls are held.
     const status = await screen.findByRole("status");
     expect(status.textContent).toContain("Reading the repository");
-    expect((screen.getByRole("button", { name: "Propose a split" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Propose a breakdown" }) as HTMLButtonElement).disabled).toBe(true);
 
     // A push under the card's scoping run id names the tool call; another run's does not.
     const es = MockEventSource.instances.at(-1)!;
@@ -219,7 +229,7 @@ describe("ScopingPanel", () => {
     );
 
     const status = screen.getByRole("status");
-    expect(status.textContent).toContain("Proposing a split");
+    expect(status.textContent).toContain("Proposing a breakdown");
     expect(status.textContent).toContain("1m 5s in");
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Draft the scoped task" }) as HTMLButtonElement).disabled).toBe(true);

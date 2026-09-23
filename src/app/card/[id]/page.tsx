@@ -11,6 +11,7 @@ import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
 import { LiveActivity } from "../../ui/liveActivity";
+import { EpicTasks } from "./epicTasks";
 import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
@@ -54,6 +55,8 @@ export default function CardDetail() {
   const [showEdit, setShowEdit] = useState(false);
   const [configReview, setConfigReview] = useState<{ runId: string; configHash: string; content: string | null } | null>(null);
   const [configBusy, setConfigBusy] = useState(false);
+  // Spec 24: Create and break down lands here with ?breakdown=propose.
+  const [autoBreakdown, setAutoBreakdown] = useState(false);
 
   useEffect(() => {
     const readTab = () => {
@@ -61,7 +64,16 @@ export default function CardDetail() {
       const found = TABS.find((item) => item.toLowerCase() === raw) ?? RETIRED_TABS[raw];
       if (found) setTab(found);
     };
+    const readBreakdown = () => {
+      const query = new URLSearchParams(window.location.search);
+      if (query.get("breakdown") !== "propose") return;
+      setAutoBreakdown(true);
+      // Off the URL at once: a reload must not spend another model turn.
+      query.delete("breakdown");
+      window.history.replaceState({}, "", `${window.location.pathname}${query.size ? `?${query}` : ""}`);
+    };
     readTab();
+    readBreakdown();
     window.addEventListener("popstate", readTab);
     return () => window.removeEventListener("popstate", readTab);
   }, []);
@@ -76,6 +88,11 @@ export default function CardDetail() {
   if (!detail)
     return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading task…"}</div></AppShell>;
   const { card, repo, plans, runs } = detail;
+  // Spec 24: a card with pieces is an epic. It never runs itself, so its
+  // actions are the set's: Start all and Pause all.
+  const epicTasks = detail.children ?? [];
+  const isEpic = epicTasks.length > 0;
+  const epicDone = epicTasks.filter((task) => task.status === "done").length;
   const planTag = plannerModelTag(runs);
   const latestPlan = plans[0];
   // plan_review means the planner is done and the human gate is open — the
@@ -179,13 +196,15 @@ export default function CardDetail() {
     { label: "Review Git config", show: Boolean(configBlocked), run: () => action(async () => {
       setConfigReview(await api(`/api/cards/${id}/review-config`, { json: {} }));
     }) },
-    { ...statusAction[card.status], show: card.status in statusAction, primary: true },
+    { ...statusAction[card.status], show: !isEpic && card.status in statusAction, primary: true },
+    { label: "Start all", show: isEpic && epicTasks.some((task) => task.status === "backlog" || task.status === "todo"), primary: true, run: () => post("start-all") },
+    { label: "Pause all", show: isEpic && epicTasks.some((task) => task.status === "looping"), run: () => confirm("Pause every running task in this epic after its current iteration?") && post("pause-all") },
     { label: "Pause", show: card.status === "looping", run: () => confirm("Pause this task after the current iteration?") && post("pause") },
     // Every stage reads the card's model override when it starts, so a change
     // made here takes effect on Continue / Retry failed step without
     // discarding the worktree, plan, or iterations so far.
     { label: "Edit model overrides", show: ["paused", "needs_attention"].includes(card.status), run: () => setShowEdit(true) },
-    { label: "View activity", show: ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
+    { label: "View activity", show: !isEpic && ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
     { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
   ];
   const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
@@ -215,7 +234,7 @@ export default function CardDetail() {
       label: "Delete task",
       danger: true,
       when: ["backlog", "todo", "done", "abandoned", "needs_attention"],
-      run: confirmThen("Delete this task and all its history?", () => action(async () => {
+      run: confirmThen(isEpic ? "Delete this epic? Its tasks stay, as standalone tasks." : "Delete this task and all its history?", () => action(async () => {
         await api(`/api/cards/${id}`, { method: "DELETE" });
         router.push("/");
       })),
@@ -236,7 +255,11 @@ export default function CardDetail() {
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 grow">
             <p className="text-sm text-foreground/75">{repo?.name ?? "Unknown repository"}</p>
-            <p className="mt-1 text-xs text-foreground/45">{plainStatus(card.status)}{card.startedAt && ` · ${timeAgo(card.startedAt)} elapsed`}</p>
+            <p className="mt-1 text-xs text-foreground/45">
+              {isEpic
+                ? `Epic · ${epicDone} of ${epicTasks.length} tasks done`
+                : <>{plainStatus(card.status)}{card.startedAt && ` · ${timeAgo(card.startedAt)} elapsed`}</>}
+            </p>
           </div>
         {headerActions.filter((a) => a.show).map((a) => (
           <ActionButton key={a.label} primary={a.primary} onClick={a.run}>{a.label}</ActionButton>
@@ -363,10 +386,28 @@ export default function CardDetail() {
             <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
             <span className="text-foreground/40">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
           </div>
+          {detail.parent && (
+            <p className="text-sm text-foreground/60">
+              Part of <Link href={`/card/${detail.parent.id}`} className="text-amber-300 hover:underline">{detail.parent.title}</Link>
+              {detail.parent.runMode && <span className="text-foreground/40"> · its tasks run {detail.parent.runMode === "ordered" ? "in order" : "in parallel"}</span>}
+            </p>
+          )}
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
             {card.description || "(no description)"}
           </pre>
-          <ScopingPanel cardId={id} status={card.status} scopingAuthorsPlan={Boolean(card.scopingAuthorsPlan)} messages={scoping} turn={detail.scopingTurn ?? null} onChanged={refetch} />
+          {isEpic && (
+            <EpicTasks cardId={id} runMode={card.runMode ?? null} tasks={epicTasks} onChanged={refetch} onError={setError} />
+          )}
+          <ScopingPanel
+            cardId={id}
+            status={card.status}
+            scopingAuthorsPlan={Boolean(card.scopingAuthorsPlan)}
+            messages={scoping}
+            turn={detail.scopingTurn ?? null}
+            homeRepoId={repo?.id ?? null}
+            autoPropose={autoBreakdown}
+            onChanged={refetch}
+          />
           <div className="text-sm text-foreground/60">
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes

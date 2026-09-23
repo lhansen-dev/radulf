@@ -134,7 +134,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
 
   // Spec 17: a rough ask is enough — "Create and scope" opens the card on
   // its scoping thread, where an assistant that reads the repo sharpens it.
-  async function create(andScope = false) {
+  // Spec 24: "Create and break down" opens it asking that thread for the
+  // pieces straight away.
+  async function create(then?: "scope" | "breakdown") {
     setBusy(true); setError("");
     try {
       const request: CreateCardRequest = {
@@ -155,7 +157,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       };
       const created = await api<{ id: string }>("/api/cards", { json: request });
       onCreated();
-      if (andScope) router.push(`/card/${created.id}`);
+      if (then === "scope") router.push(`/card/${created.id}`);
+      if (then === "breakdown") router.push(`/card/${created.id}?breakdown=propose`);
     } catch (e) { setError(errorMessage(e)); setBusy(false); }
   }
 
@@ -168,7 +171,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       footer={<>
         <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
         <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
-        <button type="button" onClick={() => create(true)} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and scope</button>
+        <button type="button" onClick={() => create("breakdown")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and break down</button>
+        <button type="button" onClick={() => create("scope")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and scope</button>
         <button type="button" onClick={() => create()} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Creating…" : "Create task"}</button>
       </>}
     >

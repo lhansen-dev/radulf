@@ -154,7 +154,7 @@ describe("NewTaskDialog", () => {
     expect(document.activeElement).toBe(title);
   });
 
-  it("creates the task and opens it for scoping from Create and scope, but not from Create task", async () => {
+  it("opens the task for scoping from Create and scope, for a breakdown from Create and break down, and not from Create task", async () => {
     cleanup();
     const user = userEvent.setup();
     const onCreated = vi.fn();
@@ -184,6 +184,19 @@ describe("NewTaskDialog", () => {
     await user.click(screen.getByRole("button", { name: "Create task" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(2));
     expect(push).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={onCreated}
+      />
+    );
+    await user.type(screen.getByLabelText("Title"), "Big ask");
+    await user.click(screen.getByRole("button", { name: "Create and break down" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(3));
+    expect(push).toHaveBeenLastCalledWith("/card/card-1?breakdown=propose");
     cleanup();
   });
 
