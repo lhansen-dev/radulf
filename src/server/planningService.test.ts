@@ -4,7 +4,6 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
-import { planningDestination, clearPlannerArtifacts, renderPlanPrompt } from "./planningService";
 
 describe("planningDestination", () => {
   it("routes on truthiness, not `=== 1`, so DB drift cannot misroute a card", () => {
@@ -128,7 +127,11 @@ const testDataDir = setupTestDataDir("radulf-planningService-");
 const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
-const { PlanningService, pendingReplanFeedback } = await import("./planningService");
+// Imported after setupTestDataDir, like everything else that reaches @/db: a
+// static import of this module fixes DATA_DIR at load and puts the file on
+// the checkout's own database, where it raced other test files.
+const { PlanningService, pendingReplanFeedback, planningDestination, clearPlannerArtifacts, renderPlanPrompt } =
+  await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
 function seedRepo() {

@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
-import { testSettings } from "@/testUtils/testSettings";
 
 const mocks = vi.hoisted(() => ({
   proposeScopedPlan: vi.fn(),
@@ -13,12 +12,20 @@ vi.mock("./scoping", async (importOriginal) => ({
   proposeScopedPlan: mocks.proposeScopedPlan,
   proposeSplit: mocks.proposeSplit,
 }));
-vi.mock("./settings", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./settings")>()),
-  // autoMode off: pump() must not reach for a real planner harness when the
-  // split queues its cards.
-  getSettings: () => testSettings({ autoMode: false, sandboxEnabled: false }),
-}));
+vi.mock("./settings", async (importOriginal) => {
+  // Built from the original's defaults rather than testSettings: that helper
+  // loads @/server/settings, which is this very module, so importing it from
+  // inside its own mock factory deadlocks. Importing it statically at the top
+  // instead would load @/db before setupTestDataDir below and put this file
+  // on the checkout's own database, where it raced planningService.test.ts.
+  const original = await importOriginal<typeof import("./settings")>();
+  return {
+    ...original,
+    // autoMode off: pump() must not reach for a real planner harness when the
+    // breakdown queues its pieces.
+    getSettings: () => ({ ...original.SETTING_DEFAULTS, autoMode: false, sandboxEnabled: false }),
+  };
+});
 
 setupTestDataDir("radulf-orchestrator-scoping-");
 
