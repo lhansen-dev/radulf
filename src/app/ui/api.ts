@@ -19,6 +19,9 @@ export type BoardCard = {
   updatedAt: string;
   repoName: string;
   baseBranch: string | null;
+  /** Spec 24: the epic this card is a piece of, and how an epic's pieces run. */
+  parentCardId: string | null;
+  runMode: "ordered" | "parallel" | null;
   latestRun: {
     id: string;
     kind: "plan" | "loop" | "evaluate";
