@@ -314,6 +314,15 @@ card's ordinary commit shows up as tampering in this run's snapshot and throws
 away a finished run (spec 19). Base branches, `main`, tags and remotes are
 still compared, as are hooks and `.git/config`.
 
+If delivery is blocked by `.git/config changed`, the card offers **Review Git
+config**. It shows the current file; the baseline stores only a hash, so the
+original contents cannot be shown as a diff. After verifying the configuration,
+choose **Accept config and retry merge** to approve that exact version for this
+run and retry delivery. A changed configuration or a newer run requires a fresh
+review. Approval preserves the hook and ref baselines and records only config
+hashes in the activity history, never the file contents. Other cards still
+require their own approval.
+
 ### Install-script gate
 
 After an install, the orchestrator enumerates every `preinstall`/`install`/

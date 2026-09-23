@@ -30,6 +30,20 @@ const ok = { ok: true };
 
 /** POST /api/cards/:id/:action — the card's single-verb state transitions. */
 const ACTIONS: Record<string, (id: string, req: Request) => unknown | Promise<unknown>> = {
+  "review-config": async (id) => {
+    const response = json(await getOrchestrator().reviewConfig(id));
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  },
+  "approve-config": async (id, req) => {
+    const body = record(await req.json(), "approve-config body");
+    if (typeof body.runId !== "string" || !body.runId ||
+        typeof body.configHash !== "string" || !/^(?:[a-f0-9]{64})?$/.test(body.configHash)) {
+      throw new ClientError("runId and configHash are required");
+    }
+    const result = await getOrchestrator().retryMerge(id, { runId: body.runId, configHash: body.configHash });
+    return result.ok ? ok : err(result.error ?? "merge failed", 409);
+  },
   abandon: async (id) => (await getOrchestrator().abandon(id), ok),
   "approve-plan": (id) => (getOrchestrator().approvePlan(id), ok),
   "approve-install": async (id, req) =>

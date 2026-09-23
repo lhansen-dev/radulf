@@ -170,6 +170,29 @@ beforeEach(() => {
 });
 
 describe("CardDetail", () => {
+  it("reviews current config before posting approval for the exact run and hash", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    cardEvents = [{ id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" }];
+    const originalFetch = globalThis.fetch;
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (input === "/api/cards/c1/review-config") {
+        return Promise.resolve(new Response(JSON.stringify({ runId: "r1", configHash: "a".repeat(64), content: "[user]\nname = Trusted identity" })));
+      }
+      if (input === "/api/cards/c1/approve-config") return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+      return originalFetch(input, init);
+    });
+    globalThis.fetch = fetch;
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review Git config" }));
+    expect(await screen.findByText(/name = Trusted identity/)).toBeTruthy();
+    expect(fetch.mock.calls.some(([url]) => url === "/api/cards/c1/approve-config")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Accept config and retry merge" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/cards/c1/approve-config", expect.objectContaining({
+      body: JSON.stringify({ runId: "r1", configHash: "a".repeat(64) }),
+    })));
+  });
+
   it("shows the planner badge and each role's resolved provider, model, and reasoning level", async () => {
     render(<CardDetail />);
 

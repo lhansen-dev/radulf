@@ -47,7 +47,7 @@ import { getRepo, requireRepo } from "./repos";
 import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
-import { ReviewService } from "./reviewService";
+import { ReviewService, type ConfigApproval } from "./reviewService";
 import { ClientError } from "./clientError";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
@@ -1754,8 +1754,12 @@ export class Orchestrator {
     return this.reviewService.approve(runId);
   }
 
-  retryMerge(cardId: string) {
-    return this.reviewService.retryMerge(cardId);
+  retryMerge(cardId: string, configApproval?: ConfigApproval) {
+    return this.reviewService.retryMerge(cardId, configApproval);
+  }
+
+  reviewConfig(cardId: string) {
+    return this.reviewService.reviewConfig(cardId);
   }
 
   reject(runId: string, feedback: string) {

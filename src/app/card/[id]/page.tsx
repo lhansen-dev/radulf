@@ -51,6 +51,8 @@ export default function CardDetail() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Task");
   const [transcript, setTranscript] = useState<TranscriptTarget | null>(null);
   const [showEdit, setShowEdit] = useState(false);
+  const [configReview, setConfigReview] = useState<{ runId: string; configHash: string; content: string | null } | null>(null);
+  const [configBusy, setConfigBusy] = useState(false);
 
   useEffect(() => {
     const readTab = () => {
@@ -85,6 +87,11 @@ export default function CardDetail() {
     (latestEvaluatorRun.status === "completed" &&
       (EVALUATOR_CLEARED_EXITS as readonly string[]).includes(latestEvaluatorRun.exitReason ?? ""));
   const canRetryMerge = latestLoopRun?.status === "completed" && evaluatorCleared;
+  const latestIntegrityDecision = detail.events.find((event) =>
+    event.runId === latestLoopRun?.id && ["review.decided", "repo.config_approved"].includes(event.type),
+  );
+  const configBlocked = card.status === "needs_attention" && canRetryMerge && latestIntegrityDecision &&
+    String((parsePayload(latestIntegrityDecision.payload) as { integrityViolation?: string }).integrityViolation ?? "").includes(".git/config changed");
   const failedStep = retryableFailedStep(runs);
   const canRetryFailedStep = Boolean(failedStep && card.status === "needs_attention");
   // Spec 18 §3: the provider rejected the request itself, so retrying the same
@@ -168,6 +175,9 @@ export default function CardDetail() {
     paused: { label: "Continue", run: () => post("resume") },
   };
   const headerActions: { label: string; show: boolean; primary?: boolean; run: () => void }[] = [
+    { label: "Review Git config", show: Boolean(configBlocked), run: () => action(async () => {
+      setConfigReview(await api(`/api/cards/${id}/review-config`, { json: {} }));
+    }) },
     { ...statusAction[card.status], show: card.status in statusAction, primary: true },
     { label: "Pause", show: card.status === "looping", run: () => confirm("Pause this task after the current iteration?") && post("pause") },
     // Every stage reads the card's model override when it starts, so a change
@@ -245,6 +255,32 @@ export default function CardDetail() {
           onClose={() => setShowEdit(false)}
           onSaved={() => { setShowEdit(false); refetch(); }}
         />
+      )}
+      {configReview && (
+        <DialogShell
+          titleId="review-config-title"
+          title="Review Git config"
+          closeLabel="Close Git config review"
+          onRequestClose={() => { if (!configBusy) setConfigReview(null); }}
+          footer={<>
+            <button type="button" disabled={configBusy} onClick={() => setConfigReview(null)}>Cancel</button>
+            <button type="button" disabled={configBusy} onClick={() => action(async () => {
+              setConfigBusy(true);
+              try {
+                await api(`/api/cards/${id}/approve-config`, { json: { runId: configReview.runId, configHash: configReview.configHash } });
+              } finally {
+                setConfigBusy(false);
+                setConfigReview(null);
+                refetch();
+              }
+            })} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">
+              Accept config and retry merge
+            </button>
+          </>}
+        >
+          <p className="mb-3 text-sm">The repository’s Git config changed since this run started. Review the current file below. The original contents were not saved, so a diff is unavailable. Accept only if you recognize and trust this configuration; Git settings can execute commands. Approval applies to this run and this exact version. Hook checks still apply.</p>
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-foreground/5 p-3 text-xs">{configReview.content ?? "(config file is absent)"}</pre>
+        </DialogShell>
       )}
       {error && <p className="text-red-400 text-sm">{error}</p>}
       {unretryableRun && (

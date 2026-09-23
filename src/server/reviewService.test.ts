@@ -3,6 +3,7 @@ import path from "node:path";
 import { desc, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 
 // Direct unit tests for ReviewService. `appendFeedbackTask` (private) is
 // exercised only through its public call site's observable effect —
@@ -24,6 +25,7 @@ vi.mock("./git", async (importOriginal) => ({
 }));
 
 const testDataDir = setupTestDataDir("radulf-reviewService-");
+const { loadBaseline, saveBaseline, snapshotRepoIntegrity } = await import("./integrity");
 
 const { db, cards, plans, runs, repos, reviews, now } = await import("@/db");
 const { ReviewService } = await import("./reviewService");
@@ -42,7 +44,7 @@ function seedRepo() {
     .run();
 }
 
-function seedCard(id: string, status: "review" = "review") {
+function seedCard(id: string, status: "review" | "needs_attention" = "review") {
   db.insert(cards)
     .values({
       id,
@@ -124,6 +126,49 @@ describe("ReviewService — feedback re-entry", () => {
     db.delete(repos).run();
     vi.clearAllMocks();
     seedRepo();
+  });
+
+  it.each(["accept", "stale config", "stale run", "hook"])("config approval: %s", async (scenario) => {
+    const repoPath = initScratchRepo("radulf-config-review-");
+    try {
+      db.update(repos).set({ path: repoPath }).where(eq(repos.id, "repo-1")).run();
+      seedCard("config-card", "needs_attention");
+      const run = seedLoopRun("config-card", seedPlan("config-card"));
+      const baseline = (await snapshotRepoIntegrity(repoPath))!;
+      saveBaseline(run.id, baseline);
+      git(repoPath, "config", "user.name", "Approved identity");
+      const deps = makeDeps();
+      const service = new ReviewService(deps);
+      const preview = await service.reviewConfig("config-card");
+      expect(preview.content).toContain("Approved identity");
+      mocks.mergeBranch.mockClear();
+      mocks.mergeBranch.mockResolvedValue({ ok: false, error: "delivery attempted" });
+
+      // Ordinary retry remains blocked until an explicit config approval.
+      expect(await service.retryMerge("config-card")).toMatchObject({ ok: false, error: expect.stringContaining(".git/config changed") });
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+
+      if (scenario === "stale config") git(repoPath, "config", "user.name", "Changed again");
+      if (scenario === "stale run") preview.runId = "old-run";
+      if (scenario === "hook") fs.writeFileSync(path.join(repoPath, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n");
+      if (scenario.startsWith("stale")) {
+        await expect(service.retryMerge("config-card", preview)).rejects.toThrow(/changed/);
+        expect(loadBaseline(run.id)?.configHash).toBe(baseline.configHash);
+        expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      } else {
+        const result = await service.retryMerge("config-card", preview);
+        expect(loadBaseline(run.id)).toEqual({ ...baseline, configHash: preview.configHash });
+        if (scenario === "hook") {
+          expect(result.error).toContain("hook appeared");
+          expect(mocks.mergeBranch).not.toHaveBeenCalled();
+        } else {
+          expect(result.error).toBe("delivery attempted");
+          expect(mocks.mergeBranch).toHaveBeenCalledTimes(1);
+        }
+      }
+    } finally {
+      fs.rmSync(repoPath, { recursive: true, force: true });
+    }
   });
 
   it("reject() sends the card back to the planner with the feedback pending", async () => {

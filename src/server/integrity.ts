@@ -30,6 +30,21 @@ function sha256(data: string | Buffer): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
+/** Read the exact bytes being approved; never include config contents in events. */
+export async function readRepoConfig(repoPath: string) {
+  const commonDir = await gitCommonDir(repoPath);
+  if (!commonDir) throw new Error("repository is no longer usable");
+  try {
+    const bytes = fs.readFileSync(path.join(commonDir, "config"));
+    return { content: bytes.toString("utf8"), configHash: sha256(bytes) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { content: null, configHash: "" };
+    }
+    throw error;
+  }
+}
+
 /** Resolve the shared .git dir; null when the path is not a usable repo. */
 async function gitCommonDir(repoPath: string): Promise<string | null> {
   const { ok, out } = await tryGit(repoPath, "rev-parse", "--git-common-dir");

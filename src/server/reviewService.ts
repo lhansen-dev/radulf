@@ -18,7 +18,7 @@ import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { getRepo } from "./repos";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
-import { checkRepoIntegrity, loadBaseline, noteRadulfRefWrite, removeBaseline } from "./integrity";
+import { checkRepoIntegrity, loadBaseline, noteRadulfRefWrite, readRepoConfig, removeBaseline, saveBaseline } from "./integrity";
 import type { StageDependencies } from "./stage";
 
 /** Every iteration runs on an injected checklist task, so a merge-conflict
@@ -35,6 +35,8 @@ function appendFeedbackTask(cardId: string, text: string): string | null {
 /** Who released this particular diff. Spec 15 uses it to decide draft-ness of
  * a delivered pull request; it describes the approval, not the card. */
 export type ApprovedBy = "human" | "auto";
+
+export type ConfigApproval = { runId: string; configHash: string };
 
 type Card = typeof cards.$inferSelect;
 type Run = typeof runs.$inferSelect;
@@ -127,13 +129,16 @@ export class ReviewService {
    * second delivery target; the path is the same one either way, which is why
    * a failed push needs no separate retry of its own.
    */
-  async retryMerge(cardId: string): Promise<ReviewResult> {
+  async retryMerge(cardId: string, configApproval?: ConfigApproval): Promise<ReviewResult> {
     const card = this.deps.getCard(cardId);
     if (!card) throw new ClientError("card not found");
     if (card.status !== "needs_attention") {
       throw new ClientError(`cannot retry merge for card in status ${card.status}`);
     }
     const run = this.latestLoopRun(cardId);
+    if (configApproval && configApproval.runId !== run?.id) {
+      throw new ClientError("run changed; review the Git config again");
+    }
     if (
       !run ||
       run.status !== "completed" ||
@@ -159,7 +164,23 @@ export class ReviewService {
     }
     // Always "human": retry is an operator clicking a button on a card that
     // has already failed once.
-    return this.approveClaimedRun(run.id, "needs_attention", "human");
+    return this.approveClaimedRun(run.id, "needs_attention", "human", configApproval);
+  }
+
+  async reviewConfig(cardId: string) {
+    const card = this.deps.getCard(cardId);
+    if (!card || card.status !== "needs_attention") {
+      throw new ClientError("Git config review requires a card in Needs Attention");
+    }
+    const run = this.latestLoopRun(cardId);
+    if (!run || run.status !== "completed") throw new ClientError("no completed loop run to merge");
+    const baseline = loadBaseline(run.id);
+    if (!baseline) throw new ClientError("no integrity baseline for this run");
+    const repo = getRepo(card.repoId);
+    if (!repo) throw new ClientError("repo not found");
+    const config = await readRepoConfig(repo.path);
+    if (config.configHash === baseline.configHash) throw new ClientError("Git config has not changed");
+    return { runId: run.id, ...config };
   }
 
   /**
@@ -300,6 +321,7 @@ export class ReviewService {
     runId: string,
     expectedStatus: "review" | "needs_attention",
     approvedBy: ApprovedBy,
+    configApproval?: ConfigApproval,
   ): Promise<ReviewResult> {
     const existing = this.reviewForRun(runId);
     if (existing) {
@@ -314,6 +336,22 @@ export class ReviewService {
     // however long the card sat in In Review. (Refs are excluded here: other
     // branches may have moved legitimately since the run-end check.)
     const baseline = loadBaseline(run.id);
+    if (configApproval) {
+      await this.restoreOnThrow(card.id, expectedStatus, async () => {
+        if (!baseline) throw new ClientError("no integrity baseline for this run");
+        const current = await readRepoConfig(repo.path);
+        if (current.configHash !== configApproval.configHash) {
+          throw new ClientError("Git config changed again; review it before accepting");
+        }
+        const previousConfigHash = baseline.configHash;
+        baseline.configHash = current.configHash;
+        saveBaseline(run.id, baseline);
+        emitEvent("repo.config_approved", {
+          cardId: card.id, runId: run.id,
+          payload: { previousConfigHash, configHash: current.configHash },
+        });
+      });
+    }
     if (baseline) {
       const violations = await this.restoreOnThrow(card.id, expectedStatus, () =>
         checkRepoIntegrity(repo.path, baseline, { runBranch: run.branch, checkRefs: false }),
