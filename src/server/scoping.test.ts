@@ -29,6 +29,7 @@ const {
   proposeScopedCard,
   parsePlanProposal,
   parseSplitProposal,
+  parseSplitRunMode,
   renderScopingPrompt,
   scopingTurn,
   scopingTurnInFlight,
@@ -121,6 +122,14 @@ describe("parseSplitProposal", () => {
     ]);
     // The blank CARD 2 block is gone, so the fallback numbering follows the
     // cards that survived rather than the model's own numbering.
+  });
+
+  it("reads the run mode off the RUN line, defaulting to in order, and keeps the line out of the cards", () => {
+    const reply = "RUN: in parallel\n\nCARD 1\nTITLE: A\nDESCRIPTION:\nx\n\nCARD 2\nTITLE: B\nDESCRIPTION:\ny";
+    expect(parseSplitRunMode(reply)).toBe("parallel");
+    expect(parseSplitRunMode("RUN: in order\n\nCARD 1\nTITLE: A")).toBe("ordered");
+    expect(parseSplitRunMode("CARD 1\nTITLE: A")).toBe("ordered");
+    expect(parseSplitProposal(reply, "f").map((c) => c.title)).toEqual(["A", "B"]);
   });
 
   it("returns nothing when the reply carries no card blocks at all", () => {

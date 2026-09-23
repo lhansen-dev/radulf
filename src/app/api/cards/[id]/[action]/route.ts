@@ -1,4 +1,5 @@
 import { getOrchestrator } from "@/server/orchestrator";
+import { parseBreakdown } from "@/server/cardValidation";
 import { ClientError } from "@/server/clientError";
 import { record } from "@/server/requestValidation";
 import type { ApprovedInstallScript } from "@/db";
@@ -45,6 +46,14 @@ const ACTIONS: Record<string, (id: string, req: Request) => unknown | Promise<un
     return result.ok ? ok : err(result.error ?? "merge failed", 409);
   },
   abandon: async (id) => (await getOrchestrator().abandon(id), ok),
+  // Spec 24: the epic's own verbs. Body: { pieces: { title, description,
+  // repoId? }[], runMode?: "ordered" | "parallel" }.
+  breakdown: async (id, req) => {
+    const { pieces, runMode } = parseBreakdown(await req.json());
+    return { cards: getOrchestrator().applyBreakdown(id, pieces, runMode) };
+  },
+  "start-all": (id) => getOrchestrator().startEpic(id),
+  "pause-all": (id) => getOrchestrator().pauseEpic(id),
   "approve-plan": (id) => (getOrchestrator().approvePlan(id), ok),
   "approve-install": async (id, req) =>
     getOrchestrator().approveInstallScripts(id, await installPackages(req)),

@@ -14,6 +14,7 @@ import {
   improvementRuns,
   type ApprovedInstallScript,
   type CardStatus,
+  type EpicRunMode,
 } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings, type Settings } from "./settings";
@@ -54,7 +55,15 @@ import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
 import { RUNNING_STATUSES, SCOPABLE_STATUSES } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
-import { addScopingMessage, proposeScopedPlan, proposeSplit, type SplitCard } from "./scoping";
+import { addScopingMessage, proposeScopedPlan, proposeSplit } from "./scoping";
+import {
+  FINISHED_STATUSES,
+  epicFinished,
+  hasChildren,
+  heldByEpicOrder,
+  listChildren,
+  type BreakdownPiece,
+} from "./epics";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
 import {
@@ -399,7 +408,19 @@ export class Orchestrator {
     if (result.changes !== 1) return false;
     emitEvent("card.moved", { cardId, payload: { from, to, ...(reason ? { reason } : {}) } });
     this.alertOnArrival(cardId, to, reason);
+    if (FINISHED_STATUSES.includes(to)) this.completeEpicIfFinished(cardId);
     return true;
+  }
+
+  /** Spec 24 decision 6: the last piece finishing finishes its epic. */
+  private completeEpicIfFinished(childId: string) {
+    const parentId = getCard(childId)?.parentCardId;
+    if (!parentId) return;
+    const children = listChildren(parentId);
+    if (!epicFinished(children)) return;
+    if (this.moveCard(parentId, "backlog", "done", "every task in the epic finished")) {
+      emitEvent("epic.completed", { cardId: parentId, payload: { cardIds: children.map((c) => c.id) } });
+    }
   }
 
   /**
@@ -586,6 +607,7 @@ export class Orchestrator {
     const card = requireCard(cardId);
     if (!["todo", "needs_attention"].includes(card.status))
       throw new ClientError(`cannot start card in status ${card.status}`);
+    if (hasChildren(cardId)) throw new ClientError("an epic does not run itself: start its tasks instead");
     if (!card.startedAt)
       db.update(cards).set({ startedAt: now() }).where(eq(cards.id, cardId)).run();
 
@@ -613,6 +635,7 @@ export class Orchestrator {
     if (card.status !== "backlog") {
       throw new ClientError(`cannot queue card in status ${card.status}`);
     }
+    if (hasChildren(cardId)) throw new ClientError("an epic does not run itself: start its tasks instead");
     // Transaction: two rapid queues must not read the same max position.
     const result = db.transaction((tx) => {
       const maxPosition =
@@ -669,93 +692,134 @@ export class Orchestrator {
   }
 
   /**
-   * Apply an approved split: the card becomes the first piece and the rest
-   * follow it, in order, in the queue.
+   * Spec 24: break the card down into pieces that become its children. The
+   * card stays as the epic: it keeps its thread and its description, leaves
+   * the queue for Backlog (an epic's own status is only ever backlog or
+   * done), and never runs itself. The pieces are appended to the end of the
+   * queue in order, inherit every per-card setting, and may each target
+   * another repository, in which case the epic's base branch does not apply.
+   * Calling it again on an epic appends more pieces.
    *
-   * The queue is Radulf's one position-ordered column, so it is where the
-   * sequence the session found is actually expressed rather than merely
-   * recorded. The whole set is appended to the end of it in order: the card's
-   * scope has just changed completely, so an old queue position is not worth
-   * preserving, and appending needs no fractional arithmetic and can collide
-   * with nothing.
-   *
-   * Refused once the card has a plan. Rewriting a planned card's description
-   * would leave it running a plan for the scope it no longer has; Reset
-   * clears the plans and is the way through.
+   * Refused once the card has a plan: the plan was written for the scope
+   * that is now being split, and Reset is the way through. Refused on a card
+   * that is itself a piece, because nested epics are out of scope.
    */
-  applyScopingSplit(cardId: string, items: SplitCard[]): Card[] {
+  applyBreakdown(cardId: string, pieces: BreakdownPiece[], runMode: EpicRunMode): Card[] {
     const card = requireCard(cardId);
     if (!SCOPABLE_STATUSES.includes(card.status)) {
-      throw new ClientError(`cannot split a card in status ${card.status}`);
+      throw new ClientError(`cannot break down a card in status ${card.status}`);
     }
-    if (items.length < 2) throw new ClientError("a split needs two or more cards");
-    if (items.some((item) => !item.title.trim())) throw new ClientError("every card needs a title");
+    if (card.parentCardId) {
+      throw new ClientError("a task that is part of an epic cannot be broken down further");
+    }
+    if (pieces.length === 0) throw new ClientError("a breakdown needs at least one task");
+    if (pieces.some((piece) => !piece.title.trim())) throw new ClientError("every task needs a title");
     if (this.latestPlan(cardId)) {
       throw new ClientError(
-        "this card is already planned, so splitting it now would leave the pieces running a plan " +
-          "for the scope they no longer have — reset the card first",
+        "this card is already planned, so breaking it down now would leave its pieces beside a plan " +
+          "for the scope they replace. Reset the card first",
       );
     }
-    const split = db.transaction((tx) => {
+    // Resolved before the transaction so an unknown repository fails the
+    // whole request rather than half a breakdown.
+    const targets = pieces.map((piece) =>
+      piece.repoId && piece.repoId !== card.repoId ? requireRepo(piece.repoId) : null,
+    );
+    const children = db.transaction((tx) => {
+      tx.update(cards)
+        .set({ status: "backlog", runMode, startedAt: null, updatedAt: now() })
+        .where(eq(cards.id, cardId))
+        .run();
       const base =
         (tx.select({ max: max(cards.position) }).from(cards).where(eq(cards.status, "todo")).get()
           ?.max ?? 0) + 1;
-      const rows: Card[] = [
+      return pieces.map((piece, offset) =>
         tx
-          .update(cards)
-          .set({
-            title: items[0].title.trim(),
-            description: items[0].description,
+          .insert(cards)
+          .values({
+            id: nanoid(),
+            repoId: targets[offset]?.id ?? card.repoId,
+            parentCardId: cardId,
+            title: piece.title.trim(),
+            description: piece.description,
             status: "todo",
-            position: base,
-            startedAt: null,
+            position: base + offset,
+            // The epic's base branch belongs to its own repository.
+            baseBranch: targets[offset] ? null : card.baseBranch,
+            // The pieces inherit every per-card setting, including the
+            // scoping flags: the operator chose them for this work, and
+            // the work is the same work.
+            source: card.source,
+            maxIterations: card.maxIterations,
+            timeoutMinutes: card.timeoutMinutes,
+            reviewPlanBeforeImplementation: card.reviewPlanBeforeImplementation,
+            autoApprove: card.autoApprove,
+            openPr: card.openPr,
+            grillMe: card.grillMe,
+            scopingAuthorsPlan: card.scopingAuthorsPlan,
+            plannerModel: card.plannerModel,
+            loopModel: card.loopModel,
+            evaluatorModel: card.evaluatorModel,
+            createdAt: now(),
             updatedAt: now(),
           })
-          .where(eq(cards.id, cardId))
           .returning()
           .get(),
-      ];
-      // The siblings inherit every per-card setting, including the scoping
-      // flags: the operator chose them for this work, and the work is the
-      // same work.
-      for (const [offset, item] of items.slice(1).entries()) {
-        rows.push(
-          tx
-            .insert(cards)
-            .values({
-              id: nanoid(),
-              repoId: card.repoId,
-              title: item.title.trim(),
-              description: item.description,
-              status: "todo",
-              position: base + offset + 1,
-              baseBranch: card.baseBranch,
-              source: card.source,
-              maxIterations: card.maxIterations,
-              timeoutMinutes: card.timeoutMinutes,
-              reviewPlanBeforeImplementation: card.reviewPlanBeforeImplementation,
-              autoApprove: card.autoApprove,
-              openPr: card.openPr,
-              grillMe: card.grillMe,
-              scopingAuthorsPlan: card.scopingAuthorsPlan,
-              plannerModel: card.plannerModel,
-              loopModel: card.loopModel,
-              evaluatorModel: card.evaluatorModel,
-              createdAt: now(),
-              updatedAt: now(),
-            })
-            .returning()
-            .get(),
-        );
-      }
-      return rows;
+      );
     });
-    emitEvent("card.split", {
+    emitEvent("card.breakdown", {
       cardId,
-      payload: { cardIds: split.map((row) => row.id), from: card.status },
+      payload: { cardIds: children.map((row) => row.id), runMode, from: card.status },
     });
     this.pump();
-    return split;
+    return children;
+  }
+
+  /**
+   * Spec 24 decision 5: queue every piece still in Backlog and mark every
+   * queued piece as manually started, then pump. Goes through the queue
+   * rather than startCard so an ordered epic still starts one piece at a
+   * time, and so it works with Auto Mode off.
+   */
+  startEpic(cardId: string): { queued: number; started: number } {
+    const children = listChildren(cardId);
+    if (children.length === 0) throw new ClientError("this card has no tasks to start");
+    const queued: string[] = [];
+    const started = db.transaction((tx) => {
+      let position =
+        tx.select({ max: max(cards.position) }).from(cards).where(eq(cards.status, "todo")).get()
+          ?.max ?? 0;
+      let count = 0;
+      for (const child of children) {
+        if (child.status === "backlog") {
+          position += 1;
+          tx.update(cards)
+            .set({ status: "todo", position, startedAt: now(), updatedAt: now() })
+            .where(eq(cards.id, child.id))
+            .run();
+          queued.push(child.id);
+          count += 1;
+        } else if (child.status === "todo") {
+          if (!child.startedAt) {
+            tx.update(cards).set({ startedAt: now(), updatedAt: now() }).where(eq(cards.id, child.id)).run();
+          }
+          count += 1;
+        }
+      }
+      return count;
+    });
+    for (const id of queued) {
+      emitEvent("card.moved", { cardId: id, payload: { from: "backlog", to: "todo", reason: "epic started" } });
+    }
+    this.pump();
+    return { queued: queued.length, started };
+  }
+
+  /** Spec 24 decision 5: pause every looping piece at its next iteration boundary. */
+  pauseEpic(cardId: string): { paused: number } {
+    const looping = listChildren(cardId).filter((child) => child.status === "looping");
+    for (const child of looping) this.pausedCards.add(child.id);
+    return { paused: looping.length };
   }
 
   pauseCard(cardId: string) {
@@ -938,12 +1002,16 @@ export class Orchestrator {
       .where(eq(cards.status, "ready"))
       .orderBy(asc(cards.startedAt))
       .all();
+    // Spec 24: a piece of an ordered epic waits for the pieces queued before
+    // it. Only these automatic starts are held; Start now on the piece is the
+    // operator overriding the order on purpose.
     const todoCards = db
       .select()
       .from(cards)
       .where(eq(cards.status, "todo"))
       .orderBy(asc(cards.position))
-      .all();
+      .all()
+      .filter((card) => !heldByEpicOrder(card));
     const autoMode = settings.autoMode;
     const limit = this.concurrencyLimit(settings);
     const eligibleTodoRepoIds = planningCandidates(todoCards, autoMode).map((c) => c.repoId);

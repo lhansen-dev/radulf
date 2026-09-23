@@ -1,4 +1,5 @@
-import { index, sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, sqliteTable, text, integer, real, uniqueIndex, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
+import type { EpicRunMode } from "../shared/epics";
 
 export const repos = sqliteTable("repos", {
   id: text("id").primaryKey(),
@@ -51,6 +52,8 @@ export const CARD_STATUSES = [
 ] as const;
 export type CardStatus = (typeof CARD_STATUSES)[number];
 
+export { EPIC_RUN_MODES, type EpicRunMode } from "../shared/epics";
+
 export const cards = sqliteTable(
   "cards",
   {
@@ -63,6 +66,17 @@ export const cards = sqliteTable(
     status: text("status").$type<CardStatus>().notNull().default("backlog"),
     position: real("position").notNull().default(0),
     baseBranch: text("base_branch"),
+    // Spec 24: the epic this card is a piece of. An epic is any card with at
+    // least one child; it never runs itself, and reads as done once every
+    // child is done or abandoned. Set null on delete: the pieces are real
+    // work with real history, so deleting the epic detaches them.
+    parentCardId: text("parent_card_id").references((): AnySQLiteColumn => cards.id, {
+      onDelete: "set null",
+    }),
+    // Spec 24: `ordered` holds each piece until every sibling queued before it
+    // has finished; `parallel` lets the repo cap (spec 20) bound them. Only
+    // meaningful on a card with children.
+    runMode: text("run_mode").$type<EpicRunMode>(),
     source: text("source").$type<"user" | "agent">().notNull().default("user"),
     maxIterations: integer("max_iterations"),
     reviewPlanBeforeImplementation: integer("review_plan_before_implementation")
@@ -108,6 +122,7 @@ export const cards = sqliteTable(
   (table) => [
     index("cards_status_position_idx").on(table.status, table.position),
     index("cards_repo_status_position_idx").on(table.repoId, table.status, table.position),
+    index("cards_parent_card_id_idx").on(table.parentCardId),
   ],
 );
 

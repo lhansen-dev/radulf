@@ -36,7 +36,7 @@ beforeEach(() => {
         ? { cards: [
             { title: "Add the limiter", description: "## Problem\nBrute force." },
             { title: "Surface the lockout", description: "## Problem\nDepends on card 1." },
-          ] }
+          ], runMode: "ordered" }
         : url.endsWith("/scoping/plan")
           ? { version: 1, status: "ready" }
           : { messages: [] };
@@ -150,17 +150,19 @@ describe("ScopingPanel", () => {
     expect(screen.queryByLabelText("Your message")).toBeNull();
 
     fireEvent.change(firstTitle, { target: { value: "Add the login limiter" } });
-    fireEvent.click(screen.getByRole("button", { name: "Queue 2 cards" }));
+    fireEvent.click(screen.getByRole("button", { name: "Queue 2 tasks" }));
 
+    // Spec 24: applying is the breakdown action, with the run mode proposed.
     await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[1].url).toBe("/api/cards/c1/scoping/split");
+    expect(calls[1].url).toBe("/api/cards/c1/breakdown");
     expect(json(1)).toEqual({
-      cards: [
+      pieces: [
         { title: "Add the login limiter", description: "## Problem\nBrute force." },
         { title: "Surface the lockout", description: "## Problem\nDepends on card 1." },
       ],
+      runMode: "ordered",
     });
-    expect(await screen.findByText(/Queued as 2 cards, in order/)).toBeTruthy();
+    expect(await screen.findByText(/Queued 2 tasks under this epic, to run in order/)).toBeTruthy();
     expect(onChanged).toHaveBeenCalled();
   });
 

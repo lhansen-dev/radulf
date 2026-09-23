@@ -1,3 +1,5 @@
+import { EPIC_RUN_MODES, type EpicRunMode } from "@/db";
+import type { BreakdownPiece } from "./epics";
 import type { CreateCardRequest } from "@/shared/cardRequests";
 import {
   invalid,
@@ -31,6 +33,8 @@ export type UpdateCardInput = {
   /** Stored as SQLite's 0/1, so the PATCH route can spread these straight in. */
   grillMe?: number;
   scopingAuthorsPlan?: number;
+  /** Spec 24: how an epic's pieces are scheduled. */
+  runMode?: EpicRunMode | null;
 };
 
 const CREATE_FIELDS = new Set([
@@ -73,8 +77,13 @@ export function parseCreateCard(value: unknown): CreateCardInput {
 
 const UPDATE_FIELDS = new Set([
   "title", "description", "maxIterations", "timeoutMinutes", "position", "plannerModel", "loopModel",
-  "evaluatorModel", "grillMe", "scopingAuthorsPlan",
+  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "runMode",
 ]);
+
+function runMode(value: unknown): EpicRunMode {
+  if (!EPIC_RUN_MODES.includes(value as EpicRunMode)) invalid("runMode must be ordered or parallel");
+  return value as EpicRunMode;
+}
 
 export function parseUpdateCard(value: unknown): UpdateCardInput {
   const body = record(value, "card body");
@@ -105,6 +114,29 @@ export function parseUpdateCard(value: unknown): UpdateCardInput {
     if (typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
     patch[field] = body[field] ? 1 : 0;
   }
+  if ("runMode" in body) patch.runMode = body.runMode === null ? null : runMode(body.runMode);
   if (Object.keys(patch).length === 0) invalid("nothing to update");
   return patch;
+}
+
+const BREAKDOWN_FIELDS = new Set(["pieces", "runMode"]);
+const PIECE_FIELDS = new Set(["title", "description", "repoId"]);
+
+/** Spec 24: the body of POST /api/cards/:id/breakdown. The run mode defaults
+ * to in order, as the split proposal's parser does. */
+export function parseBreakdown(value: unknown): { pieces: BreakdownPiece[]; runMode: EpicRunMode } {
+  const body = record(value, "breakdown body");
+  rejectUnknownKeys(body, BREAKDOWN_FIELDS, "breakdown field");
+  if (!Array.isArray(body.pieces)) invalid("pieces must be an array");
+  const pieces = (body.pieces as unknown[]).map((item) => {
+    const piece = record(item, "breakdown piece");
+    rejectUnknownKeys(piece, PIECE_FIELDS, "piece field");
+    if (typeof piece.description !== "string") invalid("every piece needs a description");
+    return {
+      title: requiredString(piece.title, "title"),
+      description: piece.description as string,
+      repoId: optionalString(piece.repoId, "repoId"),
+    };
+  });
+  return { pieces, runMode: body.runMode === undefined ? "ordered" : runMode(body.runMode) };
 }

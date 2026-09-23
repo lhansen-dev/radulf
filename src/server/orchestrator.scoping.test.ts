@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 import { testSettings } from "@/testUtils/testSettings";
@@ -66,17 +67,20 @@ beforeEach(() => {
 
 const allCards = () => db.select().from(cards).all().sort((a, b) => a.position - b.position);
 
-describe("applyScopingSplit", () => {
-  const items = [
+describe("applyBreakdown", () => {
+  const pieces = [
     { title: "  Add the limiter  ", description: "## Problem\nBrute force." },
     { title: "Surface the lockout", description: "## Problem\nDepends on card 1." },
     { title: "Document it", description: "## Problem\nNo docs." },
   ];
 
-  it("rewrites the card as the first piece and queues the rest in order", () => {
-    // A card already in the queue, so the split has a position to appear after.
+  it("makes the card an epic in Backlog and queues its pieces at the end, in order, with its settings", () => {
+    // A card already in the queue, so the pieces have a position to appear after.
     seedCard("other", { status: "todo", position: 7 });
-    seedCard("split-me", {
+    seedCard("epic", {
+      status: "todo",
+      position: 8,
+      startedAt: now(),
       baseBranch: "release/2",
       maxIterations: 9,
       autoApprove: 1,
@@ -85,25 +89,21 @@ describe("applyScopingSplit", () => {
       loopModel: "a-loop-model",
     });
 
-    const result = orchestrator.applyScopingSplit("split-me", items);
+    const result = orchestrator.applyBreakdown("epic", pieces, "parallel");
 
-    expect(result.map((row) => row.title)).toEqual([
-      "Add the limiter",
-      "Surface the lockout",
-      "Document it",
-    ]);
-    // Appended to the end of the queue, in order, after the card that was
-    // already there.
+    expect(result.map((row) => row.title)).toEqual(["Add the limiter", "Surface the lockout", "Document it"]);
     const queued = allCards().filter((row) => row.status === "todo");
-    expect(queued.map((row) => row.id)).toEqual(["other", "split-me", ...result.slice(1).map((r) => r.id)]);
+    expect(queued.map((row) => row.id)).toEqual(["other", ...result.map((row) => row.id)]);
+    // The epic's own slot is vacated first, so the pieces follow the card that stays.
     expect(queued.slice(1).map((row) => row.position)).toEqual([8, 9, 10]);
-
-    // The original keeps its id, and so its thread and its history.
-    expect(result[0].id).toBe("split-me");
-    expect(result[0].description).toBe("## Problem\nBrute force.");
-    // The siblings inherit every per-card setting.
-    for (const sibling of result.slice(1)) {
-      expect(sibling).toMatchObject({
+    // The epic itself leaves the queue, keeps its description, and never runs.
+    expect(allCards().find((row) => row.id === "epic")).toMatchObject({
+      status: "backlog", runMode: "parallel", startedAt: null, description: "Rough ask",
+    });
+    // The pieces point at it and inherit every per-card setting.
+    for (const child of result) {
+      expect(child).toMatchObject({
+        parentCardId: "epic",
         repoId: "repo-1",
         baseBranch: "release/2",
         maxIterations: 9,
@@ -113,10 +113,33 @@ describe("applyScopingSplit", () => {
         loopModel: "a-loop-model",
       });
     }
-    expect(db.select().from(events).all().map((e) => e.type)).toContain("card.split");
+    const event = db.select().from(events).all().find((e) => e.type === "card.breakdown");
+    expect(JSON.parse(event!.payload)).toEqual({ cardIds: result.map((row) => row.id), runMode: "parallel", from: "todo" });
   });
 
-  it("refuses a card that is already planned, rather than leaving the pieces on a stale plan", () => {
+  it("lets a piece target another repository, where the epic's base branch does not apply", () => {
+    db.insert(repos)
+      .values({ id: "repo-2", name: "Other", path: "/tmp/repo-2", defaultBranch: "main", createdAt: now() })
+      .run();
+    seedCard("epic", { baseBranch: "release/2" });
+
+    const [here, there] = orchestrator.applyBreakdown("epic", [pieces[0], { ...pieces[1], repoId: "repo-2" }], "ordered");
+
+    expect(here).toMatchObject({ repoId: "repo-1", baseBranch: "release/2" });
+    expect(there).toMatchObject({ repoId: "repo-2", baseBranch: null });
+    expect(() => orchestrator.applyBreakdown("epic", [{ ...pieces[2], repoId: "nope" }], "ordered")).toThrow(/repo/);
+    expect(allCards().filter((row) => row.parentCardId === "epic")).toHaveLength(2);
+  });
+
+  it("appends more pieces to an epic that already has some", () => {
+    seedCard("epic");
+    const first = orchestrator.applyBreakdown("epic", pieces.slice(0, 2), "ordered");
+    const more = orchestrator.applyBreakdown("epic", pieces.slice(2), "ordered");
+    expect(allCards().filter((row) => row.parentCardId === "epic").map((row) => row.id))
+      .toEqual([...first, ...more].map((row) => row.id));
+  });
+
+  it("refuses a planned card, rather than leaving the pieces beside a stale plan", () => {
     seedCard("planned");
     db.insert(plans)
       .values({
@@ -130,18 +153,82 @@ describe("applyScopingSplit", () => {
       })
       .run();
 
-    expect(() => orchestrator.applyScopingSplit("planned", items)).toThrow(/already planned/);
+    expect(() => orchestrator.applyBreakdown("planned", pieces, "ordered")).toThrow(/already planned/);
     expect(allCards()).toHaveLength(1);
   });
 
-  it("refuses fewer than two cards, a card with no title, and a card past scoping", () => {
+  it("refuses a piece of an epic, an empty breakdown, a piece with no title, and a card past scoping", () => {
+    seedCard("epic");
+    seedCard("piece", { parentCardId: "epic" });
     seedCard("thin");
     seedCard("running", { status: "looping" });
 
-    expect(() => orchestrator.applyScopingSplit("thin", items.slice(0, 1))).toThrow(/two or more/);
-    expect(() => orchestrator.applyScopingSplit("thin", [items[0], { title: " ", description: "x" }]))
+    expect(() => orchestrator.applyBreakdown("piece", pieces, "ordered")).toThrow(/part of an epic/);
+    expect(() => orchestrator.applyBreakdown("thin", [], "ordered")).toThrow(/at least one/);
+    expect(() => orchestrator.applyBreakdown("thin", [pieces[0], { title: " ", description: "x" }], "ordered"))
       .toThrow(/needs a title/);
-    expect(() => orchestrator.applyScopingSplit("running", items)).toThrow(/status looping/);
+    expect(() => orchestrator.applyBreakdown("running", pieces, "ordered")).toThrow(/status looping/);
+  });
+});
+
+describe("an epic", () => {
+  it("is never queued or started itself", () => {
+    seedCard("epic");
+    seedCard("piece", { parentCardId: "epic", status: "todo" });
+
+    expect(() => orchestrator.queueCard("epic")).toThrow(/does not run itself/);
+    db.update(cards).set({ status: "todo" }).where(eq(cards.id, "epic")).run();
+    expect(() => orchestrator.startCard("epic")).toThrow(/does not run itself/);
+  });
+
+  it("Start all queues the pieces still in Backlog and marks every queued piece as started", () => {
+    seedCard("epic", { runMode: "ordered" });
+    seedCard("a", { parentCardId: "epic", status: "todo", position: 1 });
+    seedCard("b", { parentCardId: "epic", status: "backlog", position: 2 });
+    seedCard("c", { parentCardId: "epic", status: "done", position: 3 });
+    seedCard("other", { status: "todo", position: 5 });
+    // Marked as started, the pieces are eligible even with Auto Mode off, so
+    // the pump would reach for a planner here; the queue is what is under test.
+    const pump = vi.spyOn(orchestrator, "pump").mockImplementation(() => {});
+    try {
+      expect(orchestrator.startEpic("epic")).toEqual({ queued: 1, started: 2 });
+    } finally {
+      pump.mockRestore();
+    }
+
+    const rows = Object.fromEntries(allCards().map((row) => [row.id, row]));
+    expect(rows.a.status).toBe("todo");
+    expect(rows.a.startedAt).not.toBeNull();
+    expect(rows.b).toMatchObject({ status: "todo", position: 6 });
+    expect(rows.b.startedAt).not.toBeNull();
+    expect(rows.c.status).toBe("done");
+    expect(db.select().from(events).all().filter((e) => e.type === "card.moved").map((e) => e.cardId)).toEqual(["b"]);
+    expect(() => orchestrator.startEpic("other")).toThrow(/no tasks/);
+  });
+
+  it("Pause all pauses the looping pieces and no others", () => {
+    seedCard("epic");
+    seedCard("a", { parentCardId: "epic", status: "looping" });
+    seedCard("b", { parentCardId: "epic", status: "todo" });
+
+    expect(orchestrator.pauseEpic("epic")).toEqual({ paused: 1 });
+    const paused = (orchestrator as unknown as { pausedCards: Set<string> }).pausedCards;
+    expect(paused.has("a")).toBe(true);
+    expect(paused.has("b")).toBe(false);
+  });
+
+  it("finishes when its last unfinished piece does, and not before", () => {
+    seedCard("epic");
+    seedCard("a", { parentCardId: "epic", status: "done", position: 1 });
+    seedCard("b", { parentCardId: "epic", status: "review", position: 2 });
+    const move = (orchestrator as unknown as { moveCard: (id: string, from: string, to: string) => boolean }).moveCard.bind(orchestrator);
+
+    move("b", "review", "reviewing");
+    expect(allCards().find((row) => row.id === "epic")!.status).toBe("backlog");
+
+    move("b", "reviewing", "done");
+    expect(allCards().find((row) => row.id === "epic")!.status).toBe("done");
+    expect(db.select().from(events).all().map((e) => e.type)).toContain("epic.completed");
   });
 });
 

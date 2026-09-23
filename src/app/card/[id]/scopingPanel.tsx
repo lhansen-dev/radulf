@@ -6,6 +6,7 @@ import { Markdown } from "../../ui/markdown";
 import type { ScopingMessage, ScopingRequest, ScopingTurn } from "./useCardDetail";
 import { SCOPABLE_STATUSES } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
+import type { EpicRunMode } from "@/shared/epics";
 import { scopingRunId } from "@/shared/scopingRunId";
 
 type SplitCard = { title: string; description: string };
@@ -60,6 +61,7 @@ export function ScopingPanel({
   const [error, setError] = useState("");
   const [proposal, setProposal] = useState<{ title: string; description: string } | null>(null);
   const [split, setSplit] = useState<SplitCard[] | null>(null);
+  const [splitRunMode, setSplitRunMode] = useState<EpicRunMode>("ordered");
   const [notice, setNotice] = useState("");
   const open = SCOPABLE_STATUSES.includes(status as never);
   // The planner asked, or the loop stopped on a blocker: either way an answer
@@ -109,17 +111,19 @@ export function ScopingPanel({
     onChanged();
   });
   // Spec 17: a split is a proposal, never an action — proposeSplit only
-  // returns the pieces, and applySplit is this second, separate click.
+  // returns the pieces, and applySplit is this second, separate click. Spec
+  // 24: applying makes this card the epic and the pieces its tasks.
   const proposeSplitCards = () => run("split", async () => {
-    const result = await api<{ cards: SplitCard[] }>(`/api/cards/${cardId}/scoping/split`, { json: {} });
+    const result = await api<{ cards: SplitCard[]; runMode: EpicRunMode }>(`/api/cards/${cardId}/scoping/split`, { json: {} });
     setSplit(result.cards);
+    setSplitRunMode(result.runMode);
     onChanged();
   });
   const applySplit = () => run("apply", async () => {
     if (!split) return;
-    await api(`/api/cards/${cardId}/scoping/split`, { json: { cards: split } });
+    await api(`/api/cards/${cardId}/breakdown`, { json: { pieces: split, runMode: splitRunMode } });
     setSplit(null);
-    setNotice(`Queued as ${split.length} cards, in order. This card is the first.`);
+    setNotice(`Queued ${split.length} tasks under this epic, to run ${splitRunMode === "ordered" ? "in order" : "in parallel"}.`);
     onChanged();
   });
   const writePlan = () => run("plan", async () => {
@@ -249,8 +253,8 @@ export function ScopingPanel({
             Proposed split into {split.length} cards — edit anything, then apply
           </p>
           <p className="text-xs text-foreground/55">
-            Applying queues them in this order. This card becomes the first one and keeps the
-            thread; the rest are new cards with its settings.
+            Applying makes this card the epic and queues these as its tasks, in this order, with its
+            settings. The session recommends running them {splitRunMode === "ordered" ? "in order" : "in parallel"}.
           </p>
           {split.map((item, i) => (
             <div key={i} className="flex flex-col gap-2 rounded-lg bg-foreground/[0.03] p-2.5">
@@ -291,7 +295,7 @@ export function ScopingPanel({
               disabled={running || split.some((c) => !c.title.trim())}
               className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}
             >
-              {busy === "apply" ? "Queueing…" : `Queue ${split.length} cards`}
+              {busy === "apply" ? "Queueing…" : `Queue ${split.length} tasks`}
             </button>
           </div>
         </div>

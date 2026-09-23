@@ -4,7 +4,6 @@ const mocks = vi.hoisted(() => ({
   scopingTurn: vi.fn(),
   proposeScopedCard: vi.fn(),
   proposeScopingSplit: vi.fn(),
-  applyScopingSplit: vi.fn(),
   adoptScopingPlan: vi.fn(),
 }));
 
@@ -15,7 +14,6 @@ vi.mock("@/server/scoping", () => ({
 vi.mock("@/server/orchestrator", () => ({
   getOrchestrator: () => ({
     proposeScopingSplit: mocks.proposeScopingSplit,
-    applyScopingSplit: mocks.applyScopingSplit,
     adoptScopingPlan: mocks.adoptScopingPlan,
   }),
 }));
@@ -25,13 +23,7 @@ const { POST: PROPOSE } = await import("./proposal/route");
 const { POST: SPLIT } = await import("./split/route");
 const { POST: PLAN } = await import("./plan/route");
 
-function splitRequest(body?: unknown) {
-  return new Request("http://localhost/api/cards/c1/scoping/split", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
-}
+const splitRequest = () => new Request("http://localhost/api/cards/c1/scoping/split", { method: "POST" });
 
 const ctx = { params: Promise.resolve({ id: "c1" }) };
 
@@ -86,33 +78,15 @@ describe("POST /api/cards/:id/scoping/proposal", () => {
 });
 
 describe("POST /api/cards/:id/scoping/split", () => {
-  it("proposes a split when the body names no cards, applying nothing", async () => {
+  it("proposes a split with the run mode the session recommends, applying nothing", async () => {
     const cards = [{ title: "One", description: "a" }, { title: "Two", description: "b" }];
-    mocks.proposeScopingSplit.mockResolvedValue({ cards, messages: [] });
+    mocks.proposeScopingSplit.mockResolvedValue({ cards, runMode: "parallel", messages: [] });
 
     const response = await SPLIT(splitRequest(), ctx);
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ cards, messages: [] });
+    await expect(response.json()).resolves.toEqual({ cards, runMode: "parallel", messages: [] });
     expect(mocks.proposeScopingSplit).toHaveBeenCalledWith("c1");
-    expect(mocks.applyScopingSplit).not.toHaveBeenCalled();
-  });
-
-  it("applies the operator's own version of the proposal when the body carries it", async () => {
-    const edited = [{ title: "One", description: "a" }, { title: "Two", description: "b" }];
-    mocks.applyScopingSplit.mockReturnValue(edited);
-
-    const response = await SPLIT(splitRequest({ cards: edited }), ctx);
-
-    expect(response.status).toBe(200);
-    expect(mocks.applyScopingSplit).toHaveBeenCalledWith("c1", edited);
-    expect(mocks.proposeScopingSplit).not.toHaveBeenCalled();
-  });
-
-  it("rejects a malformed cards list before reaching the orchestrator", async () => {
-    expect((await SPLIT(splitRequest({ cards: "One, Two" }), ctx)).status).toBe(400);
-    expect((await SPLIT(splitRequest({ cards: [{ title: "One" }] }), ctx)).status).toBe(400);
-    expect(mocks.applyScopingSplit).not.toHaveBeenCalled();
   });
 });
 

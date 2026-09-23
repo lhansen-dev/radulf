@@ -1,7 +1,7 @@
 import path from "node:path";
 import { asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, scopingMessages, TRANSCRIPTS_DIR, type ScopingRole } from "@/db";
+import { db, now, scopingMessages, TRANSCRIPTS_DIR, type EpicRunMode, type ScopingRole } from "@/db";
 import { ClientError } from "./clientError";
 import { requireCard as requireCardRow } from "./cards";
 import { emitEvent } from "./events";
@@ -145,7 +145,9 @@ const SPLIT_REQUEST =
   "cards in the order they should be done, each piece independently useful and independently " +
   "reviewable, and each one small enough for a single agent to carry out. Do not split work " +
   "that only makes sense together, and do not invent scope the conversation did not settle. " +
-  "Output EXACTLY this format and nothing else, repeating the block per card:\n\n" +
+  "Output EXACTLY this format and nothing else: one RUN line, then one block per card:\n\n" +
+  "RUN: <`in order` when a later card builds on an earlier one, `in parallel` when every card " +
+  "stands alone and they could all be worked at once>\n\n" +
   "CARD 1\n" +
   "TITLE: <one line, action-oriented>\n" +
   "DESCRIPTION:\n" +
@@ -226,6 +228,15 @@ export function parseSplitProposal(text: string, fallbackTitle: string): SplitCa
     .slice(1)
     .filter((block) => block.trim())
     .map((block, i) => parseScopedCardProposal(block, `${fallbackTitle} (${i + 1})`));
+}
+
+/**
+ * Spec 24: the run mode a split proposal recommends for its pieces. In order
+ * unless the reply says in parallel, because in order is what the queue did
+ * before the line existed, and a missing line should not loosen that.
+ */
+export function parseSplitRunMode(text: string): EpicRunMode {
+  return /^RUN:.*\bparallel\b/im.test(text) ? "parallel" : "ordered";
 }
 
 /** The three artifacts a planning run would have produced. */
@@ -373,13 +384,14 @@ export async function proposeScopedCard(
 
 /**
  * The session's second concrete output (spec 17): the work turned out to be
- * more than one card, so here are the pieces in order. A proposal and nothing
- * more — applying it is a separate, operator-driven step, the same posture
- * decision 6 takes on merging. The reply joins the thread either way.
+ * more than one card, so here are the pieces in order, with the run mode the
+ * session recommends for them (spec 24). A proposal and nothing more —
+ * applying it is a separate, operator-driven step, the same posture decision
+ * 6 takes on merging. The reply joins the thread either way.
  */
 export async function proposeSplit(
   cardId: string,
-): Promise<{ cards: SplitCard[]; messages: ScopingMessage[] }> {
+): Promise<{ cards: SplitCard[]; runMode: EpicRunMode; messages: ScopingMessage[] }> {
   const { card, repo } = requireCard(cardId);
   return oneTurnAtATime(cardId, "split", async () => {
     const raw = await ask(card, repo, listScopingMessages(cardId), "split");
@@ -390,7 +402,7 @@ export async function proposeSplit(
         "the session did not come back with two or more cards — its reply is in the thread",
       );
     }
-    return { cards: split, messages: listScopingMessages(cardId) };
+    return { cards: split, runMode: parseSplitRunMode(raw), messages: listScopingMessages(cardId) };
   });
 }
 
