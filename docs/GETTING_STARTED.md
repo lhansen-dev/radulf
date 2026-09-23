@@ -90,9 +90,11 @@ OpenRouter and a local server need no login at all — set an API key or a base 
 
    Already written up in Jira? Paste the issue link or key into **Import from
    Jira** in the New task dialog and Radulf prefills the title and description
-   from the issue, opening with a link back to it. This needs the site URL,
-   your Atlassian account email and an API token under **Settings →
-   Repositories → Jira**. Radulf only ever reads from Jira.
+   from the issue, opening with a link back to it. An issue with child issues
+   lists them too, each ticked to become a task under this one, so an epic
+   comes over as an epic. This needs the site URL, your Atlassian account
+   email and an API token under **Settings → Repositories → Jira**. Radulf
+   only ever reads from Jira.
 3. **Move it to Todo.** This is the ordered execution queue. With Auto Mode on
    (the default) the card starts when its turn arrives; **Start now** claims the
    slot immediately.

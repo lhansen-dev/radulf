@@ -37,7 +37,7 @@ The user's job shrinks to three verbs: describe the work, prioritize the queue, 
 - Improve Radulf itself with cards and Improvement Runs against this repo.
 - Batch repo improvements on a time budget against IREN repos such as cluster-setup, reviewed afterwards as one accumulated branch.
 
-**Stated direction, not built yet:** large multi-step epics that span several repos and need coordination between agents, with multiple tasks running concurrently. Spec 20's per-repo concurrency cap is the current extent of concurrency. Cross-repo coordination has no design yet.
+**Epics (spec 24):** one card broken down into child tasks that run in order or in parallel under spec 20's per-repo cap, with Jira child issues as ready-made pieces. Tasks may target different repositories, but nothing coordinates two agents; cross-repo coordination has no design yet.
 
 **Environment:**
 
@@ -57,7 +57,7 @@ The user's job shrinks to three verbs: describe the work, prioritize the queue, 
 
 **Delivery.** Approve merges the branch locally into the card's base branch, or delivers it as a GitHub pull request per spec 15. GitLab, Gitea, and Forgejo delivery are wanted and undecided.
 
-**Integrations.** Jira issue import into a new task, read-only. GitHub status and pull-request delivery. A folder browser that can register an existing repo or create a fresh one.
+**Integrations.** Jira issue import into a new task, with the issue's child issues as the tasks of an epic, read-only. GitHub status and pull-request delivery. A folder browser that can register an existing repo or create a fresh one.
 
 **Concurrency.** More than one card per repo can run at once under a per-repo cap. Local-model runs remain serial because the model owns the machine's memory.
 

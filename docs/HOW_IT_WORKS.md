@@ -28,9 +28,9 @@ takes a rough ask straight to that thread. Scoping is a role of its own in
 Settings, separate from the planner, because you wait on every turn.
 
 The thread can end three ways. **Draft the scoped task** rewrites this one
-card. **Propose a split** comes back with two or more cards in the order they
-should be done, for you to edit, drop or discard; applying it makes this card
-the first piece and queues the rest behind it. **Grill me while scoping**, on
+card. **Propose a breakdown** comes back with two or more tasks in the order
+they should be done and a recommended run mode, for you to edit, reorder, drop
+or add to; queueing them makes this card an epic (below). **Grill me while scoping**, on
 card creation or edit, makes the questioning relentless rather than a few
 questions a turn: the assistant maps the card as a design tree and asks every
 question it can at once, each with a recommended answer, until nothing is left
@@ -39,6 +39,19 @@ assumed. **Let scoping write the plan** goes further and lets the session write
 entirely — worth it when the planner is the weakest model you have configured.
 Tick **Review plan before implementation** alongside it to read the result
 before anything runs.
+
+**Epics.** A card broken down this way stays as the epic: it keeps its thread
+and description, never runs itself, and its page lists the tasks under it with
+their status, a progress bar, **Start all** and **Pause all**. The tasks are
+ordinary cards that inherit the epic's settings and may each target another
+repository. The epic's **run mode** decides how the queue treats them: **in
+order** starts a task only once every task before it is done, while **in
+parallel** lets them all be eligible at once, bounded by **Concurrent cards
+per repo** in Settings. **Start now** on a task always starts it, order or not.
+The epic reads as done when its tasks are. **Create and break down** in the
+New task dialog creates the card and asks for the breakdown straight away, and
+a Jira issue with child issues offers those children as the tasks, ticked, with
+a run mode, before the card exists.
 
 **1 · Plan.** The planner reads the card, its scoping thread, and the repo, then
 writes plan artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop
