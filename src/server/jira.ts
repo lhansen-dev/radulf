@@ -97,6 +97,35 @@ export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<Jira
   };
 }
 
+/**
+ * Spec 24 decision 8: the issue's child issues, in rank order, as the pieces
+ * of an epic. Jira Cloud unified epic children and sub-tasks under the
+ * `parent` field, and retired the legacy `search` endpoint in 2025 for
+ * `search/jql`, which is the one used here. One page of up to 100: an epic
+ * with more children than that is not one an operator breaks down in one go.
+ *
+ * Called after `fetchJiraIssue` succeeded, so the credentials are known good:
+ * on a rejected token this endpoint answers 200 with no issues, which would
+ * otherwise read as "no children".
+ */
+export async function fetchJiraChildren(key: string, s: JiraSettings): Promise<JiraIssue[]> {
+  const base = siteRoot(s);
+  const jql = encodeURIComponent(`parent = ${key} ORDER BY rank ASC`);
+  const res = await jiraGet(s, `rest/api/2/search/jql?jql=${jql}&fields=summary,description&maxResults=100`);
+  if (!res.ok) throw new ClientError(`Jira responded ${res.status} listing the child issues of ${key}`);
+  const body = (await res.json()) as {
+    issues?: { key?: string; fields?: { summary?: unknown; description?: unknown } }[];
+  };
+  return (body.issues ?? [])
+    .filter((issue) => typeof issue.key === "string" && issue.key)
+    .map((issue) => ({
+      key: issue.key as string,
+      url: `${base}/browse/${issue.key}`,
+      summary: typeof issue.fields?.summary === "string" ? issue.fields.summary.trim() : "",
+      description: descriptionToMarkdown(issue.fields?.description),
+    }));
+}
+
 /** What the New Task dialog prefills: a title carrying the key, and a
  * description that opens with the link back so the card always points home. */
 export function jiraCardDraft(issue: JiraIssue): JiraCardDraft {

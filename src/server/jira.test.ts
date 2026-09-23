@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchJiraIssue, jiraCardDraft, parseJiraIssueRef, wikiToMarkdown } from "./jira";
+import { fetchJiraChildren, fetchJiraIssue, jiraCardDraft, parseJiraIssueRef, wikiToMarkdown } from "./jira";
 
 const configured = { jiraBaseUrl: "https://example.atlassian.net/", jiraEmail: "me@example.com", jiraApiToken: "tok" };
 
@@ -172,6 +172,43 @@ describe("fetchJiraIssue", () => {
     await expect(fetchJiraIssue("DEV-1", { ...configured, jiraApiToken: "" })).rejects.toThrow(/not configured/);
     await expect(fetchJiraIssue("nonsense", configured)).rejects.toThrow(/does not look like/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchJiraChildren", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("lists the issue's children through search/jql in rank order, shaped like the issue", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          issues: [
+            { key: "DEV-2", fields: { summary: " First ", description: "h2. Why\nBecause." } },
+            { key: "DEV-3", fields: { summary: "Second", description: null } },
+            { fields: { summary: "no key, dropped" } },
+          ],
+          isLast: true,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const children = await fetchJiraChildren("DEV-1", configured);
+
+    expect(children).toEqual([
+      { key: "DEV-2", url: "https://example.atlassian.net/browse/DEV-2", summary: "First", description: "## Why\nBecause." },
+      { key: "DEV-3", url: "https://example.atlassian.net/browse/DEV-3", summary: "Second", description: "" },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe(
+      `https://example.atlassian.net/rest/api/2/search/jql?jql=${encodeURIComponent("parent = DEV-1 ORDER BY rank ASC")}&fields=summary,description&maxResults=100`,
+    );
+  });
+
+  it("reports a failed listing with the parent's key", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+    await expect(fetchJiraChildren("DEV-1", configured)).rejects.toThrow(/responded 500 listing the child issues of DEV-1/);
   });
 });
 

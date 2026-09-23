@@ -31,7 +31,18 @@ beforeEach(() => {
         };
       }
       if (target === "/api/cards" && init?.method === "POST") return { id: "card-1" };
+      if (target === "/api/cards/card-1/breakdown") return { cards: [] };
       if (target.startsWith("/api/jira/issue")) {
+        // DEV-500 is an epic with two child issues; DEV-123 stands alone.
+        if (target.includes("DEV-500")) {
+          return {
+            key: "DEV-500", url: "https://jira.example/browse/DEV-500", title: "[DEV-500] Ship the widget", description: "Jira: https://jira.example/browse/DEV-500",
+            children: [
+              { key: "DEV-501", url: "https://jira.example/browse/DEV-501", title: "[DEV-501] Part one", description: "Jira: https://jira.example/browse/DEV-501" },
+              { key: "DEV-502", url: "https://jira.example/browse/DEV-502", title: "[DEV-502] Part two", description: "Jira: https://jira.example/browse/DEV-502" },
+            ],
+          };
+        }
         return { key: "DEV-123", url: "https://jira.example/browse/DEV-123", title: "[DEV-123] Fix the widget", description: "Jira: https://jira.example/browse/DEV-123\n\nIt is broken." };
       }
       if (target === "/api/repos/init") {
@@ -88,6 +99,41 @@ describe("NewTaskDialog", () => {
       .toBe("Jira: https://jira.example/browse/DEV-123\n\nIt is broken.");
     const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string][];
     expect(calls.some(([url]) => url === `/api/jira/issue?ref=${encodeURIComponent("https://jira.example/browse/DEV-123")}`)).toBe(true);
+    cleanup();
+  });
+
+  it("imports a Jira issue's child issues as the tasks of an epic, with the run mode chosen", async () => {
+    cleanup();
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={onCreated}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Import from Jira"), "DEV-500");
+    await user.click(screen.getByRole("button", { name: "Import" }));
+
+    // Every child starts ticked; one is left out here, and the tasks are to run in parallel.
+    const first = (await screen.findByLabelText("[DEV-501] Part one")) as HTMLInputElement;
+    expect(first.checked).toBe(true);
+    await user.click(screen.getByLabelText("[DEV-502] Part two"));
+    await user.click(screen.getByLabelText("Run in parallel"));
+    // With children ticked the two secondary creates step aside, and Create says what it makes.
+    expect(screen.queryByRole("button", { name: "Create and scope" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Create epic with 1 task" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/card/card-1"));
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit?][];
+    const breakdown = calls.find(([url]) => url === "/api/cards/card-1/breakdown")!;
+    expect(JSON.parse(String(breakdown[1]?.body))).toEqual({
+      pieces: [{ title: "[DEV-501] Part one", description: "Jira: https://jira.example/browse/DEV-501" }],
+      runMode: "parallel",
+    });
+    expect(onCreated).toHaveBeenCalledTimes(1);
     cleanup();
   });
 

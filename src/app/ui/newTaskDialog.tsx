@@ -6,7 +6,11 @@ import type { CreateCardRequest } from "@/shared/cardRequests";
 import { api, type Repo } from "./api";
 import { DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
 import { FolderBrowser } from "./folderBrowser";
+import type { EpicRunMode } from "@/shared/epics";
 import { errorMessage } from "@/shared/errorMessage";
+
+/** Spec 24: a child issue of the imported Jira issue, offered as a piece. */
+type JiraChild = { key: string; title: string; description: string; include: boolean };
 
 export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { repos: Repo[]; onClose: () => void; onCreated: () => void; defaultRepoId?: string }) {
   const router = useRouter();
@@ -46,6 +50,11 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [description, setDescription] = useState("");
   const [jiraRef, setJiraRef] = useState("");
   const [importing, setImporting] = useState(false);
+  // Spec 24 decision 8: the imported issue's child issues, each ticked to
+  // become a task under this one, and how those tasks should run.
+  const [jiraChildren, setJiraChildren] = useState<JiraChild[]>([]);
+  const [childrenRunMode, setChildrenRunMode] = useState<EpicRunMode>("ordered");
+  const includedChildren = jiraChildren.filter((child) => child.include);
   // Importing a file creates its cards directly rather than prefilling this
   // dialog: a file may hold many, and there is nothing to fill in for the
   // second one. Its cards land in Backlog, like anything created here.
@@ -74,9 +83,12 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     if (!ref || importing) return;
     setImporting(true); setError("");
     try {
-      const draft = await api<{ title: string; description: string }>(`/api/jira/issue?ref=${encodeURIComponent(ref)}`);
+      const draft = await api<{ title: string; description: string; children?: Omit<JiraChild, "include">[] }>(
+        `/api/jira/issue?ref=${encodeURIComponent(ref)}`,
+      );
       setTitle(draft.title);
       setDescription(draft.description);
+      setJiraChildren((draft.children ?? []).map((child) => ({ ...child, include: true })));
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -112,7 +124,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     : prStatus.ok
       ? "This repo has no `origin` remote to open a pull request against."
       : prStatus.detail;
-  const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || autoApprove || openPr;
+  const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || autoApprove || openPr || jiraChildren.length > 0;
 
   const requestClose = useCallback(() => {
     if (dirty && !confirm("Discard your unsaved task?")) return;
@@ -156,6 +168,19 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         baseBranch: selectedBranch || null,
       };
       const created = await api<{ id: string }>("/api/cards", { json: request });
+      // Jira already wrote the pieces: the ticked children become the tasks
+      // of this card, which lands on its page as an epic.
+      if (includedChildren.length > 0) {
+        await api(`/api/cards/${created.id}/breakdown`, {
+          json: {
+            pieces: includedChildren.map(({ title, description }) => ({ title, description })),
+            runMode: childrenRunMode,
+          },
+        });
+        onCreated();
+        router.push(`/card/${created.id}`);
+        return;
+      }
       onCreated();
       if (then === "scope") router.push(`/card/${created.id}`);
       if (then === "breakdown") router.push(`/card/${created.id}?breakdown=propose`);
@@ -171,9 +196,13 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       footer={<>
         <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
         <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
-        <button type="button" onClick={() => create("breakdown")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and break down</button>
-        <button type="button" onClick={() => create("scope")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and scope</button>
-        <button type="button" onClick={() => create()} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Creating…" : "Create task"}</button>
+        {includedChildren.length === 0 && <>
+          <button type="button" onClick={() => create("breakdown")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and break down</button>
+          <button type="button" onClick={() => create("scope")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and scope</button>
+        </>}
+        <button type="button" onClick={() => create()} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">
+          {busy ? "Creating…" : includedChildren.length > 0 ? `Create epic with ${includedChildren.length} task${includedChildren.length === 1 ? "" : "s"}` : "Create task"}
+        </button>
       </>}
     >
           {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} /></div> : <>
@@ -181,6 +210,30 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
               <label className="block grow text-sm text-foreground/70">Import from Jira<input value={jiraRef} onChange={(e) => setJiraRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void importFromJira(); } }} placeholder="Issue link or key, e.g. DEV-123 (optional)" className={dialogInputCls} /></label>
               <button type="button" onClick={() => void importFromJira()} disabled={importing || !jiraRef.trim()} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">{importing ? "Importing…" : "Import"}</button>
             </div>
+            {jiraChildren.length > 0 && (
+              <fieldset className="rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3">
+                <legend className="px-1 text-sm font-medium text-cyan-300">{jiraChildren.length} child issue{jiraChildren.length === 1 ? "" : "s"} in Jira</legend>
+                <p className="text-xs text-foreground/55">Ticked issues become tasks under this one, queued in this order, and this task becomes an epic that is done when they are.</p>
+                <ul className="mt-1">
+                  {jiraChildren.map((child, i) => (
+                    <li key={child.key}>
+                      <label className="flex min-h-11 items-center gap-2 text-sm">
+                        <input type="checkbox" checked={child.include} onChange={(e) => setJiraChildren(jiraChildren.map((c, j) => (j === i ? { ...c, include: e.target.checked } : c)))} className="size-4 accent-amber-600" />
+                        <span className="truncate">{child.title}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-1 flex flex-wrap gap-4 text-sm">
+                  {(["ordered", "parallel"] as const).map((mode) => (
+                    <label key={mode} className="flex min-h-11 items-center gap-2">
+                      <input type="radio" name="jira-children-run-mode" checked={childrenRunMode === mode} onChange={() => setChildrenRunMode(mode)} className="size-4 accent-amber-600" />
+                      {mode === "ordered" ? "Run in order" : "Run in parallel"}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
             <label className="block text-sm text-foreground/70">Import an exported file<input type="file" accept="application/json,.json" disabled={importing || !repoId} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importFromFile(file); }} className={`${dialogInputCls} py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-foreground/10 file:px-2 file:py-1 file:text-sm file:text-foreground/80`} /></label>
             <p className="-mt-1 text-xs text-foreground/45">A card exported from this or another Radulf, with its scoping thread. Its cards go straight to Backlog for the repository selected below.</p>
             <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={dialogInputCls} required /></label>
