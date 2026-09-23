@@ -43,11 +43,11 @@ describe("SettingsPage", () => {
       }
       if (url === "/api/repos/init" && init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as { parentPath: string; name: string };
-        repositories = [{ id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-21" }];
+        repositories = [{ id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-21" }];
         return json(repositories[0], 201);
       }
       if (url === "/api/repos/clone" && init?.method === "POST") {
-        repositories = [{ id: "cloned-repo", name: "repo", path: "/var/lib/radulf/repos/repo", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-22" }];
+        repositories = [{ id: "cloned-repo", name: "repo", path: "/var/lib/radulf/repos/repo", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-22" }];
         return json(repositories[0], 201);
       }
       if (url === "/api/repos") {
@@ -124,7 +124,7 @@ describe("SettingsPage", () => {
 
   it("shows a repository removal conflict on that repository's row", async () => {
     repositories = [
-      { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-12" },
+      { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-12" },
     ];
     vi.stubGlobal("confirm", vi.fn(() => true));
     window.history.replaceState(null, "", "/settings#repos");

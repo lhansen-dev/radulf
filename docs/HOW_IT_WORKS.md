@@ -88,6 +88,14 @@ The evaluator may only write its own verdict file and documentation. If source
 files or Git history change during evaluation the verdict is rejected outright,
 so the judge provably cannot edit the implementation it just judged.
 
+A repository can declare a **gate command** under Settings → Connected
+repositories, `make check` for instance. Radulf runs it in the worktree, under
+the evaluator's sandbox, before each evaluation cycle, and hands the evaluator
+the exit code and the end of the output in `.ralph/GATE.md`. The judge reads
+the build and test result instead of spending its budget producing it, and a
+retry of the evaluator reuses the result rather than running the gate again.
+**Gate timeout** under Evaluation caps it. Spec 27 records the decision.
+
 **4 · Review.** The diff waits for you in **In Review** with the transcript
 alongside it. Approve merges the branch into the repo's default branch and moves
 the card to Done. Reject sends the card back to the planner with your feedback:

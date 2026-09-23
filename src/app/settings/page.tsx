@@ -523,7 +523,10 @@ export default function SettingsPage() {
                 </section>
                 <section id="evaluator-defaults" className={sectionCls}>
                   <SectionHeading title="Evaluation" />
-                  {numberInput("evaluatorTimeoutMinutes", "Timeout (minutes)", "Caps each evaluation pass after the looper finishes.", 1, "max-w-xs text-sm text-foreground/70")}
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    {numberInput("evaluatorTimeoutMinutes", "Timeout (minutes)", "Caps each evaluation pass after the looper finishes.", 1)}
+                    {numberInput("gateTimeoutMinutes", "Gate timeout (minutes)", "Caps a repository's gate command, which runs in the worktree before each evaluation on repositories that declare one under Connected repositories.", 1)}
+                  </div>
                 </section>
               </div>
             </SettingsPanel>
@@ -965,10 +968,57 @@ function AgentSection({
   );
 }
 
+/** Spec 27: the repository's gate command, edited in place on its row. */
+function GateCommandField({ repo, onChange }: { repo: Repo; onChange: () => void }) {
+  const [value, setValue] = useState(repo.gateCommand ?? "");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const dirty = value.trim() !== (repo.gateCommand ?? "");
+
+  async function save() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/api/repos/${repo.id}`, { method: "PATCH", json: { gateCommand: value.trim() } });
+      onChange();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <label className="flex min-w-0 grow items-center gap-2 text-xs text-foreground/60">
+        <span className="shrink-0">Gate command</span>
+        <input
+          aria-label={`Gate command for ${repo.name}`}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void save();
+          }}
+          placeholder="None. Runs before each evaluation, e.g. make check"
+          className={`${inputCls} mt-0 font-mono text-xs`}
+        />
+      </label>
+      {dirty && (
+        <button onClick={() => void save()} disabled={saving} className="min-h-9 rounded border border-foreground/15 px-2 text-xs hover:bg-foreground/5">
+          {saving ? "Saving…" : "Save gate"}
+        </button>
+      )}
+      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
+
 function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void }) {
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [branch, setBranch] = useState("");
+  const [gate, setGate] = useState("");
   const [error, setError] = useState("");
   // Shown on the row it belongs to — e.g. the conflict when a repo still has
   // running work — rather than below the add form.
@@ -1002,10 +1052,11 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   async function add() {
     setError("");
     try {
-      await api("/api/repos", { json: { name, path, defaultBranch: branch } });
+      await api("/api/repos", { json: { name, path, defaultBranch: branch, gateCommand: gate } });
       setName("");
       setPath("");
       setBranch("");
+      setGate("");
       onChange();
     } catch (e) {
       setError(errorMessage(e));
@@ -1028,6 +1079,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 <span className="rounded border border-foreground/10 px-1.5 py-0.5 font-mono text-[11px] text-foreground/50">{r.defaultBranch}</span>
               </div>
               <p title={r.path} className="mt-1.5 truncate font-mono text-xs text-foreground/45">{r.path}</p>
+              <GateCommandField key={r.gateCommand ?? ""} repo={r} onChange={onChange} />
               {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
             </div>
             <button
@@ -1063,6 +1115,10 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
           <label className="text-sm text-foreground/70">
             Default branch
             <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="Auto-detect" className={inputCls} />
+          </label>
+          <label className="text-sm text-foreground/70 sm:col-span-2">
+            Gate command
+            <input value={gate} onChange={(e) => setGate(e.target.value)} placeholder="Optional, e.g. make check" className={`${inputCls} font-mono`} />
           </label>
           <div className="min-w-0 text-sm text-foreground/70 sm:col-span-2">
             <label htmlFor={typePath ? "repo-path" : "repo-folder"}>Repository folder</label>

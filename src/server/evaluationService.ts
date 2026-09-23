@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -5,6 +6,7 @@ import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
+import { GATE_FILE, gateFilePath, renderGateFile, renderGateSection, runGateCommand, type GateResult } from "./gate";
 import {
   EVALUATION_NOTES_FILE,
   EVALUATION_NOTES_SECTION,
@@ -156,6 +158,40 @@ export class EvaluationService {
       if (controller.signal.aborted) return; // cancelCard already finalized
       if (sandboxError) return fail(sandboxError);
 
+      // Spec 27: the repository gate runs here, by the orchestrator, so the
+      // evaluator judges its result instead of spending its budget producing
+      // it. Once per evaluation cycle: a retry reuses the file the cycle's
+      // first attempt left, a fresh cycle after a new loop run starts over.
+      // Before the status snapshot below, so whatever a build leaves in the
+      // worktree is never attributed to the evaluator.
+      const gatePath = gateFilePath(worktreePath);
+      if (!previous) removeRalphFiles(worktreePath, [GATE_FILE]);
+      const gateCommand = repo.gateCommand?.trim() ?? "";
+      if (gateCommand && !fs.existsSync(/* turbopackIgnore: true */ gatePath)) {
+        emitEvent("gate.started", { cardId, runId, payload: { command: gateCommand } });
+        let gate: GateResult;
+        try {
+          gate = await runGateCommand({
+            command: gateCommand,
+            worktreePath,
+            ctx,
+            timeoutMs: settings.gateTimeoutMinutes * 60 * 1000,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (controller.signal.aborted) return; // cancelCard already finalized
+          throw error;
+        }
+        if (controller.signal.aborted) return; // cancelCard already finalized
+        fs.writeFileSync(/* turbopackIgnore: true */ gatePath, renderGateFile(gate));
+        emitEvent("gate.finished", {
+          cardId,
+          runId,
+          payload: { exitCode: gate.exitCode, timedOut: gate.timedOut, durationMs: gate.durationMs, error: gate.error },
+        });
+      }
+      const gateSection = gateCommand ? renderGateSection(readFileIfExists(gatePath)) : "";
+
       const [headBefore, sourceStatusBefore] = await Promise.all([head(), sourceStatus()]);
       // Spec 26: the previous attempt's notes and command digest, the running
       // notes protocol, and the clock, appended outside the template so a
@@ -185,6 +221,7 @@ export class EvaluationService {
           plan.acceptanceCriteria,
         ) +
         previousSection +
+        gateSection +
         EVALUATION_NOTES_SECTION +
         renderDeadlineSection("evaluator", new Date(), timeoutMs);
       const result = await runWithTranscript({

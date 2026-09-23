@@ -57,4 +57,18 @@ describe("POST /api/repos", () => {
     expect((await response.json()).error).toMatch(/outside the browsable root/);
     expect(db.select().from(repos).all()).toHaveLength(1);
   });
+
+  it("stores a trimmed gate command when given one, and rejects a non-string (spec 27)", async () => {
+    const another = initScratchRepo("radulf-repos-gated-");
+    const moved = path.join(path.dirname(inside), path.basename(another));
+    fs.renameSync(another, moved);
+
+    const rejected = await POST(post({ name: "gated", path: moved, gateCommand: 5 }));
+    expect(rejected.status).toBe(400);
+    expect((await rejected.json()).error).toMatch(/gateCommand must be a string/);
+
+    const response = await POST(post({ name: "gated", path: moved, gateCommand: "  make check " }));
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ name: "gated", gateCommand: "make check" });
+  });
 });

@@ -626,3 +626,134 @@ describe("EvaluationService.runEvaluator — retries inherit the failed attempt 
     expect(db.select().from(events).where(eq(events.type, "evaluation.recovered_after_timeout")).all()).toHaveLength(0);
   });
 });
+
+// Spec 27: the repository gate, run by the orchestrator before the evaluator.
+describe("EvaluationService.runEvaluator — the repository gate (spec 27)", () => {
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
+    mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.offRunBranchReason.mockResolvedValue(null);
+    mocks.settings.sandboxEnabled = false;
+    mocks.settings.sandboxWeakerIsolationForGoTls = false;
+    mocks.settings.autoApprove = false;
+    mocks.settings.evaluatorTimeoutMinutes = 10;
+    seedRepo();
+  });
+
+  const setGate = (command: string | null) => db.update(repos).set({ gateCommand: command }).where(eq(repos.id, "repo-1")).run();
+  const gatePath = (worktreePath: string) => path.join(worktreePath, ".ralph", "GATE.md");
+  const eventsOfType = (type: string) => db.select().from(events).where(eq(events.type, type)).all();
+
+  /** A timed-out evaluate attempt on the loop run's worktree, started after it. */
+  function seedFailedEvaluate(cardId: string, worktreePath: string) {
+    const started = new Date(Date.now() + 60_000);
+    db.insert(runs)
+      .values({
+        id: `ev-failed-${cardId}`,
+        cardId,
+        kind: "evaluate",
+        status: "timeout",
+        exitReason: "evaluation timed out",
+        worktreePath,
+        branch: `ralph/loop-${cardId}`,
+        baseBranch: "main",
+        startedAt: started.toISOString(),
+        endedAt: new Date(started.getTime() + 60_000).toISOString(),
+      })
+      .run();
+  }
+
+  it("runs the gate before the evaluator and hands its result over as evidence", async () => {
+    setGate("printf 'gate says hi'; exit 3");
+    seedCard("card-gate");
+    const planId = seedPlan("card-gate");
+    const { worktreePath } = seedLoopRun("card-gate", planId);
+    mockEvaluationVerdict("VERDICT: approve\n\nFine.");
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-gate");
+
+    const gateMd = fs.readFileSync(gatePath(worktreePath), "utf8");
+    expect(gateMd).toContain("Command: `printf 'gate says hi'; exit 3`");
+    expect(gateMd).toContain("Result: exit 3");
+    expect(gateMd).toContain("gate says hi");
+    const prompt = mocks.runHarness.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("REPOSITORY GATE");
+    expect(prompt).toContain("Result: exit 3");
+    expect(prompt).toContain("gate says hi");
+    expect(JSON.parse(eventsOfType("gate.started")[0].payload)).toEqual({ command: "printf 'gate says hi'; exit 3" });
+    expect(JSON.parse(eventsOfType("gate.finished")[0].payload)).toMatchObject({ exitCode: 3, timedOut: false, error: null });
+    expect(deps.moveCard).toHaveBeenCalledWith("card-gate", "evaluating", "review", "evaluator approved");
+  });
+
+  it("runs no gate and adds no section for a repository without one", async () => {
+    seedCard("card-nogate");
+    const planId = seedPlan("card-nogate");
+    const { worktreePath } = seedLoopRun("card-nogate", planId);
+    mockEvaluationVerdict("VERDICT: approve\n\nFine.");
+
+    await new EvaluationService(makeDeps()).runEvaluator("card-nogate");
+
+    expect(fs.existsSync(gatePath(worktreePath))).toBe(false);
+    expect(mocks.runHarness.mock.calls[0][0].prompt).not.toContain("REPOSITORY GATE");
+    expect(eventsOfType("gate.started")).toHaveLength(0);
+  });
+
+  it("reuses the cycle's gate result on a retry of the evaluator", async () => {
+    const marker = path.join(testDataDir, "gate-ran-on-retry");
+    setGate(`touch ${marker}`);
+    seedCard("card-reuse");
+    const planId = seedPlan("card-reuse");
+    const { worktreePath } = seedLoopRun("card-reuse", planId);
+    seedFailedEvaluate("card-reuse", worktreePath);
+    fs.writeFileSync(gatePath(worktreePath), "# Repository gate\n\nCommand: `earlier`\nResult: exit 0\n");
+    mockEvaluationVerdict("VERDICT: approve\n\nFine.");
+
+    await new EvaluationService(makeDeps()).runEvaluator("card-reuse");
+
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(mocks.runHarness.mock.calls[0][0].prompt).toContain("Command: `earlier`");
+    expect(eventsOfType("gate.started")).toHaveLength(0);
+  });
+
+  it("runs the gate again when a new loop run has started a fresh cycle", async () => {
+    const marker = path.join(testDataDir, "gate-ran-fresh");
+    setGate(`touch ${marker}`);
+    seedCard("card-fresh-gate");
+    const planId = seedPlan("card-fresh-gate");
+    const { worktreePath } = seedLoopRun("card-fresh-gate", planId);
+    fs.writeFileSync(gatePath(worktreePath), "# Repository gate\n\nCommand: `stale`\nResult: exit 1\n");
+    mockEvaluationVerdict("VERDICT: approve\n\nFine.");
+
+    await new EvaluationService(makeDeps()).runEvaluator("card-fresh-gate");
+
+    expect(fs.existsSync(marker)).toBe(true);
+    const gateMd = fs.readFileSync(gatePath(worktreePath), "utf8");
+    expect(gateMd).toContain(`Command: \`touch ${marker}\``);
+    expect(gateMd).not.toContain("stale");
+    expect(eventsOfType("gate.finished")).toHaveLength(1);
+  });
+
+  it("stops quietly when the card is cancelled while the gate runs", async () => {
+    setGate("sleep 5");
+    seedCard("card-cancel-gate");
+    const planId = seedPlan("card-cancel-gate");
+    const { worktreePath } = seedLoopRun("card-cancel-gate", planId);
+    const deps = makeDeps();
+    deps.registerController.mockImplementation((_runId: string, controller: AbortController) => {
+      setTimeout(() => controller.abort(), 100);
+    });
+
+    await new EvaluationService(deps).runEvaluator("card-cancel-gate");
+
+    expect(mocks.runHarness).not.toHaveBeenCalled();
+    expect(fs.existsSync(gatePath(worktreePath))).toBe(false);
+    expect(deps.releaseController).toHaveBeenCalled();
+  });
+});
