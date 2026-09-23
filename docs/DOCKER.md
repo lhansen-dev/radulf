@@ -117,11 +117,30 @@ and a container install needs its repositories re-registered.
 
 Use the app: **Settings → Providers & keys**, then **Sign in**. Radulf drives
 pi's login itself (spec 23), so a container install needs no terminal for
-this. The flow expects the browser to be somewhere else, which under Docker it
-always is: Anthropic and Codex give you a link to open and a box to paste the
-resulting code or redirect URL into, and Copilot gives you a device code to
-enter on GitHub. Nothing extra needs publishing, because the authorizing
-happens in your own browser rather than against the container's loopback.
+this. What each provider asks for differs, and only one kind cares that
+Radulf is in a container.
+
+Anthropic and Codex hand you a link and then wait for a redirect to
+`http://localhost:53692/callback` or `http://localhost:1455/auth/callback`.
+Those ports are pi's own, fixed and not configurable, and in your browser
+`localhost` is the Docker host rather than the container. So compose publishes
+both on loopback and sets `PI_OAUTH_CALLBACK_HOST`, which pi needs because it
+otherwise binds the container's own loopback, where Docker cannot forward
+anything. With a browser on the Docker host the redirect then lands on pi
+directly, the paste box withdraws itself, and the login finishes with nothing
+to copy. The cost is that those two host ports stay held for as long as the
+container runs, so a host install of pi cannot log in beside it.
+
+With the browser on another machine that redirect still fails, which is
+expected. Paste the whole URL it failed on into the box, including its `state`,
+and never the code alone: pi reads the verifier from the `state`, and a bare
+code is exchanged against whichever login is current, which Anthropic rejects
+as `Invalid 'code' in request`.
+
+Copilot, Kimi, Meta and xAI use device codes and need no callback at all.
+OpenRouter and Radius cannot use the published ports, the first because it
+binds an ephemeral port and the second because it hardcodes the container's
+loopback, so both keep the paste box wherever the browser is.
 
 A terminal still works, and is the only option with no browser to hand:
 
