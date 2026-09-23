@@ -491,3 +491,138 @@ describe("EvaluationService.runEvaluator", () => {
     expect(referencedRun).toBeDefined();
   });
 });
+
+// Spec 26: a retry inherits the attempt it retries.
+const { runTranscriptDir } = await import("./retention");
+
+describe("EvaluationService.runEvaluator — retries inherit the failed attempt (spec 26)", () => {
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
+    mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.offRunBranchReason.mockResolvedValue(null);
+    mocks.settings.sandboxEnabled = false;
+    mocks.settings.sandboxWeakerIsolationForGoTls = false;
+    mocks.settings.autoApprove = false;
+    mocks.settings.evaluatorTimeoutMinutes = 10;
+    seedRepo();
+  });
+
+  /** A timed-out evaluate attempt on the loop run's worktree, started after it. */
+  function seedFailedEvaluate(cardId: string, worktreePath: string) {
+    const id = `ev-failed-${cardId}`;
+    const started = new Date(Date.now() + 60_000);
+    db.insert(runs)
+      .values({
+        id,
+        cardId,
+        kind: "evaluate",
+        status: "timeout",
+        exitReason: "evaluation timed out",
+        worktreePath,
+        branch: `ralph/loop-${cardId}`,
+        baseBranch: "main",
+        startedAt: started.toISOString(),
+        endedAt: new Date(started.getTime() + 10 * 60_000).toISOString(),
+      })
+      .run();
+    return id;
+  }
+
+  const notesPath = (worktreePath: string) => path.join(worktreePath, ".ralph", "EVALUATION-NOTES.md");
+
+  it("forwards the timed-out attempt's digest and notes into the retry, and keeps the notes file", async () => {
+    seedCard("card-retry");
+    const planId = seedPlan("card-retry");
+    const { worktreePath } = seedLoopRun("card-retry", planId);
+    const prevId = seedFailedEvaluate("card-retry", worktreePath);
+    const dir = runTranscriptDir(prevId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "evaluate.jsonl"),
+      [
+        { t: "tool", name: "bash", input: { command: "make check-split" } },
+        { t: "raw", event: { type: "tool_execution_end", result: { content: [{ type: "text", text: "3 passed" }] }, isError: false } },
+        { t: "text", role: "assistant", content: "The suite is the problem, not the change." },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+    fs.writeFileSync(notesPath(worktreePath), "- check-split: PASS\n");
+    mockEvaluationVerdict("VERDICT: approve\n\nFine.");
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-retry");
+
+    const prompt = mocks.runHarness.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("PREVIOUS ATTEMPT OF THIS STAGE");
+    expect(prompt).toContain("ended with: evaluation timed out after 10 minutes.");
+    expect(prompt).toContain("1. bash: make check-split\n     3 passed");
+    expect(prompt).toContain("The suite is the problem, not the change.");
+    expect(prompt).toContain("- check-split: PASS");
+    expect(prompt).toContain("RUNNING NOTES");
+    expect(prompt).toContain("ATTEMPT BUDGET");
+    expect(prompt).toContain("hard budget is 10 minutes");
+    expect(fs.readFileSync(notesPath(worktreePath), "utf8")).toBe("- check-split: PASS\n");
+    const forwarded = db.select().from(events).where(eq(events.type, "attempt.forwarded")).all();
+    expect(forwarded).toHaveLength(1);
+    expect(JSON.parse(forwarded[0].payload)).toMatchObject({ kind: "evaluate", previousRunId: prevId, toolCalls: 1 });
+    expect(deps.moveCard).toHaveBeenCalledWith("card-retry", "evaluating", "review", "evaluator approved");
+  });
+
+  it("starts a fresh cycle after a loop run with no notes and no previous-attempt section", async () => {
+    seedCard("card-fresh");
+    const planId = seedPlan("card-fresh");
+    const { worktreePath } = seedLoopRun("card-fresh", planId);
+    fs.writeFileSync(notesPath(worktreePath), "stale notes from the last cycle\n");
+    mockEvaluationVerdict("VERDICT: approve\n\nFine.");
+
+    await new EvaluationService(makeDeps()).runEvaluator("card-fresh");
+
+    const prompt = mocks.runHarness.mock.calls[0][0].prompt as string;
+    expect(prompt).not.toContain("PREVIOUS ATTEMPT OF THIS STAGE");
+    expect(prompt).not.toContain("stale notes");
+    expect(prompt).toContain("RUNNING NOTES");
+    expect(prompt).toContain("ATTEMPT BUDGET");
+    expect(fs.existsSync(notesPath(worktreePath))).toBe(false);
+    expect(db.select().from(events).where(eq(events.type, "attempt.forwarded")).all()).toHaveLength(0);
+  });
+
+  it("honours a complete verdict the attempt wrote before the watchdog killed it", async () => {
+    seedCard("card-late");
+    const planId = seedPlan("card-late");
+    seedLoopRun("card-late", planId);
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      fs.writeFileSync(path.join(cwd, ".ralph", "EVALUATION.md"), "VERDICT: approve\n\nDone just in time.\n");
+      return { timedOut: true, stalled: false, error: "stopReason: aborted", code: 1, lastText: "" };
+    });
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-late");
+
+    expect(deps.moveCard).toHaveBeenCalledWith("card-late", "evaluating", "review", "evaluator approved");
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "approve", expect.any(Object));
+    const recovered = db.select().from(events).where(eq(events.type, "evaluation.recovered_after_timeout")).all();
+    expect(recovered).toHaveLength(1);
+    expect(JSON.parse(recovered[0].payload)).toEqual({ cause: "timeout" });
+  });
+
+  it("still fails a timeout that left no usable verdict behind", async () => {
+    seedCard("card-dead");
+    const planId = seedPlan("card-dead");
+    seedLoopRun("card-dead", planId);
+    mocks.runHarness.mockResolvedValueOnce({ timedOut: true, stalled: false, error: "", code: 1, lastText: "" });
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-dead");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "timeout", "evaluation timed out", expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-dead", "evaluating", "needs_attention", "evaluation timed out");
+    expect(db.select().from(events).where(eq(events.type, "evaluation.recovered_after_timeout")).all()).toHaveLength(0);
+  });
+});

@@ -176,6 +176,14 @@ them:
   about luck, and the card says which role and which model. Retry stays
   available — it is a reading, not a block.
 
+A retry of the planner or the evaluator also knows what the attempt before it
+did. Its prompt carries how that attempt ended, the model's last words, the
+commands it ran with the end of each output, and for the evaluator the running
+notes it kept in `.ralph/EVALUATION-NOTES.md`. Both stages are told their
+budget and asked to have their result on disk well before it runs out, and a
+complete verdict or plan left on disk when the watchdog fires is used rather
+than thrown away. Spec 26 records the decision.
+
 ## How many cards run at once
 
 By default, one. A single card occupies the planner, loop, or evaluator, and

@@ -9,6 +9,13 @@ import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
 import { errorMessage } from "@/shared/errorMessage";
 import { getSettings } from "./settings";
 import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
+import {
+  attemptTranscriptPath,
+  digestTranscript,
+  previousFailedAttempt,
+  renderDeadlineSection,
+  renderPreviousAttemptSection,
+} from "./previousAttempt";
 import { firstUnchecked } from "./checklist";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
@@ -36,6 +43,13 @@ function readRalphFile(worktreePath: string, name: string): string {
  * attempt's output. Each invocation must earn a complete artifact set. */
 export function clearPlannerArtifacts(worktreePath: string) {
   removeRalphFiles(worktreePath, PLANNER_FILES);
+}
+
+/** The three artifacts are present and PLAN.md has a task to run: what a
+ * completed planning run must leave, and what a killed one may have. */
+function plannerArtifactsComplete(worktreePath: string): boolean {
+  const contents = RALPH_FILES.map((f) => readRalphFile(worktreePath, f));
+  return contents.every(Boolean) && firstUnchecked(contents[0]) !== null;
 }
 
 const SCOPING_SPEAKER: Record<ScopingRole, string> = {
@@ -223,6 +237,13 @@ export class PlanningService {
     const { worktreePath, branch, baseBranch, created } = await resolveWorktree(
       repo, card, runId, deps.latestWorktreeRun(cardId),
     );
+    // Spec 26: a retry inherits the attempt it retries, drafts included.
+    // Decided before this run's row exists, since the rule reads the card's
+    // latest run, and before the clear below removes what it left.
+    const previous = previousFailedAttempt(cardId, "plan");
+    const drafts = previous
+      ? Object.fromEntries(RALPH_FILES.map((f) => [f, readRalphFile(worktreePath, f)]))
+      : undefined;
     clearPlannerArtifacts(worktreePath);
     // Spec 14 Phase 3: the planner's ONLY L2 write root is the worktree's
     // `.ralph/` — ensure it exists so the write root resolves.
@@ -257,21 +278,38 @@ export class PlanningService {
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
 
+      // Spec 26: the killed attempt's drafts and command digest, then the
+      // clock, appended outside the template so a customized one still gets them.
+      let previousSection = "";
+      if (previous) {
+        const digest = digestTranscript(attemptTranscriptPath(previous));
+        previousSection = renderPreviousAttemptSection({ stage: "planner", attempt: previous, digest, drafts });
+        emitEvent("attempt.forwarded", {
+          cardId,
+          runId,
+          payload: { kind: "plan", previousRunId: previous.runId, toolCalls: digest.toolCalls },
+        });
+      }
+      const timeoutMs = settings.plannerTimeoutMinutes * 60 * 1000;
+      const prompt =
+        renderPlanPrompt(
+          settings.plannerPromptTemplate,
+          card.title,
+          card.description,
+          replanFeedback ?? prevPlan?.feedback ?? undefined,
+          listScopingMessages(cardId),
+        ) +
+        previousSection +
+        renderDeadlineSection("planner", new Date(), timeoutMs);
       const result = await runWithTranscript({
         runId,
         file: "plan.jsonl",
         provider,
         model,
         reasoningLevel: settings.plannerReasoningLevel,
-        prompt: renderPlanPrompt(
-          settings.plannerPromptTemplate,
-          card.title,
-          card.description,
-          replanFeedback ?? prevPlan?.feedback ?? undefined,
-          listScopingMessages(cardId),
-        ),
+        prompt,
         cwd: worktreePath,
-        timeoutMs: settings.plannerTimeoutMinutes * 60 * 1000,
+        timeoutMs,
         signal: controller.signal,
         role: "planner",
         runContext: ctx,
@@ -279,8 +317,20 @@ export class PlanningService {
       if (controller.signal.aborted) return; // cancelCard already finalized
 
       telemetry = runTelemetry(result);
-      const failure = harnessFailure(result, provider, "planner");
-      if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+      // Spec 26 decision 4: complete artifacts on disk outlive the watchdog
+      // that killed the session (spec 18 item 1 for the planner). Every
+      // check below still applies to them.
+      const recovered = (result.timedOut || result.stalled) && plannerArtifactsComplete(worktreePath);
+      if (recovered) {
+        emitEvent("plan.recovered_after_timeout", {
+          cardId,
+          runId,
+          payload: { cause: result.timedOut ? "timeout" : "stalled" },
+        });
+      } else {
+        const failure = harnessFailure(result, provider, "planner");
+        if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+      }
 
       // Both commits below land in this worktree. The planner itself has no
       // bash and writes only `.ralph/`, but a worktree reused from an earlier

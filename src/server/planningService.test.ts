@@ -372,3 +372,118 @@ describe("PlanningService.runPlanning", () => {
     );
   });
 });
+
+// Spec 26: a retry inherits the attempt it retries.
+const { runTranscriptDir } = await import("./retention");
+const { events } = await import("@/db");
+
+describe("PlanningService.runPlanning — retries inherit the failed attempt (spec 26)", () => {
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(worktrees).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.createWorktree.mockImplementation((_repoPath: string, _base: string, _title: string, runId: string) => {
+      const worktreePath = path.join(testDataDir, "worktrees", String(runId));
+      fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+      return { worktreePath, branch: `ralph/${runId}` };
+    });
+    seedRepo();
+  });
+
+  /** A timed-out planning attempt with its own worktree, which the retry reuses. */
+  function seedFailedPlanRun(cardId: string) {
+    const id = `plan-failed-${cardId}`;
+    const worktreePath = path.join(testDataDir, "worktrees", id);
+    fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+    const started = new Date(Date.now() + 60_000);
+    db.insert(runs)
+      .values({
+        id,
+        cardId,
+        kind: "plan",
+        status: "timeout",
+        exitReason: "planning timed out",
+        worktreePath,
+        branch: `ralph/${id}`,
+        baseBranch: "main",
+        startedAt: started.toISOString(),
+        endedAt: new Date(started.getTime() + 60_000).toISOString(),
+      })
+      .run();
+    return { id, worktreePath };
+  }
+
+  it("forwards the killed attempt's drafts and digest into the retry prompt", async () => {
+    seedCard("card-retry");
+    const { id, worktreePath } = seedFailedPlanRun("card-retry");
+    fs.writeFileSync(path.join(worktreePath, ".ralph", "PLAN.md"), "## Tasks\n- [ ] half a plan\n");
+    const dir = runTranscriptDir(id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "plan.jsonl"), `${JSON.stringify({ t: "tool", name: "read", input: { path: "README.md" } })}\n`);
+    mockPlannerHarness(completeArtifacts);
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-retry");
+
+    const call = mocks.runHarness.mock.calls[0][0];
+    expect(call.cwd).toBe(worktreePath);
+    expect(call.prompt).toContain("PREVIOUS ATTEMPT OF THIS STAGE");
+    expect(call.prompt).toContain("ended with: planning timed out after 1 minute.");
+    expect(call.prompt).toContain("Its draft .ralph/PLAN.md, incomplete and unverified:\n## Tasks\n- [ ] half a plan");
+    expect(call.prompt).toContain("1. read: README.md");
+    expect(call.prompt).toContain("ATTEMPT BUDGET");
+    expect(call.prompt).toContain("hard budget is 42 minutes");
+    expect(deps.moveCard).toHaveBeenCalledWith("card-retry", "planning", "ready");
+    const forwarded = db.select().from(events).where(eq(events.type, "attempt.forwarded")).all();
+    expect(forwarded).toHaveLength(1);
+    expect(JSON.parse(forwarded[0].payload)).toMatchObject({ kind: "plan", previousRunId: id, toolCalls: 1 });
+  });
+
+  it("gives a first attempt the budget but no previous-attempt section", async () => {
+    seedCard("card-first");
+    mockPlannerHarness(completeArtifacts);
+
+    await new PlanningService(makeDeps()).runPlanning("card-first");
+
+    const prompt = mocks.runHarness.mock.calls[0][0].prompt as string;
+    expect(prompt).not.toContain("PREVIOUS ATTEMPT OF THIS STAGE");
+    expect(prompt).toContain("the three plan artifacts in `.ralph/` written by");
+  });
+
+  it("honours complete artifacts the attempt wrote before the watchdog killed it", async () => {
+    seedCard("card-late");
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      for (const [name, content] of Object.entries(completeArtifacts)) {
+        fs.writeFileSync(path.join(cwd, ".ralph", name), content);
+      }
+      return { timedOut: true, stalled: false, error: "stopReason: aborted", code: 1, lastText: "" };
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-late");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "plan artifacts written", expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-late", "planning", "ready");
+    expect(db.select().from(plans).where(eq(plans.cardId, "card-late")).all()).toHaveLength(1);
+    expect(db.select().from(events).where(eq(events.type, "plan.recovered_after_timeout")).all()).toHaveLength(1);
+  });
+
+  it("still fails a timeout that left the artifacts incomplete", async () => {
+    seedCard("card-dead");
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      fs.writeFileSync(path.join(cwd, ".ralph", "PLAN.md"), "## Tasks\n- [ ] only the plan\n");
+      return { timedOut: true, stalled: false, error: "", code: 1, lastText: "" };
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-dead");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "timeout", "planning timed out", expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-dead", "planning", "needs_attention", "planning timed out");
+  });
+});
