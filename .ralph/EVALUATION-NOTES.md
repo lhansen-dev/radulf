@@ -1,0 +1,20 @@
+# Evaluation notes (Thu Sep 24 14:09:26 UTC 2026)
+- Data model greps (drizzle/0021 single file, heartbeat_at/worker_id, schema.ts heartbeatAt + workerId count=5): PASS
+- Driver lease greps (improvementRunLeases.ts exports; improvementRuns.ts uses claim/heartbeat/release): PASS
+- Schedule/retention greps (claimScheduleFire, claimDailySweep in retention.ts + boot.ts): PASS
+- Compose/Dockerfile/Makefile greps (web/worker services, relaxations once, no security_opt in web, RADULF_ROLES, worker.mjs, radulf-worker-health, /app/dist, FROM workers WHERE, make -n web/worker/check-compose): PASS
+- Documentation greps (ARCHITECTURE/DOCKER/SANDBOXING/docs.ts registration/specs untouched): PASS
+- npx vitest run src/server/improvementRunLeases.test.ts src/server/improvementRuns.test.ts: PASS (27 tests)
+- tsc --noEmit: exit 0; scoped eslint: exit 0
+- npx vitest run schedules/retention/boot tests: PASS (27 tests)
+- npx vitest run workers/repoLeases/orchestrator.reaper tests: PASS (25 tests)
+- All mechanical acceptance criteria PASS; moving on to code review
+- Health-check script extracted from Dockerfile and run against a WAL sqlite db with fresh/stale/other-host rows: exits 0 only for a fresh row with matching hostname (PASS)
+- compose.yaml parsed with js-yaml: services web/worker; security_opt only on worker; both cap_drop ALL; worker healthcheck radulf-worker-health (PASS)
+- drizzle-kit check: "Everything's fine" (PASS)
+- make -n check-compose shell syntax check: OK
+- Docker not available in sandbox: compose up / mock-provider pipeline criteria cannot be run here (left to human reviewer)
+- Code review: driveRun claim/heartbeat/release correct; loop re-checks lease holder each iteration; claimScheduleFire CAS on lastFiredAt; claimDailySweep upsert with setWhere ne(value); getSettings ignores the marker key
+- Findings (non-blocking): stopRequests() in-process => web Stop labels run "completed" in split topology (pre-existing); check-compose does not --wait for health nor drive a pipeline, and web's fixed OAuth port publishes collide with a live operator stack; heartbeat return value ignored; per-tick BEGIN IMMEDIATE churn on non-holder workers
+- VERDICT: approve
+- README.md line 149-151 reconciled: 'a container' -> 'one image run as two containers, web and worker'
