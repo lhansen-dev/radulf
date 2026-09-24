@@ -1,6 +1,0 @@
-Spec 29: sync base and run gate before evaluation, with the sync holding the repo delivery lease
-- When a loop signals DONE, the orchestrator merges the base branch into the worktree (merge commit on the run branch), then runs the repository gate; conflicts and gate failures go back to the loop as plan tasks, bounded to two rounds, then the run fails with the reason on the card.
-- The base read now holds the spec 25 per-repo lease (`acquireRepoLease`/`releaseRepoLease` around `syncWithBase`) so an approval merge cannot start mid-read; previously it only waited for the lease to be free.
-- Events: `base.synced`, `base.conflict`, `gate.started`, `gate.finished`, `gate.repair`; `.ralph/GATE.md` is reused by the evaluator.
-- Key files: `src/server/orchestrator.ts`, `src/server/baseSync.ts`, `src/server/gate.ts`, `src/server/evaluationService.ts`, `src/server/harness/mock.ts`, `specs/29-sync-and-gate-before-evaluation.md`, tests in `orchestrator.lifecycle.test.ts` and `mockPipeline.test.ts`.
-- The acceptance check `grep -rl '28-' specs/29-...md` cannot be satisfied: no spec 28 exists here and the card forbids writing "28"; the spec deliberately has no such reference.
