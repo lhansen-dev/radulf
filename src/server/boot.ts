@@ -8,7 +8,7 @@ import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
 import { getOrchestrator } from "./orchestrator";
 import { resumeImprovementRuns } from "./improvementRuns";
 import { registerShutdownHandlers } from "./shutdown";
-import { claimDailySweep, pruneRuntimeHistory } from "./retention";
+import { claimDailySweep, pruneRuntimeHistory, removeAbandonedWorktrees } from "./retention";
 import { fireDueSchedules } from "./schedules";
 import { startEventsTail } from "./eventsTail";
 import { startTranscriptWatchers } from "./transcriptWatchers";
@@ -74,11 +74,30 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   // so the worker re-scans `running` improvement runs on every pump tick.
   // driveRun is idempotent per process (driverGuard()), so runs already being
   // driven here are skipped.
+  //
+  // And it reclaims what a web-only abandon leaves behind: that process moves
+  // the card but never writes to the repository (spec 25), so the worktree
+  // and branch wait here for a worker. A sweep still running when the next
+  // tick fires is left to finish.
+  let sweepingWorktrees = false;
+  const sweepAbandonedWorktrees = async () => {
+    if (sweepingWorktrees) return;
+    sweepingWorktrees = true;
+    try {
+      const removed = await removeAbandonedWorktrees();
+      if (removed > 0) console.log(`[radulf] removed ${removed} abandoned worktree(s)`);
+    } catch (e) {
+      console.error("[radulf] abandoned worktree sweep failed:", e);
+    } finally {
+      sweepingWorktrees = false;
+    }
+  };
   const PUMP_INTERVAL_MS = Math.max(100, Number(process.env.RADULF_PUMP_INTERVAL_MS) || 5_000);
   setInterval(() => {
     try {
       orchestrator.pump();
       resumeImprovementRuns();
+      void sweepAbandonedWorktrees();
     } catch (e) {
       console.error("[radulf] queue pump failed:", e);
     }

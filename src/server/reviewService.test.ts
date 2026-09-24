@@ -398,3 +398,44 @@ describe("ReviewService — spec 25 worker-side delivery", () => {
     expect(db.select().from(repoLeases).all()).toEqual([]);
   });
 });
+
+describe("ReviewService — abandon", () => {
+  beforeEach(() => {
+    db.delete(reviews).run();
+    db.delete(reviewDeliveries).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    seedRepo();
+  });
+
+  it("a worker removes the worktree and the plan state", async () => {
+    seedCard("card-abandon");
+    const { worktreePath } = seedLoopRun("card-abandon", seedPlan("card-abandon"));
+    seedPlanState("card-abandon");
+    const deps = makeDeps();
+
+    await new ReviewService(deps).abandon("card-abandon");
+
+    expect(deps.moveCard).toHaveBeenCalledWith("card-abandon", "review", "abandoned");
+    expect(mocks.removeWorktree).toHaveBeenCalledWith(path.join(testDataDir, "repo"), worktreePath, "ralph/loop-card-abandon");
+    expect(fs.existsSync(planStatePath("card-abandon"))).toBe(false);
+  });
+
+  // Spec 25: web never writes to a repository. The worktree waits for a
+  // worker's removeAbandonedWorktrees sweep (retention.ts).
+  it("a passive (web) abandon moves the card but leaves the repository alone", async () => {
+    seedCard("card-abandon-web");
+    seedLoopRun("card-abandon-web", seedPlan("card-abandon-web"));
+    seedPlanState("card-abandon-web");
+    const deps = { ...makeDeps(), passive: () => true };
+
+    await new ReviewService(deps).abandon("card-abandon-web");
+
+    expect(deps.moveCard).toHaveBeenCalledWith("card-abandon-web", "review", "abandoned");
+    expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    expect(fs.existsSync(planStatePath("card-abandon-web"))).toBe(false);
+  });
+});
