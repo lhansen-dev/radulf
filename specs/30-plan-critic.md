@@ -2,6 +2,12 @@
 
 Decided 2026-09-24. Extends [17-task-scoping.md](17-task-scoping.md) and the
 roles in [04-agent-pipeline.md](04-agent-pipeline.md); amends nothing else.
+Numbered 30 because 28 (epic pieces declare dependencies, scheduled as a
+graph) and 29 (sync with base and gate before evaluation) were decided the
+same day on their own branches; this spec touches neither. In particular the
+critic runs on a piece whenever it is planned, under whichever epic run mode
+spec 28 or spec 24 picked for it, and changes nothing about when the piece
+is started.
 
 ## The evidence
 
