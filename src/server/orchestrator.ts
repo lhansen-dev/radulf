@@ -42,6 +42,7 @@ import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
+import { abortMerge, resolveConflictsTaskText, syncWithBase } from "./baseSync";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
@@ -80,9 +81,11 @@ import {
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
 import {
+  LEASE_SETTLE_MS,
   removeBaseline,
   saveBaseline,
   snapshotRepoIntegrity,
+  waitForRepoLeaseRelease,
 } from "./integrity";
 import {
   collectLifecycleScripts,
@@ -160,6 +163,13 @@ const BLOAT_MIN_SAMPLES = 3;
  * the 6.0M-token one that burned an hour (5.3x), and flags no iteration twice
  * in a row that went on to finish its task. */
 const BLOAT_MULTIPLIER = 4;
+
+/** Spec 29 decision 3: how many rounds of sync-or-gate repair (a base-merge
+ * conflict or a repository gate failure handed back to the loop as a task) a
+ * run may use before the orchestrator gives up and fails it. Bounded so a
+ * conflict the loop cannot resolve, or a gate it keeps breaking, does not spin
+ * the run forever. */
+const MAX_SYNC_GATE_ROUNDS = 2;
 
 /**
  * How far out of scale this iteration's prompt is with the run's own, or null
@@ -1778,6 +1788,8 @@ export class Orchestrator {
        * deliberately forbidden to have — so an unbounded repair loop would
        * spin on it forever. */
       let acceptanceRepairUsed = false;
+      /** Spec 29: rounds of sync-or-gate repair used this run. */
+      let syncGateRounds = 0;
       /** Prompt size of every iteration that reported one, for the comparison
        * in promptBloatRatio(). Per run: a resumed run starts from a fresh
        * context, so the previous run's sizes are not its baseline. */
@@ -2008,6 +2020,46 @@ export class Orchestrator {
               );
               continue;
             }
+          }
+
+          // Spec 29: bring the base branch into the worktree before evaluation
+          // so the evaluator judges the code that will actually land. Spec 25
+          // decision 6: a delivery worker may be moving the base ref; read it
+          // only once the lease is free, and never write it.
+          const base = baseBranch ?? repo.defaultBranch;
+          await waitForRepoLeaseRelease(repo.path, LEASE_SETTLE_MS);
+          const sync = await syncWithBase(worktreePath, base, branch);
+          if (!active()) return;
+          if (sync.status === "failed") {
+            return fail(`sync with ${base} failed: ${sync.error.slice(0, 300)}`);
+          }
+          if (sync.status === "merged") {
+            emitEvent("base.synced", { cardId, runId, payload: { baseBranch: base, mergeCommit: sync.mergeCommit } });
+          }
+          if (sync.status === "conflicted") {
+            emitEvent("base.conflict", {
+              cardId,
+              runId,
+              payload: { baseBranch: base, files: sync.files, round: syncGateRounds + 1 },
+            });
+            if (syncGateRounds >= MAX_SYNC_GATE_ROUNDS) {
+              await abortMerge(worktreePath);
+              return fail(`sync-and-gate round limit reached: merge conflict with ${base} in ${sync.files.join(", ")}`);
+            }
+            syncGateRounds += 1;
+            // Clear the signal so the next iteration does the resolution
+            // instead of re-entering this branch.
+            removeRalphFiles(worktreePath, DONE_FILE_NAMES);
+            // The merge is left in progress; the next ITERATION_DONE
+            // bookkeeping's `git add -A && git commit` completes it.
+            fs.writeFileSync(
+              /* turbopackIgnore: true */ planPath,
+              appendTask(
+                fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
+                resolveConflictsTaskText(base, sync.files),
+              ),
+            );
+            continue;
           }
           // Both gated: a cancel or reset that landed during the awaited
           // bookkeeping above has already finalized this run and moved the

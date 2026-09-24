@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
   startDiskWatchdog: vi.fn(),
+  syncWithBase: vi.fn(),
+  abortMerge: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
    * moving the defaults every other test relies on. */
@@ -66,6 +68,12 @@ vi.mock("./settings", async (importOriginal) => ({
       improvePromptTemplate: "Existing cards:\n{{EXISTING_CARDS}}\n{{FOCUS}}",
       ...(mocks.settings as Partial<Settings>),
     }),
+}));
+vi.mock("./baseSync", () => ({
+  syncWithBase: mocks.syncWithBase,
+  abortMerge: mocks.abortMerge,
+  resolveConflictsTaskText: (base: string, files: string[]) =>
+    `Resolve the merge conflicts left in ${files.join(", ")} after the orchestrator merged the base branch ${base} into your branch.`,
 }));
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
@@ -302,6 +310,7 @@ describe("Orchestrator cancellation lifecycle", () => {
     mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.startDiskWatchdog.mockImplementation(() => ({ stop: vi.fn() }));
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
+    mocks.syncWithBase.mockResolvedValue({ status: "up-to-date" });
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "no verdict written in test" });
     delete (globalThis as typeof globalThis & {
       __radulfOrchestrator?: InstanceType<typeof Orchestrator>;
@@ -1097,6 +1106,100 @@ describe("Orchestrator cancellation lifecycle", () => {
 
       expect(loopCalls()).toHaveLength(1);
       expect(db.select().from(events).all().filter((e) => e.type === "acceptance.probe")).toHaveLength(0);
+    });
+  });
+
+  describe("the sync with base (spec 29)", () => {
+    const loopRun = (cardId: string) =>
+      db.select().from(runs).all().find((r) => r.cardId === cardId && r.kind === "loop");
+    const loopCalls = () => mocks.runHarness.mock.calls.filter(([opts]) => opts.role === "loop");
+    const eventsOfType = (cardId: string, type: string) =>
+      db.select().from(events).all().filter((e) => e.type === type && e.cardId === cardId);
+
+    /** A loop agent that signals DONE every iteration. Non-loop roles fall
+     * through to the suite default so the evaluator's own failure cannot be
+     * mistaken for the loop's — or, with `evaluatorHangs`, never return, so
+     * the card can be observed resting in `evaluating`. */
+    function doneEveryIteration({ evaluatorHangs = false } = {}) {
+      let call = 0;
+      mocks.runHarness.mockImplementation(({ cwd, role }: { cwd: string; role: string }) => {
+        if (role !== "loop") {
+          if (evaluatorHangs) return new Promise(() => {});
+          return Promise.resolve({ timedOut: false, error: "no verdict written in test" });
+        }
+        call += 1;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), `work ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), `iteration ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "DONE"), "all done");
+        return Promise.resolve(successfulHarnessResult);
+      });
+    }
+
+    beforeEach(() => {
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+    });
+
+    it("commits a clean merge from the base and evaluates once", async () => {
+      card("sync-clean");
+      plan("sync-clean");
+      doneEveryIteration();
+      mocks.syncWithBase.mockResolvedValue({ status: "merged", mergeCommit: "m1" });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-clean");
+      await vi.waitFor(() => expect(loopRun("sync-clean")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      const synced = eventsOfType("sync-clean", "base.synced");
+      expect(synced).toHaveLength(1);
+      expect(JSON.parse(synced[0].payload)).toEqual({ baseBranch: "main", mergeCommit: "m1" });
+    });
+
+    it("hands a conflict back as a task and evaluates once resolved", async () => {
+      card("sync-conflict");
+      plan("sync-conflict");
+      doneEveryIteration({ evaluatorHangs: true });
+      mocks.syncWithBase
+        .mockResolvedValueOnce({ status: "conflicted", files: ["src/a.ts", "src/b.ts"], out: "CONFLICT" })
+        .mockResolvedValue({ status: "up-to-date" });
+      const statuses: string[] = [];
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-conflict");
+      await vi.waitFor(() => {
+        statuses.push(getCard("sync-conflict").status);
+        expect(loopRun("sync-conflict")?.exitReason).toBe("done-signal");
+      });
+      await vi.waitFor(() => expect(getCard("sync-conflict").status).toBe("evaluating"));
+
+      // The first DONE was handed back with the conflict as a task; the
+      // second, with the merge resolved, went to the evaluator.
+      expect(loopCalls()).toHaveLength(2);
+      expect(loopCalls()[1][0].prompt).toContain("Resolve the merge conflicts left in src/a.ts, src/b.ts");
+      expect(eventsOfType("sync-conflict", "base.conflict")).toHaveLength(1);
+      expect(statuses).not.toContain("needs_attention");
+      expect(getCard("sync-conflict").status).toBe("evaluating");
+      expect(mocks.abortMerge).not.toHaveBeenCalled();
+    });
+
+    it("ends the run after two conflict rounds", async () => {
+      card("sync-stuck");
+      plan("sync-stuck");
+      doneEveryIteration();
+      mocks.syncWithBase.mockResolvedValue({ status: "conflicted", files: ["src/a.ts"], out: "CONFLICT" });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-stuck");
+      await vi.waitFor(() => expect(loopRun("sync-stuck")?.status).toBe("failed"));
+
+      expect(loopRun("sync-stuck")?.exitReason).toContain("sync-and-gate round limit reached");
+      // Two repair rounds and the attempt that hit the limit.
+      expect(loopCalls()).toHaveLength(3);
+      expect(getCard("sync-stuck").status).toBe("needs_attention");
+      expect(mocks.abortMerge).toHaveBeenCalledTimes(1);
     });
   });
 
