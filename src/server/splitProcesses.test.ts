@@ -68,17 +68,17 @@ async function freePort(): Promise<number> {
 // JSON round-trip against the web process. No `Origin` header, so the CSRF
 // check in src/proxy.ts passes; auth is off because RADULF_AUTH_PASSWORD_HASH
 // is empty in the web child's environment.
-async function api(
+async function api<T = unknown>(
   method: string,
   route: string,
   body?: unknown,
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: T }> {
   const res = await fetch(baseUrl + route, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  return { status: res.status, json: await res.json() };
+  return { status: res.status, json: (await res.json()) as T };
 }
 
 function pipe(child: ChildProcess, key: keyof typeof out) {
@@ -251,7 +251,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
         defaultBranch: "main",
       });
       expect(repo.status).toBe(201);
-      const repoId: string = repo.json.id;
+      const repoId = (repo.json as { id: string }).id;
 
       const card = await api("POST", "/api/cards", {
         repoId,
@@ -262,7 +262,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
         evaluatorModel: "happy-path",
       });
       expect(card.status).toBe(201);
-      const cardId: string = card.json.id;
+      const cardId = (card.json as { id: string }).id;
 
       expect((await api("POST", `/api/cards/${cardId}/move`, { to: "todo" })).status).toBe(200);
       // Three worker pump intervals: a web-only process queues but never
@@ -283,11 +283,20 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       // waitFor treats a thrown condition as "not yet", so a terminal
       // needs_attention ends the poll via the flag and fails at once below
       // instead of burning the full timeout.
-      let detail: any;
+      type CardDetail = {
+        card?: { status?: string };
+        runs: Array<{
+          kind: string;
+          status: string;
+          iterationsDone: number | null;
+          exitReason: string | null;
+        }>;
+      };
+      let detail: CardDetail | undefined;
       let failed = false;
       await waitFor(
         async () => {
-          detail = (await api("GET", `/api/cards/${cardId}`)).json;
+          detail = (await api<CardDetail>("GET", `/api/cards/${cardId}`)).json;
           const status = detail.card?.status;
           if (status === "needs_attention") failed = true;
           return failed || status === "review";
@@ -299,12 +308,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
         throw new Error(`card landed in needs_attention\n--- worker ---\n${tail(out.worker)}`);
       }
 
-      const runs = detail.runs as Array<{
-        kind: string;
-        status: string;
-        iterationsDone: number | null;
-        exitReason: string | null;
-      }>;
+      const runs = detail!.runs;
       const ofKind = (kind: string) => runs.filter((r) => r.kind === kind);
       expect(ofKind("plan")).toHaveLength(1);
       expect(ofKind("loop")).toHaveLength(1);
