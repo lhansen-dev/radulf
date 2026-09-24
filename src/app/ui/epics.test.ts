@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { BoardCard } from "./api";
-import { groupEpics } from "./epics";
+import { groupEpics, waitingOn } from "./epics";
 
 const card = (id: string, overrides: Partial<BoardCard> = {}): BoardCard =>
-  ({ id, title: id, status: "backlog", position: 0, parentCardId: null, runMode: null, updatedAt: "2026-09-23T10:00:00Z", ...overrides }) as BoardCard;
+  ({ id, title: id, status: "backlog", position: 0, parentCardId: null, runMode: null, dependsOn: null, updatedAt: "2026-09-23T10:00:00Z", ...overrides }) as BoardCard;
 
 describe("groupEpics", () => {
   it("groups pieces under their epic in queue order, newest epic first, and names each piece's epic", () => {
@@ -32,5 +32,25 @@ describe("groupEpics", () => {
 
   it("finds no epics among plain cards", () => {
     expect(groupEpics([card("x"), card("y")])).toEqual({ epics: [], parentOf: new Map(), epicIds: new Set() });
+  });
+});
+
+describe("waitingOn", () => {
+  it("names what a queued piece waits on under graph and ordered, and nothing under parallel", () => {
+    const a = card("a", { status: "done", position: 1 });
+    const b = card("b", { status: "looping", position: 2 });
+    const c = card("c", { status: "todo", position: 3, dependsOn: ["a", "b"] });
+    const d = card("d", { status: "todo", position: 4, dependsOn: null });
+    const tasks = [a, b, c, d];
+
+    expect(waitingOn(c, tasks, "graph")).toEqual([b]);
+    expect(waitingOn(d, tasks, "graph")).toEqual([]);
+    expect(waitingOn(c, tasks, "ordered")).toEqual([b]);
+    expect(waitingOn(d, tasks, "ordered")).toEqual([b, c]);
+    expect(waitingOn(c, tasks, "parallel")).toEqual([]);
+    // A piece already running waits on nothing, whatever the mode.
+    expect(waitingOn(b, tasks, "graph")).toEqual([]);
+    expect(waitingOn(b, tasks, "ordered")).toEqual([]);
+    expect(waitingOn(b, tasks, "parallel")).toEqual([]);
   });
 });

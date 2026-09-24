@@ -37,7 +37,7 @@ The user's job shrinks to three verbs: describe the work, prioritize the queue, 
 - Improve Radulf itself with cards and Improvement Runs against this repo.
 - Batch repo improvements on a time budget against IREN repos such as cluster-setup, reviewed afterwards as one accumulated branch.
 
-**Epics (spec 24):** one card broken down into child tasks that run in order or in parallel under spec 20's per-repo cap, with Jira child issues as ready-made pieces. Tasks may target different repositories, but nothing coordinates two agents; cross-repo coordination has no design yet.
+**Epics (specs 24, 28):** one card broken down into child tasks that run in order, in parallel, or as a dependency graph (each task starting once the tasks it depends on are done or abandoned) under spec 20's per-repo cap, with Jira child issues as ready-made pieces. Tasks may target different repositories, but nothing coordinates two agents; cross-repo coordination has no design yet.
 
 **Environment:**
 

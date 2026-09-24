@@ -29,3 +29,20 @@ export function groupEpics(cards: BoardCard[]): {
     .sort((a, b) => b.epic.updatedAt.localeCompare(a.epic.updatedAt));
   return { epics, parentOf, epicIds: new Set(tasksByEpic.keys()) };
 }
+
+/**
+ * Spec 28: the siblings a queued piece is still waiting on, so the feed can
+ * say why it has not started. Empty unless the piece is in Todo: under
+ * `graph` its unfinished `dependsOn` siblings, under `ordered` the unfinished
+ * pieces ahead of it in the queue, under `parallel` nothing.
+ */
+export function waitingOn(task: BoardCard, tasks: BoardCard[], runMode: BoardCard["runMode"]): BoardCard[] {
+  if (task.status !== "todo") return [];
+  const unfinished = (sibling: BoardCard) => sibling.status !== "done" && sibling.status !== "abandoned";
+  if (runMode === "graph") {
+    const deps = new Set(task.dependsOn ?? []);
+    return tasks.filter((sibling) => deps.has(sibling.id) && unfinished(sibling));
+  }
+  if (runMode === "ordered") return tasks.filter((sibling) => sibling.position < task.position && unfinished(sibling));
+  return [];
+}

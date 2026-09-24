@@ -102,10 +102,12 @@ describe("parseSplitProposal", () => {
       {
         title: "Add the login rate limiter",
         description: "## Problem\nBrute force. Does NOT touch the UI.",
+        dependsOn: [],
       },
       {
         title: "Surface the lockout in the login form",
         description: "## Problem\nDepends on card 1.",
+        dependsOn: [],
       },
     ]);
   });
@@ -117,8 +119,8 @@ describe("parseSplitProposal", () => {
     );
 
     expect(cards).toEqual([
-      { title: "Rate limiting (1)", description: "First piece." },
-      { title: "Third", description: "Third piece." },
+      { title: "Rate limiting (1)", description: "First piece.", dependsOn: [] },
+      { title: "Third", description: "Third piece.", dependsOn: [] },
     ]);
     // The blank CARD 2 block is gone, so the fallback numbering follows the
     // cards that survived rather than the model's own numbering.
@@ -130,6 +132,26 @@ describe("parseSplitProposal", () => {
     expect(parseSplitRunMode("RUN: in order\n\nCARD 1\nTITLE: A")).toBe("ordered");
     expect(parseSplitRunMode("CARD 1\nTITLE: A")).toBe("ordered");
     expect(parseSplitProposal(reply, "f").map((c) => c.title)).toEqual(["A", "B"]);
+  });
+
+  it("reads DEPENDS ON lines into 0-based indexes and keeps them out of the descriptions", () => {
+    const reply =
+      "RUN: as a graph\n\nCARD 1\nTITLE: A\nDEPENDS ON: none\nDESCRIPTION:\nx\n\nCARD 2\nTITLE: B\nDEPENDS ON: 1\nDESCRIPTION:\ny\n\nCARD 3\nTITLE: C\nDEPENDS ON: 1, 2\nDESCRIPTION:\nz";
+    const cards = parseSplitProposal(reply, "f");
+    expect(cards.map((c) => c.dependsOn)).toEqual([[], [0], [0, 1]]);
+    expect(cards.map((c) => c.description)).toEqual(["x", "y", "z"]);
+    expect(cards.map((c) => c.title)).toEqual(["A", "B", "C"]);
+    expect(parseSplitRunMode(reply)).toBe("graph");
+  });
+
+  it("maps dependency numbers onto surviving cards, dropping vanished cards and self-references", () => {
+    const reply =
+      "CARD 1\nTITLE: A\nDEPENDS ON: none\nDESCRIPTION:\nx\n\nCARD 2\n\nCARD 3\nTITLE: C\nDEPENDS ON: 1, 2, 3\nDESCRIPTION:\nz";
+    const cards = parseSplitProposal(reply, "f");
+    expect(cards).toEqual([
+      { title: "A", description: "x", dependsOn: [] },
+      { title: "C", description: "z", dependsOn: [0] },
+    ]);
   });
 
   it("returns nothing when the reply carries no card blocks at all", () => {

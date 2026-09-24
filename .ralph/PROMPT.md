@@ -1,3 +1,9 @@
+## Merge conflict — resolve this first
+
+Your branch conflicts with `beta`, which changed while you worked. `beta` has been merged into your branch and the conflicted files now contain `<<<<<<<` / `=======` / `>>>>>>>` markers. Resolve every marker (keep both your work and the base's intent), remove the markers, and write the normal completion signals so the orchestrator can record the merge. Only once the working tree is clean, finish the task and write DONE as usual.
+
+---
+
 You are working on: making the spec 29 base sync in `src/server/orchestrator.ts` wait for the per-repo delivery lease to be free (never acquire it) and correcting two sentences in `specs/29-sync-and-gate-before-evaluation.md` to match.
 
 Your task for this iteration is given in the `## Your assigned task` block at

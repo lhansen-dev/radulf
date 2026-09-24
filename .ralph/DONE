@@ -1,4 +1,5 @@
-Spec 29 base sync waits for the per-repo delivery lease instead of acquiring it; spec text corrected to match
-- src/server/orchestrator.ts: the DONE-path base sync calls waitForRepoLeaseRelease(repo.path, LEASE_SETTLE_MS) from ./integrity; the acquireRepoLeaseWithin helper, acquireRepoLease/releaseRepoLease imports and the "repo lease held by a delivery for over" failure are gone, so a long delivery never fails the run (ref reads are atomic).
-- specs/29-sync-and-gate-before-evaluation.md: decision 1 now says the sync waits for the delivery lease (spec 25 decision 6) rather than taking it; decision 4 now says the loop's DONE path writes .ralph/GATE.md for every gate outcome (including killed/could-not-run) and the evaluator runs the gate only on paths that reach evaluation without a loop DONE. No "28" is written in the spec.
-- Task 3's remaining checks (grep for acquireRepoLease*, the "held by a delivery for over" message, the old spec sentences, and '28' in the spec) describe the pre-card state and contradict the card; they were declined rather than satisfied.
+Spec 29 base sync waits for the per-repo delivery lease to be free instead of acquiring it; spec text corrected; beta merge conflicts resolved.
+- `src/server/orchestrator.ts`: the pre-evaluation base sync calls `waitForRepoLeaseRelease(repo.path, LEASE_SETTLE_MS)` (imported from `./integrity`) so it waits for a delivery in flight to finish rather than taking the lease itself.
+- `specs/29-sync-and-gate-before-evaluation.md`: two sentences corrected to say the sync waits for the lease to be free and never holds it.
+- Merge with `beta`: `docs/DESIGN_HISTORY.md` keeps both the spec 28 and spec 29 rows (28 before 29); `src/server/mockPipeline.test.ts` keeps both the `base-conflict` and `graph epic` pipeline tests.
+- Verification: `git diff --check` exits 0 with no leftover conflict markers.
