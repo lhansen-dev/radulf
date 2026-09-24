@@ -1,4 +1,4 @@
-You are working on: spec 29 — when a loop signals DONE, the orchestrator merges the base branch into the worktree and runs the repository gate before evaluation, handing conflicts and gate failures back to the loop as tasks (bounded to two rounds).
+You are working on: making the spec 29 base sync in `src/server/orchestrator.ts` wait for the per-repo delivery lease to be free (never acquire it) and correcting two sentences in `specs/29-sync-and-gate-before-evaluation.md` to match.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -37,9 +37,7 @@ Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
 Hints for this card:
-- This repository is TypeScript (Next.js + vitest). Run checks with `npx vitest run <file>` exactly as the task names them; never `make check` or a bare `npx vitest run`.
-- The spec number for this card is 29. Never write "28" anywhere; spec 28 belongs to another card.
-- Read the code you change just in time: `src/server/orchestrator.ts` (`runLoop`, the `if (doneFilePath(ralphDir))` block around the acceptance probe), `src/server/gate.ts`, `src/server/git.ts` (`tryGit`), `src/server/checklist.ts` (`appendTask`), `src/server/evaluationService.ts`, `src/server/harness/mock.ts`, `src/server/mockPipeline.test.ts`, `src/server/orchestrator.lifecycle.test.ts`.
-- Do not change any file under `src/server/harness/` other than `mock.ts`, and never change `src/server/reviewService.ts`.
-- Do not set or override `TMPDIR`; tests that need temp dirs use `os.tmpdir()` or `@/testUtils/gitRepo`.
-- In `src/server/orchestrator.ts`, file reads/writes use the `/* turbopackIgnore: true */` comment before the path argument, e.g. `fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8")`; follow the existing style.
+- The repository already contains a working spec 29 implementation (`src/server/baseSync.ts`, `src/server/gate.ts`, the mock `base-conflict` scenario, tests). Only change exactly what your assigned task names; do not refactor, rename, or "improve" anything nearby, and never edit `src/server/harness/`, `src/server/reviewService.ts`, `src/server/baseSync.ts`, `src/server/evaluationService.ts`, or any test file.
+- `waitForRepoLeaseRelease` and `LEASE_SETTLE_MS` are both already exported from `src/server/integrity.ts`; import them from `"./integrity"`. Do not add any import from `./repoLeases` other than `releaseStaleLeases`.
+- Never write the number 28 in the spec file: spec 28 belongs to a different card.
+- Do not set or override `TMPDIR`, and never point temp directories inside the worktree.
