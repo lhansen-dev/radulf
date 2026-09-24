@@ -112,6 +112,23 @@ pipeline, in two parts:
   still run concurrently — only the wrap step is one at a time — so an
   `npm install` in one repo does not block another repo's bash.
 
+**`TMPDIR` inside the sandbox.** srt overrides `TMPDIR` in every wrapped
+command (default `/tmp/claude`, honouring `CLAUDE_CODE_TMPDIR` in the *server
+process* at wrap time). `/tmp/claude` does not exist in the container image, so
+`runSandboxedCommand` sets `CLAUDE_CODE_TMPDIR` to the run's private `tmpdir`
+inside the same serialized window (and restores it before releasing the turn),
+making the sandboxed `TMPDIR` the spec 14 run-private directory.
+
+**Running Radulf's own test suite inside the sandbox.** A sandbox cannot be
+started from inside a sandbox, so the tests that need a real srt runtime (the
+preflight and real-runtime rows in `src/server/sandbox/srt.test.ts`, and the
+sandbox-on Phase 18.1 test in `src/server/evaluationService.test.ts`) skip
+themselves when `SANDBOX_RUNTIME=1` — the variable srt exports into every
+wrapped command — via the shared predicate in
+`src/testUtils/insideRadulfSandbox.ts`. On a plain host nothing is skipped.
+Leave `TMPDIR` as the sandbox sets it; every test takes scratch space from
+`os.tmpdir()`.
+
 Today nothing trips that check, because network policy comes from global
 settings with nothing per-card or per-role in it. **Making network policy
 genuinely per-run is what must not be done casually**: it would turn that

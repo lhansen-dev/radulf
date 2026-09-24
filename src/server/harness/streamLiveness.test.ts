@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { runHarness, type HarnessSession } from "./index";
@@ -132,7 +133,11 @@ describe("stream liveness probe", () => {
 });
 
 describe("runHarness with a ping-only provider stream", () => {
-  const scratch = "/tmp/ralph-liveness-test";
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-liveness-test-"));
+
+  afterAll(() => {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
 
   /** A session whose prompt consumes a provider stream but emits no events —
    * the shape of run yxQl1Swi0dUzN_11uAgxf: tool results returned, then a long

@@ -22,7 +22,7 @@ describe("repository inspection", () => {
   let repo: string;
   let emptyRepo: string;
   let nonGitDir: string;
-  const missingPath = "/tmp/nonexistent-ralph-test-path-12345";
+  const missingPath = path.join(os.tmpdir(), "nonexistent-ralph-test-path-12345");
 
   beforeAll(() => {
     repo = initScratchRepo("ralph-git-test-");
