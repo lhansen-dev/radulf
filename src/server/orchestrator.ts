@@ -233,6 +233,26 @@ export function planningCandidates(
   return eligible.map((card) => ({ cardId: card.id, repoId: card.repoId }));
 }
 
+/**
+ * Spec 25 (decisions 2 and 3): the orchestrator keeps NO in-memory record of
+ * which cards are starting, paused or awaiting evaluation, because two worker
+ * processes may share one SQLite database and each would only see its own
+ * memory. The former private fields were replaced as follows:
+ *
+ * - `activeLoopCards` (set of cards whose loop was being set up) →
+ *   `claimLoopRun()`: a `BEGIN IMMEDIATE` transaction that moves the card
+ *   ready → looping and inserts the running `runs` row (stamped with
+ *   `runs.worker_id`) in one step, checking the per-repo cap from the DB only.
+ * - `pendingEvaluations` (map of approved needs_attention cards) →
+ *   `cards.evaluation_pending`; `pump()` reads flagged cards and claims each
+ *   through `claimPendingEvaluation()` under `BEGIN IMMEDIATE`.
+ * - `pausedCards` (set consulted at the iteration boundary) → the card status
+ *   itself: `pauseCard()` moves looping → paused immediately and `runLoop()`
+ *   closes the run when it observes that status.
+ *
+ * Cross-process liveness comes from the `workers` table (heartbeats) and
+ * `reapStaleRuns()`, which interrupts runs owned by dead workers.
+ */
 export class Orchestrator {
   /** Set on graceful shutdown: pump() starts no new runs, and a running loop
    * stops at its next iteration boundary. */
