@@ -388,6 +388,12 @@ The human diff review is the last gate, so it is treated as a security control
 
 There is **no** automatic "sandbox unavailable, run unsandboxed" fallback.
 
+In the compose deployment ([Running in Docker](DOCKER.md)) only the `worker`
+container carries the sandbox and the `security_opt` relaxations it needs
+(`seccomp`, `apparmor`, `systempaths` unconfined). The web container runs no
+sandbox and no agent: it serves HTTP under Docker's default profiles, so there
+is nothing there to contain and the preflight below never runs in it.
+
 - **Startup preflight** (`sandboxPreflight` in `srt.ts`, run once at boot in
   [`src/server/boot.ts`](../src/server/boot.ts) (worker role only)): platform support, srt's
   dependency check, and (Linux) the Ubuntu 24.04+ AppArmor
