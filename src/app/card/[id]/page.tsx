@@ -427,6 +427,7 @@ export default function CardDetail() {
             />
             <WorkflowFlag on={Boolean(card.grillMe)} label="Grill me while scoping" />
             <WorkflowFlag on={Boolean(card.scopingAuthorsPlan)} label="Scoping writes the plan" />
+            <WorkflowFlag on={card.planCritic == null ? undefined : Boolean(card.planCritic)} label="Plan critic" />
             <WorkflowFlag
               on={Boolean(card.autoApprove)}
               label="Auto-approve on evaluator pass"
@@ -637,8 +638,10 @@ function InstallGateBanner({
 }
 
 /** Compact chip for a per-card workflow toggle. An "on" auto-approve flag is
- * amber to flag that this card can merge without human review. */
-function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; warnWhenOn?: boolean }) {
+ * amber to flag that this card can merge without human review. `on` of
+ * `undefined` means the card inherits the global default (tri-state flags
+ * such as the plan critic). */
+function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean | undefined; label: string; warnWhenOn?: boolean }) {
   const tone = on
     ? warnWhenOn
       ? "border-amber-600/50 bg-amber-950/30 text-amber-300"
@@ -646,8 +649,8 @@ function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; w
     : "border-foreground/10 text-foreground/40";
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${tone}`}>
-      <span aria-hidden>{on ? "●" : "○"}</span>
-      {label}: {on ? "On" : "Off"}
+      <span aria-hidden>{on ? "●" : on === undefined ? "◌" : "○"}</span>
+      {label}: {on === undefined ? "Default" : on ? "On" : "Off"}
     </span>
   );
 }
@@ -1070,6 +1073,9 @@ function EditCardModal({
   });
   const [grillMe, setGrillMe] = useState(Boolean(detail.card.grillMe));
   const [scopingAuthorsPlan, setScopingAuthorsPlan] = useState(Boolean(detail.card.scopingAuthorsPlan));
+  const [planCritic, setPlanCritic] = useState<boolean | null>(
+    detail.card.planCritic == null ? null : Boolean(detail.card.planCritic),
+  );
   const { providers, models } = useRoleModelOptions();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1089,6 +1095,7 @@ function EditCardModal({
           evaluatorModel: roleModels.evaluator || null,
           grillMe,
           scopingAuthorsPlan,
+          planCritic,
         },
       });
       onSaved();
@@ -1136,6 +1143,18 @@ function EditCardModal({
             className="size-4 accent-amber-600"
           />
           Let scoping write the plan
+        </label>
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          Plan critic
+          <select
+            value={planCritic === null ? "default" : planCritic ? "on" : "off"}
+            onChange={(e) => setPlanCritic(e.target.value === "default" ? null : e.target.value === "on")}
+            className={fieldCls}
+          >
+            <option value="default">Default (on for breakdown pieces)</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
         </label>
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>

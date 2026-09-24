@@ -363,6 +363,7 @@ describe("NewTaskDialog", () => {
         reviewPlanBeforeImplementation: false,
         grillMe: false,
         scopingAuthorsPlan: false,
+        planCritic: null,
         autoApprove: false,
         openPr: false,
         baseBranch: null,

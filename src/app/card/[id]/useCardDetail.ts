@@ -59,6 +59,9 @@ export type CardDetailData = {
     reviewPlanBeforeImplementation: number;
     grillMe: number;
     scopingAuthorsPlan: number;
+    /** Spec 30: null inherits the global critic mode, 1 on, 0 off. */
+    planCritic: number | null;
+    criticModel: string | null;
     autoApprove: number;
     summary: string | null;
     startedAt: string | null;
