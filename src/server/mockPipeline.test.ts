@@ -23,7 +23,7 @@ process.env.PI_OFFLINE = "1";
 
 const { db, cards, runs, plans, repos, events, now } = await import("@/db");
 const { patchSettings, getSettings } = await import("./settings");
-const { Orchestrator } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
 const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
 
@@ -48,6 +48,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  disposeAllOrchestrators();
   fs.rmSync(root, { recursive: true, force: true });
 });
 

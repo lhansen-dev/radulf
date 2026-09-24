@@ -127,6 +127,13 @@
       "when": 1790200906436,
       "tag": "0017_clumsy_rocket_racer",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1790211009836,
+      "tag": "0018_chunky_nightcrawler",
+      "breakpoints": true
     }
   ]
 }

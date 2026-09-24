@@ -17,8 +17,8 @@ vi.mock("./settings", async (importOriginal) => {
 
 setupTestDataDir("radulf-orchestrator-roles-");
 
-const { db, cards, events, plans, repos, runs, now } = await import("@/db");
-const { Orchestrator, getOrchestrator } = await import("./orchestrator");
+const { db, cards, events, plans, repos, runs, workers, now } = await import("@/db");
+const { Orchestrator, disposeAllOrchestrators, getOrchestrator } = await import("./orchestrator");
 
 type Global = { __radulfOrchestrator?: unknown };
 
@@ -60,6 +60,7 @@ const runsFor = (cardId: string) => db.select().from(runs).where(eq(runs.cardId,
 const originalRoles = process.env.RADULF_ROLES;
 
 beforeEach(() => {
+  db.delete(workers).run();
   db.delete(runs).run();
   db.delete(plans).run();
   db.delete(events).run();
@@ -71,6 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  disposeAllOrchestrators();
   (globalThis as Global).__radulfOrchestrator = undefined;
   if (originalRoles === undefined) delete process.env.RADULF_ROLES;
   else process.env.RADULF_ROLES = originalRoles;
@@ -139,6 +141,26 @@ describe("passive orchestrator (web role only)", () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as { status?: number }).status).toBe(409);
     expect(card("c1").status).toBe("needs_attention");
+  });
+});
+
+describe("worker registration", () => {
+  it("a passive orchestrator registers a workers row with the web role", () => {
+    const orchestrator = new Orchestrator({ passive: true });
+
+    const rows = db.select().from(workers).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(orchestrator.workerId);
+    expect(rows[0].roles).toBe(JSON.stringify(["web"]));
+  });
+
+  it("a non-passive orchestrator registers a workers row with the worker role", () => {
+    const orchestrator = new Orchestrator({ autoStart: false });
+
+    const rows = db.select().from(workers).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(orchestrator.workerId);
+    expect(rows[0].roles).toBe(JSON.stringify(["worker"]));
   });
 });
 

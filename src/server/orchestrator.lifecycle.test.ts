@@ -109,7 +109,8 @@ const {
   settings,
   worktrees,
 } = await import("@/db");
-const { Orchestrator, iterationBudgetMs, promptBloatRatio, slowIterationMs } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators, iterationBudgetMs, promptBloatRatio, slowIterationMs } =
+  await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome, providerBreakerStatus } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
@@ -320,6 +321,10 @@ describe("Orchestrator cancellation lifecycle", () => {
       __radulfOrchestrator?: InstanceType<typeof Orchestrator>;
     })
       .__radulfOrchestrator;
+  });
+
+  afterEach(() => {
+    disposeAllOrchestrators();
   });
 
   it.each(["DONE", "DONE.md"])("ignores premature %s and assigns the next task before evaluation", async (doneName) => {
@@ -814,8 +819,8 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
-  describe("loop start CAS loss", () => {
-    it("releases the integrity baseline it registered when the card leaves the queue first", async () => {
+  describe("cancel during loop start", () => {
+    it("releases the integrity baseline it registered when the card is cancelled during setup", async () => {
       card("cas-loss", "ready");
       plan("cas-loss");
       // A usable git-common-dir, so snapshotRepoIntegrity returns a real
@@ -829,24 +834,26 @@ describe("Orchestrator cancellation lifecycle", () => {
       const orchestrator = new Orchestrator({ autoStart: false });
 
       orchestrator.pump();
-      // pump() runs runLoop synchronously up to its first await, so the card
-      // is still captured as "ready" in the loop's closure — flip the real
-      // row out from under it here to force the loop-start CAS to lose.
-      db.update(cards).set({ status: "backlog" }).where(eq(cards.id, "cas-loss")).run();
+      // The claim moved the card to looping and inserted its run row
+      // synchronously; runLoop is still in its awaited worktree setup. Cancel
+      // out from under it so the loop finds its run already finalized.
+      expect(getCard("cas-loss").status).toBe("looping");
+      expect(getRun("cas-loss").status).toBe("running");
+      orchestrator.cancelCard("cas-loss");
+      expect(getRun("cas-loss")).toMatchObject({ status: "cancelled", exitReason: "cancelled by user" });
+      expect(getCard("cas-loss").status).toBe("backlog");
 
-      await vi.waitFor(() => {
-        expect(getRun("cas-loss")).toMatchObject({
-          status: "cancelled",
-          exitReason: "card left the queue before the loop started",
-        });
-      });
-      // A card left the queue before the try/finally that owns the baseline
-      // ever opens, so it must never have been registered either — proving
-      // the fix (moving the register call inside that try) rather than just
-      // its symptom. Whichever shape a future fix takes, every register must
+      await settle();
+      // Whichever shape the loop's early exit takes, every register must
       // still be matched by a release.
-      expect(mocks.registerRunBaseline).not.toHaveBeenCalled();
-      expect(mocks.registerRunBaseline.mock.calls.length).toBe(mocks.releaseRunBaseline.mock.calls.length);
+      await vi.waitFor(() => {
+        expect(mocks.registerRunBaseline.mock.calls.length).toBe(mocks.releaseRunBaseline.mock.calls.length);
+      });
+      // The stale continuation must not have touched the cancelled run or
+      // pushed the re-queued card anywhere.
+      expect(getRun("cas-loss").status).toBe("cancelled");
+      expect(getCard("cas-loss").status).toBe("backlog");
+      expect(mocks.runHarness).not.toHaveBeenCalled();
     });
   });
 
@@ -1449,6 +1456,9 @@ describe("Orchestrator cancellation lifecycle", () => {
 
       orchestrator.startCard("pause-status");
       await vi.waitFor(() => expect(getCard("pause-status").status).toBe("paused"));
+      // The card moves the moment the pause is requested (spec 25 decision
+      // 4); the run only closes at the iteration boundary.
+      await vi.waitFor(() => expect(getRun("pause-status").status).toBe("paused"));
 
       const run = getRun("pause-status");
       expect(run.status).toBe("paused");
@@ -1625,7 +1635,10 @@ describe("Orchestrator cancellation lifecycle", () => {
       // recover() puts it back in Ready and pump() takes it straight back
       // into the loop, with no human in the path. The tick from the last
       // committed iteration is what stops it redoing the first task.
-      await vi.waitFor(() => expect(getCard("recover-resume").status).toBe("looping"));
+      // The claim moves the card to looping synchronously, before the loop's
+      // awaited setup reaches the harness — wait for the harness call itself.
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalled());
+      expect(getCard("recover-resume").status).toBe("looping");
       expect(mocks.runHarness.mock.calls[0][0].prompt).toContain("second task");
       orchestrator.cancelCard("recover-resume");
       await settle();
@@ -1734,7 +1747,8 @@ describe("Orchestrator cancellation lifecycle", () => {
       const orchestrator = new Orchestrator({ autoStart: false });
 
       expect(orchestrator.retryFailedStep("retry-loop")).toEqual({ ok: true, step: "loop" });
-      await vi.waitFor(() => expect(getCard("retry-loop").status).toBe("looping"));
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalled());
+      expect(getCard("retry-loop").status).toBe("looping");
 
       const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "retry-loop");
       expect(cardRuns.map((run) => run.kind)).toEqual(["loop", "loop"]);
@@ -2603,12 +2617,13 @@ describe("Orchestrator cancellation lifecycle", () => {
     );
 
     it("refuses to remove a repository while a loop is still tearing down", async () => {
+      // A loop tearing down: its card has already left the running statuses
+      // but its run row is still `running`. The load is read from the
+      // database alone, so this is what pipelineLoad sees.
       card("teardown-card", "needs_attention");
-      const orchestrator = routeOrchestrator();
-      (orchestrator as unknown as { activeLoopCards: Map<string, string> }).activeLoopCards.set(
-        "teardown-card",
-        "repo-1",
-      );
+      plan("teardown-card");
+      completedRun("teardown-card", "teardown-run", { status: "running" });
+      routeOrchestrator();
 
       const response = await removeRepo1();
 

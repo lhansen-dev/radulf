@@ -127,7 +127,18 @@ export class EvaluationService {
     // record its own write rather than this run reporting it as tampering.
     if (integrityBaseline) registerRunBaseline(runId, repo.path, integrityBaseline);
     startRunRow(
-      { id: runId, cardId, planId: plan.id, kind: "evaluate", worktreePath, branch, baseBranch, provider, model },
+      {
+        id: runId,
+        cardId,
+        planId: plan.id,
+        kind: "evaluate",
+        worktreePath,
+        branch,
+        baseBranch,
+        provider,
+        model,
+        workerId: deps.workerId(),
+      },
       ctx,
       settings,
     );

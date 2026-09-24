@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, inArray, max } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, max } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
   db,
@@ -35,22 +35,31 @@ import {
 import { appendTask, firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
 import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
-import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
+import { listProviderModels, normalizeProvider, preflightProvider, type ProviderId } from "./providers";
 import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { recordProviderFailure } from "./providerRateLimit";
-import { offRunBranchReason, removeWorktree, tryGit } from "./git";
+import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { getCard, requireCard, type Card } from "./cards";
-import { getRepo, requireRepo } from "./repos";
+import { getRepo, requireRepo, type Repo } from "./repos";
 import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService, type ConfigApproval } from "./reviewService";
 import { ClientError } from "./clientError";
 import { hasRole } from "./roles";
+import {
+  HEARTBEAT_INTERVAL_MS,
+  deleteWorker,
+  heartbeatWorker,
+  liveWorkerIds,
+  registerWorker,
+  staleBefore,
+  staleWorkerIds,
+} from "./workers";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
@@ -87,12 +96,24 @@ import {
   resolveWorktree,
   runWithTranscript,
   sandboxUnavailableReason,
-  startRunRow,
   type FinishStatus,
   type StageDependencies,
 } from "./stage";
 
 type Run = typeof runs.$inferSelect;
+type Plan = typeof plans.$inferSelect;
+
+/** Everything a claimed loop run needs, read once inside `claimLoopRun`. */
+export type LoopClaim = {
+  runId: string;
+  card: Card;
+  repo: Repo;
+  plan: Plan;
+  settings: Settings;
+  prev: Run | undefined;
+  provider: ProviderId;
+  loopModel: string;
+};
 
 /** How often to look for a card that has been waiting on a human (spec 18 §5).
  * Well under the smallest useful staleness setting — the setting decides when
@@ -212,20 +233,40 @@ export function planningCandidates(
   return eligible.map((card) => ({ cardId: card.id, repoId: card.repoId }));
 }
 
+/**
+ * Spec 25 (decisions 2 and 3): the orchestrator keeps NO in-memory record of
+ * which cards are starting, paused or awaiting evaluation, because two worker
+ * processes may share one SQLite database and each would only see its own
+ * memory. The former in-memory bookkeeping was replaced as follows:
+ *
+ * - the former in-memory set of cards being started →
+ *   `claimLoopRun()`: a `BEGIN IMMEDIATE` transaction that moves the card
+ *   ready → looping and inserts the running `runs` row (stamped with
+ *   `runs.worker_id`) in one step, checking the per-repo cap from the DB only.
+ * - the former in-memory pending-evaluation map →
+ *   `cards.evaluation_pending`; `pump()` reads flagged cards and claims each
+ *   through `claimPendingEvaluation()` under `BEGIN IMMEDIATE`.
+ * - the former in-memory pause set → the card status `paused`
+ *   itself: `pauseCard()` moves looping → paused immediately and `runLoop()`
+ *   closes the run when it observes that status.
+ *
+ * Cross-process liveness comes from the `workers` table (heartbeats) and
+ * `reapStaleRuns()`, which interrupts runs owned by dead workers.
+ */
+
+/** Every Orchestrator whose timers are still live; see disposeAllOrchestrators(). */
+const liveOrchestrators = new Set<Orchestrator>();
+
+/**
+ * Stop the heartbeat/reaper and attention-sweep timers of every live
+ * Orchestrator. For test suites (so a finished file leaves no 5-second
+ * interval running against the shared DB) and final process exit.
+ */
+export function disposeAllOrchestrators(): void {
+  for (const orchestrator of liveOrchestrators) orchestrator.dispose();
+}
+
 export class Orchestrator {
-  /** Card ID → repoId for every async loop currently running in the
-   * background, so pipelineBusy(repoId) needs no extra DB round-trip. */
-  private activeLoopCards = new Map<string, string>();
-  /** Card IDs whose install gate cleared into a finished checklist while
-   * their repo was at its concurrency cap (spec 20) — evaluation is owed to
-   * them, not another loop pass, so pump() starts it once a slot frees
-   * rather than approveInstallScripts starting it over the cap. Like
-   * activeLoopCards, this is memory only; a restart loses the queue and
-   * leaves the card in needs_attention for a human, same as any other
-   * interrupted stage. */
-  private pendingEvaluations = new Map<string, string>();
-  /** Card IDs that have requested a pause on next iteration boundary. */
-  private pausedCards = new Set<string>();
   /** Set on graceful shutdown: pump() starts no new runs, and a running loop
    * stops at its next iteration boundary. */
   private draining = false;
@@ -234,6 +275,7 @@ export class Orchestrator {
 
   private stageDeps: StageDependencies = {
     getCard,
+    workerId: () => this.workerId,
     latestPlan: (cardId) => this.latestPlan(cardId),
     latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
     moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
@@ -268,8 +310,37 @@ export class Orchestrator {
    * over the same runs. */
   private readonly passive: boolean;
 
+  /** This process's row in the `workers` table (spec 25). Every run this
+   * orchestrator starts is stamped with it so a peer can tell whose claim a
+   * running row is, and whether its owner is still heartbeating. */
+  readonly workerId: string;
+  /** Roles this process registered with; re-sent on every heartbeat so the
+   * worker can re-register itself if a peer's reaper deleted its row. */
+  private readonly roles: string[];
+  /** Refreshes workers.heartbeatAt. Deliberately NOT cleared by
+   * startDraining(): a draining worker is still finishing its last iteration
+   * and must keep heartbeating so no peer reaps that run as orphaned. */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(options: { autoStart?: boolean; passive?: boolean } = {}) {
     this.passive = options.passive === true;
+    this.roles = this.passive ? ["web"] : ["worker"];
+    this.workerId = registerWorker(this.roles);
+    this.heartbeatTimer = setInterval(() => {
+      try {
+        heartbeatWorker(this.workerId, this.roles);
+        if (!this.passive) {
+          try {
+            this.reapStaleRuns();
+          } catch (e) {
+            console.error("[radulf] stale reaper failed:", e);
+          }
+        }
+      } catch (e) {
+        console.error("[radulf] heartbeat failed:", e);
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref?.();
     if (options.autoStart !== false && !this.passive) {
       this.recover();
       this.pump();
@@ -288,6 +359,21 @@ export class Orchestrator {
       // watchdog): this is a reminder, not work.
       this.attentionTimer.unref?.();
     }
+    liveOrchestrators.add(this);
+  }
+
+  /**
+   * Stop this orchestrator's timers for good. Intended for tests and for
+   * final process exit only. Note that `startDraining()` deliberately does
+   * NOT stop the heartbeat: a draining worker is still finishing its last
+   * iteration and must keep its claim alive so no peer reaps that run.
+   */
+  dispose(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+    if (this.attentionTimer) clearInterval(this.attentionTimer);
+    this.attentionTimer = null;
+    liveOrchestrators.delete(this);
   }
 
   /**
@@ -357,40 +443,130 @@ export class Orchestrator {
   // ---- boot recovery -------------------------------------------------------
 
   private recover() {
-    const stale = db.select().from(runs).where(eq(runs.status, "running")).all();
-    for (const run of stale) {
-      db.update(runs)
-        .set({ status: "interrupted", exitReason: "server restarted mid-run", endedAt: now() })
-        .where(eq(runs.id, run.id))
+    // Boot recovery is just the first pass of the continuous stale reaper: any
+    // running run whose owner is not heartbeating (or was never recorded) is
+    // marked interrupted and its card parked or resumed. Run-less orphan
+    // cards are only swept here, at boot, when nothing of ours is in flight.
+    this.reapStaleRuns({ orphans: true });
+    // Sweep the per-run scratch root (private TMPDIRs, caches, pgid files) of
+    // everything that no longer belongs to a live run. A peer worker's
+    // in-flight run keeps its directory: its TMPDIR must survive our boot.
+    const root = /* turbopackIgnore: true */ runScratchRoot();
+    if (fs.existsSync(root)) {
+      const live = liveWorkerIds(getSettings().workerStaleSeconds);
+      const liveRunIds = db
+        .select({ id: runs.id, workerId: runs.workerId })
+        .from(runs)
+        .where(eq(runs.status, "running"))
+        .all()
+        .filter((r) => r.workerId !== null && live.has(r.workerId))
+        .map((r) => r.id);
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.name === "ballast") continue;
+        if (liveRunIds.some((id) => entry.name.startsWith(id))) continue;
+        fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
+      }
+    }
+  }
+
+  /** Continuous stale reaper. Every `running` run whose owning worker has
+   * stopped heartbeating (or that has no owner at all — a row from before
+   * workers existed, or a process that died between insert and claim) is
+   * marked interrupted and its card either resumed (a checkpointed loop) or
+   * parked in Needs Attention, and dead worker rows are deleted. Safe to run
+   * from any worker at any time: the run update is a CAS on
+   * `status = running`, so two reapers racing over the same run only let one
+   * of them through.
+   *
+   * With `options.orphans` set, cards stuck in a running (or `reviewing`)
+   * status with no run at all get the same treatment once they have been
+   * idle past the stale window. That sweep is boot-only: a run-less card has
+   * no ownership row anywhere, so a continuous pass cannot tell an abandoned
+   * card from one this or a live peer process is actively working on (a
+   * `reviewing` merge in flight, or a `planning`/`evaluating` card still
+   * creating its worktree before its run row exists). Only boot, when this
+   * process knows it has nothing in flight, may judge it. Spec 25 decision 6
+   * will give delivery a lease row so the continuous pass can reason about
+   * it too. */
+  reapStaleRuns(options: { orphans?: boolean } = {}): void {
+    // Read on every call, never cached: the operator can widen or narrow the
+    // window at runtime and the next pass must honour it.
+    const staleSeconds = getSettings().workerStaleSeconds;
+    const live = liveWorkerIds(staleSeconds);
+    // Our own runs are never stale, however far behind our heartbeat row is
+    // (a long SQLite stall must not make a worker reap itself).
+    live.add(this.workerId);
+
+    const running = db.select().from(runs).where(eq(runs.status, "running")).all();
+    for (const run of running) {
+      if (run.workerId !== null && live.has(run.workerId)) continue;
+      const exitReason = run.workerId
+        ? `worker ${run.workerId} stopped heartbeating`
+        : "server restarted mid-run";
+      const result = db
+        .update(runs)
+        .set({ status: "interrupted", exitReason, endedAt: now() })
+        .where(and(eq(runs.id, run.id), eq(runs.status, "running")))
         .run();
-      this.failIterations(run.id, "interrupted by server restart");
+      if (result.changes !== 1) continue;
+      // Only the iterations still open: finished ones keep their verdicts.
+      db.update(iterations)
+        .set({ status: "failed", summary: "interrupted by worker loss", endedAt: now() })
+        .where(and(eq(iterations.runId, run.id), eq(iterations.status, "running")))
+        .run();
       emitEvent("run.finished", {
         cardId: run.cardId,
         runId: run.id,
-        payload: { status: "interrupted" },
+        payload: { status: "interrupted", exitReason },
       });
+      const card = getCard(run.cardId);
+      if (card) this.parkOrResume(card);
     }
-    // No run survives a restart, so the per-run scratch root (private TMPDIRs,
-    // caches, pgid files) is all stale — sweep it before anything new starts.
-    fs.rmSync(/* turbopackIgnore: true */ runScratchRoot(), { recursive: true, force: true });
-    // Any card still marked planning/looping/evaluating lost its run. A
-    // reviewing card lost the in-process merge claim.
-    const orphans = db
-      .select()
-      .from(cards)
-      .where(inArray(cards.status, [...RUNNING_STATUSES, "reviewing"]))
-      .all();
-    for (const card of orphans) {
-      // A loop is checkpointed: the orchestrator commits every finished
-      // iteration and ticks the private plan checklist, so a restart costs at
-      // most the one iteration that was in flight. Put a resumable card back
-      // in Ready and let pump() open a fresh loop run on the first unchecked
-      // task, instead of making a human press Retry to lose nothing. Every
-      // other stage re-runs from the top, so those still need a human.
-      if (card.status === "looping" && this.loopIsResumable(card.id)) {
-        this.moveCard(card.id, "looping", "ready", "resuming after restart");
-        continue;
+
+    if (options.orphans) {
+      // Any card still marked planning/looping/evaluating with no run at all
+      // lost its run some other way (a reviewing card lost the in-process
+      // merge claim). Only cards idle past the stale window count: a card
+      // that just moved into a running status may be about to get its run
+      // inserted. Boot-only, see the JSDoc above.
+      const orphans = db
+        .select()
+        .from(cards)
+        .where(
+          and(
+            inArray(cards.status, [...RUNNING_STATUSES, "reviewing"]),
+            lt(cards.updatedAt, staleBefore(staleSeconds)),
+          ),
+        )
+        .all();
+      for (const card of orphans) {
+        const active = db
+          .select({ id: runs.id })
+          .from(runs)
+          .where(and(eq(runs.cardId, card.id), eq(runs.status, "running")))
+          .get();
+        if (active) continue;
+        this.parkOrResume(card);
       }
+    }
+
+    for (const id of staleWorkerIds(staleSeconds)) {
+      if (id !== this.workerId) deleteWorker(id);
+    }
+  }
+
+  /** A loop is checkpointed: the orchestrator commits every finished
+   * iteration and ticks the private plan checklist, so losing its worker
+   * costs at most the one iteration that was in flight. Put a resumable card
+   * back in Ready and let pump() open a fresh loop run on the first unchecked
+   * task, instead of making a human press Retry to lose nothing. Every other
+   * stage re-runs from the top, so those still need a human. */
+  private parkOrResume(card: Card) {
+    if (card.status === "looping" && this.loopIsResumable(card.id)) {
+      this.moveCard(card.id, "looping", "ready", "resuming after worker loss");
+      return;
+    }
+    if (RUNNING_STATUSES.includes(card.status) || card.status === "reviewing") {
       this.moveCard(card.id, card.status, "needs_attention", "interrupted");
     }
   }
@@ -410,15 +586,51 @@ export class Orchestrator {
   // ---- helpers -------------------------------------------------------------
 
   private moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean {
+    // Leaving Needs Attention by any route (human or otherwise) clears the
+    // queued-evaluation flag (spec 25): pump() must not later pull the card
+    // into evaluating after someone restarted, retried, or cancelled it.
     const result = db
       .update(cards)
-      .set({ status: to, updatedAt: now() })
+      .set({ status: to, updatedAt: now(), ...(from === "needs_attention" ? { evaluationPending: 0 } : {}) })
       .where(and(eq(cards.id, cardId), eq(cards.status, from)))
       .run();
     if (result.changes !== 1) return false;
     emitEvent("card.moved", { cardId, payload: { from, to, ...(reason ? { reason } : {}) } });
     this.alertOnArrival(cardId, to, reason);
     if (FINISHED_STATUSES.includes(to)) this.completeEpicIfFinished(cardId);
+    return true;
+  }
+
+  /**
+   * Move a card into a stage that consumes a pipeline slot (planning or
+   * evaluating) under `BEGIN IMMEDIATE`, re-checking both the card's status
+   * and the repo's load inside the same transaction. Two workers sharing the
+   * database therefore cannot each pass the load check and start two
+   * different cards of one repo past its cap. Same shape as
+   * claimPendingEvaluation; neither destination is an alert or finished
+   * status, so moveCard's follow-ups do not apply here.
+   */
+  claimStage(cardId: string, from: CardStatus, to: "planning" | "evaluating", reason?: string): boolean {
+    const claimed = db.transaction(
+      (tx) => {
+        const fresh = tx
+          .select({ status: cards.status, repoId: cards.repoId })
+          .from(cards)
+          .where(eq(cards.id, cardId))
+          .get();
+        if (fresh?.status !== from) return false;
+        if (this.loadFor(fresh.repoId, tx) >= this.concurrencyLimit()) return false;
+        const moved = tx
+          .update(cards)
+          .set({ status: to, updatedAt: now(), ...(from === "needs_attention" ? { evaluationPending: 0 } : {}) })
+          .where(and(eq(cards.id, cardId), eq(cards.status, from)))
+          .run();
+        return moved.changes === 1;
+      },
+      { behavior: "immediate" },
+    );
+    if (!claimed) return false;
+    emitEvent("card.moved", { cardId, payload: { from, to, ...(reason ? { reason } : {}) } });
     return true;
   }
 
@@ -500,9 +712,6 @@ export class Orchestrator {
   ): boolean {
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
     if (!run || run.status !== "running") return false;
-    // A pause request only applies to the live loop — a run that ends for any
-    // other reason (cancel, DONE, timeout) must not pause the card's next run.
-    this.pausedCards.delete(run.cardId);
     // Plan/evaluate pass their single invocation's telemetry; a loop run's
     // lives per iteration, so roll it up from the iterations just recorded.
     const rollup = telemetry ?? (run.kind === "loop" ? this.loopTelemetryRollup(runId) : undefined);
@@ -570,7 +779,11 @@ export class Orchestrator {
   private isRunActive(runId: string, cardId: string, signal: AbortSignal): boolean {
     if (signal.aborted) return false;
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
-    return run?.status === "running" && getCard(cardId)?.status === "looping";
+    if (run?.status !== "running") return false;
+    // Spec 25 decision 4: a pause moves the card at once, but its loop is
+    // still live until the iteration boundary and must bank that iteration.
+    const status = getCard(cardId)?.status;
+    return status === "looping" || status === "paused";
   }
 
   private latestPlan(cardId: string) {
@@ -626,8 +839,9 @@ export class Orchestrator {
       // feedback (a rejection or an evaluator revise) re-plans first.
       this.moveCard(cardId, card.status, "ready");
       this.pump();
-    } else if (this.passive || this.pipelineBusy(card.repoId)) {
-      // One ticket runs at a time. The startedAt set above marks this a manual
+    } else if (this.passive || !this.claimStage(cardId, card.status, "planning")) {
+      // One ticket runs at a time (claimStage checks the repo's cap and moves
+      // the card to planning atomically). The startedAt set above marks this a manual
       // start; land it back in todo (pump only scans todo for planning) so it
       // is picked up, oldest manual start first, when the pipeline frees. A
       // passive (web-only) process takes the same path unconditionally: it
@@ -639,7 +853,6 @@ export class Orchestrator {
         this.moveCard(cardId, card.status, "todo", "queued for planning");
       }
     } else {
-      this.moveCard(cardId, card.status, "planning");
       this.startStage("planning", cardId);
     }
   }
@@ -830,23 +1043,34 @@ export class Orchestrator {
     return { queued: queued.length, started };
   }
 
-  /** Spec 24 decision 5: pause every looping piece at its next iteration boundary. */
+  /** Spec 24 decision 5: pause every looping piece; each loop stops at its
+   * next iteration boundary (spec 25 decision 4: the card moves at once). */
   pauseEpic(cardId: string): { paused: number } {
     const looping = listChildren(cardId).filter((child) => child.status === "looping");
-    for (const child of looping) this.pausedCards.add(child.id);
+    for (const child of looping) this.moveCard(child.id, "looping", "paused", "pause requested");
     return { paused: looping.length };
   }
 
   pauseCard(cardId: string) {
     const card = requireCard(cardId);
     if (card.status !== "looping") throw new ClientError(`cannot pause a ${card.status} card`);
-    this.pausedCards.add(cardId);
+    // Spec 25 decision 4: the pause is an immediate card transition, visible
+    // to every worker through the database. The loop stops at its boundary.
+    this.moveCard(cardId, "looping", "paused", "pause requested");
   }
 
   resumeCard(cardId: string) {
     const card = requireCard(cardId);
     if (card.status !== "paused") throw new ClientError(`cannot resume a ${card.status} card`);
-    this.pausedCards.delete(cardId);
+    const stillRunning = db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.cardId, cardId), eq(runs.status, "running")))
+      .limit(1)
+      .get();
+    if (stillRunning) {
+      throw new ClientError("the loop is still finishing its current iteration — try again in a moment", 409);
+    }
     this.moveCard(cardId, "paused", "ready");
     this.pump();
   }
@@ -918,7 +1142,7 @@ export class Orchestrator {
     const [stage, agent] = step === "plan"
       ? (["planning", "planner"] as const)
       : (["evaluating", "evaluator"] as const);
-    if (!this.moveCard(cardId, "needs_attention", stage, `retrying failed ${agent}`)) {
+    if (!this.claimStage(cardId, "needs_attention", stage, `retrying failed ${agent}`)) {
       throw new ClientError(`card status changed before the ${agent} could retry`);
     }
     this.startStage(stage, cardId);
@@ -938,7 +1162,19 @@ export class Orchestrator {
   /** True while any repo has a run in flight — used by graceful shutdown.
    * Deliberately global, unlike pipelineBusy(repoId). */
   hasInFlightWork(): boolean {
-    return this.activeLoopCards.size > 0 || this.cardInStatus(RUNNING_STATUSES);
+    return this.ownsRunningRun() || this.cardInStatus(RUNNING_STATUSES);
+  }
+
+  /** True if a run row claimed by this worker is still `running`. */
+  private ownsRunningRun(): boolean {
+    return (
+      db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.status, "running"), eq(runs.workerId, this.workerId)))
+        .limit(1)
+        .get() !== undefined
+    );
   }
 
   private cardInStatus(statuses: readonly CardStatus[], repoId?: string): boolean {
@@ -955,20 +1191,102 @@ export class Orchestrator {
   /** How many of `repoId`'s cards are actively running a harness. Queued or
    * human-waiting cards do not count, and repos never share slots.
    *
-   * Counted over distinct card ids: a loop appears in `activeLoopCards` from
-   * before its card reaches `looping` until after it leaves, so the two
-   * sources overlap for most of a run. */
+   * Counted over distinct card ids from the database alone: a card in a
+   * running status, or a card with a `running` run row (a loop still tearing
+   * down after its card moved on), each hold a slot — whichever worker owns
+   * them. */
   private pipelineLoad(repoId: string): number {
+    return this.loadFor(repoId);
+  }
+
+  /** `pipelineLoad` through `q` — `db` or the transaction handle inside
+   * `claimLoopRun`, so the claim counts under `BEGIN IMMEDIATE`. */
+  private loadFor(repoId: string, q: Pick<typeof db, "select"> = db): number {
     const running = new Set(
-      db
+      q
         .select({ id: cards.id })
         .from(cards)
         .where(and(inArray(cards.status, [...RUNNING_STATUSES]), eq(cards.repoId, repoId)))
         .all()
         .map((c) => c.id),
     );
-    for (const [cardId, id] of this.activeLoopCards) if (id === repoId) running.add(cardId);
+    for (const row of q
+      .select({ id: runs.cardId })
+      .from(runs)
+      .innerJoin(cards, eq(runs.cardId, cards.id))
+      .where(and(eq(runs.status, "running"), eq(cards.repoId, repoId)))
+      .all()) {
+      running.add(row.id);
+    }
     return running.size;
+  }
+
+  /**
+   * Claim the loop run for a Ready card (spec 25 decision 2). Everything the
+   * run needs is read up front; the claim itself — card still Ready, no run
+   * already `running` for it, a free slot in its repo — is checked and taken
+   * inside one `BEGIN IMMEDIATE` transaction, so two workers sharing the
+   * database can never both start the same card or overfill a repo. Returns
+   * null when the card is not claimable; the card is untouched except for a
+   * planless card, which lands in Needs Attention.
+   */
+  claimLoopRun(cardId: string): LoopClaim | null {
+    const card = getCard(cardId);
+    if (!card || card.status !== "ready") return null;
+    const repo = getRepo(card.repoId);
+    if (!repo) return null;
+    const plan = this.latestPlan(cardId);
+    if (!plan) {
+      this.moveCard(cardId, "ready", "needs_attention", "card has no plan");
+      return null;
+    }
+    const settings = getSettings();
+    const provider = normalizeProvider(settings.loopProvider, "anthropic");
+    const loopModel = card.loopModel || settings.loopModel;
+    const prev = this.latestWorktreeRun(cardId);
+    const runId = nanoid();
+    const limit = this.concurrencyLimit(settings);
+
+    const claimed = db.transaction(
+      (tx) => {
+        const fresh = tx.select({ status: cards.status }).from(cards).where(eq(cards.id, cardId)).get();
+        if (fresh?.status !== "ready") return false;
+        const live = tx
+          .select({ id: runs.id })
+          .from(runs)
+          .where(and(eq(runs.cardId, cardId), eq(runs.status, "running")))
+          .get();
+        if (live) return false;
+        if (this.loadFor(card.repoId, tx) >= limit) return false;
+        const moved = tx
+          .update(cards)
+          .set({ status: "looping", updatedAt: now() })
+          .where(and(eq(cards.id, cardId), eq(cards.status, "ready")))
+          .run();
+        if (moved.changes !== 1) return false;
+        tx.insert(runs)
+          .values({
+            id: runId,
+            cardId,
+            planId: plan.id,
+            kind: "loop",
+            worktreePath: prev?.worktreePath ?? "",
+            branch: prev?.branch ?? "",
+            baseBranch: prev?.baseBranch ?? card.baseBranch ?? null,
+            provider,
+            model: loopModel,
+            startedAt: now(),
+            sandboxed: settings.sandboxEnabled ? 1 : 0,
+            workerId: this.workerId,
+          })
+          .run();
+        return true;
+      },
+      { behavior: "immediate" },
+    );
+    if (!claimed) return null;
+    emitEvent("card.moved", { cardId, payload: { from: "ready", to: "looping" } });
+    return { runId, card, repo, plan, settings, prev, provider, loopModel };
   }
 
   /**
@@ -1051,15 +1369,29 @@ export class Orchestrator {
     const autoMode = settings.autoMode;
     const limit = this.concurrencyLimit(settings);
     const eligibleTodoRepoIds = planningCandidates(todoCards, autoMode).map((c) => c.repoId);
+    // Cards whose install gate cleared into a finished checklist while their
+    // repo was at its cap (spec 20): evaluation is owed to them, not another
+    // loop pass. The flag lives on the card row (spec 25) so any worker
+    // sharing the database — or this one after a restart — can pick it up.
+    const pendingEvaluationCards = db
+      .select()
+      .from(cards)
+      .where(and(eq(cards.status, "needs_attention"), eq(cards.evaluationPending, 1)))
+      .orderBy(asc(cards.updatedAt))
+      .all();
     const repoIds = [
-      ...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds, ...this.pendingEvaluations.values()]),
+      ...new Set([
+        ...readyCards.map((c) => c.repoId),
+        ...eligibleTodoRepoIds,
+        ...pendingEvaluationCards.map((c) => c.repoId),
+      ]),
     ];
 
     for (const repoId of repoIds) {
       const repoReady = readyCards.filter((c) => c.repoId === repoId);
       // Cards approveInstallScripts queued for evaluating while this repo
       // was at its cap — oldest queued first, same tie-break as the others.
-      const repoPendingEvaluations = [...this.pendingEvaluations].filter(([, r]) => r === repoId).map(([id]) => id);
+      const repoPendingEvaluations = pendingEvaluationCards.filter((c) => c.repoId === repoId).map((c) => c.id);
       /** Todo cards already handed to startCard in this pass. A planned card
        * that has a plan goes back to Ready rather than consuming a slot, and
        * startCard pumps again, so without this the loop would re-pick it from
@@ -1073,42 +1405,35 @@ export class Orchestrator {
       while (this.pipelineLoad(repoId) < limit) {
         const pendingEvaluationId = repoPendingEvaluations[nextPendingEvaluation++];
         if (pendingEvaluationId) {
-          this.pendingEvaluations.delete(pendingEvaluationId);
-          // Still needs_attention and unclaimed — a human may have restarted
-          // or cancelled it while it waited.
-          if (getCard(pendingEvaluationId)?.status !== "needs_attention") continue;
-          if (this.moveCard(pendingEvaluationId, "needs_attention", "evaluating", "install scripts approved")) {
+          if (this.claimPendingEvaluation(pendingEvaluationId, repoId, limit)) {
+            emitEvent("card.moved", {
+              cardId: pendingEvaluationId,
+              payload: { from: "needs_attention", to: "evaluating", reason: "install scripts approved" },
+            });
             this.startStage("evaluating", pendingEvaluationId);
           }
           continue;
         }
         const readyCard = repoReady[nextReady++];
         if (readyCard) {
-          // A nested pump may have claimed it since the list was read — or a
-          // loop may already be starting it: the ready→looping claim comes
-          // after runLoop's awaited worktree and sandbox setup, so the card
-          // still reads as Ready for those seconds, and with a cap above 1 a
-          // pump from any other event in that window would start it twice.
-          // activeLoopCards is set synchronously below, so it is the guard.
-          if (getCard(readyCard.id)?.status !== "ready" || this.activeLoopCards.has(readyCard.id)) {
-            continue;
-          }
+          // The claim is the guard: it moves the card to `looping` and
+          // inserts its run row atomically, so a nested pump, another event
+          // in this process, or another worker on the same database cannot
+          // start it twice.
+          const claim = this.claimLoopRun(readyCard.id);
+          if (!claim) continue;
           const id = readyCard.id;
-          this.activeLoopCards.set(id, repoId);
-          void this.runLoop(id)
+          void this.runLoop(claim)
             .catch((err) => {
               const reason = String(err);
-              // A throw after startRunRow would otherwise leave the run row
+              // A throw after the claim would otherwise leave the run row
               // `running` until the next recover().
               this.endActiveRun(id, "failed", reason);
               if (getCard(id)?.status === "looping") {
                 this.moveCard(id, "looping", "needs_attention", reason);
               }
             })
-            .finally(() => {
-              this.activeLoopCards.delete(id);
-              this.pump();
-            });
+            .finally(() => this.pump());
           continue;
         }
 
@@ -1129,22 +1454,43 @@ export class Orchestrator {
     }
   }
 
-  private async runLoop(cardId: string) {
-    const card = getCard(cardId)!;
-    const repo = getRepo(card.repoId);
-    if (!repo) throw new Error("repo not found");
-    const plan = this.latestPlan(cardId);
-    if (!plan) throw new Error("card has no plan");
-    const settings = getSettings();
+  /**
+   * Claim a queued evaluation (spec 25 decision 2): inside one `BEGIN
+   * IMMEDIATE` transaction, check the card is still in Needs Attention with
+   * the flag set — a human may have restarted or cancelled it while it
+   * waited — and that the repo has a free slot, then move it to evaluating
+   * and clear the flag. Two workers sharing the database cannot both win.
+   */
+  private claimPendingEvaluation(cardId: string, repoId: string, limit: number): boolean {
+    return db.transaction(
+      (tx) => {
+        const fresh = tx
+          .select({ status: cards.status, evaluationPending: cards.evaluationPending })
+          .from(cards)
+          .where(eq(cards.id, cardId))
+          .get();
+        if (fresh?.status !== "needs_attention" || fresh.evaluationPending !== 1) return false;
+        if (this.loadFor(repoId, tx) >= limit) return false;
+        const moved = tx
+          .update(cards)
+          .set({ status: "evaluating", evaluationPending: 0, updatedAt: now() })
+          .where(and(eq(cards.id, cardId), eq(cards.status, "needs_attention")))
+          .run();
+        return moved.changes === 1;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  private async runLoop(claim: LoopClaim) {
+    const { card, repo, plan, settings, runId, prev, provider, loopModel } = claim;
+    const cardId = card.id;
     const maxIterations = card.maxIterations ?? settings.defaultMaxIterations;
     const timeoutMs = (card.timeoutMinutes ?? settings.defaultTimeoutMinutes) * 60 * 1000;
-    const provider = normalizeProvider(settings.loopProvider, "anthropic");
-    const loopModel = card.loopModel || settings.loopModel;
 
-    const runId = nanoid();
-    const { worktreePath, branch, baseBranch, created } = await resolveWorktree(
-      repo, card, runId, this.latestWorktreeRun(cardId),
-    );
+    const { worktreePath, branch, baseBranch, created } = await resolveWorktree(repo, card, runId, prev);
+    db.update(runs).set({ worktreePath, branch, baseBranch }).where(eq(runs.id, runId)).run();
+    if (created) recordWorktree(repo.id, runId, worktreePath, branch);
     // Ensure the worktree carries the current plan's artifacts.
     const ralphDir = ralphDirPath(worktreePath);
     const ralphFile = (name: string) => path.join(/* turbopackIgnore: true */ ralphDir, name);
@@ -1185,25 +1531,19 @@ export class Orchestrator {
     // baseline. The baseline persists to disk because the pre-merge re-check
     // may run long after this process is gone.
     const ctx = await createRunSandbox(runId, { cwd: worktreePath, s: settings });
+    db.update(runs).set({ diskLimitMechanism: ctx.diskLimitMechanism }).where(eq(runs.id, runId)).run();
+    if (ctx.weakerIsolationEnabled) {
+      emitEvent("sandbox.weaker_isolation_enabled", {
+        cardId,
+        runId,
+        payload: { reason: "sandboxWeakerIsolationForGoTls" },
+      });
+    }
     // Multi-GB allocation — skipped under test, fire-and-forget otherwise.
     if (process.env.NODE_ENV !== "test") void ensureBallast(this.ballastPath());
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
     if (integrityBaseline) saveBaseline(runId, integrityBaseline);
 
-    startRunRow(
-      { id: runId, cardId, planId: plan.id, kind: "loop", worktreePath, branch, baseBranch, provider, model: loopModel },
-      ctx,
-      settings,
-      created ? repo.id : undefined,
-    );
-    // The awaited git calls above open a window where the user can cancel
-    // before this run row existed — the CAS failing means the card left the
-    // queue, so never start the loop for it.
-    if (!this.moveCard(cardId, card.status, "looping")) {
-      this.finishRun(runId, "cancelled", "card left the queue before the loop started");
-      await ctx.cleanup();
-      return;
-    }
     emitEvent("run.started", {
       cardId,
       runId,
@@ -1542,7 +1882,11 @@ export class Orchestrator {
           if (!this.finishRun(runId, "completed", "done-signal")) return;
           // Phase 3: every DONE goes through the evaluator before a human
           // sees it. An evaluator crash is a loud failure, not a pass-through.
-          if (this.moveCard(cardId, "looping", "evaluating")) this.startStage("evaluating", cardId);
+          // A card paused during its final iteration still gets evaluated.
+          const status = getCard(cardId)?.status;
+          if ((status === "looping" || status === "paused") && this.moveCard(cardId, status, "evaluating")) {
+            this.startStage("evaluating", cardId);
+          }
           return;
         }
         if (result.timedOut) {
@@ -1649,13 +1993,14 @@ export class Orchestrator {
         }
         if (result.promptTokens) promptTokensSeen.push(result.promptTokens);
 
-        if (this.pausedCards.has(cardId)) {
-          // Not "completed" (spec 18 §6): the operator stopped this run, it
-          // did not achieve anything. Scoring it as a success put a run that
-          // spent 51.6 minutes on one unfinished task in the numerator of the
-          // success rate.
+        if (getCard(cardId)?.status === "paused") {
+          // The card already moved when the pause was requested (spec 25
+          // decision 4); only the run needs closing here. Not "completed"
+          // (spec 18 §6): the operator stopped this run, it did not achieve
+          // anything. Scoring it as a success put a run that spent 51.6
+          // minutes on one unfinished task in the numerator of the success
+          // rate.
           this.finishRun(runId, "paused", "paused by user");
-          this.moveCard(cardId, "looping", "paused", "paused by user");
           return;
         }
 
@@ -1838,11 +2183,17 @@ export class Orchestrator {
       // holding the repo's only slot. Starting evaluating straight away
       // would push the repo over its cap (spec 20) — queue it the same way
       // the ready branch below does, but for evaluating: pump() resumes it,
-      // still skipping the loop, once a slot is free.
-      if (this.pipelineBusy(card.repoId)) {
-        this.pendingEvaluations.set(cardId, card.repoId);
-      } else if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
+      // still skipping the loop, once a slot is free. The queue is the
+      // card row's evaluationPending flag (spec 25), so it survives a
+      // restart and is visible to every worker on the database.
+      if (this.claimStage(cardId, "needs_attention", "evaluating", "install scripts approved")) {
         this.startStage("evaluating", cardId);
+      } else if (getCard(cardId)?.status === "needs_attention") {
+        db.update(cards).set({ evaluationPending: 1, updatedAt: now() }).where(eq(cards.id, cardId)).run();
+        emitEvent("card.evaluation_queued", {
+          cardId,
+          payload: { reason: "install scripts approved while the repo was at its cap" },
+        });
       }
     } else {
       this.moveCard(cardId, "needs_attention", "ready", "install scripts approved");

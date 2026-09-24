@@ -113,6 +113,12 @@ export const cards = sqliteTable(
     // is the OR of the two, read at approval time. Same shape as autoApprove,
     // and like it, NOT seeded from the global.
     openPr: integer("open_pr").notNull().default(0),
+    // Set when a loop run finishes and the card is waiting to be picked up
+    // for evaluation. A durable flag rather than an in-memory queue so a
+    // second worker process (or a restarted one) can claim the evaluation
+    // through the database instead of relying on whichever process ran the
+    // loop still being alive.
+    evaluationPending: integer("evaluation_pending").notNull().default(0),
     timeoutMinutes: integer("timeout_minutes"),
     plannerModel: text("planner_model"),
     loopModel: text("loop_model"),
@@ -243,7 +249,24 @@ export const runs = sqliteTable("runs", {
   costUsd: real("cost_usd"),
   harness: text("harness"),
   harnessVersion: text("harness_version"),
+  // The worker process that claimed this run (workers.id). Nullable and
+  // deliberately without a foreign key: a worker row may be reaped while its
+  // orphaned run still needs recovering, and historical runs predate workers.
+  workerId: text("worker_id"),
 }, (table) => [index("runs_card_started_idx").on(table.cardId, table.startedAt)]);
+
+// One row per live orchestrator process. A worker heartbeats `heartbeatAt`
+// while it runs; a row whose heartbeat is older than `workerStaleSeconds` is
+// considered dead and its runs (runs.worker_id) are reclaimed by the stale
+// reaper. `roles` is the JSON list of roles the process serves.
+export const workers = sqliteTable("workers", {
+  id: text("id").primaryKey(),
+  host: text("host").notNull(),
+  pid: integer("pid").notNull(),
+  roles: text("roles").notNull(),
+  startedAt: text("started_at").notNull(),
+  heartbeatAt: text("heartbeat_at").notNull(),
+});
 
 export const iterations = sqliteTable("iterations", {
   id: integer("id").primaryKey({ autoIncrement: true }),

@@ -6,7 +6,7 @@ process.env.RADULF_AUTH_SECRET =
   "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
 
 const { db, settings: settingsTable } = await import("@/db");
-const { getSettings, patchSettings } = await import("./settings");
+const { getSettings, patchSettings, validateSettingsPatch, SETTING_DEFAULTS } = await import("./settings");
 
 afterAll(() => {
   delete process.env.RADULF_AUTH_SECRET;
@@ -36,5 +36,16 @@ describe("secret settings encryption at rest", () => {
     // check and the setting silently falls back to blank.
     patchSettings({ omlxHeaders: "kong-api-key: abc123" });
     expect(getSettings().omlxHeaders).toBe("kong-api-key: abc123");
+  });
+});
+
+describe("workerStaleSeconds", () => {
+  it("defaults to 120 seconds", () => {
+    expect(SETTING_DEFAULTS.workerStaleSeconds).toBe(120);
+  });
+
+  it("enforces the 15 second floor", () => {
+    expect(() => validateSettingsPatch({ workerStaleSeconds: 5 })).toThrow();
+    expect(validateSettingsPatch({ workerStaleSeconds: 15 })).toEqual({ workerStaleSeconds: 15 });
   });
 });

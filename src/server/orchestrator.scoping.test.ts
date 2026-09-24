@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const mocks = vi.hoisted(() => ({
@@ -29,8 +29,12 @@ vi.mock("./settings", async (importOriginal) => {
 
 setupTestDataDir("radulf-orchestrator-scoping-");
 
-const { db, cards, events, plans, repos, now } = await import("@/db");
-const { Orchestrator } = await import("./orchestrator");
+const { db, cards, events, plans, repos, iterations, runs, workers, now } = await import("@/db");
+const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
+
+afterAll(() => {
+  disposeAllOrchestrators();
+});
 const { readPlanState } = await import("./bookkeeping");
 
 const orchestrator = new Orchestrator({ autoStart: false });
@@ -62,6 +66,10 @@ const PLAN_ARTIFACTS = {
 };
 
 beforeEach(() => {
+  // Run-side tables first, in FK-safe order, since pump() now claims runs.
+  db.delete(iterations).run();
+  db.delete(runs).run();
+  db.delete(workers).run();
   db.delete(events).run();
   db.delete(plans).run();
   db.delete(cards).run();
@@ -219,9 +227,10 @@ describe("an epic", () => {
     seedCard("b", { parentCardId: "epic", status: "todo" });
 
     expect(orchestrator.pauseEpic("epic")).toEqual({ paused: 1 });
-    const paused = (orchestrator as unknown as { pausedCards: Set<string> }).pausedCards;
-    expect(paused.has("a")).toBe(true);
-    expect(paused.has("b")).toBe(false);
+    // Spec 25 decision 4: the pause is an immediate card transition.
+    const rows = Object.fromEntries(allCards().map((row) => [row.id, row]));
+    expect(rows.a.status).toBe("paused");
+    expect(rows.b.status).toBe("todo");
   });
 
   it("finishes when its last unfinished piece does, and not before", () => {
@@ -251,7 +260,18 @@ describe("adoptScopingPlan", () => {
     expect(plan).toMatchObject({ cardId: "authored", version: 1, origin: "scoping" });
     // The private checklist is what the loop reads, and no run was needed.
     expect(readPlanState("authored")).toBe(PLAN_ARTIFACTS.planMd);
-    expect(allCards()[0].status).toBe("ready");
+    // The card lands in Ready and the pump immediately claims it: since spec 25
+    // decision 2 the claim is synchronous (claimLoopRun inside pump()), so by the
+    // time adoptScopingPlan resolves the card is already looping with a loop run.
+    expect(allCards()[0].status).toBe("looping");
+    const allRuns = db.select().from(runs).all();
+    expect(allRuns).toHaveLength(1);
+    expect(allRuns[0]).toMatchObject({
+      cardId: "authored",
+      kind: "loop",
+      status: "running",
+      workerId: orchestrator.workerId,
+    });
   });
 
   it("sends an opted-in card to plan review when it asked for one", async () => {
