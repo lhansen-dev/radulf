@@ -29,7 +29,7 @@ vi.mock("./settings", async (importOriginal) => {
 
 setupTestDataDir("radulf-orchestrator-scoping-");
 
-const { db, cards, events, plans, repos, now } = await import("@/db");
+const { db, cards, events, plans, repos, iterations, runs, workers, now } = await import("@/db");
 const { Orchestrator } = await import("./orchestrator");
 const { readPlanState } = await import("./bookkeeping");
 
@@ -62,6 +62,10 @@ const PLAN_ARTIFACTS = {
 };
 
 beforeEach(() => {
+  // Run-side tables first, in FK-safe order, since pump() now claims runs.
+  db.delete(iterations).run();
+  db.delete(runs).run();
+  db.delete(workers).run();
   db.delete(events).run();
   db.delete(plans).run();
   db.delete(cards).run();
@@ -252,7 +256,18 @@ describe("adoptScopingPlan", () => {
     expect(plan).toMatchObject({ cardId: "authored", version: 1, origin: "scoping" });
     // The private checklist is what the loop reads, and no run was needed.
     expect(readPlanState("authored")).toBe(PLAN_ARTIFACTS.planMd);
-    expect(allCards()[0].status).toBe("ready");
+    // The card lands in Ready and the pump immediately claims it: since spec 25
+    // decision 2 the claim is synchronous (claimLoopRun inside pump()), so by the
+    // time adoptScopingPlan resolves the card is already looping with a loop run.
+    expect(allCards()[0].status).toBe("looping");
+    const allRuns = db.select().from(runs).all();
+    expect(allRuns).toHaveLength(1);
+    expect(allRuns[0]).toMatchObject({
+      cardId: "authored",
+      kind: "loop",
+      status: "running",
+      workerId: orchestrator.workerId,
+    });
   });
 
   it("sends an opted-in card to plan review when it asked for one", async () => {
