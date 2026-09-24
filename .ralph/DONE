@@ -1,0 +1,5 @@
+Web-only cancel reliably reaches the owning worker; split cancel test waits for the first iteration before cancelling
+- Worker clears a stale `runs.control = 'cancel'` when its run exits and `endActiveRun` honours `finishRun`'s compare-and-set result (src/server/orchestrator.ts and its tests).
+- `src/server/splitProcesses.test.ts`: the "cancelling a looping card from the web-only process" test now waits (up to 60s) for the run's first `iterations` row before issuing the move-to-backlog cancel, so the cancel is guaranteed to travel through the worker's `runs.control` poll rather than landing during `runLoop` setup.
+- Why: the first `iterations` row is written after the worker registers its AbortController and right before the harness starts, closing the flaky window where the poll could not see the cancel.
+- Check: `npx eslint src/server/splitProcesses.test.ts && npx tsc --noEmit` exits 0.

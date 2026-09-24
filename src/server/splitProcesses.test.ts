@@ -589,6 +589,15 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       }
       const runId = running.id;
 
+      // The first `iterations` row is written after the worker registers its
+      // AbortController and right before it starts the harness, so from here on
+      // the cancel must travel through the worker's `runs.control` poll.
+      await waitFor(
+        () => dbQuery<{ id: string }>("SELECT id FROM iterations WHERE run_id = ?", runId).length > 0,
+        60_000,
+        "the loop's first iteration to start",
+      );
+
       // The web process moves the card at once without waiting on the worker.
       expect((await api("POST", `/api/cards/${cardId}/move`, { to: "backlog" })).status).toBe(
         200,
