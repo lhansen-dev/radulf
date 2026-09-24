@@ -17,7 +17,7 @@ vi.mock("./settings", async (importOriginal) => {
 
 setupTestDataDir("radulf-orchestrator-roles-");
 
-const { db, cards, events, plans, repos, runs, workers, now } = await import("@/db");
+const { db, cards, events, iterations, plans, repos, runs, workers, now } = await import("@/db");
 const { Orchestrator, disposeAllOrchestrators, getOrchestrator } = await import("./orchestrator");
 
 type Global = { __radulfOrchestrator?: unknown };
@@ -187,6 +187,22 @@ describe("operator verbs from a web-only process write runs.control", () => {
     expect(run("r3").status).toBe("completed");
     expect(run("r3").control).toBeNull();
     expect(finishedEvents("r3")).toHaveLength(0);
+  });
+
+  it("cancelCard does not fail iterations or write control when a peer finished the run first", () => {
+    seedCard("c4", { status: "looping" });
+    seedRun("r4", "c4");
+    db.insert(iterations)
+      .values({ id: 4, runId: "r4", n: 1, status: "running", transcriptPath: "iter-001.jsonl", startedAt: now() })
+      .run();
+    const orch = new Orchestrator({ passive: true });
+    vi.spyOn(orch as unknown as { finishRun: () => boolean }, "finishRun").mockReturnValue(false);
+
+    orch.cancelCard("c4");
+
+    expect(db.select().from(iterations).where(eq(iterations.id, 4)).get()!.status).toBe("running");
+    expect(run("r4").control).toBeNull();
+    expect(card("c4").status).toBe("backlog");
   });
 });
 

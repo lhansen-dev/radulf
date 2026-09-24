@@ -875,7 +875,10 @@ export class Orchestrator {
       .limit(1)
       .get();
     if (!active) return;
-    this.finishRun(active.id, status, reason);
+    // When a peer process (or the worker itself) finalized this run first, the
+    // first terminal cause wins: leave the iteration rows and `runs.control`
+    // alone rather than overwriting the winner's bookkeeping.
+    if (!this.finishRun(active.id, status, reason)) return;
     this.failIterations(active.id, reason);
     // Spec 25 decision 4: the owning worker (possibly another process) polls
     // this column and aborts its local controller. The local abort below
