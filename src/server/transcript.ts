@@ -101,7 +101,11 @@ export async function readTranscriptChunk(
  * transcript file lazily on its first write (harness/index.ts:250-251) — a
  * watch started right as a run/iteration begins races that creation. Fall
  * back to a short `fs.watchFile` poll until the file appears, then hand off
- * to a real `fs.watch` for genuine push behavior. Returns a `close()`.
+ * to a real `fs.watch` for genuine push behavior. Either way, `onChange` is
+ * invoked once right after attaching so anything already in the file is
+ * caught up on — the watcher may be started by a process other than the
+ * writer (spec 25), so the file may already have content by the time we
+ * attach. Returns a `close()`.
  */
 function watchTranscript(transcriptPath: string, onChange: () => void): () => void {
   let closed = false;
@@ -120,6 +124,7 @@ function watchTranscript(transcriptPath: string, onChange: () => void): () => vo
     }
   };
   if (attach()) {
+    onChange(); // catch up on anything written before we attached
     return () => {
       closed = true;
       watcher?.close();
@@ -148,13 +153,17 @@ function watchTranscript(transcriptPath: string, onChange: () => void): () => vo
  * iterations, planning, evaluation) shares this one function so the cursor
  * bookkeeping and SSE payload shape stay identical across all of them.
  *
- * Callers own the run/iteration lifecycle: call this right before the
- * `runHarness` call that writes `transcriptPath`, and call the returned
- * `stop()` once that call settles (in a `finally`), so a run's watcher never
- * outlives the file it's tailing.
+ * Callers own the run/iteration lifecycle: start this when a run/iteration
+ * begins writing `transcriptPath` (or, in a split web/worker deployment, when
+ * the web process first observes the run as running — spec 25) and call the
+ * returned `stop()` once the run settles, so a run's watcher never outlives
+ * the file it's tailing. Attaching late is safe: the watcher catches up on
+ * everything already in the file from cursor 0 as soon as it attaches, and a
+ * read still in flight when `stop()` is called emits nothing.
  */
 export function startTranscriptPush(transcriptPath: string, runId: string, iteration: number): () => void {
   let cursor = 0;
+  let stopped = false;
   // Re-entrancy guard: fs.watch can fire more than once for a single write,
   // and the client trusts this channel's cursor sequence to be gapless and
   // non-overlapping once caught up — two overlapping `readTranscriptChunk`
@@ -170,6 +179,13 @@ export function startTranscriptPush(transcriptPath: string, runId: string, itera
     const fromCursor = cursor;
     readTranscriptChunk(transcriptPath, cursor, true)
       .then((chunk) => {
+        // stop() may have landed while the read was in flight (e.g. the
+        // catch-up pump fired by attaching) — emit nothing and leave the
+        // cursor alone.
+        if (stopped) return;
+        // More complete lines remain past this chunk: read them right away
+        // instead of waiting for another fs event that may never come.
+        if (chunk.hasMore) recheckPending = true;
         if (chunk.lines.length === 0) return;
         cursor = chunk.cursor;
         const push: TranscriptPush = {
@@ -190,9 +206,13 @@ export function startTranscriptPush(transcriptPath: string, runId: string, itera
         pumpInFlight = false;
         if (recheckPending) {
           recheckPending = false;
-          pump();
+          if (!stopped) pump();
         }
       });
   };
-  return watchTranscript(transcriptPath, pump);
+  const close = watchTranscript(transcriptPath, pump);
+  return () => {
+    stopped = true;
+    close();
+  };
 }

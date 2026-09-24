@@ -30,7 +30,15 @@ export function changedPaths(porcelain: string): string[] {
     .map((line) => line.trimEnd())
     .filter(Boolean)
     .map((line) => {
-      const rest = line.slice(3);
+      // Porcelain v1 is `XY path`, three columns before the path. A caller
+      // that trimmed the whole output (tryGit does) has stripped the leading
+      // space from the first line whenever X was a space, an unstaged change,
+      // leaving `Y path`: slicing three characters there eats the path's first
+      // letter, and `docs/ARCHITECTURE.md` was once judged as `ocs/...`. A
+      // blank Y column keeps three columns (`M  path`), so the tell is a
+      // space in column two followed by a non-space.
+      const columns = line[1] === " " && line[2] !== " " ? 2 : 3;
+      const rest = line.slice(columns);
       const arrow = rest.indexOf(" -> ");
       const p = arrow === -1 ? rest : rest.slice(arrow + 4);
       return p.replace(/^"(.*)"$/, "$1");

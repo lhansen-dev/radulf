@@ -1760,6 +1760,32 @@ describe("Orchestrator cancellation lifecycle", () => {
       await settle();
     });
 
+    it("retries a loop that finished its checklist and wrote DONE straight into evaluation", async () => {
+      card("retry-done-loop", "needs_attention");
+      plan("retry-done-loop");
+      completedRun("retry-done-loop", "done-loop", {
+        status: "failed",
+        exitReason: "repo integrity violation: ref moved: refs/remotes/origin/beta",
+      });
+      const worktreePath = db.select().from(runs).where(eq(runs.id, "done-loop")).get()!.worktreePath;
+      fs.writeFileSync(path.join(worktreePath, ".ralph", "DONE"), "Every task done.\n");
+      fs.mkdirSync(path.dirname(planStatePath("retry-done-loop")), { recursive: true });
+      fs.writeFileSync(planStatePath("retry-done-loop"), "## Tasks\n- [x] implement the task\n");
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writeEvaluation(worktreePath, "VERDICT: approve\n\nFinished work, evaluated.");
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      // Nothing left to inject, so the retry is the evaluation, not another loop.
+      expect(orchestrator.retryFailedStep("retry-done-loop")).toEqual({ ok: true, step: "evaluate" });
+      await vi.waitFor(() => expect(getCard("retry-done-loop").status).toBe("review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "retry-done-loop");
+      expect(cardRuns.map((run) => run.kind)).toEqual(["loop", "evaluate"]);
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
+    });
+
     it("retries a failed evaluator without rerunning the loop", async () => {
       card("retry-evaluator", "needs_attention");
       plan("retry-evaluator");

@@ -104,6 +104,11 @@ bus consumer works unchanged. Transcript pushes, started today by the stage
 run in the writing process, are started by the web process for each run one of
 its SSE clients is viewing, and stopped when the last client leaves or the run
 finishes. The chunked reader, cursor protocol, and resync path are unchanged.
+*Amended at implementation (2026-09-24): the web process watches every run in
+status running — one watcher per run per process, started when the tailer sees
+the run start or a periodic scan finds it and stopped when it finishes — rather
+than the runs its SSE clients are viewing; there is no client-interest protocol
+and the browser is unchanged.*
 
 **6. Review delivery is claimed like a run.** Approve already moves the card to
 reviewing before any git work; the frontend stops there. A worker claims the
