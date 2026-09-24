@@ -475,7 +475,7 @@ these same targets.
 | `make start` | 🚀 Start the production server (run `build` first) |
 | `make worker` | ⚙️ Run a worker-only process (orchestrator, no HTTP) against this checkout — builds `dist/worker.mjs` first |
 | `make build-worker` | 📦 Bundle the worker entry point `src/worker.ts` into `dist/worker.mjs` |
-| `make check-split` | 🔀 Boot a web-only and a worker-only process against a temp data dir and drive a card through the web API |
+| `make check-split` | 🔀 Boot two web-only and a worker-only process against a temp data dir, drive a card through the web API, and assert events and live transcripts fan out across processes (runs `make build` first) |
 | `make lint` | 🧹 Run ESLint across the codebase |
 | `make test` | 🧪 Run unit, component, route, and lifecycle integration tests |
 | `make typecheck` | 🔍 Type-check without emitting files |
