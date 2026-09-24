@@ -43,6 +43,7 @@ import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { abortMerge, resolveConflictsTaskText, syncWithBase } from "./baseSync";
+import { GATE_FILE, gateFilePath, gateRepairTaskText, renderGateFile, runGateCommand, type GateResult } from "./gate";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
@@ -1666,7 +1667,7 @@ export class Orchestrator {
     // never read back from here, because the loop agent's write root is the
     // whole worktree and a file it can edit must not become its next
     // instructions.
-    removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md", ...DONE_FILE_NAMES]);
+    removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md", GATE_FILE, ...DONE_FILE_NAMES]);
     fs.writeFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), plan.promptMd);
     clearEvaluationArtifact(worktreePath);
     // A reused worktree (retry, restart) may have been left on another branch
@@ -2060,6 +2061,50 @@ export class Orchestrator {
               ),
             );
             continue;
+          }
+
+          // Spec 29 decision 2: the repository gate runs here, after the sync
+          // and before evaluation, so the loop — not the evaluator's budget —
+          // pays for a gate it broke. A non-zero exit goes back to the loop as
+          // a task; a timed-out or unrunnable gate (exitCode null) is a fact
+          // about the gate, not the change (spec 27 decision 5): record it and
+          // go on to evaluation.
+          const gateCommand = repo.gateCommand?.trim() ?? "";
+          if (gateCommand) {
+            emitEvent("gate.started", { cardId, runId, payload: { command: gateCommand } });
+            let gate: GateResult;
+            try {
+              gate = await runGateCommand({
+                command: gateCommand,
+                worktreePath,
+                ctx,
+                timeoutMs: settings.gateTimeoutMinutes * 60 * 1000,
+                signal: controller.signal,
+              });
+            } catch (e) {
+              if (!active()) return;
+              throw e;
+            }
+            if (!active()) return;
+            fs.writeFileSync(/* turbopackIgnore: true */ gateFilePath(worktreePath), renderGateFile(gate));
+            emitEvent("gate.finished", {
+              cardId,
+              runId,
+              payload: { exitCode: gate.exitCode, timedOut: gate.timedOut, durationMs: gate.durationMs, error: gate.error },
+            });
+            if (gate.exitCode !== null && gate.exitCode !== 0) {
+              if (syncGateRounds >= MAX_SYNC_GATE_ROUNDS) {
+                return fail(`sync-and-gate round limit reached: gate \`${gateCommand}\` exited ${gate.exitCode}`);
+              }
+              syncGateRounds += 1;
+              emitEvent("gate.repair", { cardId, runId, payload: { exitCode: gate.exitCode, round: syncGateRounds } });
+              removeRalphFiles(worktreePath, DONE_FILE_NAMES);
+              fs.writeFileSync(
+                /* turbopackIgnore: true */ planPath,
+                appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), gateRepairTaskText(gate)),
+              );
+              continue;
+            }
           }
           // Both gated: a cancel or reset that landed during the awaited
           // bookkeeping above has already finalized this run and moved the

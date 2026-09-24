@@ -3,7 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RunSandboxContext } from "./sandbox/context";
-import { GATE_OUTPUT_CHARS, renderGateFile, renderGateSection, runGateCommand } from "./gate";
+import {
+  GATE_OUTPUT_CHARS,
+  GATE_REPAIR_OUTPUT_CHARS,
+  gateRepairTaskText,
+  renderGateFile,
+  renderGateSection,
+  runGateCommand,
+  type GateResult,
+} from "./gate";
 
 /** No sandbox policy and no prefix: the plain path every unit test here takes. */
 const ctx = { env: process.env, commandPrefix: undefined, srtConfig: undefined } as unknown as RunSandboxContext;
@@ -85,5 +93,28 @@ describe("renderGateFile and renderGateSection", () => {
     expect(section).toContain("REPOSITORY GATE");
     expect(section).toContain("Do not run it again");
     expect(section).toContain("Command: `make check`");
+  });
+});
+
+describe("gateRepairTaskText (spec 29)", () => {
+  it("names the command and exit code, and quotes only the last 3000 characters of output", () => {
+    const tail = "y".repeat(GATE_REPAIR_OUTPUT_CHARS);
+    const result: GateResult = {
+      command: "make check",
+      startedAt: "2026-09-23T21:00:00.000Z",
+      durationMs: 1_000,
+      output: `${"x".repeat(500)}${tail}`,
+      error: null,
+      timedOut: false,
+      exitCode: 2,
+    };
+    const text = gateRepairTaskText(result);
+    expect(text.split("\n")[0]).toBe(
+      "Repair the repository gate: the orchestrator ran `make check` in the worktree after you signalled DONE and it exited 2.",
+    );
+    expect(text).toContain("The end of its output:\n  " + tail + "\n");
+    expect(text).not.toContain("xy");
+    expect(text).toContain("Run only the part of the gate that failed");
+    expect(gateRepairTaskText({ ...result, output: "" })).toContain("  (no output)");
   });
 });

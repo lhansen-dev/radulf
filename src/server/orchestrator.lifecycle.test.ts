@@ -1203,6 +1203,110 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
+  describe("the gate before DONE (spec 29)", () => {
+    const loopRun = (cardId: string) =>
+      db.select().from(runs).all().find((r) => r.cardId === cardId && r.kind === "loop");
+    const loopCalls = () => mocks.runHarness.mock.calls.filter(([opts]) => opts.role === "loop");
+    const eventsOfType = (cardId: string, type: string) =>
+      db.select().from(events).all().filter((e) => e.type === type && e.cardId === cardId);
+    const gateFile = (cardId: string) => path.join(loopRun(cardId)!.worktreePath, ".ralph", "GATE.md");
+    const setGate = (gateCommand: string | null) =>
+      db.update(repos).set({ gateCommand }).where(eq(repos.id, "repo-1")).run();
+
+    /** A loop agent that signals DONE every iteration, plus whatever `extra`
+     * does to the worktree on that iteration. Sandboxing is off here, so
+     * `runGateCommand` really runs the gate in the mkdtemp worktree. */
+    function doneEveryIteration(extra: (cwd: string, call: number) => void = () => {}) {
+      let call = 0;
+      mocks.runHarness.mockImplementation(async ({ cwd, role }: { cwd: string; role: string }) => {
+        if (role !== "loop") return { timedOut: false, error: "no verdict written in test" };
+        call += 1;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), `work ${call}`);
+        extra(cwd, call);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), `iteration ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "DONE"), "all done");
+        return successfulHarnessResult;
+      });
+    }
+
+    beforeEach(() => {
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+    });
+
+    it("repairs a failing gate before evaluation", async () => {
+      card("gate-repair");
+      plan("gate-repair");
+      setGate("test -f gate-ok.txt");
+      // The second attempt writes the file the gate is looking for.
+      doneEveryIteration((cwd, call) => {
+        if (call === 2) fs.writeFileSync(path.join(cwd, "gate-ok.txt"), "ok");
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-repair");
+      await vi.waitFor(() => expect(loopRun("gate-repair")?.exitReason).toBe("done-signal"));
+
+      // The first DONE was handed back with the gate failure as a task; the
+      // second, with the gate green, went to the evaluator.
+      expect(loopCalls()).toHaveLength(2);
+      expect(loopCalls()[1][0].prompt).toContain("Repair the repository gate");
+      expect(loopCalls()[1][0].prompt).toContain("test -f gate-ok.txt");
+      expect(fs.readFileSync(gateFile("gate-repair"), "utf8")).toContain("Result: exit 0");
+      expect(eventsOfType("gate-repair", "gate.repair")).toHaveLength(1);
+      // Two from the loop run; the evaluator's own gate run (spec 27) is its own.
+      const runId = loopRun("gate-repair")!.id;
+      expect(eventsOfType("gate-repair", "gate.finished").filter((e) => e.runId === runId)).toHaveLength(2);
+    });
+
+    it("starts evaluation directly when the gate passes", async () => {
+      card("gate-pass");
+      plan("gate-pass");
+      setGate("true");
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-pass");
+      await vi.waitFor(() => expect(loopRun("gate-pass")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      expect(fs.existsSync(gateFile("gate-pass"))).toBe(true);
+    });
+
+    it("runs no gate for a repository without one", async () => {
+      card("gate-none");
+      plan("gate-none");
+      setGate(null);
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-none");
+      await vi.waitFor(() => expect(loopRun("gate-none")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      expect(eventsOfType("gate-none", "gate.started")).toHaveLength(0);
+      expect(fs.existsSync(gateFile("gate-none"))).toBe(false);
+    });
+
+    it("ends the run after two failing gate rounds", async () => {
+      card("gate-stuck");
+      plan("gate-stuck");
+      setGate("false");
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-stuck");
+      await vi.waitFor(() => expect(loopRun("gate-stuck")?.status).toBe("failed"));
+
+      expect(loopRun("gate-stuck")?.exitReason).toContain("sync-and-gate round limit reached");
+      // Two repair rounds and the attempt that hit the limit.
+      expect(loopCalls()).toHaveLength(3);
+      expect(getCard("gate-stuck").status).toBe("needs_attention");
+    });
+  });
+
   describe("slowIterationMs", () => {
     const MINUTE = 60 * 1000;
 

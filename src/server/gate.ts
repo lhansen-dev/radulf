@@ -138,6 +138,25 @@ export function renderGateFile(result: GateResult): string {
   ].join("\n");
 }
 
+/** The end of the gate's output quoted in the loop's repair task (spec 29). */
+export const GATE_REPAIR_OUTPUT_CHARS = 3_000;
+
+/**
+ * Spec 29: the task handed back to the loop when the gate fails after DONE.
+ * It quotes only the end of the output; the whole of it is in `.ralph/GATE.md`.
+ */
+export function gateRepairTaskText(result: GateResult): string {
+  const output = result.output.slice(-GATE_REPAIR_OUTPUT_CHARS) || "(no output)";
+  return [
+    `Repair the repository gate: the orchestrator ran \`${result.command}\` in the worktree after you signalled DONE and it exited ${result.exitCode}.`,
+    "",
+    "The end of its output:",
+    ...output.split("\n").map((line) => `  ${line}`),
+    "",
+    "Fix the underlying problem rather than the command. Run only the part of the gate that failed as this task's targeted check, not the whole gate command.",
+  ].join("\n");
+}
+
 /** The prompt section built from `.ralph/GATE.md`; empty when there is no file. */
 export function renderGateSection(gateMd: string): string {
   if (!gateMd.trim()) return "";
