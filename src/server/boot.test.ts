@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   settings: { sandboxEnabled: false } as { sandboxEnabled: boolean },
@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   resumeImprovementRuns: vi.fn(),
   registerShutdownHandlers: vi.fn(),
   pruneRuntimeHistory: vi.fn(),
+  claimDailySweep: vi.fn(),
   fireDueSchedules: vi.fn(),
   startEventsTail: vi.fn(),
   startTranscriptWatchers: vi.fn(),
@@ -23,7 +24,10 @@ vi.mock("./sandbox/srt", () => ({
 vi.mock("./orchestrator", () => ({ getOrchestrator: mocks.getOrchestrator }));
 vi.mock("./improvementRuns", () => ({ resumeImprovementRuns: mocks.resumeImprovementRuns }));
 vi.mock("./shutdown", () => ({ registerShutdownHandlers: mocks.registerShutdownHandlers }));
-vi.mock("./retention", () => ({ pruneRuntimeHistory: mocks.pruneRuntimeHistory }));
+vi.mock("./retention", () => ({
+  pruneRuntimeHistory: mocks.pruneRuntimeHistory,
+  claimDailySweep: mocks.claimDailySweep,
+}));
 vi.mock("./schedules", () => ({ fireDueSchedules: mocks.fireDueSchedules }));
 vi.mock("./eventsTail", () => ({ startEventsTail: mocks.startEventsTail }));
 vi.mock("./transcriptWatchers", () => ({
@@ -47,6 +51,10 @@ function installDefaults() {
 const originalPumpInterval = process.env.RADULF_PUMP_INTERVAL_MS;
 
 describe("boot", () => {
+  beforeEach(() => {
+    mocks.claimDailySweep.mockReturnValue(true);
+  });
+
   afterEach(() => {
     vi.useRealTimers();
     if (originalPumpInterval === undefined) delete process.env.RADULF_PUMP_INTERVAL_MS;
