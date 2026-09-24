@@ -44,4 +44,15 @@ describe("changedPaths", () => {
       "docs/renamed.md",
     ]);
   });
+
+  it("copes with a first line whose leading status column a caller's trim removed", () => {
+    // tryGit trims the whole output, so ` M docs/a.md\n M docs/b.md` arrives
+    // with the first line's leading space gone. Every path must still survive.
+    expect(changedPaths("M docs/ARCHITECTURE.md\n M docs/TROUBLESHOOTING.md")).toEqual([
+      "docs/ARCHITECTURE.md",
+      "docs/TROUBLESHOOTING.md",
+    ]);
+    // A staged modification with a blank second column keeps three columns.
+    expect(changedPaths("M  docs/a.md\nMM docs/b.md\n?? docs/c.md")).toEqual(["docs/a.md", "docs/b.md", "docs/c.md"]);
+  });
 });
