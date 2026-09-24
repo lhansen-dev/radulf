@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, inArray, max } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, max } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
   db,
@@ -51,7 +51,15 @@ import { EvaluationService, clearEvaluationArtifact } from "./evaluationService"
 import { ReviewService, type ConfigApproval } from "./reviewService";
 import { ClientError } from "./clientError";
 import { hasRole } from "./roles";
-import { HEARTBEAT_INTERVAL_MS, heartbeatWorker, registerWorker } from "./workers";
+import {
+  HEARTBEAT_INTERVAL_MS,
+  deleteWorker,
+  heartbeatWorker,
+  liveWorkerIds,
+  registerWorker,
+  staleBefore,
+  staleWorkerIds,
+} from "./workers";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
@@ -284,6 +292,13 @@ export class Orchestrator {
     this.heartbeatTimer = setInterval(() => {
       try {
         heartbeatWorker(this.workerId);
+        if (!this.passive) {
+          try {
+            this.reapStaleRuns();
+          } catch (e) {
+            console.error("[radulf] stale reaper failed:", e);
+          }
+        }
       } catch (e) {
         console.error("[radulf] heartbeat failed:", e);
       }
@@ -376,40 +391,116 @@ export class Orchestrator {
   // ---- boot recovery -------------------------------------------------------
 
   private recover() {
-    const stale = db.select().from(runs).where(eq(runs.status, "running")).all();
-    for (const run of stale) {
-      db.update(runs)
-        .set({ status: "interrupted", exitReason: "server restarted mid-run", endedAt: now() })
-        .where(eq(runs.id, run.id))
+    // Boot recovery is just the first pass of the continuous stale reaper: any
+    // running run whose owner is not heartbeating (or was never recorded) is
+    // marked interrupted and its card parked or resumed.
+    this.reapStaleRuns();
+    // Sweep the per-run scratch root (private TMPDIRs, caches, pgid files) of
+    // everything that no longer belongs to a live run. A peer worker's
+    // in-flight run keeps its directory: its TMPDIR must survive our boot.
+    const root = /* turbopackIgnore: true */ runScratchRoot();
+    if (fs.existsSync(root)) {
+      const live = liveWorkerIds(getSettings().workerStaleSeconds);
+      const liveRunIds = db
+        .select({ id: runs.id, workerId: runs.workerId })
+        .from(runs)
+        .where(eq(runs.status, "running"))
+        .all()
+        .filter((r) => r.workerId !== null && live.has(r.workerId))
+        .map((r) => r.id);
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.name === "ballast") continue;
+        if (liveRunIds.some((id) => entry.name.startsWith(id))) continue;
+        fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
+      }
+    }
+  }
+
+  /** Continuous stale reaper. Every `running` run whose owning worker has
+   * stopped heartbeating (or that has no owner at all — a row from before
+   * workers existed, or a process that died between insert and claim) is
+   * marked interrupted and its card either resumed (a checkpointed loop) or
+   * parked in Needs Attention. Cards stuck in a running status with no run at
+   * all get the same treatment once they have been idle past the stale
+   * window, and dead worker rows are deleted. Safe to run from any worker at
+   * any time: the run update is a CAS on `status = running`, so two reapers
+   * racing over the same run only let one of them through. */
+  reapStaleRuns(): void {
+    // Read on every call, never cached: the operator can widen or narrow the
+    // window at runtime and the next pass must honour it.
+    const staleSeconds = getSettings().workerStaleSeconds;
+    const live = liveWorkerIds(staleSeconds);
+    // Our own runs are never stale, however far behind our heartbeat row is
+    // (a long SQLite stall must not make a worker reap itself).
+    live.add(this.workerId);
+
+    const running = db.select().from(runs).where(eq(runs.status, "running")).all();
+    for (const run of running) {
+      if (run.workerId !== null && live.has(run.workerId)) continue;
+      const exitReason = run.workerId
+        ? `worker ${run.workerId} stopped heartbeating`
+        : "server restarted mid-run";
+      const result = db
+        .update(runs)
+        .set({ status: "interrupted", exitReason, endedAt: now() })
+        .where(and(eq(runs.id, run.id), eq(runs.status, "running")))
         .run();
-      this.failIterations(run.id, "interrupted by server restart");
+      if (result.changes !== 1) continue;
+      // Only the iterations still open: finished ones keep their verdicts.
+      db.update(iterations)
+        .set({ status: "failed", summary: "interrupted by worker loss", endedAt: now() })
+        .where(and(eq(iterations.runId, run.id), eq(iterations.status, "running")))
+        .run();
       emitEvent("run.finished", {
         cardId: run.cardId,
         runId: run.id,
-        payload: { status: "interrupted" },
+        payload: { status: "interrupted", exitReason },
       });
+      const card = getCard(run.cardId);
+      if (card) this.parkOrResume(card);
     }
-    // No run survives a restart, so the per-run scratch root (private TMPDIRs,
-    // caches, pgid files) is all stale — sweep it before anything new starts.
-    fs.rmSync(/* turbopackIgnore: true */ runScratchRoot(), { recursive: true, force: true });
-    // Any card still marked planning/looping/evaluating lost its run. A
-    // reviewing card lost the in-process merge claim.
+
+    // Any card still marked planning/looping/evaluating with no run at all
+    // lost its run some other way (a reviewing card lost the in-process merge
+    // claim). Only cards idle past the stale window count: a card that just
+    // moved into a running status may be about to get its run inserted.
     const orphans = db
       .select()
       .from(cards)
-      .where(inArray(cards.status, [...RUNNING_STATUSES, "reviewing"]))
+      .where(
+        and(
+          inArray(cards.status, [...RUNNING_STATUSES, "reviewing"]),
+          lt(cards.updatedAt, staleBefore(staleSeconds)),
+        ),
+      )
       .all();
     for (const card of orphans) {
-      // A loop is checkpointed: the orchestrator commits every finished
-      // iteration and ticks the private plan checklist, so a restart costs at
-      // most the one iteration that was in flight. Put a resumable card back
-      // in Ready and let pump() open a fresh loop run on the first unchecked
-      // task, instead of making a human press Retry to lose nothing. Every
-      // other stage re-runs from the top, so those still need a human.
-      if (card.status === "looping" && this.loopIsResumable(card.id)) {
-        this.moveCard(card.id, "looping", "ready", "resuming after restart");
-        continue;
-      }
+      const active = db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.cardId, card.id), eq(runs.status, "running")))
+        .get();
+      if (active) continue;
+      this.parkOrResume(card);
+    }
+
+    for (const id of staleWorkerIds(staleSeconds)) {
+      if (id !== this.workerId) deleteWorker(id);
+    }
+  }
+
+  /** A loop is checkpointed: the orchestrator commits every finished
+   * iteration and ticks the private plan checklist, so losing its worker
+   * costs at most the one iteration that was in flight. Put a resumable card
+   * back in Ready and let pump() open a fresh loop run on the first unchecked
+   * task, instead of making a human press Retry to lose nothing. Every other
+   * stage re-runs from the top, so those still need a human. */
+  private parkOrResume(card: Card) {
+    if (card.status === "looping" && this.loopIsResumable(card.id)) {
+      this.moveCard(card.id, "looping", "ready", "resuming after worker loss");
+      return;
+    }
+    if (RUNNING_STATUSES.includes(card.status) || card.status === "reviewing") {
       this.moveCard(card.id, card.status, "needs_attention", "interrupted");
     }
   }
