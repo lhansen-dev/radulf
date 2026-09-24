@@ -190,3 +190,59 @@ describe("pending evaluations", () => {
     orchestrator.startDraining();
   });
 });
+
+describe("pausing through the database", () => {
+  const movedEvents = (cardId: string) =>
+    db
+      .select()
+      .from(events)
+      .where(eq(events.type, "card.moved"))
+      .all()
+      .filter((e) => e.cardId === cardId)
+      .map((e) => JSON.parse(e.payload ?? "{}") as { from?: string; to?: string; reason?: string });
+
+  it("pauseCard moves the card at once; resumeCard waits for the run to close", async () => {
+    // Spec 25 decision 4: a pause is an immediate card transition rather
+    // than an in-memory flag, so any worker sees it through the database.
+    db.insert(cards)
+      .values({
+        id: "p1",
+        repoId: "repo-1",
+        title: "Card p1",
+        description: "Rough ask",
+        status: "looping",
+        position: 10,
+        createdAt: now(),
+        updatedAt: now(),
+      })
+      .run();
+    db.insert(runs)
+      .values({
+        id: "run-p1",
+        cardId: "p1",
+        kind: "loop",
+        status: "running",
+        worktreePath: "/tmp/wt-p1",
+        branch: "card/p1",
+        startedAt: now(),
+      })
+      .run();
+
+    const orchestrator = new Orchestrator({ autoStart: false });
+    orchestrator.pauseCard("p1");
+    expect(card("p1").status).toBe("paused");
+    expect(movedEvents("p1")).toContainEqual({ from: "looping", to: "paused", reason: "pause requested" });
+
+    // The loop is still banking its current iteration.
+    await expect(async () => orchestrator.resumeCard("p1")).rejects.toMatchObject({
+      name: "ClientError",
+      status: 409,
+    });
+    expect(card("p1").status).toBe("paused");
+
+    db.update(runs).set({ status: "paused", endedAt: now() }).where(eq(runs.id, "run-p1")).run();
+    orchestrator.resumeCard("p1");
+    expect(movedEvents("p1")).toContainEqual(expect.objectContaining({ from: "paused", to: "ready" }));
+    orchestrator.startDraining();
+  });
+});

@@ -1451,6 +1451,9 @@ describe("Orchestrator cancellation lifecycle", () => {
 
       orchestrator.startCard("pause-status");
       await vi.waitFor(() => expect(getCard("pause-status").status).toBe("paused"));
+      // The card moves the moment the pause is requested (spec 25 decision
+      // 4); the run only closes at the iteration boundary.
+      await vi.waitFor(() => expect(getRun("pause-status").status).toBe("paused"));
 
       const run = getRun("pause-status");
       expect(run.status).toBe("paused");

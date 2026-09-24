@@ -219,9 +219,10 @@ describe("an epic", () => {
     seedCard("b", { parentCardId: "epic", status: "todo" });
 
     expect(orchestrator.pauseEpic("epic")).toEqual({ paused: 1 });
-    const paused = (orchestrator as unknown as { pausedCards: Set<string> }).pausedCards;
-    expect(paused.has("a")).toBe(true);
-    expect(paused.has("b")).toBe(false);
+    // Spec 25 decision 4: the pause is an immediate card transition.
+    const rows = Object.fromEntries(allCards().map((row) => [row.id, row]));
+    expect(rows.a.status).toBe("paused");
+    expect(rows.b.status).toBe("todo");
   });
 
   it("finishes when its last unfinished piece does, and not before", () => {

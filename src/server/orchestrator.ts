@@ -226,8 +226,6 @@ export function planningCandidates(
 }
 
 export class Orchestrator {
-  /** Card IDs that have requested a pause on next iteration boundary. */
-  private pausedCards = new Set<string>();
   /** Set on graceful shutdown: pump() starts no new runs, and a running loop
    * stops at its next iteration boundary. */
   private draining = false;
@@ -524,9 +522,6 @@ export class Orchestrator {
   ): boolean {
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
     if (!run || run.status !== "running") return false;
-    // A pause request only applies to the live loop — a run that ends for any
-    // other reason (cancel, DONE, timeout) must not pause the card's next run.
-    this.pausedCards.delete(run.cardId);
     // Plan/evaluate pass their single invocation's telemetry; a loop run's
     // lives per iteration, so roll it up from the iterations just recorded.
     const rollup = telemetry ?? (run.kind === "loop" ? this.loopTelemetryRollup(runId) : undefined);
@@ -594,7 +589,11 @@ export class Orchestrator {
   private isRunActive(runId: string, cardId: string, signal: AbortSignal): boolean {
     if (signal.aborted) return false;
     const run = db.select().from(runs).where(eq(runs.id, runId)).get();
-    return run?.status === "running" && getCard(cardId)?.status === "looping";
+    if (run?.status !== "running") return false;
+    // Spec 25 decision 4: a pause moves the card at once, but its loop is
+    // still live until the iteration boundary and must bank that iteration.
+    const status = getCard(cardId)?.status;
+    return status === "looping" || status === "paused";
   }
 
   private latestPlan(cardId: string) {
@@ -854,17 +853,20 @@ export class Orchestrator {
     return { queued: queued.length, started };
   }
 
-  /** Spec 24 decision 5: pause every looping piece at its next iteration boundary. */
+  /** Spec 24 decision 5: pause every looping piece; each loop stops at its
+   * next iteration boundary (spec 25 decision 4: the card moves at once). */
   pauseEpic(cardId: string): { paused: number } {
     const looping = listChildren(cardId).filter((child) => child.status === "looping");
-    for (const child of looping) this.pausedCards.add(child.id);
+    for (const child of looping) this.moveCard(child.id, "looping", "paused", "pause requested");
     return { paused: looping.length };
   }
 
   pauseCard(cardId: string) {
     const card = requireCard(cardId);
     if (card.status !== "looping") throw new ClientError(`cannot pause a ${card.status} card`);
-    this.pausedCards.add(cardId);
+    // Spec 25 decision 4: the pause is an immediate card transition, visible
+    // to every worker through the database. The loop stops at its boundary.
+    this.moveCard(cardId, "looping", "paused", "pause requested");
   }
 
   resumeCard(cardId: string) {
@@ -879,7 +881,6 @@ export class Orchestrator {
     if (stillRunning) {
       throw new ClientError("the loop is still finishing its current iteration — try again in a moment", 409);
     }
-    this.pausedCards.delete(cardId);
     this.moveCard(cardId, "paused", "ready");
     this.pump();
   }
@@ -1673,7 +1674,11 @@ export class Orchestrator {
           if (!this.finishRun(runId, "completed", "done-signal")) return;
           // Phase 3: every DONE goes through the evaluator before a human
           // sees it. An evaluator crash is a loud failure, not a pass-through.
-          if (this.moveCard(cardId, "looping", "evaluating")) this.startStage("evaluating", cardId);
+          // A card paused during its final iteration still gets evaluated.
+          const status = getCard(cardId)?.status;
+          if ((status === "looping" || status === "paused") && this.moveCard(cardId, status, "evaluating")) {
+            this.startStage("evaluating", cardId);
+          }
           return;
         }
         if (result.timedOut) {
@@ -1780,13 +1785,14 @@ export class Orchestrator {
         }
         if (result.promptTokens) promptTokensSeen.push(result.promptTokens);
 
-        if (this.pausedCards.has(cardId)) {
-          // Not "completed" (spec 18 §6): the operator stopped this run, it
-          // did not achieve anything. Scoring it as a success put a run that
-          // spent 51.6 minutes on one unfinished task in the numerator of the
-          // success rate.
+        if (getCard(cardId)?.status === "paused") {
+          // The card already moved when the pause was requested (spec 25
+          // decision 4); only the run needs closing here. Not "completed"
+          // (spec 18 §6): the operator stopped this run, it did not achieve
+          // anything. Scoring it as a success put a run that spent 51.6
+          // minutes on one unfinished task in the numerator of the success
+          // rate.
           this.finishRun(runId, "paused", "paused by user");
-          this.moveCard(cardId, "looping", "paused", "paused by user");
           return;
         }
 
