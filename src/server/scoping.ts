@@ -146,16 +146,17 @@ const SPLIT_REQUEST =
   "reviewable, and each one small enough for a single agent to carry out. Do not split work " +
   "that only makes sense together, and do not invent scope the conversation did not settle. " +
   "Output EXACTLY this format and nothing else: one RUN line, then one block per card:\n\n" +
-  "RUN: <`in order` when a later card builds on an earlier one, `in parallel` when every card " +
-  "stands alone and they could all be worked at once>\n\n" +
+  "RUN: <`in order` when each card builds on the one before it, `in parallel` when every card " +
+  "stands alone, `as a graph` when only some cards depend on others>\n\n" +
   "CARD 1\n" +
   "TITLE: <one line, action-oriented>\n" +
+  "DEPENDS ON: <the card numbers this card needs finished first, comma-separated, or `none`>\n" +
   "DESCRIPTION:\n" +
   "<the same Markdown sections a single scoped card would carry, written for a fresh agent " +
-  "with no access to this conversation. Say explicitly what this card does NOT do and which " +
-  "earlier card it depends on.>\n\n" +
+  "with no access to this conversation. Say explicitly what this card does NOT do.>\n\n" +
   "CARD 2\n" +
   "TITLE: ...\n" +
+  "DEPENDS ON: ...\n" +
   "DESCRIPTION:\n" +
   "...";
 
@@ -205,8 +206,11 @@ export function parseScopedCardProposal(
   return { title, description };
 }
 
-/** One card of a split proposal, in the order the session put it. */
-export type SplitCard = { title: string; description: string };
+/**
+ * One card of a split proposal, in the order the session put it. `dependsOn`
+ * holds 0-based indexes into the returned array (spec 28).
+ */
+export type SplitCard = { title: string; description: string; dependsOn: number[] };
 
 /**
  * Split a split proposal into its cards.
@@ -218,24 +222,56 @@ export type SplitCard = { title: string; description: string };
  * that omits its TITLE line still yields a usable card, numbered after the
  * original. The operator edits the result before it is applied, and applying
  * refuses a card with no title.
+ *
+ * Spec 28: a block's `DEPENDS ON:` line names the 1-based CARD numbers it
+ * needs finished first. Those are mapped to indexes of the surviving blocks;
+ * numbers that name no surviving block, or the card itself, are dropped. A
+ * missing line means no dependencies.
  */
 export function parseSplitProposal(text: string, fallbackTitle: string): SplitCard[] {
   let body = text.trim();
   const fenced = /^```[a-z]*\n([\s\S]*?)\n```$/i.exec(body);
   if (fenced) body = fenced[1].trim();
-  return body
-    .split(/^CARD\s+\d+\s*$/m)
-    .slice(1)
-    .filter((block) => block.trim())
-    .map((block, i) => parseScopedCardProposal(block, `${fallbackTitle} (${i + 1})`));
+
+  const separators = [...body.matchAll(/^CARD\s+(\d+)\s*$/gm)];
+  const blocks: { number: number; text: string }[] = [];
+  separators.forEach((sep, i) => {
+    const start = (sep.index ?? 0) + sep[0].length;
+    const end = i + 1 < separators.length ? (separators[i + 1].index ?? body.length) : body.length;
+    const text = body.slice(start, end);
+    if (text.trim()) blocks.push({ number: Number(sep[1]), text });
+  });
+
+  const indexByNumber = new Map<number, number>();
+  blocks.forEach((block, i) => {
+    if (!indexByNumber.has(block.number)) indexByNumber.set(block.number, i);
+  });
+
+  return blocks.map((block, i) => {
+    const dependsLine = /^DEPENDS ON:[ \t]*(.*)$/m.exec(block.text);
+    const rest = dependsLine
+      ? block.text.slice(0, dependsLine.index) + block.text.slice(dependsLine.index + dependsLine[0].length)
+      : block.text;
+    const numbers = dependsLine ? (dependsLine[1].match(/\d+/g) ?? []).map(Number) : [];
+    const dependsOn = [
+      ...new Set(
+        numbers
+          .map((n) => indexByNumber.get(n))
+          .filter((idx): idx is number => idx !== undefined && idx !== i),
+      ),
+    ].sort((a, b) => a - b);
+    return { ...parseScopedCardProposal(rest, `${fallbackTitle} (${i + 1})`), dependsOn };
+  });
 }
 
 /**
  * Spec 24: the run mode a split proposal recommends for its pieces. In order
  * unless the reply says in parallel, because in order is what the queue did
  * before the line existed, and a missing line should not loosen that.
+ * Spec 28: `as a graph` picks the dependency-driven mode.
  */
 export function parseSplitRunMode(text: string): EpicRunMode {
+  if (/^RUN:.*\bgraph\b/im.test(text)) return "graph";
   return /^RUN:.*\bparallel\b/im.test(text) ? "parallel" : "ordered";
 }
 
