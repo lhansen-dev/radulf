@@ -832,6 +832,191 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
   );
 
   it(
+    "two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering",
+    async () => {
+      type CardRow = { id: string; title: string; status: string };
+      const cards = await api<CardRow[]>("GET", "/api/cards");
+      expect(cards.status).toBe(200);
+      const contention1 = cards.json.find((c) => c.title === "Contention 1");
+      const contention2 = cards.json.find((c) => c.title === "Contention 2");
+      expect(contention1).toMatchObject({ status: "review" });
+      expect(contention2).toMatchObject({ status: "review" });
+
+      type LoopRow = { id: string; worktree_path: string; branch: string };
+      const loopOf = (id: string): LoopRow => {
+        const [row] = dbQuery<LoopRow>(
+          "SELECT id, worktree_path, branch FROM runs WHERE kind = 'loop' AND card_id = ? ORDER BY started_at DESC LIMIT 1",
+          id,
+        );
+        expect(row).toBeDefined();
+        return row;
+      };
+      const run1 = loopOf(contention1!.id);
+      const run2 = loopOf(contention2!.id);
+
+      // The mock loop writes the same mock-output/task-*.md files in every
+      // card, so Contention 2 would conflict with Contention 1's merge. Give
+      // it a distinct path so both merges can land.
+      const git2 = (...args: string[]) =>
+        execFileSync("git", args, { cwd: run2.worktree_path, stdio: "pipe" });
+      git2("rm", "-q", "mock-output/task-1.md", "mock-output/task-2.md");
+      fs.writeFileSync(
+        path.join(run2.worktree_path, "mock-output", "contention-2.md"),
+        "# contention 2\n",
+      );
+      git2("add", "mock-output/contention-2.md");
+      git2(
+        "-c",
+        "user.name=Split",
+        "-c",
+        "user.email=split@radulf.local",
+        "commit",
+        "-q",
+        "-m",
+        "distinct paths",
+      );
+
+      // A loop running while the sibling merges moves main underneath it; the
+      // run-end integrity check must recognise the recorded ref write.
+      const repos = await api<Array<{ id: string; name: string }>>("GET", "/api/repos");
+      expect(repos.status).toBe(200);
+      const repoId = repos.json.find((r) => r.name === "fixture")!.id;
+      const overlapping = await api<{ id: string }>("POST", "/api/cards", {
+        repoId,
+        title: "Overlapping loop",
+        description: "Loops while two sibling approvals merge into main.",
+        plannerModel: "happy-path",
+        loopModel: "happy-path",
+        evaluatorModel: "happy-path",
+      });
+      expect(overlapping.status).toBe(201);
+      const overlappingId = overlapping.json.id;
+      expect((await api("POST", `/api/cards/${overlappingId}/move`, { to: "todo" })).status).toBe(
+        200,
+      );
+      expect(
+        (await api("POST", `/api/cards/${overlappingId}/move`, { to: "in_progress" })).status,
+      ).toBe(200);
+      await waitFor(
+        () =>
+          dbQuery<{ status: string }>("SELECT status FROM cards WHERE id = ?", overlappingId)[0]
+            ?.status === "looping",
+        90_000,
+        "the overlapping card to reach looping",
+      );
+
+      // Both web processes accept at once; neither runs the merge itself.
+      const approve = (url: string, runId: string) =>
+        fetch(url + "/api/reviews", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ runId, decision: "approved" }),
+        });
+      const [res1, res2] = await Promise.all([
+        approve(baseUrl, run1.id),
+        approve(baseUrl2, run2.id),
+      ]);
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+
+      const contentionIds = [contention1!.id, contention2!.id];
+      let statuses: CardRow[] = [];
+      let bounced: CardRow | undefined;
+      await waitFor(
+        async () => {
+          statuses = (await api<CardRow[]>("GET", "/api/cards")).json.filter((c) =>
+            contentionIds.includes(c.id),
+          );
+          bounced = statuses.find((c) => c.status === "needs_attention" || c.status === "ready");
+          if (bounced) return true;
+          return statuses.length === 2 && statuses.every((c) => c.status === "done");
+        },
+        120_000,
+        "both contention cards to reach done",
+      );
+      if (bounced) {
+        const deliveries = dbQuery(
+          "SELECT run_id, status, ok, error FROM review_deliveries WHERE run_id IN (?, ?)",
+          run1.id,
+          run2.id,
+        );
+        throw new Error(
+          `card ${bounced.id} landed in ${bounced.status}: ${JSON.stringify(deliveries)}\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+        );
+      }
+
+      const fixture = path.join(root, "repos", "fixture");
+      const log = execFileSync("git", ["log", "--oneline", "main"], {
+        cwd: fixture,
+        stdio: "pipe",
+      }).toString();
+      expect(log).toContain('ralph: merge "Contention 1"');
+      expect(log).toContain('ralph: merge "Contention 2"');
+
+      type DeliveryRow = {
+        run_id: string;
+        status: string;
+        ok: number | null;
+        worker_id: string | null;
+        claimed_at: string | null;
+        ended_at: string | null;
+      };
+      const deliveries = dbQuery<DeliveryRow>(
+        "SELECT run_id, status, ok, worker_id, claimed_at, ended_at FROM review_deliveries WHERE run_id IN (?, ?) ORDER BY claimed_at",
+        run1.id,
+        run2.id,
+      );
+      expect(deliveries).toHaveLength(2);
+      expect(new Set(deliveries.map((d) => d.run_id))).toEqual(new Set([run1.id, run2.id]));
+      for (const d of deliveries) {
+        expect(d.status).toBe("finished");
+        expect(d.ok).toBe(1);
+        expect(d.worker_id).not.toBeNull();
+        expect(d.claimed_at).not.toBeNull();
+        expect(d.ended_at).not.toBeNull();
+      }
+      // Serialized under the per-repo lease: the intervals are disjoint (ISO
+      // timestamps sort as strings).
+      expect(deliveries[0].ended_at! <= deliveries[1].claimed_at!).toBe(true);
+
+      expect(dbQuery("SELECT * FROM repo_leases")).toHaveLength(0);
+      const [refWrites] = dbQuery<{ n: number }>(
+        "SELECT count(*) AS n FROM ref_writes WHERE ref = 'refs/heads/main'",
+      );
+      expect(refWrites.n).toBeGreaterThanOrEqual(2);
+
+      // The loop that ran across both merges settles in review, and its
+      // run-end integrity check attributes the moved main to the recorded
+      // ref writes rather than to tampering.
+      let overlappingFailed = false;
+      await waitFor(
+        () => {
+          const [row] = dbQuery<{ status: string }>(
+            "SELECT status FROM cards WHERE id = ?",
+            overlappingId,
+          );
+          if (row?.status === "needs_attention") overlappingFailed = true;
+          return overlappingFailed || row?.status === "review";
+        },
+        120_000,
+        "the overlapping card to settle in review",
+      );
+      if (overlappingFailed) {
+        throw new Error(
+          `overlapping card landed in needs_attention\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+        );
+      }
+      const finished = dbQuery<{ payload: string }>(
+        "SELECT payload FROM events WHERE card_id = ? AND type = 'run.finished'",
+        overlappingId,
+      );
+      expect(finished.length).toBeGreaterThan(0);
+      for (const row of finished) expect(row.payload).not.toContain("integrity violation");
+    },
+    240_000,
+  );
+
+  it(
     "SIGKILL on a worker mid-loop hands the card to the other worker within the stale window",
     async () => {
       const repos = await api<Array<{ id: string; name: string }>>("GET", "/api/repos");
