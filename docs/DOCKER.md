@@ -106,10 +106,12 @@ make check-compose
 ```
 
 This brings up one web and two workers under the project name `radulf-check`
-with a scratch env file, shows `docker compose ps`, and tears the lot down
-with `-v`. It creates and removes its own volumes only, on its own port
-(`RADULF_CHECK_PORT`, default 3999), so the operator's `radulf-state` volume
-and published port are never involved.
+with a scratch env file, waits until every container reports healthy, shows
+`docker compose ps`, and tears the lot down with `-v`. It creates and removes
+its own volumes only, on its own port (`RADULF_CHECK_PORT`, default 3999), and
+`compose.check.yaml` drops the fixed OAuth callback ports, so the operator's
+`radulf-state` volume and published ports are never involved and the check
+runs beside a live stack.
 
 ## Where state lives
 

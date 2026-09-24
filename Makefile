@@ -96,14 +96,21 @@ check: test lint typecheck build check-split ## Full gate: test + lint + typeche
 
 # Runs under its own compose project name with a scratch env file so it never
 # touches the operator's `radulf` project: separate volume, separate port
-# (RADULF_CHECK_PORT, default 3999). `down -v` removes only this project's volumes.
-check-compose: ## Throwaway compose run: one web + two workers under project name radulf-check with a scratch env file; never touches the operator's volume or port
+# (RADULF_CHECK_PORT, default 3999), and compose.check.yaml drops the fixed
+# OAuth callback ports so it can run beside a live stack. `--wait` blocks
+# until every container reports healthy, so a web or worker that boots and
+# dies fails the target instead of showing up as a fresh `ps` line. The
+# stack is torn down whatever `up` returned; `down -v` removes only this
+# project's volumes.
+check-compose: ## Throwaway compose run: one web + two workers under project name radulf-check, waits for healthy, tears down; never touches the operator's volume or ports
 	env_file=$$(mktemp); \
 	printf 'RADULF_PORT=%s\n' "$${RADULF_CHECK_PORT:-3999}" > "$$env_file"; \
-	docker compose -p radulf-check --env-file "$$env_file" up -d --build --scale worker=2 \
-		&& docker compose -p radulf-check ps \
-		&& docker compose -p radulf-check --env-file "$$env_file" down -v; \
-	rm -f "$$env_file"
+	compose="docker compose -p radulf-check -f compose.yaml -f compose.check.yaml --env-file $$env_file"; \
+	$$compose up -d --build --wait --wait-timeout 180 --scale worker=2; status=$$?; \
+	$$compose ps; \
+	$$compose down -v; \
+	rm -f "$$env_file"; \
+	exit $$status
 
 db-generate: ## Generate a migration from schema changes
 	$(BIN)/drizzle-kit generate
