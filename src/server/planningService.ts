@@ -250,7 +250,7 @@ export class PlanningService {
     fs.mkdirSync(/* turbopackIgnore: true */ ralphDirPath(worktreePath), { recursive: true });
     const ctx = await createRunSandbox(runId);
     startRunRow(
-      { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model },
+      { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model, workerId: deps.workerId() },
       ctx,
       settings,
       created ? repo.id : undefined,

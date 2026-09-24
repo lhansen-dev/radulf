@@ -193,6 +193,7 @@ function mockEvaluationVerdict(content: string) {
 function makeDeps() {
   return {
     getCard: (id: string) => db.select().from(cards).where(eq(cards.id, id)).get(),
+    workerId: () => "worker-test",
     latestPlan: (id: string) =>
       db.select().from(plans).where(eq(plans.cardId, id)).orderBy(desc(plans.version)).limit(1).get(),
     latestWorktreeRun: (id: string) =>

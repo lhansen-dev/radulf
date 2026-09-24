@@ -166,6 +166,8 @@ export async function integrityViolationReason(
  * service stays independently testable. */
 export type StageDependencies = {
   getCard(cardId: string): Card | undefined;
+  /** The owning orchestrator's `workers.id`, stamped on every run it starts. */
+  workerId(): string;
   latestPlan(cardId: string): Plan | undefined;
   latestWorktreeRun(cardId: string): Run | undefined;
   moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean;

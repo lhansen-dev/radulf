@@ -51,6 +51,7 @@ import { EvaluationService, clearEvaluationArtifact } from "./evaluationService"
 import { ReviewService, type ConfigApproval } from "./reviewService";
 import { ClientError } from "./clientError";
 import { hasRole } from "./roles";
+import { HEARTBEAT_INTERVAL_MS, heartbeatWorker, registerWorker } from "./workers";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
@@ -234,6 +235,7 @@ export class Orchestrator {
 
   private stageDeps: StageDependencies = {
     getCard,
+    workerId: () => this.workerId,
     latestPlan: (cardId) => this.latestPlan(cardId),
     latestWorktreeRun: (cardId) => this.latestWorktreeRun(cardId),
     moveCard: (cardId, from, to, reason) => this.moveCard(cardId, from, to, reason),
@@ -268,8 +270,26 @@ export class Orchestrator {
    * over the same runs. */
   private readonly passive: boolean;
 
+  /** This process's row in the `workers` table (spec 25). Every run this
+   * orchestrator starts is stamped with it so a peer can tell whose claim a
+   * running row is, and whether its owner is still heartbeating. */
+  readonly workerId: string;
+  /** Refreshes workers.heartbeatAt. Deliberately NOT cleared by
+   * startDraining(): a draining worker is still finishing its last iteration
+   * and must keep heartbeating so no peer reaps that run as orphaned. */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(options: { autoStart?: boolean; passive?: boolean } = {}) {
     this.passive = options.passive === true;
+    this.workerId = registerWorker(this.passive ? ["web"] : ["worker"]);
+    this.heartbeatTimer = setInterval(() => {
+      try {
+        heartbeatWorker(this.workerId);
+      } catch (e) {
+        console.error("[radulf] heartbeat failed:", e);
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref?.();
     if (options.autoStart !== false && !this.passive) {
       this.recover();
       this.pump();
@@ -920,7 +940,19 @@ export class Orchestrator {
   /** True while any repo has a run in flight — used by graceful shutdown.
    * Deliberately global, unlike pipelineBusy(repoId). */
   hasInFlightWork(): boolean {
-    return this.activeLoopCards.size > 0 || this.cardInStatus(RUNNING_STATUSES);
+    return this.ownsRunningRun() || this.cardInStatus(RUNNING_STATUSES);
+  }
+
+  /** True if a run row claimed by this worker is still `running`. */
+  private ownsRunningRun(): boolean {
+    return (
+      db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.status, "running"), eq(runs.workerId, this.workerId)))
+        .limit(1)
+        .get() !== undefined
+    );
   }
 
   private cardInStatus(statuses: readonly CardStatus[], repoId?: string): boolean {
