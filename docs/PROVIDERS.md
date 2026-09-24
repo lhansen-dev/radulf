@@ -55,8 +55,8 @@ are available for the provider.
 
 ## Configuring a role
 
-Open **Settings → Agents & models** in the app. Each of the four roles —
-scoping, planner, loop, and evaluator — gets its own three pickers:
+Open **Settings → Agents & models** in the app. Each of the five roles —
+scoping, planner, plan critic, loop, and evaluator — gets its own three pickers:
 
 - **Provider** — one of the five above.
 - **Model** — a model id. Leaving it blank means "the subscription's default

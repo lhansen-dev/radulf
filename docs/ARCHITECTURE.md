@@ -106,10 +106,12 @@ the mapping to the five board columns is in the comment above the list.
 `reviewing` renders as nothing at all, because it is a short-lived atomic claim
 on a review decision rather than a state a card rests in.
 
-## The four roles
+## The five roles
 
 Each role is a service with one entry point, and each constructs its own pi
 session. The role is what decides the tool set — see the capability split below.
+The plan critic runs under the planner's tool set (writes confined to `.ralph/`,
+no bash) and the post-run check rejects any change other than `.ralph/CRITIQUE.md`.
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|

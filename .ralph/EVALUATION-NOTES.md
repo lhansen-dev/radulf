@@ -1,23 +1,21 @@
-# Evaluation notes — attempt started 2026-09-24T15:39:25Z
-- grep -c '28' specs/30-plan-critic.md → 0 (exit 1) PASS
-- grep -c '^# 30: ' specs/30-plan-critic.md → 1 PASS
-- grep -q 'Decided 2026-09-24' / 'amends nothing else' → both exit 0 PASS
-- grep -q '30-plan-critic.md' docs/DESIGN_HISTORY.md → exit 0 PASS
-- grep -q 'criticModel: null' requestValidation.test.ts → exit 0 PASS
-- grep -q 'critique: "critique.jsonl"' runs/[id]/route.ts → exit 0 PASS
-- grep -q '"plan critic"' stageDiagnosis.ts → exit 0 PASS
-- harness diff: vs beta (real base) only mock.ts changed PASS; vs main merge-base 18 files but all identical to beta (beta is ahead of main) — criterion's literal cmd picks wrong base
-- vitest requestValidation/stageDiagnosis/settings/cardValidation → 65/65 pass PASS
-- vitest 'src/app/api/runs/\[id\]/runRoute.test.ts' (literal escaped) → "No test files found" exit 1 (vitest 4.1.11 filter quirk); unescaped 'src/app/api/runs/[id]/runRoute.test.ts' → 2/2 pass exit 0 PASS
-- vitest planCriticService + planningService → 33/33 pass PASS
-- vitest mockPipeline -t critic → 2 pass (approve + revise) PASS
-- npx tsc --noEmit → exit 0 PASS
-- npx eslint (4 named files) → exit 0 PASS
-- gate (make lint typecheck build check-split) exit 0 per GATE.md; starting `make test` in background → $TMPDIR/make-test.log
-- drizzle migration 0023 chains on 0022 (prevId ok), drizzle-kit check → "Everything's fine" PASS
-- reviewed planCriticService.ts, planningService.ts diff, orchestrator diff, mock.ts, mockPipeline tests: approve/revise/limit/illegal-change paths all present
-- background make test got killed by the sandbox between tool calls (18 files done, all passing); re-running in foreground
-- make test run 1: 138/139 files pass; 1 fail = orchestrator.reaper.test.ts "never reaps its own run" ENOTEMPTY rmdir /tmp/claude/runtmp (shared-TMPDIR race between parallel workers, passes alone; not touched by the card)
-- make test run 2: 139 passed | 1 skipped, exit 0 → PASS. Combined with gate (lint typecheck build check-split exit 0) = make check passes
-- doc reconciliation (approve): HOW_IT_WORKS roles table (+Plan critic, "five"), spec 03 cards cols/runs.kind/settings keys, PROVIDERS mock scenario table + curl example (criticProvider)
-- verdict written: approve 2026-09-24T15:52:19Z
+# Evaluator notes (attempt started 2026-09-24T15:55Z)
+- grep -c '28' specs/30-plan-critic.md → 0, exit 1 (PASS)
+- grep -c '^# 30: ' specs/30-plan-critic.md → 1 (PASS)
+- grep -q 'Decided 2026-09-24' / 'amends nothing else' specs/30 → both exit 0 (PASS)
+- grep -q '30-plan-critic.md' docs/DESIGN_HISTORY.md → exit 0 (PASS)
+- grep -q 'criticModel: null' src/server/requestValidation.test.ts → exit 0 (PASS)
+- grep -q 'critique: "critique.jsonl"' src/app/api/runs/[id]/route.ts → exit 0 (PASS)
+- grep -q '"plan critic"' src/server/stageDiagnosis.ts → exit 0 (PASS)
+- harness diff vs merge-base(main) → 18 files, but all 18 are beta-vs-main drift (same 18 for beta itself); vs beta only mock.ts changed (PASS on intent; literal command wrong for beta-based branch)
+- vitest requestValidation/stageDiagnosis/settings/cardValidation → 65/65 pass, exit 0 (PASS)
+- vitest runRoute.test.ts (unescaped path) → 2/2 pass; literal '\[id\]' escaping makes vitest filter '[id/]' → "No test files found" — criterion quoting issue, not the change
+- vitest planCriticService + planningService → 33/33 pass, exit 0 (PASS)
+- vitest mockPipeline -t critic → 2 pass (approve + revise), exit 0 (PASS)
+- tsc --noEmit → exit 0 (PASS)
+- eslint on 4 named files → exit 0 (PASS)
+- code review: planCriticService.ts mirrors evaluator (HEAD + porcelain before/after, parseEvaluation, removeRalphFiles of stale verdict), revise cap = 2 prior → plan_review, replan via startStage("planning"); orchestrator retryFailedStep has a critique branch; pendingReplanFeedback picks critique revise with prefix; mock roleOf detects critic by CRITIQUE.md in prompt; docs (ARCHITECTURE, HOW_IT_WORKS, PROVIDERS, spec 03/04, DESIGN_HISTORY) updated
+- make check launched in background at 15:58 (setsid), log at $TMPDIR/makecheck.log — first launch died with the shell
+- setsid'd make check also died with the tool call; ran `vitest run` in the foreground instead: 140 files passed, 1 skipped (splitProcesses, run by the gate), 1361 tests pass, exit 0, 14s — none of the card's listed environmental failures occurred
+- make check = test (pass) + lint/typecheck/build/check-split (gate exit 0) → PASS
+- previous revise items (spec 28 paragraph, requestValidation regression, critique.jsonl route, stageDiagnosis wording) all confirmed fixed with tests
+- VERDICT: approve written to .ralph/EVALUATION.md; SUMMARY.md written; doc reconciliation: ARCHITECTURE.md "four roles" → "five roles" (+ critic tool-set note), PROVIDERS.md "four roles" → "five roles" incl. plan critic

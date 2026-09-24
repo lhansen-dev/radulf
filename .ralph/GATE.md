@@ -2,20 +2,19 @@
 
 Command: `make lint typecheck build check-split`
 Result: exit 0
-Duration: 47s
-Ran at: 2026-09-24T15:38:23.089Z
+Duration: 41s
+Ran at: 2026-09-24T15:54:20.701Z
 
 ## Output, last 8000 characters
 
 ```
-…unning TypeScript ...
-  Finished TypeScript in 6.1s ...
+…inished TypeScript in 5.1s ...
   Collecting page data using 15 workers ...
   Generating static pages using 15 workers (0/39) ...
   Generating static pages using 15 workers (9/39) 
   Generating static pages using 15 workers (19/39) 
   Generating static pages using 15 workers (29/39) 
-✓ Generating static pages using 15 workers (39/39) in 183ms
+✓ Generating static pages using 15 workers (39/39) in 117ms
   Finalizing page optimization ...
 
 Route (app)
@@ -81,19 +80,19 @@ RADULF_SPLIT_CHECK=1 node_modules/.bin/vitest run src/server/splitProcesses.test
 make[1]: Entering directory '/var/lib/radulf/worktrees/add-a-plan-critic-that-reviews-each-plan-oGOz-S-hAB8M5N-meJs8R'
 node_modules/.bin/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
 make[1]: Leaving directory '/var/lib/radulf/worktrees/add-a-plan-critic-that-reviews-each-plan-oGOz-S-hAB8M5N-meJs8R'
- ✓ src/server/splitProcesses.test.ts (9 tests) 21968ms
-     ✓ fans a card created on one web process out to the other web process's event stream  327ms
-     ✓ drives a card from Todo to In Review through the web-only process  2093ms
-     ✓ cancelling a looping card from the web-only process ends the run in the worker  1020ms
-     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1229ms
-     ✓ two workers never run two runs of one repo at once with a cap of one  842ms
-     ✓ two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering  645ms
-     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  14898ms
+ ✓ src/server/splitProcesses.test.ts (9 tests) 21994ms
+     ✓ fans a card created on one web process out to the other web process's event stream  323ms
+     ✓ drives a card from Todo to In Review through the web-only process  2078ms
+     ✓ cancelling a looping card from the web-only process ends the run in the worker  647ms
+     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1176ms
+     ✓ two workers never run two runs of one repo at once with a cap of one  843ms
+     ✓ two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering  654ms
+     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  15414ms
 
  Test Files  1 passed (1)
       Tests  9 passed (9)
-   Start at  15:38:47
-   Duration  22.09s (transform 39ms, setup 0ms, import 53ms, tests 21.97s, environment 0ms)
+   Start at  15:54:39
+   Duration  22.12s (transform 37ms, setup 0ms, import 56ms, tests 21.99s, environment 0ms)
 
 Turbopack build encountered 3 warnings:
 ./src/server/docs.ts:173:15
@@ -125,7 +124,7 @@ Import traces:
     ./src/server/sandbox/srt.ts
     ./src/server/stage.ts
     ./src/server/orchestrator.ts
-    ./src/app/api/settings/route.ts
+    ./src/app/api/repos/[id]/route.ts
 
 
 ./src/server/sandbox/srt.ts:73:16
@@ -161,9 +160,9 @@ Import traces:
 
   #3 [App Route]:
     ./src/server/sandbox/srt.ts
-    ./src/server/stage.ts
-    ./src/server/orchestrator.ts
-    ./src/app/api/reviews/route.ts
+    ./src/server/harness/pi.ts
+    ./src/server/providers.ts
+    ./src/app/api/providers/[provider]/models/route.ts
 
 
 ./src/server/transcriptWatchers.ts:80:31
@@ -196,7 +195,7 @@ Import traces:
     ./src/server/sandbox/srt.ts
     ./src/server/stage.ts
     ./src/server/orchestrator.ts
-    ./src/app/api/settings/route.ts
+    ./src/app/api/repos/[id]/route.ts
 
 
 (!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
