@@ -1,0 +1,13 @@
+# Evaluator notes (Thu Sep 24 12:03:01 UTC 2026)
+- static greps (schema, migration 0019, journal idx 19, applyControlSignals, POLL env, control cancel/pause, finishRun CAS x1, split test greps, spec amended x2): all PASS
+- git diff --stat beta...HEAD -- src/server/harness/ : empty PASS
+- npx tsc --noEmit: exit 0 PASS
+- npx vitest run src/server/orchestrator.roles.test.ts: 13 passed PASS
+- npx vitest run src/server/orchestrator.lifecycle.test.ts: 101 passed PASS
+- stage services + boot: planningService/reviewService/boot pass; evaluationService has 3 failures (timeout/gate tests) — reproduced identically on pristine beta export => pre-existing, not this card
+- eslint on the 5 listed files: exit 0 PASS
+- make build: exit 0
+- RADULF_SPLIT_CHECK=1 vitest splitProcesses.test.ts (worktree): FAIL — "cancelling a looping card..." times out after 5s (same as gate); 7/8 pass
+- Debug copy in $TMPDIR/dbg (test patched to dump DB): run row = status cancelled, control still 'cancel'; events show run.finished(cancelled) BEFORE run.started(loop) => web cancelled during worker's run setup, before controllers.set(); worker bailed at the !active() guard and never consumed the column
+- Debug copy with test waiting for an iterations row before cancelling: 8/8 pass (twice) => race in the test's cancel timing + stale control never consumed on non-poll exit paths
+- Verdict written: revise (check-split fails; root cause + verified fix documented)
