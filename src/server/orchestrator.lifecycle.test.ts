@@ -1470,6 +1470,33 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(finished).toHaveLength(1);
     });
 
+    it("a cancel the worker's poll never saw is still consumed when its run exits", async () => {
+      card("stale-cancel");
+      plan("stale-cancel");
+      const harness = deferred<never>();
+      mocks.runHarness.mockReturnValueOnce(harness.promise);
+      const worker = new Orchestrator({ autoStart: false });
+      const web = new Orchestrator({ passive: true });
+
+      worker.startCard("stale-cancel");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+      web.cancelCard("stale-cancel");
+      expect(getRun("stale-cancel").control).toBe("cancel");
+
+      // The worker never polls the column; the run exits on its own and the
+      // owner clears the stale cancel in runLoop's finally block.
+      harness.reject(new Error("child exited"));
+      await settle();
+      expect(getRun("stale-cancel").status).toBe("cancelled");
+      expect(getRun("stale-cancel").control).toBeNull();
+      expect(getCard("stale-cancel").status).toBe("backlog");
+      const runId = getRun("stale-cancel").id;
+      const finished = db.select().from(events).all()
+        .filter((e) => e.type === "run.finished" && e.runId === runId);
+      expect(finished).toHaveLength(1);
+    });
+
     it("a passive pause closes the run at the worker's iteration boundary", async () => {
       card("remote-pause");
       plan("remote-pause");

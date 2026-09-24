@@ -2096,6 +2096,11 @@ export class Orchestrator {
     } finally {
       watchdog.stop();
       this.controllers.delete(runId);
+      // A cancel written by a web-only process between the claim and
+      // `this.controllers.set(runId, controller)` is never seen by
+      // applyControlSignals(), so the owner clears it here (a `pause` value is
+      // left untouched — the loop records it at the iteration boundary).
+      db.update(runs).set({ control: null }).where(and(eq(runs.id, runId), eq(runs.control, "cancel"))).run();
       releaseRunBaseline(runId);
       // Reaps every recorded process group, then removes the run-private
       // TMPDIR/caches — on every exit path including failure and cancel.
