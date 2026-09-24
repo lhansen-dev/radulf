@@ -42,7 +42,7 @@ import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
-import { abortMerge, resolveConflictsTaskText, syncWithBase } from "./baseSync";
+import { abortMerge, mergeInProgress, resolveConflictsTaskText, syncWithBase } from "./baseSync";
 import { GATE_FILE, gateFilePath, gateRepairTaskText, renderGateFile, runGateCommand, type GateResult } from "./gate";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
@@ -1709,6 +1709,16 @@ export class Orchestrator {
     const { worktreePath, branch, baseBranch, created } = await resolveWorktree(repo, card, runId, prev);
     db.update(runs).set({ worktreePath, branch, baseBranch }).where(eq(runs.id, runId)).run();
     if (created) recordWorktree(repo.id, runId, worktreePath, branch);
+    // A run that died mid conflict round (spec 29) leaves its merge in
+    // progress: MERGE_HEAD set, markers in the tree. Left alone, the plan-sync
+    // commit below fails on the unmerged paths and the first ITERATION_DONE
+    // commit then completes the merge, markers and all. Abort it before
+    // anything is written here — `merge --abort` resets the tree — and let
+    // the next DONE re-sync and hand any conflict back as a fresh task.
+    if (!created && (await mergeInProgress(worktreePath))) {
+      await abortMerge(worktreePath);
+      emitEvent("base.merge_aborted", { cardId, runId, payload: { baseBranch } });
+    }
     // Ensure the worktree carries the current plan's artifacts.
     const ralphDir = ralphDirPath(worktreePath);
     const ralphFile = (name: string) => path.join(/* turbopackIgnore: true */ ralphDir, name);

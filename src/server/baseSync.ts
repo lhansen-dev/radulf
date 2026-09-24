@@ -55,6 +55,12 @@ export async function abortMerge(worktreePath: string): Promise<void> {
   await tryGit(worktreePath, "merge", "--abort");
 }
 
+/** Whether a merge is still in progress in the worktree (MERGE_HEAD set) —
+ * what a run that died between a conflict and its resolution leaves behind. */
+export async function mergeInProgress(worktreePath: string): Promise<boolean> {
+  return (await tryGit(worktreePath, "rev-parse", "-q", "--verify", "MERGE_HEAD")).ok;
+}
+
 /** Task text handed back to the loop when the base-branch merge conflicted. */
 export function resolveConflictsTaskText(baseBranch: string, files: string[]): string {
   return [

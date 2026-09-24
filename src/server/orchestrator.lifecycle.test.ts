@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   startDiskWatchdog: vi.fn(),
   syncWithBase: vi.fn(),
   abortMerge: vi.fn(),
+  mergeInProgress: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
    * moving the defaults every other test relies on. */
@@ -72,6 +73,7 @@ vi.mock("./settings", async (importOriginal) => ({
 vi.mock("./baseSync", () => ({
   syncWithBase: mocks.syncWithBase,
   abortMerge: mocks.abortMerge,
+  mergeInProgress: mocks.mergeInProgress,
   resolveConflictsTaskText: (base: string, files: string[]) =>
     `Resolve the merge conflicts left in ${files.join(", ")} after the orchestrator merged the base branch ${base} into your branch.`,
 }));
@@ -311,6 +313,7 @@ describe("Orchestrator cancellation lifecycle", () => {
     mocks.startDiskWatchdog.mockImplementation(() => ({ stop: vi.fn() }));
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
     mocks.syncWithBase.mockResolvedValue({ status: "up-to-date" });
+    mocks.mergeInProgress.mockResolvedValue(false);
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "no verdict written in test" });
     delete (globalThis as typeof globalThis & {
       __radulfOrchestrator?: InstanceType<typeof Orchestrator>;
@@ -1293,6 +1296,31 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(loopCalls()).toHaveLength(3);
       expect(getCard("sync-stuck").status).toBe("needs_attention");
       expect(mocks.abortMerge).toHaveBeenCalledTimes(1);
+    });
+
+    it("aborts a merge a dead run left in progress before the loop reuses the worktree", async () => {
+      card("sync-stale-merge");
+      plan("sync-stale-merge");
+      // The previous loop run was reaped mid conflict round: its worktree is
+      // still on disk, MERGE_HEAD and all.
+      completedRun("sync-stale-merge", "stale-merge-loop", { status: "interrupted" });
+      mocks.mergeInProgress.mockResolvedValue(true);
+      doneEveryIteration({ evaluatorHangs: true });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-stale-merge");
+      const newLoopRun = () =>
+        db.select().from(runs).all().find((r) => r.cardId === "sync-stale-merge" && r.kind === "loop" && r.id !== "stale-merge-loop");
+      await vi.waitFor(() => expect(newLoopRun()?.exitReason).toBe("done-signal"));
+
+      expect(mocks.createWorktree).not.toHaveBeenCalled();
+      expect(mocks.abortMerge).toHaveBeenCalledTimes(1);
+      expect(mocks.abortMerge).toHaveBeenCalledWith(path.join(testDataDir, "worktrees", "stale-merge-loop"));
+      expect(eventsOfType("sync-stale-merge", "base.merge_aborted")).toHaveLength(1);
+      // The abort happened before the loop's first iteration, not after DONE.
+      const abortOrder = mocks.abortMerge.mock.invocationCallOrder[0];
+      const firstLoopOrder = Math.min(...mocks.runHarness.mock.invocationCallOrder);
+      expect(abortOrder).toBeLessThan(firstLoopOrder);
     });
   });
 

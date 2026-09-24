@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { git, initScratchRepo } from "@/testUtils/gitRepo";
-import { abortMerge, resolveConflictsTaskText, syncWithBase } from "./baseSync";
+import { abortMerge, mergeInProgress, resolveConflictsTaskText, syncWithBase } from "./baseSync";
 
 describe("syncWithBase (spec 29)", () => {
   let repo: string;
@@ -29,6 +29,7 @@ describe("syncWithBase (spec 29)", () => {
   });
 
   it("returns up-to-date and leaves HEAD alone when the base has not moved", async () => {
+    expect(await mergeInProgress(wt)).toBe(false);
     const before = git(wt, "rev-parse", "HEAD");
     expect(await syncWithBase(wt, base, "ralph/x")).toEqual({ status: "up-to-date" });
     expect(git(wt, "rev-parse", "HEAD")).toBe(before);
@@ -61,9 +62,11 @@ describe("syncWithBase (spec 29)", () => {
     expect(fs.readFileSync(path.join(wt, "work.ts"), "utf8")).toContain("<<<<<<<");
     expect(fs.statSync(path.join(wt, ".git")).isFile()).toBe(true);
     expect(() => git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD")).not.toThrow();
+    expect(await mergeInProgress(wt)).toBe(true);
 
     await abortMerge(wt);
     expect(() => git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+    expect(await mergeInProgress(wt)).toBe(false);
     expect(fs.readFileSync(path.join(wt, "work.ts"), "utf8")).not.toContain("<<<<<<<");
   });
 
