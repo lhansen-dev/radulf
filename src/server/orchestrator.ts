@@ -120,6 +120,10 @@ export type LoopClaim = {
  * to speak, this only decides how often to look. */
 const ATTENTION_SWEEP_MS = 60_000;
 
+/** Spec 25 decision 4: how often a worker checks `runs.control` for the runs
+ * whose harness it holds. Floored so a bad env value cannot hammer SQLite. */
+const CONTROL_POLL_INTERVAL_MS = Math.max(100, Number(process.env.RADULF_CONTROL_POLL_INTERVAL_MS) || 1_000);
+
 /** How many productive iterations a run must have before its own pace, rather
  * than the configured ceiling, bounds a single iteration. */
 const BUDGET_MIN_SAMPLES = 3;
@@ -302,6 +306,9 @@ export class Orchestrator {
   /** Spec 18 §5 sweep timer, held so startDraining() can stop it. */
   private attentionTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Spec 25 decision 4 poll of `runs.control`; see applyControlSignals(). */
+  private controlTimer: ReturnType<typeof setInterval> | null = null;
+
   /** A passive orchestrator is what a process with only the `web` role gets
    * (spec 25). It moves cards for operator actions but never runs boot
    * recovery, never pumps the queue, never starts a stage and never
@@ -341,6 +348,18 @@ export class Orchestrator {
       }
     }, HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimer.unref?.();
+    if (!this.passive) {
+      // Guarded like the other timers: a throw here would be an uncaught
+      // exception and take the worker down.
+      this.controlTimer = setInterval(() => {
+        try {
+          this.applyControlSignals();
+        } catch (e) {
+          console.error("[radulf] control poll failed:", e);
+        }
+      }, CONTROL_POLL_INTERVAL_MS);
+      this.controlTimer.unref?.();
+    }
     if (options.autoStart !== false && !this.passive) {
       this.recover();
       this.pump();
@@ -373,7 +392,40 @@ export class Orchestrator {
     this.heartbeatTimer = null;
     if (this.attentionTimer) clearInterval(this.attentionTimer);
     this.attentionTimer = null;
+    if (this.controlTimer) clearInterval(this.controlTimer);
+    this.controlTimer = null;
     liveOrchestrators.delete(this);
+  }
+
+  /**
+   * Spec 25 decision 4: honour `runs.control` for the runs whose harness this
+   * process holds. A web-only process that cancels a card finishes the run
+   * row and writes `control = 'cancel'`; it has no AbortController for the
+   * harness, so the owning worker fires its own here. The signal is consumed
+   * (column cleared) once the abort has fired. Nothing else is written: the
+   * run row was already finished by the process that issued the verb, and the
+   * existing `!active()` guards and the `finally` in runLoop do the transcript
+   * ending, telemetry and cleanup exactly as an in-process cancel does. A
+   * `pause` is left alone — the loop observes it at its iteration boundary.
+   *
+   * A process running both roles aborts locally in endActiveRun and again
+   * here, harmlessly: AbortController.abort() is idempotent.
+   */
+  applyControlSignals(): void {
+    if (this.controllers.size === 0) return;
+    const rows = db
+      .select({ id: runs.id, control: runs.control })
+      .from(runs)
+      .where(inArray(runs.id, [...this.controllers.keys()]))
+      .all();
+    for (const row of rows) {
+      if (row.control !== "cancel") continue;
+      this.controllers.get(row.id)?.abort();
+      db.update(runs)
+        .set({ control: null })
+        .where(and(eq(runs.id, row.id), eq(runs.control, "cancel")))
+        .run();
+    }
   }
 
   /**
@@ -2015,7 +2067,10 @@ export class Orchestrator {
         }
         if (result.promptTokens) promptTokensSeen.push(result.promptTokens);
 
-        if (getCard(cardId)?.status === "paused") {
+        // Spec 25 decision 4: a pause requested from another process shows
+        // up as the card status and as `runs.control`; either is enough.
+        const control = db.select({ control: runs.control }).from(runs).where(eq(runs.id, runId)).get()?.control;
+        if (getCard(cardId)?.status === "paused" || control === "pause") {
           // The card already moved when the pause was requested (spec 25
           // decision 4); only the run needs closing here. Not "completed"
           // (spec 18 §6): the operator stopped this run, it did not achieve
