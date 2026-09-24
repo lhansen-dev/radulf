@@ -599,6 +599,21 @@ describe("EvaluationService.runEvaluator — retries inherit the failed attempt 
     expect(deps.moveCard).toHaveBeenCalledWith("card-retry", "evaluating", "review", "evaluator approved");
   });
 
+  it("auto-approves the card's loop run, not the failed evaluate attempt it is retrying", async () => {
+    seedCard("card-auto-retry", 1);
+    const planId = seedPlan("card-auto-retry");
+    const { id: loopId, worktreePath } = seedLoopRun("card-auto-retry", planId);
+    seedFailedEvaluate("card-auto-retry", worktreePath);
+    mockEvaluationVerdict("VERDICT: approve\n\nFine.");
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-auto-retry");
+
+    expect(deps.approveReview).toHaveBeenCalledWith(loopId);
+    const auto = db.select().from(events).where(eq(events.type, "card.auto_approved")).all();
+    expect(JSON.parse(auto[0].payload)).toMatchObject({ runId: loopId, source: "card" });
+  });
+
   it("starts a fresh cycle after a loop run with no notes and no previous-attempt section", async () => {
     seedCard("card-fresh");
     const planId = seedPlan("card-fresh");

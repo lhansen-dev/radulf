@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
@@ -321,13 +321,25 @@ export class EvaluationService {
         // be flipped later). Only genuine `approve` verdicts qualify, and a
         // `critical` finding always leaves the card in review for a human.
         if ((card.autoApprove || getSettings().autoApprove) && !hasCritical) {
+          // The run to approve is the card's latest loop run. `loopRun` above
+          // is the latest run with a worktree, which after an evaluator retry
+          // is the failed evaluate attempt, and the review service rightly
+          // refuses to merge anything but a completed loop run.
+          const latestLoop = db
+            .select({ id: runs.id })
+            .from(runs)
+            .where(and(eq(runs.cardId, cardId), eq(runs.kind, "loop")))
+            .orderBy(desc(runs.startedAt))
+            .limit(1)
+            .get();
+          const approveRunId = latestLoop?.id ?? loopRun.id;
           emitEvent("card.auto_approved", {
             cardId,
             runId,
-            payload: { runId: loopRun.id, source: card.autoApprove ? "card" : "global" },
+            payload: { runId: approveRunId, source: card.autoApprove ? "card" : "global" },
           });
           try {
-            await deps.approveReview(loopRun.id);
+            await deps.approveReview(approveRunId);
           } catch {
             // Best-effort: the review service restores a safe status on error,
             // which for auto-approve means the card falls back to human review.
