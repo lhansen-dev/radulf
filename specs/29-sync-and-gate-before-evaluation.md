@@ -37,9 +37,11 @@ private plan naming the conflicted files, in the same way the acceptance
 probe appends its repair task, and the loop continues. The loop agent edits
 the files and signals ITERATION_DONE, and the orchestrator's bookkeeping
 commit for that iteration completes the merge. The base branch is never
-written by this step, and the sync takes the repository's delivery lease for
-the duration of the read, so it never sees a base that an approval merge is
-halfway through changing.
+written by this step, and the sync never takes the lease either: it
+waits for the repository's delivery lease (spec 25 decision 6) to be free
+before reading the base, so it never sees a base that an approval merge is
+halfway through changing, and a delivery that outlasts the settle window never
+fails the run, because git ref reads are atomic and the read simply proceeds.
 
 **2. The gate before DONE.** If the repository has a gate command, the gate
 runs in the worktree after the sync, with the spec 27 runner and the spec 27
@@ -59,9 +61,11 @@ consume iterations indefinitely.
 **4. The evaluator reuses `.ralph/GATE.md`.** The loop's DONE path writes the
 file spec 27 describes, with the same fields. A fresh cycle is a new loop run,
 which clears the file at start, so a stale result never carries across cycles.
-The evaluator's own gate step runs only when the file is missing, which is the
-case for a repository whose gate was killed or could not run, and for any path
-that reaches evaluation without a loop.
+The loop's DONE path writes the file for every gate outcome, including a gate
+that was killed for time or could not run; the file is missing only on a path
+that reaches evaluation without a loop's DONE (for example a run resumed
+straight into evaluation after the install-script gate), and the evaluator
+runs the gate itself only then.
 
 **5. Announced.** The sync emits `base.synced` with the merge commit, or
 `base.conflict` with the conflicted files. The gate emits `gate.started` and

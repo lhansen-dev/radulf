@@ -1,0 +1,4 @@
+Spec 29 base sync waits for the per-repo delivery lease instead of acquiring it; spec text corrected to match
+- `src/server/orchestrator.ts`: the pre-evaluation base sync now waits for the repository's delivery lease to be free (via `waitForRepoLeaseRelease` / `LEASE_SETTLE_MS` from `./integrity`) and never takes the lease; a delivery outlasting the settle window does not fail the run because git ref reads are atomic.
+- `specs/29-sync-and-gate-before-evaluation.md`: decision 1 now states the sync waits for (never takes) the lease, referencing spec 25 decision 6; decision 4 now states the loop's DONE path writes `.ralph/GATE.md` for every gate outcome and the evaluator runs the gate itself only when evaluation is reached without a loop's DONE.
+- Why: taking the lease during a read-only sync could block or contend with approval deliveries; the spec previously misdescribed both the lease behavior and when the evaluator's own gate step runs.
