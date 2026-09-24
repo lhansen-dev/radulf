@@ -31,8 +31,16 @@ import { parsePayload } from "@/shared/eventPayload";
 import { errorMessage } from "@/shared/errorMessage";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
 import { scriptKey } from "@/shared/installScripts";
+import type { EpicRunMode } from "@/shared/epics";
 
 const TABS = ["Task", "Activity"] as const;
+
+/** How a parent epic's run mode reads in the "Part of" line. */
+const RUN_MODE_PHRASES: Record<EpicRunMode, string> = {
+  ordered: "in order",
+  parallel: "in parallel",
+  graph: "as a graph",
+};
 
 /** Exporting a card never depends on where it is in its lifecycle. */
 const ALL_STATUSES = Object.keys(STATUS_LABELS);
@@ -389,7 +397,7 @@ export default function CardDetail() {
           {detail.parent && (
             <p className="text-sm text-foreground/60">
               Part of <Link href={`/card/${detail.parent.id}`} className="text-amber-300 hover:underline">{detail.parent.title}</Link>
-              {detail.parent.runMode && <span className="text-foreground/40"> · its tasks run {detail.parent.runMode === "ordered" ? "in order" : "in parallel"}</span>}
+              {detail.parent.runMode && <span className="text-foreground/40"> · its tasks run {RUN_MODE_PHRASES[detail.parent.runMode]}</span>}
             </p>
           )}
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">

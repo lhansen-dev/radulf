@@ -45,9 +45,14 @@ and description, never runs itself, and its page lists the tasks under it with
 their status, a progress bar, **Start all** and **Pause all**. The tasks are
 ordinary cards that inherit the epic's settings and may each target another
 repository. The epic's **run mode** decides how the queue treats them: **in
-order** starts a task only once every task before it is done, while **in
-parallel** lets them all be eligible at once, bounded by **Concurrent cards
-per repo** in Settings. **Start now** on a task always starts it, order or not.
+order** starts a task only once every task before it is done, **in
+parallel** lets them all be eligible at once, and **as a graph** starts each
+task once the tasks it was marked as depending on are done or abandoned — all
+bounded by **Concurrent cards per repo** in Settings. In graph mode the
+breakdown editor shows a **Depends on** picker per task, the breakdown
+proposal suggests dependencies, a cycle is refused when you queue, and the
+Work feed says what each waiting task is waiting on. **Start now** on a task
+always starts it, order or dependencies notwithstanding.
 The epic reads as done when its tasks are. **Create and break down** in the
 New task dialog creates the card and asks for the breakdown straight away, and
 a Jira issue with child issues offers those children as the tasks, ticked, with

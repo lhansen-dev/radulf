@@ -56,6 +56,7 @@ export function EpicTasks({
           >
             <option value="ordered">In order</option>
             <option value="parallel">In parallel</option>
+            <option value="graph">As a graph</option>
           </select>
         </label>
       </div>

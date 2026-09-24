@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3a54c45a-8e14-4fab-8d17-5842d16560d7",
-  "prevId": "d2ecc0bc-1739-49ba-a0a8-dd8c56736ad3",
+  "id": "96078c10-bd6f-4d71-96be-5afd585ccec3",
+  "prevId": "3a54c45a-8e14-4fab-8d17-5842d16560d7",
   "tables": {
     "cards": {
       "name": "cards",
@@ -166,6 +166,20 @@
         },
         "evaluator_model": {
           "name": "evaluator_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "plan_critic": {
+          "name": "plan_critic",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "critic_model": {
+          "name": "critic_model",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

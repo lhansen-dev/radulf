@@ -53,6 +53,39 @@ describe("BreakdownEditor", () => {
     });
   });
 
+  it("picks dependencies as a graph and keeps them pointing at the same task when tasks move", async () => {
+    const onApplied = vi.fn();
+    render(
+      <BreakdownEditor cardId="c1" homeRepoId="r1" initialPieces={pieces} initialRunMode="ordered" onApplied={onApplied} onDiscard={() => {}} />,
+    );
+
+    // Dependencies only mean something as a graph, so the other modes hide them.
+    expect(screen.queryByText("Depends on")).toBeNull();
+    expect(screen.queryByLabelText("Task 2 depends on task 1")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("As a graph"));
+    expect(screen.getAllByText("Depends on")).toHaveLength(2);
+    fireEvent.click(screen.getByLabelText("Task 2 depends on task 1"));
+    expect((screen.getByLabelText("Task 2 depends on task 1") as HTMLInputElement).checked).toBe(true);
+
+    // "Surface the lockout" moves to the front, and still depends on "Add the limiter", now task 2.
+    fireEvent.click(screen.getByRole("button", { name: "Move task 2 up" }));
+    expect((screen.getByLabelText("Task 1 depends on task 2") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("Task 2 depends on task 1") as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Queue 2 tasks" }));
+
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith("Queued 2 tasks under this epic, to run as a graph."));
+    const apply = calls.find((call) => call.url === "/api/cards/c1/breakdown")!;
+    expect(JSON.parse(String(apply.init?.body))).toEqual({
+      pieces: [
+        { title: "Surface the lockout", description: "b", dependsOn: [1] },
+        { title: "Add the limiter", description: "a" },
+      ],
+      runMode: "graph",
+    });
+  });
+
   it("will not queue a blank title, keeps at least one piece, and hides the repository choice with one repository", async () => {
     repos = [{ id: "r1", name: "Repo" }];
     render(

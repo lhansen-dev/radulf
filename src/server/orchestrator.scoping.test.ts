@@ -146,6 +146,39 @@ describe("applyBreakdown", () => {
     expect(allCards().filter((row) => row.parentCardId === "epic")).toHaveLength(2);
   });
 
+  it("persists each piece's dependencies as sibling ids under graph", () => {
+    seedCard("epic");
+
+    const result = orchestrator.applyBreakdown(
+      "epic",
+      [pieces[0], { ...pieces[1], dependsOn: [0] }, { ...pieces[2], dependsOn: [0, 1] }],
+      "graph",
+    );
+
+    expect(result[0].dependsOn).toBeNull();
+    expect(result[1].dependsOn).toEqual([result[0].id]);
+    expect(result[2].dependsOn).toEqual([result[0].id, result[1].id]);
+    expect(db.select().from(cards).where(eq(cards.id, "epic")).get()).toMatchObject({ runMode: "graph" });
+  });
+
+  it("rejects a dependency cycle naming the pieces", () => {
+    seedCard("epic");
+
+    expect(() =>
+      orchestrator.applyBreakdown(
+        "epic",
+        [{ ...pieces[0], dependsOn: [1] }, { ...pieces[1], dependsOn: [0] }],
+        "graph",
+      ),
+    ).toThrow(
+      /dependency cycle: "Add the limiter" \u2192 "Surface the lockout" \u2192 "Add the limiter"|dependency cycle: "Surface the lockout" \u2192 "Add the limiter" \u2192 "Surface the lockout"/,
+    );
+    expect(() => orchestrator.applyBreakdown("epic", [{ ...pieces[0], dependsOn: [7] }], "graph")).toThrow(
+      /invalid dependency/,
+    );
+    expect(allCards().filter((row) => row.parentCardId === "epic")).toHaveLength(0);
+  });
+
   it("appends more pieces to an epic that already has some", () => {
     seedCard("epic");
     const first = orchestrator.applyBreakdown("epic", pieces.slice(0, 2), "ordered");

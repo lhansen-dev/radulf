@@ -513,6 +513,7 @@ export async function runSandboxedCommand<T>(
   command: string,
   runConfig: SandboxRuntimeConfig,
   execute: (wrapped: string) => Promise<T>,
+  opts?: { tmpdir?: string },
 ): Promise<T> {
   // Real (not hardcoded-"always equal") safety check. Every run derives its
   // network policy from the Settings snapshot taken at its start
@@ -533,26 +534,41 @@ export async function runSandboxedCommand<T>(
   activePolicy = incomingPolicy;
   activeCommands++;
   try {
-    return await execute(await wrapUnderPolicy(command, runConfig));
+    return await execute(await wrapUnderPolicy(command, runConfig, opts?.tmpdir));
   } finally {
     activeCommands--;
   }
 }
 
 /** The serialized half: apply this run's config process-wide and wrap under
- * it, with no other call able to do either in between. */
+ * it, with no other call able to do either in between.
+ *
+ * `tmpdir`: srt overrides `TMPDIR` inside every wrapped command so temp-file
+ * writers land somewhere the filesystem policy allows. Its default is
+ * `/tmp/claude` — a path that does not exist in Radulf's container image and
+ * is not in the run's write-allow — unless the *server process* has
+ * `CLAUDE_CODE_TMPDIR` set at wrap time (srt reads `process.env` in
+ * `generateProxyEnvVars`, on the wrap path). So the run-private tmpdir is
+ * published through that env var for exactly the duration of the wrap. It
+ * is process-wide state, like `updateConfig`, which is why it lives inside
+ * this serialized window and is restored before the turn is released. */
 async function wrapUnderPolicy(
   command: string,
   runConfig: SandboxRuntimeConfig,
+  tmpdir?: string,
 ): Promise<string> {
   const myTurn = sandboxQueueTail;
   const { promise: myDone, resolve: releaseMyTurn } = Promise.withResolvers<void>();
   sandboxQueueTail = myDone;
   await myTurn;
+  const previous = process.env.CLAUDE_CODE_TMPDIR;
   try {
+    if (tmpdir !== undefined) process.env.CLAUDE_CODE_TMPDIR = tmpdir;
     SandboxManager.updateConfig(runConfig);
     return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
   } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
+    else process.env.CLAUDE_CODE_TMPDIR = previous;
     releaseMyTurn();
   }
 }
@@ -566,12 +582,18 @@ async function wrapUnderPolicy(
  * named `spawnHook`, but the SDK's `BashSpawnHook` type is
  * `(ctx) => ctx`, not `Promise<ctx>`).
  */
-export function createSandboxedBashOperations(runConfig: SandboxRuntimeConfig): BashOperations {
+export function createSandboxedBashOperations(
+  runConfig: SandboxRuntimeConfig,
+  opts?: { tmpdir?: string },
+): BashOperations {
   const local = createLocalBashOperations();
   return {
     async exec(command, cwd, options) {
-      return runSandboxedCommand(command, runConfig, (wrapped) =>
-        local.exec(wrapped, cwd, options),
+      return runSandboxedCommand(
+        command,
+        runConfig,
+        (wrapped) => local.exec(wrapped, cwd, options),
+        opts,
       );
     },
   };

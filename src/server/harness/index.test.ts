@@ -1,6 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
   createTranscriptTotals,
@@ -107,7 +108,11 @@ describe("foldTranscriptEvent", () => {
 });
 
 describe("runHarness watchdogs", () => {
-  const scratch = "/tmp/ralph-stall-test";
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-stall-test-"));
+
+  afterAll(() => {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
 
   afterEach(() => {
     vi.useRealTimers();
