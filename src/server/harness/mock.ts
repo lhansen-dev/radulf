@@ -235,6 +235,27 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
       },
     },
   },
+  "base-conflict": {
+    description:
+      "The base branch moves under the loop with an overlapping edit; the loop resolves the orchestrator's conflict task and evaluation follows a clean merge.",
+    scripts: {
+      loop: (turn) => {
+        const task = assignedTask(turn.prompt);
+        const m = /^Resolve the merge conflicts left in (.+?) after the orchestrator merged the base branch /.exec(task.text);
+        if (!m) return loop(turn);
+        const files = m[1].split(", ");
+        const signal = task.last ? ".ralph/DONE" : ".ralph/ITERATION_DONE";
+        switch (turn.step) {
+          case 0:
+            return files.map((f) => write(f, `resolved by mock ${Date.now()}\n`));
+          case 1:
+            return [write(signal, `Resolved conflicts in ${files.join(", ")}\n`)];
+          default:
+            return [say("Conflicts resolved.")];
+        }
+      },
+    },
+  },
 };
 
 export const DEFAULT_MOCK_SCENARIO = "happy-path";
