@@ -81,7 +81,7 @@ const UPDATE_FIELDS = new Set([
 ]);
 
 function runMode(value: unknown): EpicRunMode {
-  if (!EPIC_RUN_MODES.includes(value as EpicRunMode)) invalid("runMode must be ordered or parallel");
+  if (!EPIC_RUN_MODES.includes(value as EpicRunMode)) invalid("runMode must be ordered, parallel or graph");
   return value as EpicRunMode;
 }
 
@@ -120,7 +120,21 @@ export function parseUpdateCard(value: unknown): UpdateCardInput {
 }
 
 const BREAKDOWN_FIELDS = new Set(["pieces", "runMode"]);
-const PIECE_FIELDS = new Set(["title", "description", "repoId"]);
+const PIECE_FIELDS = new Set(["title", "description", "repoId", "dependsOn"]);
+
+/** Spec 28: a piece's `dependsOn` as 0-based sibling indexes, deduplicated
+ * and sorted. Messages count pieces from 1, the way people read the list. */
+function pieceDependsOn(value: unknown, index: number, count: number): number[] {
+  if (!Array.isArray(value) || value.some((item) => !Number.isInteger(item))) {
+    invalid("dependsOn must be a list of piece indexes");
+  }
+  const indexes = value as number[];
+  for (const target of indexes) {
+    if (target === index) invalid(`piece ${index + 1} cannot depend on itself`);
+    if (target < 0 || target >= count) invalid(`piece ${index + 1} depends on unknown piece ${target + 1}`);
+  }
+  return [...new Set(indexes)].sort((a, b) => a - b);
+}
 
 /** Spec 24: the body of POST /api/cards/:id/breakdown. The run mode defaults
  * to in order, as the split proposal's parser does. */
@@ -128,15 +142,18 @@ export function parseBreakdown(value: unknown): { pieces: BreakdownPiece[]; runM
   const body = record(value, "breakdown body");
   rejectUnknownKeys(body, BREAKDOWN_FIELDS, "breakdown field");
   if (!Array.isArray(body.pieces)) invalid("pieces must be an array");
-  const pieces = (body.pieces as unknown[]).map((item) => {
+  const count = body.pieces.length;
+  const pieces = (body.pieces as unknown[]).map((item, index): BreakdownPiece => {
     const piece = record(item, "breakdown piece");
     rejectUnknownKeys(piece, PIECE_FIELDS, "piece field");
     if (typeof piece.description !== "string") invalid("every piece needs a description");
-    return {
+    const parsed: BreakdownPiece = {
       title: requiredString(piece.title, "title"),
       description: piece.description as string,
       repoId: optionalString(piece.repoId, "repoId"),
     };
+    if (piece.dependsOn !== undefined) parsed.dependsOn = pieceDependsOn(piece.dependsOn, index, count);
+    return parsed;
   });
   return { pieces, runMode: body.runMode === undefined ? "ordered" : runMode(body.runMode) };
 }
