@@ -95,6 +95,10 @@ export const SETTING_DEFAULTS = {
   // every streamed event resets the watchdog, so a genuinely slow high-effort
   // turn is never killed by this. Only a dead stream is.
   stallTimeoutSeconds: 300,
+  // How long a worker process may go without a heartbeat before another
+  // worker treats it as dead and reclaims its runs. Floor is well above the
+  // heartbeat interval so a busy-but-alive process is never reaped.
+  workerStaleSeconds: 120,
   autoMode: true,
   minimalToolset: false,
   // Global auto-approve: skip the human In Review gate on an evaluator
@@ -211,6 +215,7 @@ const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   evaluatorTimeoutMinutes: [1, 10_080],
   gateTimeoutMinutes: [1, 1_440],
   stallTimeoutSeconds: [30, 86_400],
+  workerStaleSeconds: [15, 86_400],
   attentionStaleMinutes: [1, 10_080],
 };
 /** Renamed keys, old → new. `getSettings` replays a stored legacy row onto its
