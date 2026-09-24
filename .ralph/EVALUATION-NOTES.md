@@ -1,0 +1,12 @@
+# Evaluator notes (attempt started 2026-09-24T01:16Z)
+- Read .ralph/DONE and diff beta...HEAD (15 files; new eventsTail.ts, transcriptWatchers.ts + tests; stage.ts no longer calls startTranscriptPush but its doc comment names it).
+- Gate (make check) exit 2: visible failures are harness/index stall tests, streamLiveness stall tests, srt real-runtime rows — all on the card's environmental list.
+- Started `make build && make check-split` in background -> $TMPDIR/split.log
+- grep criteria: all pass EXCEPT (a) `grep -c 'spawnWeb(' splitProcesses.test.ts` prints 2 (helper is `const spawnWeb = (p) =>`, two call sites; intent met), (b) `grep -q startTranscriptPush src/server/stage.ts` succeeds because the doc comment names it (no import/call remains; intent met).
+- vitest eventsTail/transcriptWatchers/transcript/stage/scoping/boot: 6 files, 45 tests pass.
+- npx tsc --noEmit exit 0; eslint on the 5 named files exit 0.
+- make check-split (runs make build first) exit 0 at 01:24Z: 4/4 split tests pass (boot, card.created fan-out to web2 in 337ms, live transcript from web2 gapless/dup-free + cursor resume, SIGTERM drain).
+- Suite minus the 4 environmental files: 125 files pass, 1 fails — evaluationService.test.ts (3 tests: spec 26 timeout-recovery x2, spec 27 gate). Reproduced identically on a `git archive beta` copy → pre-existing on beta, not this card.
+- Gate output (make check exit 2) is consistent: failures shown are harness stall tests / streamLiveness / srt real-runtime rows (environmental list) — first 12 of 21 truncated from the log.
+- Docs reviewed (ARCHITECTURE.md, README.md, spec 25, IMPROVEMENT_RUNS.md): already reconciled by the loop; no evaluator doc edits needed.
+- VERDICT written: approve (two proxy greps — stage.ts comment names startTranscriptPush; spawnWeb( count is 2 — flagged as findings, intent met).
