@@ -1,5 +1,6 @@
-Plan critic stage (spec 30) finished and merged with beta's spec 29 work
-- Resolved merge conflicts with `beta`: DESIGN_HISTORY.md now lists both spec 29 (sync-and-gate) and spec 30 (plan critic) rows.
-- mockPipeline.test.ts keeps both `runTranscriptDir` and `recordRefWrite` imports; `runScenario` takes a single opts object (`planCritic`, `cardId`, `afterLoopStarts`) so the critic scenarios and the base-conflict scenario coexist; all 15 tests pass.
-- Earlier iterations: removed the "Numbered 30 because 28…" paragraph from specs/30-plan-critic.md, added critic fields to the request-validation test, mapped `critique` runs to `critique.jsonl` in the runs API route (with route test), and named the plan critic in stage diagnoses.
-- Verification: `git diff --check` clean, no conflict markers remain.
+Plan critic stage (spec 30) finished: reviewer findings fixed
+- Removed the "Numbered 30 because 28…" paragraph from specs/30-plan-critic.md (grep -c '28' now prints 0; its exit 1 is the expected success outcome).
+- Added critic fields to the request-validation test's expected object.
+- Mapped `critique` runs to `critique.jsonl` in the runs API route (src/app/api/runs/[id]) with a route test.
+- Named the plan critic in stage diagnoses.
+- Resolved beta merge conflicts (docs/DESIGN_HISTORY.md, src/server/mockPipeline.test.ts); final iteration confirmed no conflict markers remain in tracked sources and the tree is clean.
