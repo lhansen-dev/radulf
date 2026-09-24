@@ -47,9 +47,22 @@ describe("workers registry", () => {
     const id = registerWorker(["orchestrator"]);
     const before = getWorker(id)!.heartbeatAt;
     await new Promise((r) => setTimeout(r, 5));
-    heartbeatWorker(id);
+    heartbeatWorker(id, ["orchestrator"]);
     const after = getWorker(id)!.heartbeatAt;
     expect(after > before).toBe(true);
+  });
+
+  it("heartbeatWorker re-inserts a row that a peer deleted", () => {
+    const id = registerWorker(["worker"]);
+    deleteWorker(id);
+    expect(getWorker(id)).toBeUndefined();
+
+    heartbeatWorker(id, ["worker"]);
+
+    const row = getWorker(id);
+    expect(row).toBeDefined();
+    expect(row!.pid).toBe(process.pid);
+    expect(row!.roles).toBe(JSON.stringify(["worker"]));
   });
 
   it("staleBefore returns an ISO timestamp staleSeconds in the past", () => {

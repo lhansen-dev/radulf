@@ -37,9 +37,27 @@ export function registerWorker(roles: string[]): string {
   return id;
 }
 
-/** Refresh `heartbeatAt` for a live worker. */
-export function heartbeatWorker(id: string): void {
-  db.update(workers).set({ heartbeatAt: now() }).where(eq(workers.id, id)).run();
+/**
+ * Refresh `heartbeatAt` for a live worker.
+ *
+ * Implemented as an upsert so it is self-healing: if this worker stalled past
+ * the stale window and a peer's reaper deleted its row, but the process is in
+ * fact still alive, the next tick re-registers it (same id, current host/pid/
+ * roles) instead of silently updating zero rows.
+ */
+export function heartbeatWorker(id: string, roles: string[]): void {
+  const ts = now();
+  db.insert(workers)
+    .values({
+      id,
+      host: os.hostname(),
+      pid: process.pid,
+      roles: JSON.stringify(roles),
+      startedAt: ts,
+      heartbeatAt: ts,
+    })
+    .onConflictDoUpdate({ target: workers.id, set: { heartbeatAt: ts } })
+    .run();
 }
 
 /** ISO timestamp `staleSeconds` ago; heartbeats older than this are dead. */

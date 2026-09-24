@@ -301,6 +301,9 @@ export class Orchestrator {
    * orchestrator starts is stamped with it so a peer can tell whose claim a
    * running row is, and whether its owner is still heartbeating. */
   readonly workerId: string;
+  /** Roles this process registered with; re-sent on every heartbeat so the
+   * worker can re-register itself if a peer's reaper deleted its row. */
+  private readonly roles: string[];
   /** Refreshes workers.heartbeatAt. Deliberately NOT cleared by
    * startDraining(): a draining worker is still finishing its last iteration
    * and must keep heartbeating so no peer reaps that run as orphaned. */
@@ -308,10 +311,11 @@ export class Orchestrator {
 
   constructor(options: { autoStart?: boolean; passive?: boolean } = {}) {
     this.passive = options.passive === true;
-    this.workerId = registerWorker(this.passive ? ["web"] : ["worker"]);
+    this.roles = this.passive ? ["web"] : ["worker"];
+    this.workerId = registerWorker(this.roles);
     this.heartbeatTimer = setInterval(() => {
       try {
-        heartbeatWorker(this.workerId);
+        heartbeatWorker(this.workerId, this.roles);
         if (!this.passive) {
           try {
             this.reapStaleRuns();
