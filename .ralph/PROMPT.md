@@ -1,4 +1,4 @@
-You are working on: adding a read-only plan critic stage (spec 30) that reviews each plan between planning and the loop, approving it or sending it back to the planner with feedback, recorded as runs of a new `critique` kind.
+You are working on: finishing the plan critic stage (spec 30) by fixing the reviewer's findings — remove the "Numbered 30 because 28…" paragraph from the spec, add the critic fields to the request-validation test's expected object, map `critique` runs to `critique.jsonl` in the runs API route with a route test, and name the plan critic in stage diagnoses.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,10 +36,8 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Hints for this codebase:
-- Copy existing patterns rather than inventing: `src/server/evaluationService.ts` is the model for a verdict-writing stage, `src/server/planningService.ts` and its test for a stage service test harness (`vi.mock` of `./harness`, `./git`, `./settings`; `setupTestDataDir` before any `@/db` import).
-- The verdict format and parser already exist: `parseEvaluation` in `src/shared/evaluation.ts`. Reuse it; never write a new parser.
-- `src/server/harness/` must not change except `src/server/harness/mock.ts`.
-- Do not set or override `TMPDIR`; never point a temp directory inside the worktree. Use `os.tmpdir()` in tests exactly as the neighbouring tests do.
-- Run `node_modules/.bin/tsc --noEmit` when a task touches a TypeScript union shared across files; fix every error it reports for the kind you widened.
-- Never run `make check`, `make test`, or a bare `npx vitest run` — only the check named in your task.
+Hints:
+- The critic implementation already exists and works; your task is a small, precisely located fix. Do not refactor or re-implement anything beyond what the task names.
+- Paths containing `[id]` must be quoted in shell commands, e.g. `npx vitest run 'src/app/api/runs/\[id\]/runRoute.test.ts'`.
+- Never write to a literal `/tmp` path and never set `TMPDIR`; tests get temp dirs from `setupTestStateDir` / `os.tmpdir()`.
+- `grep -c` printing `0` exits with status 1 — for the spec task that is the expected success outcome.
