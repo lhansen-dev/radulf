@@ -320,6 +320,43 @@ describe("createImprovementRun", () => {
 
     expect(db.select().from(improvementRuns).all()).toHaveLength(0);
   });
+
+  it("does not drive the run in a web-only process", async () => {
+    const savedRoles = process.env.RADULF_ROLES;
+    process.env.RADULF_ROLES = "web";
+    try {
+      const row = await createImprovementRun({ repoId: "repo-1", baseBranch: "main", budgetMinutes: 30 });
+
+      expect(row.status).toBe("running");
+      expect(getRunRow(row.id).status).toBe("running");
+      // The driver loop calls the proposer synchronously before its first
+      // await, so a fired driver would already have called it by now.
+      expect(mocks.proposeOneImprovement).not.toHaveBeenCalled();
+    } finally {
+      if (savedRoles === undefined) delete process.env.RADULF_ROLES;
+      else process.env.RADULF_ROLES = savedRoles;
+    }
+  });
+
+  it("drives the run when the process has the worker role", async () => {
+    const savedRoles = process.env.RADULF_ROLES;
+    process.env.RADULF_ROLES = "worker";
+    mocks.proposeOneImprovement.mockResolvedValue(null);
+    try {
+      const row = await createImprovementRun({ repoId: "repo-1", baseBranch: "main", budgetMinutes: 30 });
+
+      expect(mocks.proposeOneImprovement).toHaveBeenCalledTimes(1);
+
+      // Neutralize the fire-and-forget driver so it does not linger.
+      db.update(improvementRuns)
+        .set({ status: "stopped", endedAt: now() })
+        .where(eq(improvementRuns.id, row.id))
+        .run();
+    } finally {
+      if (savedRoles === undefined) delete process.env.RADULF_ROLES;
+      else process.env.RADULF_ROLES = savedRoles;
+    }
+  });
 });
 
 describe("stopImprovementRun", () => {

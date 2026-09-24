@@ -18,6 +18,7 @@ import { assertBranchExists, git, isRalphBranch } from "./git";
 import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
+import { hasRole } from "./roles";
 import { sleep } from "@/shared/sleep";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -214,7 +215,11 @@ export async function createImprovementRun(
   }
 
   emitEvent("improvement.started", { payload: { runId: row.id, featureBranch } });
-  void driveRun(row.id);
+  // A web-only process (spec 25: RADULF_ROLES=web) only inserts the row and
+  // emits `improvement.started`; the worker adopts the still-`running` row
+  // from its pump timer via resumeImprovementRuns(). A pi session must never
+  // be constructed in a web-only process.
+  if (hasRole("worker")) void driveRun(row.id);
   return row;
 }
 
