@@ -1,18 +1,16 @@
-# Evaluation notes (attempt started 2026-09-24T14:57Z)
-- grep spec title / DESIGN_HISTORY row after 27 / no '28-' in spec: all pass
-- baseSync.ts exists with syncWithBase/abortMerge/resolveConflictsTaskText: pass
-- grep 'waitForRepoLeaseRelease' orchestrator.ts: FAIL (exit 1) — task 7 replaced it with acquireRepoLease
-- grep -c 'acquireRepoLease' orchestrator.ts: prints 5, expected 0 — FAIL (sync now takes the lease)
-- other orchestrator greps (syncWithBase, MAX_SYNC_GATE_ROUNDS = 2, runGateCommand, gateRepairTaskText): pass
-- gate.ts gateRepairTaskText export: pass; evaluationService removeRalphFiles GATE_FILE count 0: pass
-- mock.ts "base-conflict": pass; git diff beta...HEAD -- src/server/harness/ touches only mock.ts (the literal `git log -n 15` command walks pre-branch history and is not a fair test)
-- npx vitest run src/server/baseSync.test.ts src/server/gate.test.ts: pass (4 + 9 tests)
-- npx vitest run orchestrator.lifecycle.test.ts -t "spec 29": pass, 7 tests
-- npx vitest run orchestrator.lifecycle.test.ts (full): pass, 109 tests
-- acceptanceProbe/checklist/git/integrity tests: pass; evaluationService.test.ts: 3 failures (honours a complete verdict…, still fails a timeout…, runs the gate before the evaluator…) — SAME 3 fail on unmodified beta (git archive beta run), pass in isolation: pre-existing order-dependent pollution, not this card
-- npx vitest run src/server/mockPipeline.test.ts: pass, 12 tests incl. base-conflict
-- tsc --noEmit: exit 0; eslint on listed files: exit 0
-- 15:08 preliminary VERDICT: revise written; starting full vitest run once (foreground)
-- full `npx vitest run` (once, 28s): 20 failed / 1282 passed. Failures: bookkeeping.test.ts, harness/index.test.ts stall tests, harness/streamLiveness.test.ts stall tests, sandbox/srt.test.ts real-runtime rows (all on the card's environmental list); evaluationService.test.ts 3 (pre-existing on beta, order-dependent); settings/page.test.tsx 1 timeout under load (passes in isolation, 12/12). None attributable to this card.
-- Repository gate (lint typecheck build check-split) exit 0 per .ralph/GATE.md — not re-run.
-- 15:11 final VERDICT: revise written to .ralph/EVALUATION.md; .ralph/SUMMARY.md written
+# Evaluation notes (attempt started 2026-09-24T15:17Z)
+- git diff --name-only beta...HEAD -- src/server/harness/ → exactly src/server/harness/mock.ts: PASS
+- git diff --quiet beta...HEAD -- src/server/reviewService.ts → exit 0: PASS
+- Lease greps 1-8 (acquireRepoLease=0, releaseRepoLease(=0, no acquireRepoLeaseWithin, waitForRepoLeaseRelease present incl. exact call, releaseStaleLeases-only import, no "held by a delivery for over", recordTaskCompleted doc comment adjacent): all PASS
+- Previous-attempt greps (syncWithBase, MAX_SYNC_GATE_ROUNDS = 2, runGateCommand, gateRepairTaskText): PASS
+- Spec text greps S1-S7 (title, waits-not-takes, no old killed-gate sentence, "without a loop's DONE", no '28', DESIGN_HISTORY row line 66 after spec 27 line 65): all PASS
+- npx vitest run src/server/orchestrator.lifecycle.test.ts -t "spec 29" → exit 0, 7 passed: PASS
+- npx vitest run src/server/orchestrator.lifecycle.test.ts → exit 0, 109 passed: PASS
+- npx vitest run baseSync/gate/acceptanceProbe/checklist/git/integrity tests → exit 0, 83 passed: PASS
+- npx vitest run src/server/mockPipeline.test.ts → exit 0, 12 passed incl. base-conflict: PASS
+- npx vitest run src/server/evaluationService.test.ts -t "spec 29" → exit 0, 1 passed: PASS
+- npx vitest run src/server/evaluationService.test.ts (full) → 3 failures = exactly the 3 pre-existing ones named in the criteria; spec 29 reuse test passes
+- beta moved since merge-base 620e94e (spec 28 graph epics + sandbox test-suite card); 3 evaluationService failures reproduce with merge-base test file (Phase 18.1 pollution), fixed on beta tip by skipIf → pre-existing, not this card
+- isolated clone merge of cardhead into beta tip: conflicts only in docs/DESIGN_HISTORY.md (two appended rows) and src/server/mockPipeline.test.ts (two appended tests); orchestrator.ts auto-merges
+- Doc reconciliation on approve: docs/HOW_IT_WORKS.md (gate paragraph + DONE section), docs/ARCHITECTURE.md (evaluator row + run-end ordering)
+- VERDICT: approve written to .ralph/EVALUATION.md; SUMMARY.md written 15:29:12Z

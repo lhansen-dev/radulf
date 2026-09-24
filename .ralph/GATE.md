@@ -2,19 +2,19 @@
 
 Command: `make lint typecheck build check-split`
 Result: exit 0
-Duration: 53s
-Ran at: 2026-09-24T14:56:51.744Z
+Duration: 42s
+Ran at: 2026-09-24T15:16:45.534Z
 
 ## Output, last 8000 characters
 
 ```
-….
+…..
   Collecting page data using 15 workers ...
   Generating static pages using 15 workers (0/39) ...
   Generating static pages using 15 workers (9/39) 
   Generating static pages using 15 workers (19/39) 
   Generating static pages using 15 workers (29/39) 
-✓ Generating static pages using 15 workers (39/39) in 164ms
+✓ Generating static pages using 15 workers (39/39) in 208ms
   Finalizing page optimization ...
 
 Route (app)
@@ -80,19 +80,19 @@ RADULF_SPLIT_CHECK=1 node_modules/.bin/vitest run src/server/splitProcesses.test
 make[1]: Entering directory '/var/lib/radulf/worktrees/sync-a-finished-loop-with-its-base-branc-9ptxkwj-EHX5XccJnG38t'
 node_modules/.bin/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
 make[1]: Leaving directory '/var/lib/radulf/worktrees/sync-a-finished-loop-with-its-base-branc-9ptxkwj-EHX5XccJnG38t'
- ✓ src/server/splitProcesses.test.ts (9 tests) 22073ms
-     ✓ fans a card created on one web process out to the other web process's event stream  337ms
-     ✓ drives a card from Todo to In Review through the web-only process  2081ms
-     ✓ cancelling a looping card from the web-only process ends the run in the worker  1063ms
-     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1227ms
-     ✓ two workers never run two runs of one repo at once with a cap of one  843ms
-     ✓ two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering  670ms
-     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  14913ms
+ ✓ src/server/splitProcesses.test.ts (9 tests) 22020ms
+     ✓ fans a card created on one web process out to the other web process's event stream  329ms
+     ✓ drives a card from Todo to In Review through the web-only process  2336ms
+     ✓ cancelling a looping card from the web-only process ends the run in the worker  756ms
+     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1258ms
+     ✓ two workers never run two runs of one repo at once with a cap of one  835ms
+     ✓ two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering  672ms
+     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  14893ms
 
  Test Files  1 passed (1)
       Tests  9 passed (9)
-   Start at  14:57:22
-   Duration  22.20s (transform 40ms, setup 0ms, import 57ms, tests 22.07s, environment 0ms)
+   Start at  15:17:05
+   Duration  22.15s (transform 39ms, setup 0ms, import 59ms, tests 22.02s, environment 0ms)
 
 Turbopack build encountered 3 warnings:
 ./src/server/docs.ts:173:15
