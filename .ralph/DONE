@@ -1,0 +1,5 @@
+Finish the plan critic stage (spec 30) by addressing reviewer findings
+- Removed the "Numbered 30 because 28…" justification paragraph from the spec.
+- Added the critic fields (critique provider/model) to the request-validation test's expected object.
+- Mapped `critique` runs to `critique.jsonl` in the runs API route (`src/app/api/runs/[id]/`) with a route test covering it.
+- Stage diagnoses now name the "plan critic" for `critique` runs in `src/server/stageDiagnosis.ts`, with a test in `stageDiagnosis.test.ts`.

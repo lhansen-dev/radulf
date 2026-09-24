@@ -113,4 +113,12 @@ describe("misconfiguredStage", () => {
       "The evaluator has failed 5 times in a row on omlx/llm. A different model for this role is the next thing to try.",
     );
   });
+
+  it("names the plan critic when the critique stage is the one failing", () => {
+    expect(
+      diagnosisMessage({ kind: "critique", provider: "omlx", model: "llm", attempts: 3 }),
+    ).toBe(
+      "The plan critic has failed 3 times in a row on omlx/llm. A different model for this role is the next thing to try.",
+    );
+  });
 });

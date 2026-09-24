@@ -89,7 +89,14 @@ export function misconfiguredStage(
 
 /** The sentence the card detail page shows and the event payload carries. */
 export function diagnosisMessage(d: StageDiagnosis): string {
-  const role = d.kind === "plan" ? "planner" : d.kind === "loop" ? "loop" : "evaluator";
+  const role =
+    d.kind === "plan"
+      ? "planner"
+      : d.kind === "loop"
+        ? "loop"
+        : d.kind === "critique"
+          ? "plan critic"
+          : "evaluator";
   const model = [d.provider, d.model].filter(Boolean).join("/") || "the configured model";
   return `The ${role} has failed ${d.attempts} times in a row on ${model}. A different model for this role is the next thing to try.`;
 }
