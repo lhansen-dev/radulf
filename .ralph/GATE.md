@@ -2,8 +2,8 @@
 
 Command: `make lint typecheck build check-split`
 Result: exit 0
-Duration: 47s
-Ran at: 2026-09-24T01:24:57.570Z
+Duration: 39s
+Ran at: 2026-09-24T01:52:40.128Z
 
 ## Output, last 8000 characters
 
@@ -13,23 +13,18 @@ node_modules/.bin/tsc --noEmit
 node_modules/.bin/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
 NODE_ENV=production node_modules/.bin/next build
 ▲ Next.js 16.3.4 (Turbopack)
-✓ Running next.config.ts took 16ms
-Attention: Next.js now collects completely anonymous telemetry regarding usage.
-This information is used to shape Next.js' roadmap and prioritize features.
-You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
-https://nextjs.org/telemetry
-
+✓ Running next.config.ts took 18ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 4.7s
+✓ Compiled successfully in 1205ms
   Running TypeScript ...
-  Finished TypeScript in 7.5s ...
+  Finished TypeScript in 4.5s ...
   Collecting page data using 15 workers ...
   Generating static pages using 15 workers (0/39) ...
   Generating static pages using 15 workers (9/39) 
   Generating static pages using 15 workers (19/39) 
   Generating static pages using 15 workers (29/39) 
-✓ Generating static pages using 15 workers (39/39) in 177ms
+✓ Generating static pages using 15 workers (39/39) in 136ms
   Finalizing page optimization ...
 
 Route (app)
@@ -95,15 +90,15 @@ RADULF_SPLIT_CHECK=1 node_modules/.bin/vitest run src/server/splitProcesses.test
 make[1]: Entering directory '/var/lib/radulf/worktrees/claim-runs-through-the-database-with-wor-1l85BIC9MYY1r2yYsuBtq'
 node_modules/.bin/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
 make[1]: Leaving directory '/var/lib/radulf/worktrees/claim-runs-through-the-database-with-wor-1l85BIC9MYY1r2yYsuBtq'
- ✓ src/server/splitProcesses.test.ts (5 tests) 22390ms
-     ✓ drives a card from Todo to In Review through the web-only process  3974ms
-     ✓ two workers never run two runs of one repo at once with a cap of one  1165ms
-     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  15812ms
+ ✓ src/server/splitProcesses.test.ts (5 tests) 21149ms
+     ✓ drives a card from Todo to In Review through the web-only process  3811ms
+     ✓ two workers never run two runs of one repo at once with a cap of one  859ms
+     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  15048ms
 
  Test Files  1 passed (1)
       Tests  5 passed (5)
-   Start at  01:25:22
-   Duration  22.51s (transform 37ms, setup 0ms, import 52ms, tests 22.39s, environment 0ms)
+   Start at  01:52:58
+   Duration  21.27s (transform 35ms, setup 0ms, import 55ms, tests 21.15s, environment 0ms)
 
 Turbopack build encountered 2 warnings:
 ./src/server/docs.ts:173:15
