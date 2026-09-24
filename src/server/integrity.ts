@@ -4,6 +4,7 @@ import path from "node:path";
 import { and, asc, eq, gte } from "drizzle-orm";
 import { DATA_DIR, db, now, refWrites } from "@/db";
 import { tryGit } from "./git";
+import { leaseHolder } from "./repoLeases";
 
 /**
  * Parent-repo integrity check (spec 14 L3). A worktree shares the parent
@@ -175,21 +176,53 @@ export async function checkRepoIntegrity(
     // Spec 25 decision 6: refs Radulf moved itself since the baseline was
     // taken (a delivery worker's approved merge on the base branch) are not
     // tampering, provided the ref now sits exactly where we left it.
-    const written = refWritesSince(repoPath, baseline.capturedAt ?? "");
-    for (const [ref, oid] of Object.entries(refsNow)) {
-      if (managed(ref)) continue;
-      if (written.get(ref) === oid) continue;
-      if (!(ref in baseline.refs)) violations.push(`ref appeared: ${ref}`);
-      else if (baseline.refs[ref] !== oid) {
-        violations.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
+    const since = baseline.capturedAt ?? "";
+    const compareRefs = (written: Map<string, string>): string[] => {
+      const found: string[] = [];
+      for (const [ref, oid] of Object.entries(refsNow)) {
+        if (managed(ref)) continue;
+        if (written.get(ref) === oid) continue;
+        if (!(ref in baseline.refs)) found.push(`ref appeared: ${ref}`);
+        else if (baseline.refs[ref] !== oid) {
+          found.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
+        }
       }
+      for (const ref of Object.keys(baseline.refs)) {
+        if (!managed(ref) && !(ref in refsNow)) found.push(`ref deleted: ${ref}`);
+      }
+      return found;
+    };
+
+    let refViolations = compareRefs(refWritesSince(repoPath, since));
+    if (refViolations.some((v) => v.startsWith("ref moved:") || v.startsWith("ref appeared:"))) {
+      // A delivery worker's `mergeBranch` moves the base branch at `git
+      // commit` and only afterwards records the write (`recordRefWrite`), but
+      // it holds the per-repo lease from before any git work until after that
+      // record lands. Reading refs inside that sliver sees a moved ref with no
+      // `ref_writes` row yet. Wait for the lease to be released, then re-read
+      // the record against the SAME ref snapshot: once the lease is free every
+      // ref write Radulf made is recorded, so a moved ref still unexplained
+      // after that is real tampering. With no lease held this returns at once.
+      await waitForRepoLeaseRelease(repoPath, LEASE_SETTLE_MS);
+      refViolations = compareRefs(refWritesSince(repoPath, since));
     }
-    for (const ref of Object.keys(baseline.refs)) {
-      if (!managed(ref) && !(ref in refsNow)) violations.push(`ref deleted: ${ref}`);
-    }
+    violations.push(...refViolations);
   }
 
   return violations;
+}
+
+/** Upper bound on how long the run-end check waits for a delivery worker to
+ * release the repo lease before judging an unexplained ref move. */
+const LEASE_SETTLE_MS = 30_000;
+
+/** Poll `leaseHolder(repoPath)` every 50 ms until the lease is free or `maxMs`
+ * elapses. Resolves immediately when nobody holds it. */
+async function waitForRepoLeaseRelease(repoPath: string, maxMs: number): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (leaseHolder(repoPath) !== null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 // ---------------------------------------------------------------------------

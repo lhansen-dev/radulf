@@ -381,11 +381,12 @@ export async function mergeBranch(
   // at the `commit` above, and `restore()` can be a slow checkout on a large
   // repo. Every tick it takes is a tick where another card's stale baseline
   // still thinks the old oid is current (spec 20's recordRefWrite). This
-  // narrows that window, it does not close it — the ref moved back at
-  // `commit`, before we could have read its new oid here, and that sliver is
-  // unavoidable without inspecting the ref inside the same git process that
-  // wrote it. git.ts stays free of integrity.ts; the caller supplies what to
-  // do with the oid.
+  // narrows that window but cannot close it alone — the ref moved back at
+  // `commit`, before we could have read its new oid here. What closes it is
+  // the per-repo lease the caller holds around all of this: the run-end check
+  // in integrity.ts waits for that lease to be released before judging an
+  // unexplained ref move, by which point the write is recorded. git.ts stays
+  // free of integrity.ts; the caller supplies what to do with the oid.
   onCommitted?.(mergeCommit);
   await restore();
   return { ok: true, mergeCommit };

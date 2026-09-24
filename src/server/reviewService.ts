@@ -517,8 +517,10 @@ export class ReviewService {
     // namespace (spec 19), so nothing else would excuse this. Passed as a
     // callback rather than called after `mergeBranch` returns, so it fires the
     // instant the new oid is known instead of after mergeBranch's own
-    // post-commit checkout restore — see mergeBranch's comment for the
-    // residual window this still leaves.
+    // post-commit checkout restore. The sliver between `git commit` and this
+    // record is covered by the repo lease we hold until `executeDelivery`'s
+    // finally: the run-end check in integrity.ts waits for the lease to be
+    // released before judging an unexplained ref move, which closes it.
     const result = await mergeBranch(
       repo.path,
       baseBranch,

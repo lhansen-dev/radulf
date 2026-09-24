@@ -7,7 +7,8 @@ import { git, initScratchRepo } from "@/testUtils/gitRepo";
 // integrity.ts resolves its baseline dir from DATA_DIR at import time.
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-integrity-"));
 process.env.RADULF_DATA_DIR = path.join(testDataDir, "data");
-const { db, refWrites } = await import("@/db");
+const { db, refWrites, repoLeases } = await import("@/db");
+const { acquireRepoLease, releaseRepoLease } = await import("./repoLeases");
 const {
   snapshotRepoIntegrity,
   checkRepoIntegrity,
@@ -216,6 +217,33 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
       ).toEqual([]);
     } finally {
       db.delete(refWrites).run();
+      git(repo, "reset", "--hard", "HEAD~1");
+    }
+  });
+
+  it("waits for the repo lease holder before judging a moved ref (spec 25 decision 6)", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    try {
+      // A worker mid-merge: `git commit` has already moved main…
+      fs.writeFileSync(path.join(repo, "leased.txt"), "x");
+      git(repo, "add", ".");
+      git(repo, "commit", "-m", "ralph: merge under lease");
+      const head = git(repo, "rev-parse", "HEAD");
+      // …but it still holds the repo lease and has not recorded the write yet.
+      expect(acquireRepoLease(repo, "w-merge", 60)).toBe(true);
+
+      const pending = checkRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      setTimeout(() => {
+        recordRefWrite(repo, "refs/heads/main", head, "w-merge");
+        releaseRepoLease(repo, "w-merge");
+      }, 150);
+      expect(await pending).toEqual([]);
+    } finally {
+      db.delete(refWrites).run();
+      db.delete(repoLeases).run();
       git(repo, "reset", "--hard", "HEAD~1");
     }
   });
