@@ -834,6 +834,9 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
   it(
     "two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering",
     async () => {
+      // Depends on the "Contention 1" and "Contention 2" cards created by the
+      // preceding "cap of one" test in this file; running this test alone with
+      // `-t` fails by design.
       type CardRow = { id: string; title: string; status: string };
       const cards = await api<CardRow[]>("GET", "/api/cards");
       expect(cards.status).toBe(200);
@@ -860,6 +863,9 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       const git2 = (...args: string[]) =>
         execFileSync("git", args, { cwd: run2.worktree_path, stdio: "pipe" });
       git2("rm", "-q", "mock-output/task-1.md", "mock-output/task-2.md");
+      // The mock loop wrote exactly those two files, so `git rm` removed the
+      // now-empty directory; recreate it before writing the replacement.
+      fs.mkdirSync(path.join(run2.worktree_path, "mock-output"), { recursive: true });
       fs.writeFileSync(
         path.join(run2.worktree_path, "mock-output", "contention-2.md"),
         "# contention 2\n",
