@@ -72,6 +72,7 @@ import { addScopingMessage, proposeScopedPlan, proposeSplit } from "./scoping";
 import {
   FINISHED_STATUSES,
   epicFinished,
+  findDependencyCycle,
   hasChildren,
   heldByEpicOrder,
   listChildren,
@@ -1066,6 +1067,21 @@ export class Orchestrator {
     }
     if (pieces.length === 0) throw new ClientError("a breakdown needs at least one task");
     if (pieces.some((piece) => !piece.title.trim())) throw new ClientError("every task needs a title");
+    // Spec 28: dependencies are sibling indexes. Checked again here, after
+    // request parsing, so a caller that bypasses parseBreakdown cannot
+    // persist a dangling or self-referential edge.
+    pieces.forEach((piece, index) => {
+      const invalid = (piece.dependsOn ?? []).some(
+        (target) => !Number.isInteger(target) || target < 0 || target >= pieces.length || target === index,
+      );
+      if (invalid) throw new ClientError(`piece ${index + 1} has an invalid dependency`);
+    });
+    const cycle = findDependencyCycle(pieces);
+    if (cycle) {
+      throw new ClientError(
+        `dependency cycle: ${cycle.map((i) => `"${pieces[i].title.trim()}"`).join(" → ")}`,
+      );
+    }
     if (this.latestPlan(cardId)) {
       throw new ClientError(
         "this card is already planned, so breaking it down now would leave its pieces beside a plan " +
@@ -1085,15 +1101,19 @@ export class Orchestrator {
       const base =
         (tx.select({ max: max(cards.position) }).from(cards).where(eq(cards.status, "todo")).get()
           ?.max ?? 0) + 1;
+      // Ids are generated up front so a piece's dependencies can point at
+      // siblings inserted after it.
+      const ids = pieces.map(() => nanoid());
       return pieces.map((piece, offset) =>
         tx
           .insert(cards)
           .values({
-            id: nanoid(),
+            id: ids[offset],
             repoId: targets[offset]?.id ?? card.repoId,
             parentCardId: cardId,
             title: piece.title.trim(),
             description: piece.description,
+            dependsOn: piece.dependsOn?.length ? piece.dependsOn.map((i) => ids[i]) : null,
             status: "todo",
             position: base + offset,
             // The epic's base branch belongs to its own repository.
