@@ -72,7 +72,7 @@ session. The role is what decides the tool set — see the capability split belo
 | Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)`, `proposeSplit(cardId)`, `proposeScopedPlan(cardId)` | 5 min per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
-| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default |
+| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default; runs the repository's gate command first through `gate.ts` when one is set, under `gateTimeoutMinutes` |
 
 Scoping is not a pipeline stage (spec 17): it runs on demand from the card's
 API route, outside the orchestrator's slots, as a read-only session against the

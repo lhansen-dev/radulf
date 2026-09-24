@@ -11,6 +11,9 @@ export const repos = sqliteTable("repos", {
   // body changes the key and re-fires the gate. The read-modify-write race
   // across concurrent approvals is benign — a lost write just re-fires.
   approvedInstallScripts: text("approved_install_scripts").notNull().default("[]"),
+  // Spec 27: the repository's own whole-card gate, `make check` for instance,
+  // run by the orchestrator before each evaluation cycle. Null means none.
+  gateCommand: text("gate_command"),
   createdAt: text("created_at").notNull(),
 });
 

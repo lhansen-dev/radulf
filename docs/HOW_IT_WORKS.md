@@ -88,6 +88,14 @@ The evaluator may only write its own verdict file and documentation. If source
 files or Git history change during evaluation the verdict is rejected outright,
 so the judge provably cannot edit the implementation it just judged.
 
+A repository can declare a **gate command** under Settings → Connected
+repositories, `make check` for instance. Radulf runs it in the worktree, under
+the evaluator's sandbox, before each evaluation cycle, and hands the evaluator
+the exit code and the end of the output in `.ralph/GATE.md`. The judge reads
+the build and test result instead of spending its budget producing it, and a
+retry of the evaluator reuses the result rather than running the gate again.
+**Gate timeout** under Evaluation caps it. Spec 27 records the decision.
+
 **4 · Review.** The diff waits for you in **In Review** with the transcript
 alongside it. Approve merges the branch into the repo's default branch and moves
 the card to Done. Reject sends the card back to the planner with your feedback:
@@ -175,6 +183,14 @@ them:
   role on one provider and model says something about the pairing rather than
   about luck, and the card says which role and which model. Retry stays
   available — it is a reading, not a block.
+
+A retry of the planner or the evaluator also knows what the attempt before it
+did. Its prompt carries how that attempt ended, the model's last words, the
+commands it ran with the end of each output, and for the evaluator the running
+notes it kept in `.ralph/EVALUATION-NOTES.md`. Both stages are told their
+budget and asked to have their result on disk well before it runs out, and a
+complete verdict or plan left on disk when the watchdog fires is used rather
+than thrown away. Spec 26 records the decision.
 
 ## How many cards run at once
 

@@ -82,6 +82,11 @@ export const SETTING_DEFAULTS = {
   // Like planning, evaluation is one harness invocation after a completed
   // loop, rather than part of the loop's card-wide budget.
   evaluatorTimeoutMinutes: 10,
+  // Spec 27: caps a repository's gate command, which the orchestrator runs
+  // before each evaluation cycle on repositories that declare one. Separate
+  // from the evaluator's own budget: the gate is a build and a suite, not a
+  // model call.
+  gateTimeoutMinutes: 30,
   // Kill ANY harness invocation that emits nothing for this long — planner,
   // loop, evaluator, improvement proposer, scoping. A hung provider
   // stream, dropped wifi, or laptop sleep otherwise burns that call's whole
@@ -204,6 +209,7 @@ const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   defaultTimeoutMinutes: [1, 10_080],
   iterationHardTimeoutMinutes: [1, 1_440],
   evaluatorTimeoutMinutes: [1, 10_080],
+  gateTimeoutMinutes: [1, 1_440],
   stallTimeoutSeconds: [30, 86_400],
   attentionStaleMinutes: [1, 10_080],
 };

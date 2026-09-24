@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db, cards, repos, runs } from "@/db";
 import { assertBranchExists, assertUsableRepo } from "@/server/git";
 import { getOrchestrator } from "@/server/orchestrator";
-import { getRepo, requireRepo } from "@/server/repos";
+import { getRepo, parseGateCommand, requireRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { removeCardArtifacts } from "@/server/retention";
 import { json, err, handle } from "../../_lib";
@@ -30,6 +30,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
       await assertBranchExists(patch.path ?? current.path, body.defaultBranch.trim(), "defaultBranch");
       patch.defaultBranch = body.defaultBranch.trim();
     }
+    // Spec 27: present means set, blank or null means clear.
+    if ("gateCommand" in body) patch.gateCommand = parseGateCommand(body.gateCommand);
     if (Object.keys(patch).length === 0) return err("nothing to update");
     const row = db.update(repos).set(patch).where(eq(repos.id, id)).returning().get();
     return row ? json(row) : err("repo not found", 404);

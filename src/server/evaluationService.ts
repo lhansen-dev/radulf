@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -5,6 +6,16 @@ import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
+import { GATE_FILE, gateFilePath, renderGateFile, renderGateSection, runGateCommand, type GateResult } from "./gate";
+import {
+  EVALUATION_NOTES_FILE,
+  EVALUATION_NOTES_SECTION,
+  attemptTranscriptPath,
+  digestTranscript,
+  previousFailedAttempt,
+  renderDeadlineSection,
+  renderPreviousAttemptSection,
+} from "./previousAttempt";
 import { EVALUATOR_CLEARED_EXITS, parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { errorMessage } from "@/shared/errorMessage";
@@ -98,8 +109,14 @@ export class EvaluationService {
     const { worktreePath, branch } = loopRun;
     const baseBranch = loopRun.baseBranch ?? repo.defaultBranch;
     const ralphDir = ralphDirPath(worktreePath);
+    // Spec 26: a retry inherits the attempt it retries. Decided before this
+    // run's row exists, since the rule reads the card's latest run.
+    const previous = previousFailedAttempt(cardId, "evaluate");
     // A verdict left over from an earlier cycle must never be read as this run's.
     clearEvaluationArtifact(worktreePath);
+    // The running notes belong to one evaluation cycle: kept across its
+    // attempts, cleared when a new loop run has started a fresh one.
+    if (!previous) removeRalphFiles(worktreePath, [EVALUATION_NOTES_FILE]);
 
     // Spec 14 L3: the evaluator holds bash, so it gets the same per-run
     // containment as the loop, including the parent-repo integrity check.
@@ -141,22 +158,81 @@ export class EvaluationService {
       if (controller.signal.aborted) return; // cancelCard already finalized
       if (sandboxError) return fail(sandboxError);
 
+      // Spec 27: the repository gate runs here, by the orchestrator, so the
+      // evaluator judges its result instead of spending its budget producing
+      // it. Once per evaluation cycle: a retry reuses the file the cycle's
+      // first attempt left, a fresh cycle after a new loop run starts over.
+      // Before the status snapshot below, so whatever a build leaves in the
+      // worktree is never attributed to the evaluator.
+      const gatePath = gateFilePath(worktreePath);
+      if (!previous) removeRalphFiles(worktreePath, [GATE_FILE]);
+      const gateCommand = repo.gateCommand?.trim() ?? "";
+      if (gateCommand && !fs.existsSync(/* turbopackIgnore: true */ gatePath)) {
+        emitEvent("gate.started", { cardId, runId, payload: { command: gateCommand } });
+        let gate: GateResult;
+        try {
+          gate = await runGateCommand({
+            command: gateCommand,
+            worktreePath,
+            ctx,
+            timeoutMs: settings.gateTimeoutMinutes * 60 * 1000,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (controller.signal.aborted) return; // cancelCard already finalized
+          throw error;
+        }
+        if (controller.signal.aborted) return; // cancelCard already finalized
+        fs.writeFileSync(/* turbopackIgnore: true */ gatePath, renderGateFile(gate));
+        emitEvent("gate.finished", {
+          cardId,
+          runId,
+          payload: { exitCode: gate.exitCode, timedOut: gate.timedOut, durationMs: gate.durationMs, error: gate.error },
+        });
+      }
+      const gateSection = gateCommand ? renderGateSection(readFileIfExists(gatePath)) : "";
+
       const [headBefore, sourceStatusBefore] = await Promise.all([head(), sourceStatus()]);
+      // Spec 26: the previous attempt's notes and command digest, the running
+      // notes protocol, and the clock, appended outside the template so a
+      // customized template still receives them.
+      let previousSection = "";
+      if (previous) {
+        const digest = digestTranscript(attemptTranscriptPath(previous));
+        previousSection = renderPreviousAttemptSection({
+          stage: "evaluator",
+          attempt: previous,
+          digest,
+          notes: readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, EVALUATION_NOTES_FILE)),
+        });
+        emitEvent("attempt.forwarded", {
+          cardId,
+          runId,
+          payload: { kind: "evaluate", previousRunId: previous.runId, toolCalls: digest.toolCalls },
+        });
+      }
+      const timeoutMs = settings.evaluatorTimeoutMinutes * 60 * 1000;
+      const prompt =
+        renderEvaluatorPrompt(
+          settings.evaluatorPromptTemplate,
+          card.title,
+          card.description,
+          baseBranch,
+          plan.acceptanceCriteria,
+        ) +
+        previousSection +
+        gateSection +
+        EVALUATION_NOTES_SECTION +
+        renderDeadlineSection("evaluator", new Date(), timeoutMs);
       const result = await runWithTranscript({
         runId,
         file: "evaluate.jsonl",
         provider,
         model,
         reasoningLevel: settings.evaluatorReasoningLevel,
-        prompt: renderEvaluatorPrompt(
-          settings.evaluatorPromptTemplate,
-          card.title,
-          card.description,
-          baseBranch,
-          plan.acceptanceCriteria,
-        ),
+        prompt,
         cwd: worktreePath,
-        timeoutMs: settings.evaluatorTimeoutMinutes * 60 * 1000,
+        timeoutMs,
         signal: controller.signal,
         role: "evaluator",
         runContext: ctx,
@@ -164,8 +240,22 @@ export class EvaluationService {
       if (controller.signal.aborted) return; // cancelCard already finalized
       telemetry = runTelemetry(result);
 
-      const failure = harnessFailure(result, provider, "evaluator");
-      if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+      // Spec 26 decision 4: a complete verdict on disk outlives the watchdog
+      // that killed the session, the way a loop's signal file does (spec 18
+      // item 1). Every check below still applies to it.
+      const evaluationPath = path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md");
+      const recovered =
+        (result.timedOut || result.stalled) && parseEvaluation(readFileIfExists(evaluationPath)) !== null;
+      if (recovered) {
+        emitEvent("evaluation.recovered_after_timeout", {
+          cardId,
+          runId,
+          payload: { cause: result.timedOut ? "timeout" : "stalled" },
+        });
+      } else {
+        const failure = harnessFailure(result, provider, "evaluator");
+        if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+      }
 
       const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
       if (violation) return fail(violation);

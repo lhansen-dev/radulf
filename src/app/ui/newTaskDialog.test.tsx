@@ -47,14 +47,14 @@ beforeEach(() => {
       }
       if (target === "/api/repos/init") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { parentPath: string; name: string };
-        return { id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+        return { id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" };
       }
       if (target === "/api/repos/clone") {
-        return { id: "cloned-repo", name: "repo", path: "/var/lib/radulf/repos/repo", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+        return { id: "cloned-repo", name: "repo", path: "/var/lib/radulf/repos/repo", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" };
       }
       if (target.includes("/api/repos") && init?.method !== "GET") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { name: string; path: string };
-        return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+        return { id: "new-repo", name: body.name, path: body.path, defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" };
       }
       return { plannerProvider: "p", loopProvider: "l", evaluatorProvider: "e" };
     },
@@ -85,7 +85,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />,
@@ -108,7 +108,7 @@ describe("NewTaskDialog", () => {
     const onCreated = vi.fn();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={onCreated}
       />,
@@ -174,7 +174,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -189,7 +189,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -206,7 +206,7 @@ describe("NewTaskDialog", () => {
     const onCreated = vi.fn();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={onCreated}
       />
@@ -221,7 +221,7 @@ describe("NewTaskDialog", () => {
 
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={onCreated}
       />
@@ -234,7 +234,7 @@ describe("NewTaskDialog", () => {
 
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={onCreated}
       />
@@ -248,8 +248,8 @@ describe("NewTaskDialog", () => {
 
   it("defaults to the scoped repo when defaultRepoId is provided", async () => {
     cleanup();
-    const radulf = { id: "radulf", name: "radulf", path: "/r/radulf", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
-    const doomClone = { id: "doom", name: "doom-clone", path: "/r/doom", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+    const radulf = { id: "radulf", name: "radulf", path: "/r/radulf", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" };
+    const doomClone = { id: "doom", name: "doom-clone", path: "/r/doom", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" };
     render(
       <NewTaskDialog
         repos={[radulf, doomClone]}
@@ -281,7 +281,7 @@ describe("NewTaskDialog", () => {
       const user = userEvent.setup();
       render(
         <NewTaskDialog
-          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
           onClose={() => {}}
           onCreated={() => {}}
         />
@@ -327,7 +327,7 @@ describe("NewTaskDialog", () => {
     const user = userEvent.setup();
     render(
       <NewTaskDialog
-        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
         onClose={() => {}}
         onCreated={() => {}}
       />
@@ -374,7 +374,7 @@ describe("NewTaskDialog", () => {
   // authenticated AND the selected repo has an `origin`. Each of the three
   // failures names a different next action, so each is asserted separately.
   describe("Open a pull request instead of merging", () => {
-    const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" };
+    const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" };
 
     function stubGithubStatus(status: Record<string, unknown>) {
       cleanup();
@@ -452,7 +452,7 @@ describe("NewTaskDialog", () => {
       const user = userEvent.setup();
       render(
         <NewTaskDialog
-          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "" }]}
+          repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
           onClose={() => {}}
           onCreated={() => {}}
         />
