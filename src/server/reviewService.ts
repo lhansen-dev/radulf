@@ -517,7 +517,7 @@ export class ReviewService {
     // namespace (spec 19), so nothing else would excuse this. Passed as a
     // callback rather than called after `mergeBranch` returns, so it fires the
     // instant the new oid is known instead of after mergeBranch's own
-    // post-commit checkout restore — see mergeBranchLocked's comment for the
+    // post-commit checkout restore — see mergeBranch's comment for the
     // residual window this still leaves.
     const result = await mergeBranch(
       repo.path,
