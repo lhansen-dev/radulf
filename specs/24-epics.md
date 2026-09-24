@@ -6,6 +6,8 @@ not" list in [20-concurrent-cards.md](20-concurrent-cards.md) by adding one
 scheduling rule: the pieces of an epic can be held to their order. No locked
 decision is reversed. Merging still needs a human, every piece still goes
 through the evaluator, and one card is still one agent working one checklist.
+Decisions 4 and 5 and the "No dependency graph" non-goal are amended by
+[28-epic-dependency-graph.md](28-epic-dependency-graph.md).
 
 ## Motivation
 
