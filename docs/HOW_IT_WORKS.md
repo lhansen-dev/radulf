@@ -95,11 +95,14 @@ so the judge provably cannot edit the implementation it just judged.
 
 A repository can declare a **gate command** under Settings → Connected
 repositories, `make check` for instance. Radulf runs it in the worktree, under
-the evaluator's sandbox, before each evaluation cycle, and hands the evaluator
-the exit code and the end of the output in `.ralph/GATE.md`. The judge reads
-the build and test result instead of spending its budget producing it, and a
-retry of the evaluator reuses the result rather than running the gate again.
-**Gate timeout** under Evaluation caps it. Spec 27 records the decision.
+the run's sandbox, once the loop has signalled DONE and its branch has
+been synced with the base (see *When the loop says it is done*), and hands the
+evaluator the exit code and the end of the output in `.ralph/GATE.md`. A
+failing gate goes back to the loop as a repair task before any evaluation
+starts; the judge reads the build and test result instead of spending its
+budget producing it, and a retry of the evaluator reuses the result rather than
+running the gate again. **Gate timeout** under Evaluation caps it. Specs 27 and
+29 record the decisions.
 
 **4 · Review.** The diff waits for you in **In Review** with the transcript
 alongside it. Approve merges the branch into the repo's default branch and moves
@@ -231,6 +234,19 @@ evaluator still decides. Only check-shaped commands run — `test`, `grep`,
 `find`, `ls` and their kin — and anything else in backticks is left alone. The
 repair pass happens at most once per run, because a criterion can be written so
 that it can never pass.
+
+Once those checks pass, the orchestrator merges the base branch into the
+worktree, so the evaluator judges the code that will actually land. A clean
+merge becomes a merge commit on the run branch; a conflict becomes one more task
+for the loop, naming the conflicted files, and the loop's next completion signal
+lets the orchestrator finish the merge commit. The loop agent never runs git
+itself, and the base branch is only read, once any approval merge in flight for
+the repository has finished. Then, if the repository has a gate command, the
+gate runs; a non-zero exit is another task quoting the end of its output.
+Evaluation starts only once the branch is synced and the gate passes (or the
+repository has none). A run gets at most two such sync-or-gate rounds; a third
+conflict or gate failure ends the run with the reason on the card. Spec 29
+records the decision.
 
 ## Where the work happens
 

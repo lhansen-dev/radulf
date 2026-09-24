@@ -214,11 +214,11 @@ export async function checkRepoIntegrity(
 
 /** Upper bound on how long the run-end check waits for a delivery worker to
  * release the repo lease before judging an unexplained ref move. */
-const LEASE_SETTLE_MS = 30_000;
+export const LEASE_SETTLE_MS = 30_000;
 
 /** Poll `leaseHolder(repoPath)` every 50 ms until the lease is free or `maxMs`
  * elapses. Resolves immediately when nobody holds it. */
-async function waitForRepoLeaseRelease(repoPath: string, maxMs: number): Promise<void> {
+export async function waitForRepoLeaseRelease(repoPath: string, maxMs: number): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (leaseHolder(repoPath) !== null && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));

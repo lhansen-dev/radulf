@@ -42,6 +42,8 @@ import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
+import { abortMerge, resolveConflictsTaskText, syncWithBase } from "./baseSync";
+import { GATE_FILE, gateFilePath, gateRepairTaskText, renderGateFile, runGateCommand, type GateResult } from "./gate";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
@@ -81,11 +83,7 @@ import {
 } from "./epics";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
-import {
-  removeBaseline,
-  saveBaseline,
-  snapshotRepoIntegrity,
-} from "./integrity";
+import { LEASE_SETTLE_MS, removeBaseline, saveBaseline, snapshotRepoIntegrity, waitForRepoLeaseRelease } from "./integrity";
 import {
   collectLifecycleScripts,
   lockfileFingerprint,
@@ -162,6 +160,13 @@ const BLOAT_MIN_SAMPLES = 3;
  * the 6.0M-token one that burned an hour (5.3x), and flags no iteration twice
  * in a row that went on to finish its task. */
 const BLOAT_MULTIPLIER = 4;
+
+/** Spec 29 decision 3: how many rounds of sync-or-gate repair (a base-merge
+ * conflict or a repository gate failure handed back to the loop as a task) a
+ * run may use before the orchestrator gives up and fails it. Bounded so a
+ * conflict the loop cannot resolve, or a gate it keeps breaking, does not spin
+ * the run forever. */
+const MAX_SYNC_GATE_ROUNDS = 2;
 
 /**
  * How far out of scale this iteration's prompt is with the run's own, or null
@@ -1695,7 +1700,7 @@ export class Orchestrator {
     // never read back from here, because the loop agent's write root is the
     // whole worktree and a file it can edit must not become its next
     // instructions.
-    removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md", ...DONE_FILE_NAMES]);
+    removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md", GATE_FILE, ...DONE_FILE_NAMES]);
     fs.writeFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), plan.promptMd);
     clearEvaluationArtifact(worktreePath);
     // A reused worktree (retry, restart) may have been left on another branch
@@ -1817,6 +1822,8 @@ export class Orchestrator {
        * deliberately forbidden to have — so an unbounded repair loop would
        * spin on it forever. */
       let acceptanceRepairUsed = false;
+      /** Spec 29: rounds of sync-or-gate repair used this run. */
+      let syncGateRounds = 0;
       /** Prompt size of every iteration that reported one, for the comparison
        * in promptBloatRatio(). Per run: a resumed run starts from a fresh
        * context, so the previous run's sizes are not its baseline. */
@@ -2044,6 +2051,92 @@ export class Orchestrator {
               fs.writeFileSync(
                 /* turbopackIgnore: true */ planPath,
                 appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), repairTaskText(failures)),
+              );
+              continue;
+            }
+          }
+
+          // Spec 29: bring the base branch into the worktree before evaluation
+          // so the evaluator judges the code that will actually land. Spec 25
+          // decision 6: a delivery worker may be moving the base ref, so wait
+          // for the repo lease to be free before reading the base (ref reads
+          // are atomic, so after the settle window the read simply proceeds),
+          // and never take the lease or write the base.
+          const base = baseBranch ?? repo.defaultBranch;
+          await waitForRepoLeaseRelease(repo.path, LEASE_SETTLE_MS);
+          const sync = await syncWithBase(worktreePath, base, branch);
+          if (!active()) return;
+          if (sync.status === "failed") {
+            return fail(`sync with ${base} failed: ${sync.error.slice(0, 300)}`);
+          }
+          if (sync.status === "merged") {
+            emitEvent("base.synced", { cardId, runId, payload: { baseBranch: base, mergeCommit: sync.mergeCommit } });
+          }
+          if (sync.status === "conflicted") {
+            emitEvent("base.conflict", {
+              cardId,
+              runId,
+              payload: { baseBranch: base, files: sync.files, round: syncGateRounds + 1 },
+            });
+            if (syncGateRounds >= MAX_SYNC_GATE_ROUNDS) {
+              await abortMerge(worktreePath);
+              return fail(`sync-and-gate round limit reached: merge conflict with ${base} in ${sync.files.join(", ")}`);
+            }
+            syncGateRounds += 1;
+            // Clear the signal so the next iteration does the resolution
+            // instead of re-entering this branch.
+            removeRalphFiles(worktreePath, DONE_FILE_NAMES);
+            // The merge is left in progress; the next ITERATION_DONE
+            // bookkeeping's `git add -A && git commit` completes it.
+            fs.writeFileSync(
+              /* turbopackIgnore: true */ planPath,
+              appendTask(
+                fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
+                resolveConflictsTaskText(base, sync.files),
+              ),
+            );
+            continue;
+          }
+
+          // Spec 29 decision 2: the repository gate runs here, after the sync
+          // and before evaluation, so the loop — not the evaluator's budget —
+          // pays for a gate it broke. A non-zero exit goes back to the loop as
+          // a task; a timed-out or unrunnable gate (exitCode null) is a fact
+          // about the gate, not the change (spec 27 decision 5): record it and
+          // go on to evaluation.
+          const gateCommand = repo.gateCommand?.trim() ?? "";
+          if (gateCommand) {
+            emitEvent("gate.started", { cardId, runId, payload: { command: gateCommand } });
+            let gate: GateResult;
+            try {
+              gate = await runGateCommand({
+                command: gateCommand,
+                worktreePath,
+                ctx,
+                timeoutMs: settings.gateTimeoutMinutes * 60 * 1000,
+                signal: controller.signal,
+              });
+            } catch (e) {
+              if (!active()) return;
+              throw e;
+            }
+            if (!active()) return;
+            fs.writeFileSync(/* turbopackIgnore: true */ gateFilePath(worktreePath), renderGateFile(gate));
+            emitEvent("gate.finished", {
+              cardId,
+              runId,
+              payload: { exitCode: gate.exitCode, timedOut: gate.timedOut, durationMs: gate.durationMs, error: gate.error },
+            });
+            if (gate.exitCode !== null && gate.exitCode !== 0) {
+              if (syncGateRounds >= MAX_SYNC_GATE_ROUNDS) {
+                return fail(`sync-and-gate round limit reached: gate \`${gateCommand}\` exited ${gate.exitCode}`);
+              }
+              syncGateRounds += 1;
+              emitEvent("gate.repair", { cardId, runId, payload: { exitCode: gate.exitCode, round: syncGateRounds } });
+              removeRalphFiles(worktreePath, DONE_FILE_NAMES);
+              fs.writeFileSync(
+                /* turbopackIgnore: true */ planPath,
+                appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), gateRepairTaskText(gate)),
               );
               continue;
             }
