@@ -1,4 +1,4 @@
-You are working on: delivering cancel, pause and reset to the worker that owns a run through a nullable `runs.control` column (spec 25 decision 4) — the verb still moves the card at once in the calling process, additionally writes the column, and the owning worker polls it and fires its local AbortController.
+You are working on: making a cancel issued by a web-only process reliably reach the worker that owns the run — the worker clears a stale `runs.control = 'cancel'` when its run exits, `endActiveRun` honours `finishRun`'s compare-and-set result, and the split-process cancel test waits for the loop's first iteration before cancelling (spec 25 decision 4 follow-up in `src/server/orchestrator.ts` and its tests).
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,10 +36,9 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Hints for this card:
-- Run single test files with `npx vitest run <path>` (optionally `-t "<name>"`). Never run `npx vitest run` with no file, `make test`, or `make check`.
-- Do not set or override `TMPDIR`; the sandbox already provides one and `/tmp` is read-only.
-- `src/server/harness/` must not change. The worker only fires the existing `AbortSignal` the harness already honours.
-- `src/server/splitProcesses.test.ts` is skipped unless `RADULF_SPLIT_CHECK=1` and needs `make build`; verify edits to it with `npx tsc --noEmit` and eslint only.
-- Drizzle: schema lives in `src/db/schema.ts`; migrations are generated with `node_modules/.bin/drizzle-kit generate` into `drizzle/` and applied automatically when a test opens the database.
-- In `src/server/orchestrator.ts`, `and`, `eq`, `inArray` are already imported from `drizzle-orm`, and `db`, `runs`, `now` from `@/db`.
+Hints:
+- Never touch anything under `src/server/harness/`.
+- Never run `make check`, `make test`, `make check-split`, or a bare `npx vitest run` — only the single check named in your task.
+- Do not set or override `TMPDIR`.
+- `src/server/orchestrator.ts` is large (~2300 lines): use grep to find `controllers.delete(runId)`, `private endActiveRun`, and `applyControlSignals` instead of reading the whole file.
+- Test files use `db`, `runs`, `events`, `iterations`, `now` from `@/db`, and `eq`/`and` from `drizzle-orm`; mirror the neighbouring tests' style exactly.
