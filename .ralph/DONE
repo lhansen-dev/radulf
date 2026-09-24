@@ -1,7 +1,6 @@
-Plan critic (spec 30) reviewer fixes finished and branch merged cleanly with beta
-
-- Spec 30 no longer carries the "Numbered 30 because 28…" paragraph; DESIGN_HISTORY lists both spec 28 (beta) and spec 30 rows.
-- Request-validation test's expected object now includes the critic fields (`planCritic`, `criticModel`); `cardValidation.test.ts` keeps both the critic tests and beta's `parseBreakdown` tests.
-- Runs API route maps `critique` runs to `critique.jsonl`, covered by a route test; stage diagnoses name the plan critic.
-- Merge with beta: beta's migration stays `0022_epic_dependencies`; the critic migration is renumbered to `drizzle/0023_greedy_the_professor.sql` with `drizzle/meta/0023_snapshot.json` (prevId → beta's 0022, contains `depends_on`, `plan_critic`, `critic_model`) and a matching `_journal.json` entry.
-- Verification: no conflict markers remain, `git diff --check` is clean, `src/server/cardValidation.test.ts` passes (16 tests).
+Plan critic stage (spec 30) reviewer findings resolved; final check misreports success
+- Removed the "Numbered 30 because 28…" paragraph from specs/30-plan-critic.md (`grep -c '28'` → 0; exit 1 is grep's zero-count status, not a failure)
+- Added critic fields to the request-validation test's expected object
+- Mapped `critique` runs to `critique.jsonl` in the runs API route with a route test
+- Named the plan critic in stage diagnoses
+- Key files: specs/30-plan-critic.md, src/app/api/runs/[id]/*, stage diagnosis module, request-validation test
