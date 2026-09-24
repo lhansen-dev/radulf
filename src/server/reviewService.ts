@@ -18,7 +18,7 @@ import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { getRepo } from "./repos";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
-import { checkRepoIntegrity, loadBaseline, noteRadulfRefWrite, readRepoConfig, removeBaseline, saveBaseline } from "./integrity";
+import { checkRepoIntegrity, loadBaseline, readRepoConfig, recordRefWrite, removeBaseline, saveBaseline } from "./integrity";
 import type { StageDependencies } from "./stage";
 
 /** Every iteration runs on an injected checklist task, so a merge-conflict
@@ -388,7 +388,7 @@ export class ReviewService {
         baseBranch,
         run.branch,
         `ralph: merge "${card.title}" (card ${card.id})`,
-        (mergeCommit) => noteRadulfRefWrite(repo.path, `refs/heads/${baseBranch}`, mergeCommit),
+        (mergeCommit) => recordRefWrite(repo.path, `refs/heads/${baseBranch}`, mergeCommit, null),
       ),
     );
     if (!result.ok) {

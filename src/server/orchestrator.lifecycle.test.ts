@@ -16,8 +16,6 @@ const mocks = vi.hoisted(() => ({
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
   startDiskWatchdog: vi.fn(),
-  registerRunBaseline: vi.fn(),
-  releaseRunBaseline: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
    * moving the defaults every other test relies on. */
@@ -45,18 +43,6 @@ vi.mock("./providers", () => ({
   normalizeProvider: (value: string) => value,
   preflightProvider: mocks.preflightProvider,
 }));
-// Real registerRunBaseline/releaseRunBaseline (wrapped so a test can assert
-// they stay paired), everything else in the module untouched.
-vi.mock("./integrity", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./integrity")>();
-  mocks.registerRunBaseline.mockImplementation(actual.registerRunBaseline);
-  mocks.releaseRunBaseline.mockImplementation(actual.releaseRunBaseline);
-  return {
-    ...actual,
-    registerRunBaseline: mocks.registerRunBaseline,
-    releaseRunBaseline: mocks.releaseRunBaseline,
-  };
-});
 vi.mock("./settings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./settings")>()),
   getSettings: () =>
@@ -820,7 +806,7 @@ describe("Orchestrator cancellation lifecycle", () => {
   });
 
   describe("cancel during loop start", () => {
-    it("releases the integrity baseline it registered when the card is cancelled during setup", async () => {
+    it("leaves the run cancelled when the card is cancelled during setup", async () => {
       card("cas-loss", "ready");
       plan("cas-loss");
       // A usable git-common-dir, so snapshotRepoIntegrity returns a real
@@ -844,14 +830,12 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(getCard("cas-loss").status).toBe("backlog");
 
       await settle();
-      // Whichever shape the loop's early exit takes, every register must
-      // still be matched by a release.
+      // Whichever shape the loop's early exit takes, the stale continuation
+      // must not have touched the cancelled run or pushed the re-queued card
+      // anywhere.
       await vi.waitFor(() => {
-        expect(mocks.registerRunBaseline.mock.calls.length).toBe(mocks.releaseRunBaseline.mock.calls.length);
+        expect(getRun("cas-loss").status).toBe("cancelled");
       });
-      // The stale continuation must not have touched the cancelled run or
-      // pushed the re-queued card anywhere.
-      expect(getRun("cas-loss").status).toBe("cancelled");
       expect(getCard("cas-loss").status).toBe("backlog");
       expect(mocks.runHarness).not.toHaveBeenCalled();
     });

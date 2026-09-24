@@ -77,8 +77,6 @@ import {
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
 import {
-  registerRunBaseline,
-  releaseRunBaseline,
   removeBaseline,
   saveBaseline,
   snapshotRepoIntegrity,
@@ -1658,14 +1656,6 @@ export class Orchestrator {
     });
 
     try {
-      // Registered here, inside the try whose finally releases it below, so
-      // every early return in this loop — present or future — releases the
-      // baseline instead of leaking a `liveBaselines` entry for the life of
-      // the process. Spec 20: with more than one card in flight, another
-      // card's approved merge moves this run's base branch. Registering lets
-      // that merge record its own write here instead of this run reporting
-      // it as tampering.
-      if (integrityBaseline) registerRunBaseline(runId, repo.path, integrityBaseline);
       if (offBranchAtStart) return fail(offBranchAtStart);
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
@@ -2104,7 +2094,6 @@ export class Orchestrator {
       // applyControlSignals(), so the owner clears it here (a `pause` value is
       // left untouched — the loop records it at the iteration boundary).
       db.update(runs).set({ control: null }).where(and(eq(runs.id, runId), eq(runs.control, "cancel"))).run();
-      releaseRunBaseline(runId);
       // Reaps every recorded process group, then removes the run-private
       // TMPDIR/caches — on every exit path including failure and cancel.
       await ctx.cleanup();

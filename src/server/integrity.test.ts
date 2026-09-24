@@ -7,15 +7,14 @@ import { git, initScratchRepo } from "@/testUtils/gitRepo";
 // integrity.ts resolves its baseline dir from DATA_DIR at import time.
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-integrity-"));
 process.env.RADULF_DATA_DIR = path.join(testDataDir, "data");
+const { db, refWrites } = await import("@/db");
 const {
   snapshotRepoIntegrity,
   checkRepoIntegrity,
   saveBaseline,
   loadBaseline,
   removeBaseline,
-  registerRunBaseline,
-  releaseRunBaseline,
-  noteRadulfRefWrite,
+  recordRefWrite,
 } = await import("./integrity");
 
 const RUN_BRANCH = "ralph/test-card-run1";
@@ -170,7 +169,7 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
 
   it("takes Radulf's own base-branch move off a live run's baseline (spec 20)", async () => {
     const baseline = (await snapshotRepoIntegrity(repo))!;
-    registerRunBaseline("run-during-merge", repo, baseline);
+    expect(baseline.capturedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     try {
       // Another card's approved merge moves the base branch under this run.
       fs.writeFileSync(path.join(repo, "merged.txt"), "x");
@@ -187,19 +186,36 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
       expect(before).toHaveLength(1);
       expect(before[0]).toMatch(/^ref moved: refs\/heads\/main /);
 
-      // A note for a different repo must not reach this run's baseline.
-      noteRadulfRefWrite("/not/this/repo", "refs/heads/main", "0".repeat(40));
+      // A write recorded for a different repo must not excuse this one.
+      recordRefWrite("/not/this/repo", "refs/heads/main", head, null);
       expect(
         await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
       ).toHaveLength(1);
 
-      // Recorded against this repo, the run stops reporting our own merge.
-      noteRadulfRefWrite(repo, "refs/heads/main", head);
+      // A write that predates the baseline cannot explain a move seen after
+      // it: the ref was already at the baseline oid when the run started.
+      db.insert(refWrites)
+        .values({
+          repoPath: repo,
+          ref: "refs/heads/main",
+          sha: head,
+          workerId: "w0",
+          writtenAt: "2000-01-01T00:00:00.000Z",
+        })
+        .run();
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toHaveLength(1);
+
+      // Recorded against this repo since the baseline, the run stops
+      // reporting our own merge, from any process, not just the one that
+      // took the baseline.
+      recordRefWrite(repo, "refs/heads/main", head, "w1");
       expect(
         await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
       ).toEqual([]);
     } finally {
-      releaseRunBaseline("run-during-merge");
+      db.delete(refWrites).run();
       git(repo, "reset", "--hard", "HEAD~1");
     }
   });
