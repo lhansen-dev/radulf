@@ -53,7 +53,7 @@ import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService, type ConfigApproval } from "./reviewService";
-import { acquireRepoLease, releaseRepoLease, releaseStaleLeases } from "./repoLeases";
+import { releaseStaleLeases } from "./repoLeases";
 import { ClientError } from "./clientError";
 import { hasRole } from "./roles";
 import {
@@ -81,7 +81,7 @@ import {
 } from "./epics";
 import { createRunSandbox, runScratchRoot } from "./sandbox/context";
 import { ensureBallast, startDiskWatchdog } from "./sandbox/diskWatchdog";
-import { LEASE_SETTLE_MS, removeBaseline, saveBaseline, snapshotRepoIntegrity } from "./integrity";
+import { LEASE_SETTLE_MS, removeBaseline, saveBaseline, snapshotRepoIntegrity, waitForRepoLeaseRelease } from "./integrity";
 import {
   collectLifecycleScripts,
   lockfileFingerprint,
@@ -210,21 +210,6 @@ IMPORTANT: your previous attempt at this task ended without writing \`.ralph/ITE
 
 /** Record on the iteration row whether its injected task is now ticked off —
  * read from the checklist itself, so every bookkeeping path agrees. */
-/**
- * Poll `acquireRepoLease` every 50 ms until it succeeds or `maxMs` elapses
- * (spec 25 decision 6). Returns whether the lease is now held by `workerId`;
- * the caller must release it.
- */
-async function acquireRepoLeaseWithin(repoPath: string, workerId: string, maxMs: number): Promise<boolean> {
-  const staleSeconds = getSettings().workerStaleSeconds;
-  const deadline = Date.now() + maxMs;
-  for (;;) {
-    if (acquireRepoLease(repoPath, workerId, staleSeconds)) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 function recordTaskCompleted(iterationId: number, planPath: string, taskNumber: number) {
   const item = parseChecklist(
     fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
@@ -2034,24 +2019,13 @@ export class Orchestrator {
 
           // Spec 29: bring the base branch into the worktree before evaluation
           // so the evaluator judges the code that will actually land. Spec 25
-          // decision 6: a delivery worker may be moving the base ref; hold the
-          // repo lease for the duration of the read so no approval merge can
-          // start halfway through it, and never write the base.
+          // decision 6: a delivery worker may be moving the base ref, so wait
+          // for the repo lease to be free before reading the base (ref reads
+          // are atomic, so after the settle window the read simply proceeds),
+          // and never take the lease or write the base.
           const base = baseBranch ?? repo.defaultBranch;
-          const leased = await acquireRepoLeaseWithin(repo.path, this.workerId, LEASE_SETTLE_MS);
-          if (!active()) {
-            if (leased) releaseRepoLease(repo.path, this.workerId);
-            return;
-          }
-          if (!leased) {
-            return fail(`sync with ${base} failed: repo lease held by a delivery for over ${LEASE_SETTLE_MS / 1000}s`);
-          }
-          let sync: Awaited<ReturnType<typeof syncWithBase>>;
-          try {
-            sync = await syncWithBase(worktreePath, base, branch);
-          } finally {
-            releaseRepoLease(repo.path, this.workerId);
-          }
+          await waitForRepoLeaseRelease(repo.path, LEASE_SETTLE_MS);
+          const sync = await syncWithBase(worktreePath, base, branch);
           if (!active()) return;
           if (sync.status === "failed") {
             return fail(`sync with ${base} failed: ${sync.error.slice(0, 300)}`);
