@@ -748,3 +748,54 @@ describeOnHost("acceptance-test table — individual rows verified directly (spe
     await expect(run(`nc -G 3 -w 3 -U /var/run/docker.sock </dev/null`)).rejects.toThrow();
   });
 });
+
+describe("runSandboxedCommand sets CLAUDE_CODE_TMPDIR for the wrap", () => {
+  // No real sandbox needed: srt reads process.env.CLAUDE_CODE_TMPDIR on the
+  // wrap path (sandbox-utils.js generateProxyEnvVars), so what matters is
+  // the value in force while wrapWithSandbox runs, and that it is restored.
+  const cfg = () =>
+    buildRunSandboxConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/data/repo/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      networkAllowlistText: "",
+    });
+
+  async function wrapAndObserve(): Promise<string | undefined> {
+    let seen: string | undefined;
+    const update = vi.spyOn(SandboxManager, "updateConfig").mockImplementation(() => {});
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandbox").mockImplementation(async (cmd) => {
+      seen = process.env.CLAUDE_CODE_TMPDIR;
+      return cmd;
+    });
+    try {
+      await runSandboxedCommand("true", cfg(), async (w) => w, { tmpdir: "/data/runtmp/run-1/tmp" });
+    } finally {
+      update.mockRestore();
+      wrap.mockRestore();
+    }
+    return seen;
+  }
+
+  it("publishes the run tmpdir during the wrap and unsets it afterwards when previously unset", async () => {
+    vi.stubEnv("CLAUDE_CODE_TMPDIR", undefined);
+    try {
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBeUndefined();
+      expect(await wrapAndObserve()).toBe("/data/runtmp/run-1/tmp");
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("publishes the run tmpdir during the wrap and restores a previously-set value afterwards", async () => {
+    vi.stubEnv("CLAUDE_CODE_TMPDIR", "/elsewhere");
+    try {
+      expect(await wrapAndObserve()).toBe("/data/runtmp/run-1/tmp");
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBe("/elsewhere");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

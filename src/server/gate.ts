@@ -94,7 +94,7 @@ export async function runGateCommand(opts: {
   const run = (toRun: string) => execute(toRun, worktreePath, ctx.env, timeoutMs, signal);
   let outcome: Outcome;
   try {
-    outcome = ctx.srtConfig ? await runSandboxedCommand(prefixed, ctx.srtConfig, run) : await run(prefixed);
+    outcome = ctx.srtConfig ? await runSandboxedCommand(prefixed, ctx.srtConfig, run, { tmpdir: ctx.tmpdir }) : await run(prefixed);
   } catch (e) {
     if (signal?.aborted) throw e;
     // A wrap that could not be built: the gate did not run, and says so.

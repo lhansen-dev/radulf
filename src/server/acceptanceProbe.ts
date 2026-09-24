@@ -120,8 +120,11 @@ export async function runAcceptanceProbe(opts: {
     try {
       results.push(
         ctx.srtConfig
-          ? await runSandboxedCommand(prefixed, ctx.srtConfig, (wrapped) =>
-              runOne(command, wrapped, opts.worktreePath, ctx.env),
+          ? await runSandboxedCommand(
+              prefixed,
+              ctx.srtConfig,
+              (wrapped) => runOne(command, wrapped, opts.worktreePath, ctx.env),
+              { tmpdir: ctx.tmpdir },
             )
           : await runOne(command, prefixed, opts.worktreePath, ctx.env),
       );

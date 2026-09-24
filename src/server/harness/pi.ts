@@ -619,7 +619,7 @@ export async function createRalphSession(
     spawnHook: (ctx) => ({ ...ctx, env: runContext?.env ?? agentEnv() }),
     operations:
       shouldSandboxBash(opts.role, runContext?.srtConfig) && runContext?.srtConfig
-        ? createSandboxedBashOperations(runContext.srtConfig)
+        ? createSandboxedBashOperations(runContext.srtConfig, { tmpdir: runContext.tmpdir })
         : undefined,
   }) as unknown as ToolDefinition;
 
