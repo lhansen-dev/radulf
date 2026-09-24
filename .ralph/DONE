@@ -1,8 +1,0 @@
-Review delivery moved from the web process into workers under durable review_deliveries / repo_leases / ref_writes rows (spec 25 decision 6)
-- Added `review_deliveries`, `repo_leases`, `ref_writes` tables (src/db/schema.ts, drizzle/0020_wonderful_martin_li.sql) with schema tests.
-- integrity.ts now consults `ref_writes` (recordRefWrite/refWritesSince) instead of an in-memory baseline registry, so run-end integrity checks excuse refs Radulf moved from any process.
-- src/server/repoLeases.ts: acquireRepoLease/releaseRepoLease/releaseStaleLeases/leaseHolder honoring liveWorkerIds; replaces the in-process `withRepoMergeLock` that was removed from git.ts.
-- ReviewService.approveClaimedRun is split: web side enqueues a review_deliveries row (+ review.delivery_requested event); workers claimDelivery/executeDelivery under the repo lease and record ref writes by workerId. Merge/PR behaviour in reviewService.ts/git.ts is unchanged.
-- orchestrator.ts pump() claims pending deliveries; reapStaleRuns() fails running deliveries of dead workers (card → needs_attention, review.decided), releases stale leases, prunes old ref_writes; orphan sweep skips cards with pending/running deliveries.
-- Tests: repoLeases.test.ts, reviewService.test.ts, orchestrator.reaper.test.ts, splitProcesses.test.ts (two web processes deliver serially; sibling merge causes no tampering report), git.test.ts updated.
-- Task 8: acceptance checks `grep -l 'CREATE TABLE` (malformed quote) and `grep -rn 'withRepoMergeLock' src` (symbol intentionally removed) are wrong about the repo; no code changed.
