@@ -1,0 +1,13 @@
+# Evaluation notes
+- grep activeLoopCards/pendingEvaluations/pausedCards in orchestrator.ts: all exit 0 (EXPECTED 1) — names appear in class-level JSDoc lines 242-249 added by task 8, which misread the criterion as "grep must succeed".
+- grep behavior:"immediate", reapStaleRuns, workerStaleSeconds (orchestrator), workerStaleSeconds: [15 (settings), workerId (planning+evaluation): all exit 0 as expected.
+- git diff --quiet merge-base(beta) -- src/server/harness src/server/sandbox: exit 0 (unchanged). Base branch is beta; vs main differs only because beta is ahead of main.
+- npx vitest run workers.test.ts orchestrator.claim.test.ts orchestrator.reaper.test.ts orchestrator.roles.test.ts: exit 0, 25/25 passed
+- npx vitest run orchestrator.lifecycle.test.ts: exit 0, 98/98 passed
+- npx vitest run scoping/planningService/evaluationService/stage/mockPipeline/settings: exit 1 — 7 failed / 63 passed. orchestrator.scoping.test.ts 4 failed (adoptScopingPlan tests: card reads `looping` not `ready` because pump() now claims synchronously; the following 3 fail on FK when beforeEach deletes plans while a run row references them). evaluationService.test.ts 3 failed (spec 26/27 tests).
+- Same two files on a `git archive beta` export in $TMPDIR: scoping 13/13 PASS, evaluationService same 3 failures → evaluationService failures are pre-existing/environmental; scoping failures are a REGRESSION from this card.
+- Gate (make lint typecheck build check-split) exit 0 at 01:24:57 — covers tsc, eslint, split check (5 tests incl. cap contention + SIGKILL handover).
+- npx vitest run src/server/orchestrator.scoping.test.ts alone: exit 1, deterministic (4 adoptScopingPlan tests).
+- Code review: heartbeatWorker is UPDATE not upsert (card says "upserts"); continuous orphan sweep parks `reviewing` cards older than the window even in the live process; heartbeat/reaper interval never cleared (test flake risk); startCard/approveInstallScripts non-queued path still check cap outside a transaction.
+- Verdict: revise (scoping suite regression + three identifier greps exit 0 via JSDoc).
+- Wrote .ralph/EVALUATION.md (VERDICT: revise) and .ralph/SUMMARY.md at 01:36:33Z
