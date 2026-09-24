@@ -80,6 +80,9 @@ export const cards = sqliteTable(
     // has finished; `parallel` lets the repo cap (spec 20) bound them. Only
     // meaningful on a card with children.
     runMode: text("run_mode").$type<EpicRunMode>(),
+    // Spec 28: sibling card ids this piece waits for under `graph`; null
+    // means none.
+    dependsOn: text("depends_on", { mode: "json" }).$type<string[]>(),
     source: text("source").$type<"user" | "agent">().notNull().default("user"),
     maxIterations: integer("max_iterations"),
     reviewPlanBeforeImplementation: integer("review_plan_before_implementation")

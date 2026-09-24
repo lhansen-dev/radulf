@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, useEventStream } from "../../ui/api";
 import type { Run } from "./metricsPanel";
+import type { EpicRunMode } from "@/shared/epics";
 
 export type Plan = {
   id: string;
@@ -66,7 +67,7 @@ export type CardDetailData = {
     baseBranch: string | null;
     /** Spec 24. Absent on older cached responses. */
     parentCardId?: string | null;
-    runMode?: "ordered" | "parallel" | null;
+    runMode?: EpicRunMode | null;
   };
   repo: { id: string; name: string; path: string; defaultBranch: string } | null;
   plans: Plan[];
@@ -98,7 +99,7 @@ export type CardDetailData = {
   scopingTurn?: ScopingTurn | null;
   /** Spec 24: this card's pieces, in queue order, and the epic it belongs to. */
   children?: ChildCard[];
-  parent?: { id: string; title: string; runMode: "ordered" | "parallel" | null } | null;
+  parent?: { id: string; title: string; runMode: EpicRunMode | null } | null;
 };
 
 /** Card detail data and card-scoped live refresh. */

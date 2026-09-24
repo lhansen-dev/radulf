@@ -9,8 +9,14 @@ import { getCard, type Card } from "./cards";
  */
 
 /** One piece of a breakdown, as the editor or the Jira import hands it over.
- * `repoId` unset means the epic's own repository. */
-export type BreakdownPiece = { title: string; description: string; repoId?: string | null };
+ * `repoId` unset means the epic's own repository. `dependsOn` (spec 28) holds
+ * 0-based indexes of sibling pieces in the same breakdown. */
+export type BreakdownPiece = {
+  title: string;
+  description: string;
+  repoId?: string | null;
+  dependsOn?: number[];
+};
 
 /** Statuses in which a piece no longer holds up an ordered epic, and which
  * count towards the epic finishing. */

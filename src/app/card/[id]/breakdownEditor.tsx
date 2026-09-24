@@ -7,13 +7,19 @@ import { errorMessage } from "@/shared/errorMessage";
 /** One piece as the editor holds it. `repoId` unset means the epic's own repository. */
 export type BreakdownPiece = { title: string; description: string; repoId?: string };
 
-const RUN_MODE_LABELS: Record<EpicRunMode, string> = { ordered: "In order", parallel: "In parallel" };
+const RUN_MODE_LABELS: Record<EpicRunMode, string> = {
+  ordered: "In order",
+  parallel: "In parallel",
+  graph: "As a graph",
+};
 
 const RUN_MODE_HELP: Record<EpicRunMode, string> = {
   ordered:
     "Each task starts only once the tasks before it are done. Pick this when a later task builds on an earlier one.",
   parallel:
     "Every task is eligible at once, up to the repository's concurrency cap in Settings. Pick this when the tasks stand alone.",
+  graph:
+    "Each task starts once the tasks it depends on are done. Pick this when only some tasks build on others.",
 };
 
 /** What applying did, in the panel's words. */
