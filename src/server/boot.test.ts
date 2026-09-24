@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   registerShutdownHandlers: vi.fn(),
   pruneRuntimeHistory: vi.fn(),
   fireDueSchedules: vi.fn(),
+  startEventsTail: vi.fn(),
+  startTranscriptWatchers: vi.fn(),
 }));
 
 vi.mock("./authSecret", () => ({ ensureAuthSecret: mocks.ensureAuthSecret }));
@@ -23,6 +25,10 @@ vi.mock("./improvementRuns", () => ({ resumeImprovementRuns: mocks.resumeImprove
 vi.mock("./shutdown", () => ({ registerShutdownHandlers: mocks.registerShutdownHandlers }));
 vi.mock("./retention", () => ({ pruneRuntimeHistory: mocks.pruneRuntimeHistory }));
 vi.mock("./schedules", () => ({ fireDueSchedules: mocks.fireDueSchedules }));
+vi.mock("./eventsTail", () => ({ startEventsTail: mocks.startEventsTail }));
+vi.mock("./transcriptWatchers", () => ({
+  startTranscriptWatchers: mocks.startTranscriptWatchers,
+}));
 
 const { boot } = await import("./boot");
 
@@ -57,6 +63,8 @@ describe("boot", () => {
 
     expect(mocks.ensureAuthSecret).toHaveBeenCalledTimes(1);
     expect(mocks.getSettings).toHaveBeenCalledTimes(1);
+    expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
+    expect(mocks.startTranscriptWatchers).toHaveBeenCalledTimes(1);
     expect(mocks.getOrchestrator).not.toHaveBeenCalled();
     expect(mocks.resumeImprovementRuns).not.toHaveBeenCalled();
     expect(mocks.registerShutdownHandlers).not.toHaveBeenCalled();
@@ -73,6 +81,8 @@ describe("boot", () => {
 
     expect(mocks.getOrchestrator).toHaveBeenCalledTimes(1);
     expect(mocks.resumeImprovementRuns).toHaveBeenCalledTimes(1);
+    expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
+    expect(mocks.startTranscriptWatchers).not.toHaveBeenCalled();
     const orchestrator = mocks.getOrchestrator.mock.results[0]!.value;
     expect(mocks.registerShutdownHandlers).toHaveBeenCalledWith(orchestrator);
 
@@ -94,5 +104,7 @@ describe("boot", () => {
 
     expect(mocks.initializeSandboxRuntimeOnce).toHaveBeenCalledTimes(1);
     expect(mocks.getOrchestrator).toHaveBeenCalledTimes(1);
+    expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
+    expect(mocks.startTranscriptWatchers).toHaveBeenCalledTimes(1);
   });
 });

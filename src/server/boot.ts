@@ -10,6 +10,8 @@ import { resumeImprovementRuns } from "./improvementRuns";
 import { registerShutdownHandlers } from "./shutdown";
 import { pruneRuntimeHistory } from "./retention";
 import { fireDueSchedules } from "./schedules";
+import { startEventsTail } from "./eventsTail";
+import { startTranscriptWatchers } from "./transcriptWatchers";
 import type { Role } from "./roles";
 
 export async function boot(roles: ReadonlySet<Role>): Promise<void> {
@@ -21,9 +23,18 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   // the first request.
   const settings = getSettings();
 
-  // A web-only process stops here — no sandbox preflight, no orchestrator, no
-  // boot recovery, no pump, no improvement-run drivers, no shutdown drain, no
-  // retention or schedule timers.
+  // Spec 25 decision 5: events fan out through the `events` table. Every role
+  // tails it and re-emits rows other processes inserted on the local bus, so a
+  // split web/worker deployment sees every event. The web role owns one live
+  // transcript watcher per running run (whichever process runs the harness),
+  // so SSE clients get transcripts pushed from the process they connect to.
+  startEventsTail();
+  if (roles.has("web")) startTranscriptWatchers();
+
+  // A web-only process stops here — it tails events and watches transcripts
+  // (above), but runs no sandbox preflight, no orchestrator, no boot recovery,
+  // no pump, no improvement-run drivers, no shutdown drain, no retention or
+  // schedule timers.
   if (!roles.has("worker")) return;
 
   // Spec 14 Phase 6: startup preflight, not first-command discovery — a
