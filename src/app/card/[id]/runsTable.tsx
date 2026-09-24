@@ -25,7 +25,7 @@ const KIND_LABEL = {
   plan: "◔ Planning",
   loop: "⚙ Loop",
   evaluate: "🔎 Evaluator",
-  critique: "⚖ Critic",
+  critique: "⚖ Plan critic",
 } as const;
 
 /** Milliseconds the run was actually executing — `nowMs` keeps a live run's

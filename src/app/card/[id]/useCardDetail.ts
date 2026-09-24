@@ -91,6 +91,8 @@ export type CardDetailData = {
     planner: { provider: string; model: string | null; reasoningLevel: string };
     loop: { provider: string; model: string | null; reasoningLevel: string };
     evaluator: { provider: string; model: string | null; reasoningLevel: string };
+    /** Spec 30: the plan critic. Absent on responses cached before it existed. */
+    critic?: { provider: string; model: string | null; reasoningLevel: string };
   };
   /** The card's scoping thread, oldest first. Absent on older cached responses. */
   scoping?: ScopingMessage[];

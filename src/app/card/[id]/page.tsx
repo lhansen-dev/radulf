@@ -501,17 +501,52 @@ export default function CardDetail() {
           )}
           <div>
             <h3 className="text-sm font-medium mb-1">Events</h3>
-            {detail.events.map((e) => (
-              <div key={e.id} className="text-xs text-foreground/50 font-mono">
-                {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
-              </div>
-            ))}
+            {detail.events.map((e) => {
+              const critique = e.type === "critique.decided" ? parseCritiqueDecided(e.payload) : null;
+              if (critique) {
+                const approved = critique.verdict === "approve";
+                return (
+                  <div
+                    key={e.id}
+                    data-testid="critique-decided"
+                    className={`my-1 rounded border p-2 text-xs ${approved ? "border-green-800/50 bg-green-950/30" : "border-amber-800/50 bg-amber-950/40"}`}
+                  >
+                    <span className="font-mono text-foreground/50">{e.createdAt.slice(11, 19)} </span>
+                    <span className={`font-medium ${approved ? "text-green-300" : "text-amber-300"}`}>
+                      ⚖ Plan critic: {critique.verdict}
+                    </span>
+                    {critique.feedback && (
+                      <p className="mt-1 whitespace-pre-wrap text-foreground/70">{critique.feedback}</p>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <div key={e.id} className="text-xs text-foreground/50 font-mono">
+                  {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
+                </div>
+              );
+            })}
           </div>
         </section>
       ))}
     </div>
     </AppShell>
   );
+}
+
+/** The `critique.decided` event payload (planCriticService): the verdict and
+ * the first 500 characters of the critic's feedback. Null when the payload
+ * is not shaped that way, so the row falls back to the raw event line. */
+function parseCritiqueDecided(payload: string): { verdict: string; feedback: string } | null {
+  try {
+    const parsed = JSON.parse(payload) as { verdict?: unknown; feedback?: unknown };
+    if (typeof parsed.verdict !== "string") return null;
+    const feedback = typeof parsed.feedback === "string" ? parsed.feedback.slice(0, 500) : "";
+    return { verdict: parsed.verdict, feedback };
+  } catch {
+    return null;
+  }
 }
 
 type GatePackage = {

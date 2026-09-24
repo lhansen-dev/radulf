@@ -12,5 +12,6 @@ export function reasoningLevelForKind(
   if (!models) return undefined;
   if (kind === "plan") return models.planner.reasoningLevel;
   if (kind === "loop") return models.loop.reasoningLevel;
+  if (kind === "critique") return models.critic?.reasoningLevel;
   return models.evaluator.reasoningLevel;
 }

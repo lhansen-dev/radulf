@@ -73,7 +73,7 @@ export async function GET(_req: Request, { params }: Ctx) {
   // always the current global value, not necessarily what an old run used.
   const settings = getSettings();
   const models = Object.fromEntries(
-    (["planner", "loop", "evaluator"] as const).map((role) => [role, {
+    (["planner", "loop", "evaluator", "critic"] as const).map((role) => [role, {
       provider: settings[`${role}Provider`],
       model: card[`${role}Model`] || settings[`${role}Model`] || null,
       reasoningLevel: settings[`${role}ReasoningLevel`],

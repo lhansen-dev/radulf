@@ -195,6 +195,13 @@ const AGENTS = [
     demand:
       "Runs once per loop and is the only stage that executes the whole-card acceptance criteria, which the looper never sees. A reviewer that rubber-stamps sends broken work straight to you.",
   },
+  {
+    role: "critic",
+    title: "Plan critic agent",
+    subtitle: "Reads each plan before the loop starts.",
+    demand:
+      "Runs once per plan, read-only, and only when the critic is on for the card. A second reader from a different model than the planner is the point: it names the gap the planner could not see in its own plan.",
+  },
 ] as const;
 
 type AgentRole = (typeof AGENTS)[number]["role"];
@@ -216,6 +223,9 @@ function roleFitWarning(role: AgentRole, provider: string): string | undefined {
   if (role === "evaluator" && providerClass === "local") {
     return "The evaluator is the only gate that runs the whole-card acceptance criteria. A self-hosted model that approves work it did not really verify sends it straight to you. A subscription model costs you one run per loop here.";
   }
+  if (role === "critic" && providerClass === "local") {
+    return "The plan critic is a second reader whose whole job is to catch what the planner missed, and it runs read-only once per plan. A self-hosted model that waves a plan through leaves every iteration after it building on the gap. A subscription model costs you one short run per plan here.";
+  }
   if (role === "loop" && providerClass === "subscription") {
     return "The looper runs every iteration up to the max-iterations budget, so it drives most of your token spend and rate-limit pressure. A self-hosted or low-cost model is usually the right seat for this role.";
   }
@@ -225,6 +235,7 @@ function roleFitWarning(role: AgentRole, provider: string): string | undefined {
 const TEMPLATES = [
   { key: "plannerPromptTemplate", title: "Planning artifacts", description: "Instructions for generating PLAN.md, CRITERIA.md, and the loop's PROMPT.md.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{SCOPING_SECTION}}", "{{FEEDBACK_SECTION}}"] },
   { key: "evaluatorPromptTemplate", title: "Evaluation", description: "Instructions used when the evaluator reviews a completed loop.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{BASE_BRANCH}}", "{{CRITERIA}}"] },
+  { key: "criticPromptTemplate", title: "Plan critique", description: "Instructions used when the plan critic reviews a plan before the loop starts.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{SCOPING_SECTION}}", "{{SPEC_FILES}}", "{{PLAN_VERSION}}", "{{PLAN_MD}}", "{{CRITERIA_MD}}", "{{PROMPT_MD}}"] },
   { key: "improvePromptTemplate", title: "Self-improvement", description: "Instructions used by an improvement run to propose the next change from a repository review.", placeholders: ["{{EXISTING_CARDS}}", "{{FOCUS}}"] },
 ] as const;
 
@@ -449,6 +460,7 @@ export default function SettingsPage() {
                     scopingProvider: "anthropic", scopingModel: "",
                     plannerProvider: "anthropic", plannerModel: "",
                     evaluatorProvider: "anthropic", evaluatorModel: "",
+                    criticProvider: "anthropic", criticModel: "",
                     loopProvider: "omlx", loopModel: "",
                   })}
                 />
@@ -507,6 +519,22 @@ export default function SettingsPage() {
                 <section id="planner-defaults" className={sectionCls}>
                   <SectionHeading title="Planning" />
                   {numberInput("plannerTimeoutMinutes", "Timeout (minutes)", "Caps each card's planning pass.", 1, "max-w-xs text-sm text-foreground/70")}
+                  {numberInput("criticTimeoutMinutes", "Critic timeout (minutes)", "Caps each plan critique pass.", 1)}
+                  <label className="block max-w-xs text-sm text-foreground/70">
+                    Plan critic
+                    <select
+                      value={settings.planCriticMode}
+                      onChange={(e) => set({ planCriticMode: e.target.value as Settings["planCriticMode"] })}
+                      className={inputCls}
+                    >
+                      <option value="breakdown">On for tasks created from a breakdown</option>
+                      <option value="always">On for every card</option>
+                      <option value="off">Off</option>
+                    </select>
+                    <span className="mt-1 block text-xs text-foreground/45">
+                      Which cards get a read-only critique of their plan before the loop starts.
+                    </span>
+                  </label>
                 </section>
                 <section id="defaults" className={sectionCls}>
                   <SectionHeading title="Loop execution" />
