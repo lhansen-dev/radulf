@@ -389,7 +389,7 @@ The human diff review is the last gate, so it is treated as a security control
 There is **no** automatic "sandbox unavailable, run unsandboxed" fallback.
 
 - **Startup preflight** (`sandboxPreflight` in `srt.ts`, run once at boot in
-  [`src/instrumentation.ts`](../src/instrumentation.ts)): platform support, srt's
+  [`src/server/boot.ts`](../src/server/boot.ts) (worker role only)): platform support, srt's
   dependency check, and (Linux) the Ubuntu 24.04+ AppArmor
   `kernel.apparmor_restrict_unprivileged_userns` gate — each with a specific
   remediation message. Cached via `initializeSandboxRuntimeOnce`.
@@ -469,7 +469,7 @@ only via the human-facing `/api/settings` route. The disk-limit env vars
 | Repo integrity check | `src/server/integrity.ts` |
 | Install-script gate | `src/server/installGate.ts` |
 | Run lifecycle (watchdog, reaping, integrity, gate) | `src/server/orchestrator.ts` |
-| Startup preflight | `src/instrumentation.ts` |
+| Startup preflight | `src/server/boot.ts` |
 | Settings store | `src/server/settings.ts` |
 | Review-surface: Unicode | `src/shared/diffSafety.ts` |
 | Review-surface: sensitive paths | `src/app/review/[id]/sensitivePaths.ts` |

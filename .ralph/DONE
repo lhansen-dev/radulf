@@ -1,0 +1,4 @@
+Finished the web/worker role split (RADULF_ROLES) and reconciled docs with the boot module
+- `src/server/roles.ts` / `src/server/boot.ts` / `src/worker.ts` split boot into web and worker roles; web-only processes never run the preflight, scheduler tick, or improvement-run pump, and the worker adopts runs from its pump timer.
+- New make targets `worker`, `build-worker`, and `check-split` (split-process smoke test in `src/server/splitProcesses.test.ts`); `make check` now includes the split check.
+- Docs reconciled: `docs/SANDBOXING.md` and `docs/ARCHITECTURE.md` now point the startup preflight and scheduler tick at `src/server/boot.ts` (worker role), leaving the one correct `src/instrumentation.ts` mention as the Next-side caller; `README.md` Make targets table lists the new targets and updated `make check` description.

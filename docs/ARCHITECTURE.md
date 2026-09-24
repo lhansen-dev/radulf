@@ -217,8 +217,8 @@ file over a branch name that only meant something where it came from.
 ## Scheduling
 
 `src/server/schedules.ts` is the whole scheduler (spec 22), ticked once a
-minute from `src/instrumentation.ts`. A schedule starts only what a button
-starts, by the path a button takes: `queue-drain` calls `startCard` on every
+minute from `src/server/boot.ts` in a process with the `worker` role. A schedule
+starts only what a button starts, by the path a button takes: `queue-drain` calls `startCard` on every
 card waiting in the Queue, and `improvement-run` calls `createImprovementRun`
 with the arguments stored on the schedule. Every cap those paths enforce still
 applies, and no schedule merges anything.
