@@ -20,7 +20,15 @@ export const PROMPT_TEMPLATE_DEFAULTS = {
   plannerPromptTemplate: readBuiltInPromptTemplate("plan.md"),
   evaluatorPromptTemplate: readBuiltInPromptTemplate("evaluate.md"),
   improvePromptTemplate: readBuiltInPromptTemplate("improve.md"),
+  criticPromptTemplate: readBuiltInPromptTemplate("critique.md"),
 } as const;
+
+// Spec 30: when the read-only plan critic reviews a plan before the loop.
+// `breakdown` = on for cards that are pieces of an epic, `always`, `off`; a
+// card's own `planCritic` column overrides.
+export const PLAN_CRITIC_MODES = ["breakdown", "always", "off"] as const;
+export type PlanCriticMode = (typeof PLAN_CRITIC_MODES)[number];
+const PLAN_CRITIC_MODE_SET = new Set<string>(PLAN_CRITIC_MODES);
 
 export const SETTING_DEFAULTS = {
   plannerProvider: "anthropic",
@@ -34,6 +42,10 @@ export const SETTING_DEFAULTS = {
   // riding on whatever was chosen for batch planning.
   scopingProvider: "anthropic",
   scopingModel: "",
+  // Spec 30: the read-only plan critic that reviews each plan between
+  // planning and the loop. Its own seat, like scoping.
+  criticProvider: "anthropic",
+  criticModel: "",
   // The one directory the repository picker may browse. Blank means the server
   // user's home directory. Everything the picker lists is confined beneath
   // this, resolved through symlinks, because unlike the old native dialog this
@@ -65,6 +77,7 @@ export const SETTING_DEFAULTS = {
   loopReasoningLevel: "medium",
   evaluatorReasoningLevel: "medium",
   scopingReasoningLevel: "medium",
+  criticReasoningLevel: "medium",
   // Spec 20: how many of a repo's cards may hold a harness at once (planning,
   // looping or evaluating). 1 keeps the serial queue locked decision 5
   // describes. Forced back to 1 whenever the loop provider is local, since
@@ -82,6 +95,11 @@ export const SETTING_DEFAULTS = {
   // Like planning, evaluation is one harness invocation after a completed
   // loop, rather than part of the loop's card-wide budget.
   evaluatorTimeoutMinutes: 10,
+  // Spec 30: one critic pass is one harness invocation.
+  criticTimeoutMinutes: 10,
+  // Spec 30 — `breakdown` = on for cards that are pieces of an epic, `always`,
+  // `off`; a card's own `planCritic` column overrides.
+  planCriticMode: "breakdown",
   // Spec 27: caps a repository's gate command, which the orchestrator runs
   // before each evaluation cycle on repositories that declare one. Separate
   // from the evaluator's own budget: the gate is a build and a suite, not a
@@ -178,6 +196,7 @@ const REASONING_LEVEL_SETTINGS = new Set<keyof Settings>([
   "loopReasoningLevel",
   "evaluatorReasoningLevel",
   "scopingReasoningLevel",
+  "criticReasoningLevel",
 ]);
 const THEMES = new Set([
   "default",
@@ -213,6 +232,7 @@ const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   defaultTimeoutMinutes: [1, 10_080],
   iterationHardTimeoutMinutes: [1, 1_440],
   evaluatorTimeoutMinutes: [1, 10_080],
+  criticTimeoutMinutes: [1, 10_080],
   gateTimeoutMinutes: [1, 1_440],
   stallTimeoutSeconds: [30, 86_400],
   workerStaleSeconds: [15, 86_400],
@@ -234,6 +254,7 @@ const PRIMARY_PROVIDER_SETTINGS = new Set<keyof Settings>([
   "loopProvider",
   "evaluatorProvider",
   "scopingProvider",
+  "criticProvider",
 ]);
 const PROMPT_TEMPLATE_SETTINGS = new Set<keyof Settings>(
   Object.keys(PROMPT_TEMPLATE_DEFAULTS) as (keyof typeof PROMPT_TEMPLATE_DEFAULTS)[],
@@ -289,6 +310,10 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
     } else if (key === "theme") {
       if (typeof settingValue !== "string" || !THEMES.has(settingValue)) {
         invalid("theme must be a known theme");
+      }
+    } else if (key === "planCriticMode") {
+      if (typeof settingValue !== "string" || !PLAN_CRITIC_MODE_SET.has(settingValue)) {
+        invalid(`planCriticMode must be one of: ${PLAN_CRITIC_MODES.join(", ")}`);
       }
     } else if (REASONING_LEVEL_SETTINGS.has(key)) {
       if (typeof settingValue !== "string" || !REASONING_LEVEL_SET.has(settingValue)) {

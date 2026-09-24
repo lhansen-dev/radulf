@@ -39,6 +39,24 @@ describe("secret settings encryption at rest", () => {
   });
 });
 
+describe("plan critic settings (spec 30)", () => {
+  it("defaults planCriticMode to breakdown", () => {
+    expect(getSettings().planCriticMode).toBe("breakdown");
+  });
+
+  it("round-trips the critic's mode, provider and reasoning level", () => {
+    patchSettings({ planCriticMode: "always", criticProvider: "mock", criticReasoningLevel: "high" });
+    const value = getSettings();
+    expect(value.planCriticMode).toBe("always");
+    expect(value.criticProvider).toBe("mock");
+    expect(value.criticReasoningLevel).toBe("high");
+  });
+
+  it("rejects an unknown planCriticMode", () => {
+    expect(() => validateSettingsPatch({ planCriticMode: "sometimes" })).toThrow();
+  });
+});
+
 describe("workerStaleSeconds", () => {
   it("defaults to 120 seconds", () => {
     expect(SETTING_DEFAULTS.workerStaleSeconds).toBe(120);
