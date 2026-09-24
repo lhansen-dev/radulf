@@ -26,6 +26,7 @@ const { patchSettings, getSettings } = await import("./settings");
 const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
 const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
+const { runTranscriptDir } = await import("./retention");
 
 const TERMINAL = new Set(["review", "needs_attention", "done", "plan_review"]);
 
@@ -37,6 +38,8 @@ beforeAll(() => {
     loopProvider: "mock",
     evaluatorProvider: "mock",
     scopingProvider: "mock",
+    criticProvider: "mock",
+    criticModel: "",
     plannerModel: "",
     loopModel: "",
     evaluatorModel: "",
@@ -71,8 +74,12 @@ function seedRepo(name: string) {
 }
 
 /** Start a Todo card whose every role runs `scenario`; resolve once it rests. */
-async function runScenario(scenario: string, repo = seedRepo(scenario)) {
-  const cardId = `card-${scenario}`;
+async function runScenario(
+  scenario: string,
+  repo = seedRepo(scenario),
+  opts: { planCritic?: 0 | 1; cardId?: string } = {},
+) {
+  const cardId = opts.cardId ?? `card-${scenario}`;
   db.insert(cards)
     .values({
       id: cardId,
@@ -84,6 +91,8 @@ async function runScenario(scenario: string, repo = seedRepo(scenario)) {
       plannerModel: scenario,
       loopModel: scenario,
       evaluatorModel: scenario,
+      criticModel: scenario,
+      planCritic: opts.planCritic ?? null,
       createdAt: now(),
       updatedAt: now(),
     })
@@ -96,7 +105,7 @@ async function runScenario(scenario: string, repo = seedRepo(scenario)) {
 const cardStatus = (cardId: string) =>
   db.select().from(cards).where(eq(cards.id, cardId)).get()!.status;
 
-const cardRuns = (cardId: string, kind?: "plan" | "loop" | "evaluate") =>
+const cardRuns = (cardId: string, kind?: "plan" | "critique" | "loop" | "evaluate") =>
   db
     .select()
     .from(runs)
@@ -155,6 +164,32 @@ describe("mock provider — full pipeline", () => {
     expect(cardRuns(cardId, "plan")).toHaveLength(2);
     const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
     expect(replan?.feedback).toContain("Mock revision");
+  }, 30_000);
+
+  it("critic approve: with the critic on, planning is followed by a critique run and the card still reaches review", async () => {
+    const { cardId } = await runScenario("happy-path", seedRepo("critic-approve"), {
+      planCritic: 1,
+      cardId: "card-critic-approve",
+    });
+    expect(cardStatus(cardId)).toBe("review");
+    const critiques = cardRuns(cardId, "critique");
+    expect(critiques).toHaveLength(1);
+    const [critique] = critiques;
+    expect(critique).toMatchObject({ status: "completed", exitReason: "approve", provider: "mock" });
+    expect(critique.promptTokens).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(runTranscriptDir(critique.id), "critique.jsonl"))).toBe(true);
+    expect(
+      db.select().from(events).where(eq(events.cardId, cardId)).all().filter((e) => e.type === "critique.decided"),
+    ).toHaveLength(1);
+  }, 30_000);
+
+  it("critic-revise-once: a critic revise re-plans with the feedback, then the critic approves", async () => {
+    const { cardId } = await runScenario("critic-revise-once", seedRepo("critic-revise"), { planCritic: 1 });
+    expect(cardStatus(cardId)).toBe("review");
+    expect(cardRuns(cardId, "critique").map((r) => r.exitReason)).toEqual(["revise", "approve"]);
+    expect(cardRuns(cardId, "plan")).toHaveLength(2);
+    const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+    expect(replan?.feedback).toContain("Mock critique");
   }, 30_000);
 
   it("planner-questions: parks the card for a human", async () => {
