@@ -781,6 +781,99 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(getCard("cap-third").status).toBe("ready");
     });
 
+    function graphEpic(pieces: { id: string; status?: "todo" | "abandoned"; dependsOn?: string[] }[]) {
+      db.insert(cards)
+        .values({
+          id: "graph-epic",
+          repoId: "repo-1",
+          title: "Epic",
+          status: "backlog",
+          runMode: "graph",
+          position: 0,
+          createdAt: now(),
+          updatedAt: now(),
+        })
+        .run();
+      pieces.forEach((piece, index) => {
+        db.insert(cards)
+          .values({
+            id: piece.id,
+            repoId: "repo-1",
+            parentCardId: "graph-epic",
+            title: `Piece ${piece.id}`,
+            status: piece.status ?? "todo",
+            dependsOn: piece.dependsOn ?? null,
+            position: index + 1,
+            startedAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+            createdAt: now(),
+            updatedAt: now(),
+          })
+          .run();
+      });
+    }
+
+    /** Finish a piece the way a completed loop would: card Done, run no
+     * longer running (the cap counts running runs as well as card status). */
+    function finishPiece(id: string) {
+      db.update(runs).set({ status: "completed" }).where(eq(runs.cardId, id)).run();
+      db.update(cards).set({ status: "done" }).where(eq(cards.id, id)).run();
+    }
+
+    it("starts a graph epic's pieces as their dependencies finish, under the cap (spec 28)", async () => {
+      mocks.settings.maxConcurrentCards = 2;
+      graphEpic([
+        { id: "g-a" },
+        { id: "g-b" },
+        { id: "g-c", dependsOn: ["g-a"] },
+        { id: "g-d", dependsOn: ["g-x"] },
+        { id: "g-x", status: "abandoned" },
+      ]);
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+
+      await vi.waitFor(() => {
+        expect(getCard("g-a").status).toBe("planning");
+        expect(getCard("g-b").status).toBe("planning");
+      });
+      await settle();
+      // The cap of two is full: the unblocked g-d and the blocked g-c both wait.
+      expect(getCard("g-c").status).toBe("todo");
+      expect(getCard("g-d").status).toBe("todo");
+
+      finishPiece("g-a");
+      orchestrator.pump();
+      await vi.waitFor(() => expect(getCard("g-c").status).toBe("planning"));
+      await settle();
+      expect(getCard("g-d").status).toBe("todo");
+
+      finishPiece("g-b");
+      orchestrator.pump();
+      await vi.waitFor(() => expect(getCard("g-d").status).toBe("planning"));
+
+      const noted = db
+        .select()
+        .from(events)
+        .all()
+        .filter((event) => event.type === "epic.dependency_abandoned");
+      expect(noted).toHaveLength(1);
+      expect(noted[0].cardId).toBe("graph-epic");
+      expect(JSON.parse(noted[0].payload)).toEqual({ pieceId: "g-d", abandoned: ["g-x"] });
+    });
+
+    it("Start now starts a graph piece whose dependencies are unfinished (spec 28)", async () => {
+      mocks.settings.maxConcurrentCards = 1;
+      graphEpic([{ id: "g-a" }, { id: "g-c", dependsOn: ["g-a"] }]);
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("g-c");
+
+      expect(getCard("g-c").status).toBe("planning");
+      expect(getCard("g-a").status).toBe("todo");
+    });
+
     it("keeps the queue serial on a local loop provider whatever the cap says", async () => {
       mocks.settings.maxConcurrentCards = 4;
       mocks.settings.loopProvider = "omlx";

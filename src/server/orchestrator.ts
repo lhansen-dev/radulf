@@ -71,6 +71,7 @@ import { errorMessage } from "@/shared/errorMessage";
 import { addScopingMessage, proposeScopedPlan, proposeSplit } from "./scoping";
 import {
   FINISHED_STATUSES,
+  abandonedDependencies,
   epicFinished,
   findDependencyCycle,
   hasChildren,
@@ -958,10 +959,26 @@ export class Orchestrator {
     if (hasChildren(cardId)) throw new ClientError("an epic does not run itself: start its tasks instead");
     if (!card.startedAt)
       db.update(cards).set({ startedAt: now() }).where(eq(cards.id, cardId)).run();
+    // Spec 28: a graph piece may start once every dependency is Done or
+    // Abandoned. When it actually leaves Todo, note which dependencies were
+    // abandoned so the operator can see the piece ran without their work.
+    const abandoned =
+      card.parentCardId && getCard(card.parentCardId)?.runMode === "graph"
+        ? abandonedDependencies(card, listChildren(card.parentCardId))
+        : [];
+    const noteAbandoned = () => {
+      if (card.status === "todo" && abandoned.length > 0) {
+        emitEvent("epic.dependency_abandoned", {
+          cardId: card.parentCardId!,
+          payload: { pieceId: cardId, abandoned: abandoned.map((c) => c.id) },
+        });
+      }
+    };
 
     if (this.latestPlan(cardId) && !pendingReplanFeedback(cardId)) {
       // Restart path — plan exists, go straight to the loop queue. Unplanned
       // feedback (a rejection or an evaluator revise) re-plans first.
+      noteAbandoned();
       this.moveCard(cardId, card.status, "ready");
       this.pump();
     } else if (this.passive || !this.claimStage(cardId, card.status, "planning")) {
@@ -978,6 +995,7 @@ export class Orchestrator {
         this.moveCard(cardId, card.status, "todo", "queued for planning");
       }
     } else {
+      noteAbandoned();
       this.startStage("planning", cardId);
     }
   }
@@ -1514,8 +1532,9 @@ export class Orchestrator {
       .orderBy(asc(cards.startedAt))
       .all();
     // Spec 24: a piece of an ordered epic waits for the pieces queued before
-    // it. Only these automatic starts are held; Start now on the piece is the
-    // operator overriding the order on purpose.
+    // it. Spec 28: a piece of a graph epic waits until every sibling in its
+    // `dependsOn` is Done or Abandoned. Only these automatic starts are held;
+    // Start now on the piece is the operator overriding the order on purpose.
     const todoCards = db
       .select()
       .from(cards)
