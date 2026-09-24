@@ -63,6 +63,7 @@ history inline.
 | [25: Web and worker processes](../specs/25-web-and-worker-processes.md) | Splitting the one process into web and worker roles that share the database, so a web restart ends no run, several of each can run on one host, and a session crash stays in its worker | Current; amends 02's process model, 13's hosting note, and 20's process-wide analysis |
 | [26: Retries inherit the failed attempt](../specs/26-retries-inherit-the-failed-attempt.md) | Forwarding a killed planner or evaluator attempt's notes, transcript digest, and drafts into its retry, a deadline in the prompt, and honouring a complete result left on disk at a timeout | Current; extends 18 |
 | [27: A repository gate, run outside the model](../specs/27-repository-gate.md) | One gate command per repository, run by the orchestrator in the evaluator's sandbox before each evaluation cycle, with the result handed to the evaluator as evidence | Current; extends 18 item 7 and 26 |
+| [30: A plan critic between planning and the loop](../specs/30-plan-critic.md) | A read-only critic run that reviews each plan against the card, the thread and the specs before the loop starts, approving or sending it back to the planner with feedback, at most twice | Current; extends 04's roles and 17 |
 
 ## Implementation plans
 
