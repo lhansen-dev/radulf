@@ -1,7 +1,0 @@
-Plan critic stage (spec 30): read-only critique run between planning and the loop
-- New specs/30-plan-critic.md decision record (registered in docs/DESIGN_HISTORY.md, cross-referenced from specs/04-agent-pipeline.md), now with a numbering note tying it to specs 28/29 decided in parallel.
-- `critique` run kind + `critique.decided` event; `planCriticMode` global setting (breakdown|always|off), per-card `planCritic` override, critic provider/model/reasoning/prompt/timeout settings.
-- src/server/planCriticService.ts: modelled on evaluationService — sandboxed read-only run, writes only .ralph/CRITIQUE.md, verdict parsed by the shared parseEvaluation; approve → Ready/plan review, revise → re-plan with feedback, third consecutive revise → plan review with notes.
-- src/server/planningService.ts and the orchestrator hand finished plans to the critic when enabled; pendingReplanFeedback picks up critique revise runs; retryFailedStep handles `critique`.
-- UI: Plan critic run label, critic model per run, verdict-styled events entry, settings section, tri-state Plan critic control in new-task dialog / card edit / card page flag.
-- Mock harness (src/server/harness/mock.ts) knows the critic role with approve and revise-once scenarios; tests in planCriticService.test.ts, planningService.test.ts, mockPipeline.test.ts.
