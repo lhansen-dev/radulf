@@ -301,6 +301,30 @@ describe("EvaluationService.runEvaluator", () => {
     expect(mocks.tryGit.mock.calls.some(([, cmd]) => cmd === "commit")).toBe(false);
   });
 
+  it("accepts approve-time doc edits even when git's first status line arrives trimmed", async () => {
+    seedCard("card-doc-edits");
+    const planId = seedPlan("card-doc-edits");
+    seedLoopRun("card-doc-edits", planId);
+    mockEvaluationVerdict("VERDICT: approve\n\nDocs refreshed.");
+    // tryGit trims stdout, so the first porcelain line loses the leading space
+    // of its unstaged-change marker. Before the harness the tree is clean;
+    // after it two docs changed. Every other git call answers as before.
+    let statusCalls = 0;
+    mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => {
+      if (args[0] === "status") {
+        statusCalls += 1;
+        return { ok: true, out: statusCalls === 1 ? "" : "M docs/ARCHITECTURE.md\n M docs/TROUBLESHOOTING.md" };
+      }
+      return { ok: true, out: "" };
+    });
+    const deps = makeDeps();
+
+    await new EvaluationService(deps).runEvaluator("card-doc-edits");
+
+    expect(deps.moveCard).toHaveBeenCalledWith("card-doc-edits", "evaluating", "review", "evaluator approved");
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "approve", expect.any(Object));
+  });
+
   // Spec 20: the evaluator holds one of its repo's pipeline slots, so it owes
   // the queue a pump when it lets go. It was the only stage that never did,
   // which left ready cards parked behind a slot nothing was using.
