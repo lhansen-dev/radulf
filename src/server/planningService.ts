@@ -22,6 +22,7 @@ import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
+import { criticEnabled } from "./planCriticService";
 import {
   circuitOpenReason,
   harnessFailure,
@@ -80,6 +81,9 @@ function loopStopFeedback(exitReason: string, feedback: string | null): string {
   );
 }
 
+const CRITIC_REVISE_PREFIX =
+  "The plan critic reviewed the previous plan before any code was written and asked for changes:\n\n";
+
 export function renderPlanPrompt(
   template: string,
   title: string,
@@ -110,7 +114,8 @@ export function renderPlanPrompt(
 
 /**
  * Feedback the planner has not re-planned from yet: a human rejection of the
- * diff, or an evaluator `revise` verdict.
+ * diff, an evaluator `revise` verdict, or a plan critic `revise` verdict
+ * (spec 30).
  *
  * Both send the card back through planning rather than straight to the loop,
  * so pending feedback is also what tells `startCard` to re-plan a card that
@@ -135,13 +140,19 @@ export function pendingReplanFeedback(cardId: string): string | null {
     .orderBy(desc(reviews.createdAt))
     .limit(1)
     .get();
-  const revise = db
-    .select({ feedback: runs.feedback, at: runs.startedAt })
+  const reviseRow = db
+    .select({ feedback: runs.feedback, kind: runs.kind, at: runs.startedAt })
     .from(runs)
-    .where(and(onLatestPlan, eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")))
+    .where(and(onLatestPlan, inArray(runs.kind, ["evaluate", "critique"]), eq(runs.exitReason, "revise")))
     .orderBy(desc(runs.startedAt))
     .limit(1)
     .get();
+  // The critic judged the plan alone, before any code existed: say so, or the
+  // planner reads its feedback as a review of an implementation.
+  const revise =
+    reviseRow?.kind === "critique" && reviseRow.feedback
+      ? { ...reviseRow, feedback: CRITIC_REVISE_PREFIX + reviseRow.feedback }
+      : reviseRow;
   // A loop that stopped for the planner: blocked, or exhausted without DONE.
   // Older exhausted rows carry no feedback of their own, so the wording is
   // supplied here rather than read from the row.
@@ -222,7 +233,13 @@ export function planningDestination(
  * injected callbacks.
  */
 export class PlanningService {
-  constructor(private readonly deps: StageDependencies & { pump(): void }) {}
+  constructor(
+    private readonly deps: StageDependencies & {
+      pump(): void;
+      /** Spec 30: hand a finished plan to the critic; the card stays in `planning`. */
+      critique(cardId: string): void;
+    },
+  ) {}
 
   async runPlanning(cardId: string) {
     const deps = this.deps;
@@ -383,7 +400,14 @@ export class PlanningService {
       await tryGit(worktreePath, "commit", "-m", `ralph: plan v${version} for "${card.title}"`);
 
       deps.finishRun(runId, "completed", "plan artifacts written", telemetry);
-      deps.moveCard(cardId, "planning", planningDestination(card));
+      if (criticEnabled(card, settings)) {
+        // Spec 30: the critic reads the plan while the card keeps its slot in
+        // `planning`; it moves the card on (or re-plans) itself.
+        emitEvent("plan.critique_requested", { cardId, runId, payload: { version } });
+        deps.critique(cardId);
+      } else {
+        deps.moveCard(cardId, "planning", planningDestination(card));
+      }
     } catch (error) {
       if (!controller.signal.aborted) {
         const reason = `planner failed: ${errorMessage(error)}`;
