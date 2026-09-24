@@ -1,4 +1,4 @@
-You are working on: making this repository's test suite runnable inside Radulf's own sandbox (no literal `/tmp` filesystem paths in tests, real-sandbox tests skip themselves when nested, and the sandboxed `TMPDIR` becomes the run-private directory via `CLAUDE_CODE_TMPDIR`).
+You are working on: making Radulf's own test suite pass when run nested inside Radulf's sandbox — this iteration fixes `src/server/evaluationService.test.ts` leaking a queued `runHarness` mock when the Phase 18.1 sandbox test cannot start a nested sandbox, by sharing the `insideRadulfSandbox` predicate from `src/testUtils/` (test files and test utilities only; no production code).
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -37,7 +37,19 @@ Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
 Task-specific hints:
-- If `node_modules/.bin/vitest` does not exist, run `npm ci` once before your check (the npm registry is reachable). Never run `make test` or a bare `vitest run`.
-- Never set or override `TMPDIR`, and never point a temp directory inside this worktree. Use whatever the environment already provides; `os.tmpdir()` in Node honours it.
-- You are yourself running inside Radulf's sandbox: `/tmp` is read-only and real bubblewrap/Seatbelt suites cannot start here. When a check on `src/server/sandbox/srt.test.ts` reports the real-runtime suites as skipped, that is the expected result here, not a failure.
-- Use the `Edit` tool with exact, minimal `oldText` snippets; keep surrounding code and comments intact.
+- Run vitest as `node_modules/.bin/vitest run <file>`. Never set or override
+  `TMPDIR`; leave it exactly as the environment provides it, and never point it
+  inside this worktree.
+- The `@/testUtils/...` import alias already works (see the existing
+  `import { setupTestDataDir } from "@/testUtils/testDataDir";`). Files under
+  `src/testUtils/` that do not end in `.test.ts` are not collected as tests.
+- Inside Radulf's sandbox it is normal for `src/server/sandbox/srt.test.ts` to
+  report 21 skipped tests and for the Phase 18.1 test in
+  `src/server/evaluationService.test.ts` to be skipped; a skipped test is not a
+  failure. Only a non-zero exit code is a failure.
+- `vi.clearAllMocks()` does NOT drop a pending `mockImplementationOnce` /
+  `mockResolvedValueOnce`; `mock.mockReset()` does, but it also removes the
+  default implementation, so call `mockReset()` BEFORE re-establishing
+  `mockResolvedValue(...)`, never after.
+- Only edit the files the task names. Do not touch anything under
+  `src/server/sandbox/srt.ts` or any other non-test source file.
