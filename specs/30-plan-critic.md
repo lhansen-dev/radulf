@@ -49,6 +49,9 @@ verdict appears in the card's activity as a `critique.decided` event.
 planner's tool set — writes confined to `.ralph/`, no bash — and the post-run
 check rejects any change other than `.ralph/CRITIQUE.md`, as it does for the
 evaluator.
+*Amended at implementation (2026-09-24): the critic is its own harness role,
+`critic`, bound to the planner's tool set less `edit` — it writes exactly one
+file and never changes an existing one. Same `.ralph/` write root, no bash.*
 
 **6. No new card status.** The card stays in `planning` while the critic
 runs. The critique is part of producing a plan, not a state of its own.

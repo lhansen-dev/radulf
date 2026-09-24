@@ -34,12 +34,19 @@ describe("toolsForRole — role capability split (spec 14 Phase 2b)", () => {
     expect(ro).toContain("web_search");
     for (const tool of ["bash", "write", "edit"]) expect(ro).not.toContain(tool);
   });
+
+  it("gives the critic the planner's set less edit, so the two are told apart by their tools", () => {
+    const critic = toolsForRole("critic", false);
+    expect(critic).toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "write", "web_search"]));
+    for (const tool of ["bash", "edit"]) expect(critic).not.toContain(tool);
+  });
 });
 
 describe("pathRootsForRole — L2 roots (spec 14 Phase 3)", () => {
   it("lets the planner write only .ralph, and the loop/evaluator the whole worktree", () => {
     const wt = "/tmp/wt";
     expect(pathRootsForRole("planner", wt)).toEqual({ readRoots: [wt], writeRoots: [path.join(wt, ".ralph")] });
+    expect(pathRootsForRole("critic", wt)).toEqual({ readRoots: [wt], writeRoots: [path.join(wt, ".ralph")] });
     expect(pathRootsForRole("loop", wt)).toEqual({ readRoots: [wt], writeRoots: [wt] });
     expect(pathRootsForRole("evaluator", wt)).toEqual({ readRoots: [wt], writeRoots: [wt] });
     // Read-only sessions (scoping, proposer): the checkout they were pointed

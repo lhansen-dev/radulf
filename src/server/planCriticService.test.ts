@@ -338,7 +338,7 @@ describe("PlanCriticService.runCritic", () => {
     const call = mocks.runHarness.mock.calls[0][0];
     expect(call).toMatchObject({
       timeoutMs: 7 * 60 * 1000,
-      role: "planner",
+      role: "critic",
       cwd: worktreePath,
       model: "critic-model",
     });

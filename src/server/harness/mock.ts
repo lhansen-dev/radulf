@@ -120,8 +120,8 @@ const loop: Script = ({ prompt, step }) => {
   }
 };
 
-/** The plan critic (spec 30): same tool set as the planner, told apart by
- * the verdict path its prompt names. */
+/** The plan critic (spec 30): the planner's tool set less `edit`, which is
+ * how the two are told apart. */
 const critic: Script = ({ step }) =>
   step === 0
     ? [write(".ralph/CRITIQUE.md", "VERDICT: approve\n\nMock critique: the plan covers the card.\n")]
@@ -319,11 +319,11 @@ function declaredTools(ctx: Context): Set<string> {
 
 /** Role from the tool set toolsForRole() bound (pi.ts): only loop and
  * evaluator hold bash; the planner and the plan critic write without it,
- * and only the critic's prompt names its verdict file. */
+ * and only the planner holds edit. */
 function roleOf(ctx: Context, prompt: string): MockRole {
   const tools = declaredTools(ctx);
   if (tools.has("bash")) return /^LAST_TASK=/m.test(prompt) ? "loop" : "evaluator";
-  if (tools.has("write")) return /\.ralph\/CRITIQUE\.md/.test(prompt) ? "critic" : "planner";
+  if (tools.has("write")) return tools.has("edit") ? "planner" : "critic";
   return "readOnly";
 }
 

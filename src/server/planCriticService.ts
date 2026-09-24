@@ -235,7 +235,7 @@ export class PlanCriticService {
         cwd: worktreePath,
         timeoutMs,
         signal: controller.signal,
-        role: "planner",
+        role: "critic",
         runContext: ctx,
       });
       if (controller.signal.aborted) return; // cancelCard already finalized
