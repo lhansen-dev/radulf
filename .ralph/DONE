@@ -1,0 +1,5 @@
+Stop evaluationService.test.ts leaking a queued runHarness mock when run nested inside Radulf's sandbox
+- Added `import { insideRadulfSandbox } from "@/testUtils/insideRadulfSandbox"` and changed the "PLAN.md Phase 18.1 regression ... sandboxWeakerIsolationForGoTls" test to `it.skipIf(insideRadulfSandbox)(...)` with a comment explaining that nested srt preflight fails before runHarness is called, which would leave the once-queued verdict to leak into the next test.
+- Added `expect(mocks.runHarness).toHaveBeenCalledTimes(1)` after `runEvaluator("card-weaker-iso")` so on a plain host the test proves the run went through the harness.
+- Inserted `mocks.runHarness.mockReset()` between `vi.clearAllMocks()` and `mockResolvedValue(...)` in all three beforeEach blocks (clearAllMocks does not drop pending *Once implementations; mockReset does, and must precede re-establishing the default).
+- Only file touched: src/server/evaluationService.test.ts. Check: `node_modules/.bin/vitest run src/server/evaluationService.test.ts` exits 0 (23 passed + 1 skipped in sandbox); `grep -c 'mocks.runHarness.mockReset()'` prints 3.

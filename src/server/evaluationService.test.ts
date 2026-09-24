@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { and, desc, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
+import { insideRadulfSandbox } from "@/testUtils/insideRadulfSandbox";
 
 const execFileAsync = promisify(execFile);
 
@@ -236,6 +237,7 @@ describe("EvaluationService.runEvaluator", () => {
     db.delete(cards).run();
     db.delete(repos).run();
     vi.clearAllMocks();
+    mocks.runHarness.mockReset();
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
     mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
     mocks.offRunBranchReason.mockResolvedValue(null);
@@ -484,7 +486,8 @@ describe("EvaluationService.runEvaluator", () => {
   // "@/db" (foreign_keys = ON, src/db/index.ts:32), so the old ordering bug
   // would fail this test with SQLITE_CONSTRAINT_FOREIGNKEY rather than a
   // wholesale-mocked assertion papering over it.
-  it("PLAN.md Phase 18.1 regression: does not violate events.run_id FK when sandboxWeakerIsolationForGoTls is on", async () => {
+  // Skipped inside Radulf's own sandbox: this test turns real sandboxing on, and there srt preflight cannot start a nested sandbox, so runEvaluator fails before calling runHarness and the queued `mockImplementationOnce` verdict would leak into the next test.
+  it.skipIf(insideRadulfSandbox)("PLAN.md Phase 18.1 regression: does not violate events.run_id FK when sandboxWeakerIsolationForGoTls is on", async () => {
     mocks.settings.sandboxEnabled = true;
     mocks.settings.sandboxWeakerIsolationForGoTls = true;
     seedCard("card-weaker-iso");
@@ -495,6 +498,7 @@ describe("EvaluationService.runEvaluator", () => {
 
     // Would throw (SQLITE_CONSTRAINT_FOREIGNKEY) under the pre-fix ordering.
     await new EvaluationService(deps).runEvaluator("card-weaker-iso");
+    expect(mocks.runHarness).toHaveBeenCalledTimes(1);
 
     const weakerEvents = db
       .select()
@@ -528,6 +532,7 @@ describe("EvaluationService.runEvaluator — retries inherit the failed attempt 
     db.delete(cards).run();
     db.delete(repos).run();
     vi.clearAllMocks();
+    mocks.runHarness.mockReset();
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
     mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
     mocks.offRunBranchReason.mockResolvedValue(null);
@@ -676,6 +681,7 @@ describe("EvaluationService.runEvaluator — the repository gate (spec 27)", () 
     db.delete(cards).run();
     db.delete(repos).run();
     vi.clearAllMocks();
+    mocks.runHarness.mockReset();
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
     mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
     mocks.offRunBranchReason.mockResolvedValue(null);
