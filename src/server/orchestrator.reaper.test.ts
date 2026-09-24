@@ -24,7 +24,8 @@ vi.mock("./settings", async (importOriginal) => {
 
 const testDataDir = setupTestDataDir("radulf-orchestrator-reaper-");
 
-const { db, cards, events, iterations, plans, repos, runs, workers, now } = await import("@/db");
+const { db, cards, events, iterations, plans, repoLeases, repos, reviewDeliveries, runs, workers, now } =
+  await import("@/db");
 const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runScratchRoot } = await import("./sandbox/context");
 const { planStatePath } = await import("./bookkeeping");
@@ -70,12 +71,37 @@ function seedWorker(id: string, heartbeatAt: string) {
     .run();
 }
 
+function seedDelivery(
+  id: string,
+  cardId: string,
+  runId: string,
+  overrides: Partial<typeof reviewDeliveries.$inferInsert> = {},
+) {
+  db.insert(reviewDeliveries)
+    .values({
+      id,
+      runId,
+      cardId,
+      repoId: "repo-1",
+      fromStatus: "review",
+      approvedBy: "human",
+      status: "pending",
+      createdAt: now(),
+      ...overrides,
+    })
+    .run();
+}
+
 const card = (id: string) => db.select().from(cards).where(eq(cards.id, id)).get()!;
+const delivery = (id: string) => db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, id)).get()!;
+const lease = (repoPath: string) => db.select().from(repoLeases).where(eq(repoLeases.repoPath, repoPath)).get();
 const run = (id: string) => db.select().from(runs).where(eq(runs.id, id)).get()!;
 const worker = (id: string) => db.select().from(workers).where(eq(workers.id, id)).get();
 
 beforeEach(() => {
   mocks.staleSeconds = 120;
+  db.delete(reviewDeliveries).run();
+  db.delete(repoLeases).run();
   db.delete(workers).run();
   db.delete(iterations).run();
   db.delete(runs).run();
@@ -203,5 +229,48 @@ describe("stale reaper", () => {
 
     expect(run("r1").status).toBe("interrupted");
     expect(card("c1").status).toBe("ready");
+  });
+});
+
+describe("delivery reaper (spec 25 decision 6)", () => {
+  it("fails a running delivery owned by a dead worker, frees its lease and parks the card", () => {
+    seedWorker("dead", secondsAgo(600));
+    seedCard("c1", { status: "reviewing" });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    seedDelivery("d1", "c1", "r1", { status: "running", workerId: "dead", claimedAt: secondsAgo(600) });
+    db.insert(repoLeases).values({ repoPath: "/tmp/repo-1", workerId: "dead", acquiredAt: secondsAgo(600) }).run();
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns();
+
+    expect(delivery("d1").status).toBe("finished");
+    expect(delivery("d1").ok).toBe(0);
+    expect(delivery("d1").error).toContain("dead");
+    expect(lease("/tmp/repo-1")).toBeUndefined();
+    expect(card("c1").status).toBe("needs_attention");
+  });
+
+  it("leaves a running delivery owned by a live worker alone", () => {
+    seedWorker("alive", now());
+    seedCard("c1", { status: "reviewing" });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    seedDelivery("d1", "c1", "r1", { status: "running", workerId: "alive", claimedAt: now() });
+    db.insert(repoLeases).values({ repoPath: "/tmp/repo-1", workerId: "alive", acquiredAt: now() }).run();
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns();
+
+    expect(delivery("d1").status).toBe("running");
+    expect(lease("/tmp/repo-1")?.workerId).toBe("alive");
+    expect(card("c1").status).toBe("reviewing");
+  });
+
+  it("the orphan sweep skips a reviewing card whose delivery is still pending", () => {
+    seedCard("c1", { status: "reviewing", updatedAt: secondsAgo(600) });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    seedDelivery("d1", "c1", "r1", { status: "pending" });
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns({ orphans: true });
+
+    expect(card("c1").status).toBe("reviewing");
+    expect(delivery("d1").status).toBe("pending");
   });
 });

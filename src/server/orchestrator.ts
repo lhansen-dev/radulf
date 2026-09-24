@@ -12,6 +12,8 @@ import {
   events,
   repos,
   improvementRuns,
+  reviewDeliveries,
+  refWrites,
   type ApprovedInstallScript,
   type CardStatus,
   type EpicRunMode,
@@ -49,6 +51,7 @@ import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { ReviewService, type ConfigApproval } from "./reviewService";
+import { releaseStaleLeases } from "./repoLeases";
 import { ClientError } from "./clientError";
 import { hasRole } from "./roles";
 import {
@@ -299,7 +302,13 @@ export class Orchestrator {
     // pull request delivered this way a draft.
     approveReview: (runId) => this.reviewService.approve(runId, "auto"),
   });
-  private reviewService = new ReviewService({ ...this.stageDeps, pump: () => this.pump() });
+  private reviewService = new ReviewService({
+    ...this.stageDeps,
+    pump: () => this.pump(),
+    // Spec 25 decision 6: a closure, not the value — `passive` is assigned in
+    // the constructor, after this field initialiser has already run.
+    passive: () => this.passive,
+  });
 
   /** Spec 18 §5 sweep timer, held so startDraining() can stop it. */
   private attentionTimer: ReturnType<typeof setInterval> | null = null;
@@ -536,8 +545,12 @@ export class Orchestrator {
    * `reviewing` merge in flight, or a `planning`/`evaluating` card still
    * creating its worktree before its run row exists). Only boot, when this
    * process knows it has nothing in flight, may judge it. Spec 25 decision 6
-   * will give delivery a lease row so the continuous pass can reason about
-   * it too. */
+   * gives a review delivery a `review_deliveries` row, so the continuous
+   * pass does reason about those: a `running` delivery whose worker has
+   * stopped heartbeating is finished as failed, its card parked, and its
+   * repo lease released; a `reviewing` card with a pending or running
+   * delivery is left alone by the orphan sweep because a worker owns it (or
+   * will claim it). */
   reapStaleRuns(options: { orphans?: boolean } = {}): void {
     // Read on every call, never cached: the operator can widen or narrow the
     // window at runtime and the next pass must honour it.
@@ -573,6 +586,38 @@ export class Orchestrator {
       if (card) this.parkOrResume(card);
     }
 
+    // Spec 25 decision 6: a delivery whose claiming worker died mid-merge.
+    // Same CAS shape as the run update, so two reapers cannot both park the
+    // card. The pending rows are left alone: any live worker's pump claims
+    // them.
+    const runningDeliveries = db
+      .select()
+      .from(reviewDeliveries)
+      .where(eq(reviewDeliveries.status, "running"))
+      .all();
+    for (const delivery of runningDeliveries) {
+      if (delivery.workerId !== null && live.has(delivery.workerId)) continue;
+      const error = `worker ${delivery.workerId} stopped heartbeating during delivery`;
+      const result = db
+        .update(reviewDeliveries)
+        .set({ status: "finished", ok: 0, error, endedAt: now() })
+        .where(and(eq(reviewDeliveries.id, delivery.id), eq(reviewDeliveries.status, "running")))
+        .run();
+      if (result.changes !== 1) continue;
+      this.moveCard(delivery.cardId, "reviewing", "needs_attention", error);
+      emitEvent("review.decided", {
+        cardId: delivery.cardId,
+        runId: delivery.runId,
+        payload: { decision: "approved", deliveryFailed: error },
+      });
+    }
+    releaseStaleLeases(live);
+    // The ref audit log only has to outlive the integrity checks that consult
+    // it; a week is far past any run's lifetime.
+    db.delete(refWrites)
+      .where(lt(refWrites.writtenAt, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()))
+      .run();
+
     if (options.orphans) {
       // Any card still marked planning/looping/evaluating with no run at all
       // lost its run some other way (a reviewing card lost the in-process
@@ -596,6 +641,22 @@ export class Orchestrator {
           .where(and(eq(runs.cardId, card.id), eq(runs.status, "running")))
           .get();
         if (active) continue;
+        // A reviewing card with a queued or running delivery is owned (or
+        // about to be claimed) by a worker; the delivery reaper above judges
+        // it, not this sweep.
+        if (card.status === "reviewing") {
+          const owned = db
+            .select({ id: reviewDeliveries.id })
+            .from(reviewDeliveries)
+            .where(
+              and(
+                eq(reviewDeliveries.cardId, card.id),
+                inArray(reviewDeliveries.status, ["pending", "running"]),
+              ),
+            )
+            .get();
+          if (owned) continue;
+        }
         this.parkOrResume(card);
       }
     }
@@ -1527,6 +1588,10 @@ export class Orchestrator {
         }
       }
     }
+
+    // Spec 25 decision 6: deliveries enqueued by a web process (or by this
+    // one) wait here for a worker; run every one whose repo lease is free.
+    this.reviewService.claimPendingDeliveries();
   }
 
   /**
