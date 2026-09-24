@@ -159,6 +159,24 @@ describe("stale reaper", () => {
     expect(run("r1").exitReason).toBe("worker w1 stopped heartbeating");
   });
 
+  it("the continuous pass leaves a run-less reviewing card alone", () => {
+    seedCard("c1", { status: "reviewing", updatedAt: secondsAgo(600) });
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns();
+
+    expect(card("c1").status).toBe("reviewing");
+  });
+
+  it("boot recovery parks a run-less reviewing card idle past the stale window", () => {
+    seedCard("c1", { status: "reviewing", updatedAt: secondsAgo(600) });
+
+    const o = new Orchestrator();
+
+    expect(card("c1").status).toBe("needs_attention");
+
+    o.startDraining();
+  });
+
   it("puts a resumable loop back in ready", () => {
     seedWorker("dead", secondsAgo(600));
     seedCard("c1", { status: "looping" });

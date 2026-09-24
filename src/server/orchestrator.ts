@@ -417,8 +417,9 @@ export class Orchestrator {
   private recover() {
     // Boot recovery is just the first pass of the continuous stale reaper: any
     // running run whose owner is not heartbeating (or was never recorded) is
-    // marked interrupted and its card parked or resumed.
-    this.reapStaleRuns();
+    // marked interrupted and its card parked or resumed. Run-less orphan
+    // cards are only swept here, at boot, when nothing of ours is in flight.
+    this.reapStaleRuns({ orphans: true });
     // Sweep the per-run scratch root (private TMPDIRs, caches, pgid files) of
     // everything that no longer belongs to a live run. A peer worker's
     // in-flight run keeps its directory: its TMPDIR must survive our boot.
@@ -444,12 +445,22 @@ export class Orchestrator {
    * stopped heartbeating (or that has no owner at all — a row from before
    * workers existed, or a process that died between insert and claim) is
    * marked interrupted and its card either resumed (a checkpointed loop) or
-   * parked in Needs Attention. Cards stuck in a running status with no run at
-   * all get the same treatment once they have been idle past the stale
-   * window, and dead worker rows are deleted. Safe to run from any worker at
-   * any time: the run update is a CAS on `status = running`, so two reapers
-   * racing over the same run only let one of them through. */
-  reapStaleRuns(): void {
+   * parked in Needs Attention, and dead worker rows are deleted. Safe to run
+   * from any worker at any time: the run update is a CAS on
+   * `status = running`, so two reapers racing over the same run only let one
+   * of them through.
+   *
+   * With `options.orphans` set, cards stuck in a running (or `reviewing`)
+   * status with no run at all get the same treatment once they have been
+   * idle past the stale window. That sweep is boot-only: a run-less card has
+   * no ownership row anywhere, so a continuous pass cannot tell an abandoned
+   * card from one this or a live peer process is actively working on (a
+   * `reviewing` merge in flight, or a `planning`/`evaluating` card still
+   * creating its worktree before its run row exists). Only boot, when this
+   * process knows it has nothing in flight, may judge it. Spec 25 decision 6
+   * will give delivery a lease row so the continuous pass can reason about
+   * it too. */
+  reapStaleRuns(options: { orphans?: boolean } = {}): void {
     // Read on every call, never cached: the operator can widen or narrow the
     // window at runtime and the next pass must honour it.
     const staleSeconds = getSettings().workerStaleSeconds;
@@ -484,28 +495,31 @@ export class Orchestrator {
       if (card) this.parkOrResume(card);
     }
 
-    // Any card still marked planning/looping/evaluating with no run at all
-    // lost its run some other way (a reviewing card lost the in-process merge
-    // claim). Only cards idle past the stale window count: a card that just
-    // moved into a running status may be about to get its run inserted.
-    const orphans = db
-      .select()
-      .from(cards)
-      .where(
-        and(
-          inArray(cards.status, [...RUNNING_STATUSES, "reviewing"]),
-          lt(cards.updatedAt, staleBefore(staleSeconds)),
-        ),
-      )
-      .all();
-    for (const card of orphans) {
-      const active = db
-        .select({ id: runs.id })
-        .from(runs)
-        .where(and(eq(runs.cardId, card.id), eq(runs.status, "running")))
-        .get();
-      if (active) continue;
-      this.parkOrResume(card);
+    if (options.orphans) {
+      // Any card still marked planning/looping/evaluating with no run at all
+      // lost its run some other way (a reviewing card lost the in-process
+      // merge claim). Only cards idle past the stale window count: a card
+      // that just moved into a running status may be about to get its run
+      // inserted. Boot-only, see the JSDoc above.
+      const orphans = db
+        .select()
+        .from(cards)
+        .where(
+          and(
+            inArray(cards.status, [...RUNNING_STATUSES, "reviewing"]),
+            lt(cards.updatedAt, staleBefore(staleSeconds)),
+          ),
+        )
+        .all();
+      for (const card of orphans) {
+        const active = db
+          .select({ id: runs.id })
+          .from(runs)
+          .where(and(eq(runs.cardId, card.id), eq(runs.status, "running")))
+          .get();
+        if (active) continue;
+        this.parkOrResume(card);
+      }
     }
 
     for (const id of staleWorkerIds(staleSeconds)) {
