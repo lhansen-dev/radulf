@@ -123,6 +123,16 @@ performs the merge or pull-request delivery, records the refs it moved in a
 ref-write table, and finishes the card. A loop running against the same repo
 consults that table at its run-end integrity check, which is what the
 in-memory live-baseline registry does today within one process.
+*Amended at implementation (2026-09-24): the delivery request is a
+`review_deliveries` row (pending → running → finished, with the claiming
+worker, outcome and error). A worker claims it and takes the `repo_leases` row
+in one transaction; a process with the worker role that approves runs the
+delivery itself, a web-only process returns once the row exists. Because
+`mergeBranch` moves the base branch at `git commit` and records the write only
+afterwards, the run-end check waits (bounded) for the repo lease to be released
+before judging a moved ref it cannot explain, then re-reads `ref_writes`. The
+stale reaper finishes a `running` delivery whose worker stopped heartbeating,
+releases its lease and parks the card in Needs Attention.*
 
 **7. Exactly-once background work uses the rows it acts on.** Improvement-run
 drivers hold a lease per run with a heartbeat. The schedule tick and the
@@ -158,6 +168,8 @@ the existing budget. `POST /api/restart` restarts the process it is called on.
   rows. `runs.control`: nullable text, the pending operator signal.
 - A card column for a card waiting on a free slot after install approval,
   replacing the in-memory pending-evaluations map.
+- `review_deliveries`: the durable delivery request — run, card, repo, the
+  status the card came from, who approved, status, claiming worker, outcome.
 - `repo_leases`: repo path, holder worker id, acquired_at, for delivery
   serialization.
 - `ref_writes`: repo path, ref, sha, written_at, worker id, replacing the

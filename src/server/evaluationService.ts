@@ -24,11 +24,7 @@ import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
-import {
-  registerRunBaseline,
-  releaseRunBaseline,
-  snapshotRepoIntegrity,
-} from "./integrity";
+import { snapshotRepoIntegrity } from "./integrity";
 import {
   circuitOpenReason,
   harnessFailure,
@@ -122,10 +118,6 @@ export class EvaluationService {
     // containment as the loop, including the parent-repo integrity check.
     const ctx = await createRunSandbox(runId, { cwd: worktreePath, s: settings });
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
-    // Spec 20: an evaluation runs long enough that another card's merge can
-    // move this repo's base branch under it. Registering lets that merge
-    // record its own write rather than this run reporting it as tampering.
-    if (integrityBaseline) registerRunBaseline(runId, repo.path, integrityBaseline);
     startRunRow(
       {
         id: runId,
@@ -394,7 +386,6 @@ export class EvaluationService {
       }
     } finally {
       deps.releaseController(runId);
-      releaseRunBaseline(runId);
       await ctx.cleanup();
       // Last, and on every exit path: the card has already landed wherever
       // this evaluation sent it, so the slot this run held is free.
