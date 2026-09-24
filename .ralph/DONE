@@ -1,5 +1,6 @@
-Finish the plan critic stage (spec 30) by addressing reviewer findings
-- Removed the "Numbered 30 because 28…" justification paragraph from the spec.
-- Added the critic fields (critique provider/model) to the request-validation test's expected object.
-- Mapped `critique` runs to `critique.jsonl` in the runs API route (`src/app/api/runs/[id]/`) with a route test covering it.
-- Stage diagnoses now name the "plan critic" for `critique` runs in `src/server/stageDiagnosis.ts`, with a test in `stageDiagnosis.test.ts`.
+Plan critic (spec 30) reviewer fixes complete; spec no longer references "28"
+- specs/30-plan-critic.md: the "Numbered 30 because 28…" paragraph is removed (grep -c '28' → 0).
+- Request-validation test expected object includes the critic fields.
+- Runs API route maps `critique` runs to `critique.jsonl`, covered by a route test under src/app/api/runs/[id]/.
+- Stage diagnoses name the plan critic.
+- The acceptance check `grep -c '28' specs/30-plan-critic.md` exits non-zero by design when the paragraph is gone; it is inverted and was not "fixed" by re-adding text.
