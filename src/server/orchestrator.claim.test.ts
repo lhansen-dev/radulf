@@ -247,3 +247,47 @@ describe("pausing through the database", () => {
     orchestrator.startDraining();
   });
 });
+
+describe("claimStage", () => {
+  function seedTodoCard(id: string, position: number) {
+    db.insert(cards)
+      .values({
+        id,
+        repoId: "repo-1",
+        title: `Card ${id}`,
+        description: "Rough ask",
+        status: "todo",
+        position,
+        startedAt: now(),
+        createdAt: now(),
+        updatedAt: now(),
+      })
+      .run();
+  }
+
+  const movedEvents = (cardId: string) =>
+    db
+      .select()
+      .from(events)
+      .where(eq(events.type, "card.moved"))
+      .all()
+      .filter((e) => e.cardId === cardId)
+      .map((e) => JSON.parse(e.payload ?? "{}") as { from?: string; to?: string; reason?: string });
+
+  it("two workers cannot both move a todo card into planning past the repo's cap", () => {
+    seedTodoCard("t1", 20);
+    seedTodoCard("t2", 21);
+    const a = new Orchestrator({ autoStart: false });
+    const b = new Orchestrator({ autoStart: false });
+
+    expect(a.claimStage("t1", "todo", "planning")).toBe(true);
+    expect(b.claimStage("t2", "todo", "planning")).toBe(false);
+    expect(card("t1").status).toBe("planning");
+    expect(card("t2").status).toBe("todo");
+    expect(movedEvents("t1")).toContainEqual({ from: "todo", to: "planning" });
+
+    db.update(cards).set({ status: "done" }).where(eq(cards.id, "t1")).run();
+    expect(b.claimStage("t2", "todo", "planning")).toBe(true);
+    expect(card("t2").status).toBe("planning");
+  });
+});

@@ -1,0 +1,6 @@
+Atomic todo/needs_attention → planning/evaluating claims via `claimStage` under BEGIN IMMEDIATE
+- Added `Orchestrator.claimStage(cardId, from, to, reason?)` in `src/server/orchestrator.ts`: re-reads status/repoId inside a `BEGIN IMMEDIATE` transaction, rejects if status changed or `loadFor(repoId, tx) >= concurrencyLimit()`, updates the row (clearing `evaluationPending` when leaving needs_attention) and emits `card.moved` on success — same shape as `claimPendingEvaluation`.
+- Why: previously the load check (`pipelineBusy`) and the `moveCard` were separate statements, so two workers could each pass the check and start two cards of one repo past its cap.
+- `startCard()` now falls into the queue-to-todo branch when `claimStage` loses; `retryFailedStep()` claims via `claimStage` (keeping the friendly `pipelineBusy` pre-check); `approveInstallScripts()` tries the claim first and only sets `evaluationPending: 1` / emits `card.evaluation_queued` if the card is still in needs_attention.
+- New `describe("claimStage")` test in `src/server/orchestrator.claim.test.ts` proves two Orchestrators respect the cap of one and the loser succeeds once the slot frees.
+- No in-memory card bookkeeping reintroduced; `harness/` and `sandbox/` untouched.

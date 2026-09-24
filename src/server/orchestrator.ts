@@ -601,6 +601,39 @@ export class Orchestrator {
     return true;
   }
 
+  /**
+   * Move a card into a stage that consumes a pipeline slot (planning or
+   * evaluating) under `BEGIN IMMEDIATE`, re-checking both the card's status
+   * and the repo's load inside the same transaction. Two workers sharing the
+   * database therefore cannot each pass the load check and start two
+   * different cards of one repo past its cap. Same shape as
+   * claimPendingEvaluation; neither destination is an alert or finished
+   * status, so moveCard's follow-ups do not apply here.
+   */
+  claimStage(cardId: string, from: CardStatus, to: "planning" | "evaluating", reason?: string): boolean {
+    const claimed = db.transaction(
+      (tx) => {
+        const fresh = tx
+          .select({ status: cards.status, repoId: cards.repoId })
+          .from(cards)
+          .where(eq(cards.id, cardId))
+          .get();
+        if (fresh?.status !== from) return false;
+        if (this.loadFor(fresh.repoId, tx) >= this.concurrencyLimit()) return false;
+        const moved = tx
+          .update(cards)
+          .set({ status: to, updatedAt: now(), ...(from === "needs_attention" ? { evaluationPending: 0 } : {}) })
+          .where(and(eq(cards.id, cardId), eq(cards.status, from)))
+          .run();
+        return moved.changes === 1;
+      },
+      { behavior: "immediate" },
+    );
+    if (!claimed) return false;
+    emitEvent("card.moved", { cardId, payload: { from, to, ...(reason ? { reason } : {}) } });
+    return true;
+  }
+
   /** Spec 24 decision 6: the last piece finishing finishes its epic. */
   private completeEpicIfFinished(childId: string) {
     const parentId = getCard(childId)?.parentCardId;
@@ -806,8 +839,9 @@ export class Orchestrator {
       // feedback (a rejection or an evaluator revise) re-plans first.
       this.moveCard(cardId, card.status, "ready");
       this.pump();
-    } else if (this.passive || this.pipelineBusy(card.repoId)) {
-      // One ticket runs at a time. The startedAt set above marks this a manual
+    } else if (this.passive || !this.claimStage(cardId, card.status, "planning")) {
+      // One ticket runs at a time (claimStage checks the repo's cap and moves
+      // the card to planning atomically). The startedAt set above marks this a manual
       // start; land it back in todo (pump only scans todo for planning) so it
       // is picked up, oldest manual start first, when the pipeline frees. A
       // passive (web-only) process takes the same path unconditionally: it
@@ -819,7 +853,6 @@ export class Orchestrator {
         this.moveCard(cardId, card.status, "todo", "queued for planning");
       }
     } else {
-      this.moveCard(cardId, card.status, "planning");
       this.startStage("planning", cardId);
     }
   }
@@ -1091,7 +1124,7 @@ export class Orchestrator {
     const [stage, agent] = step === "plan"
       ? (["planning", "planner"] as const)
       : (["evaluating", "evaluator"] as const);
-    if (!this.moveCard(cardId, "needs_attention", stage, `retrying failed ${agent}`)) {
+    if (!this.claimStage(cardId, "needs_attention", stage, `retrying failed ${agent}`)) {
       throw new ClientError(`card status changed before the ${agent} could retry`);
     }
     this.startStage(stage, cardId);
@@ -2135,14 +2168,14 @@ export class Orchestrator {
       // still skipping the loop, once a slot is free. The queue is the
       // card row's evaluationPending flag (spec 25), so it survives a
       // restart and is visible to every worker on the database.
-      if (this.pipelineBusy(card.repoId)) {
+      if (this.claimStage(cardId, "needs_attention", "evaluating", "install scripts approved")) {
+        this.startStage("evaluating", cardId);
+      } else if (getCard(cardId)?.status === "needs_attention") {
         db.update(cards).set({ evaluationPending: 1, updatedAt: now() }).where(eq(cards.id, cardId)).run();
         emitEvent("card.evaluation_queued", {
           cardId,
           payload: { reason: "install scripts approved while the repo was at its cap" },
         });
-      } else if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
-        this.startStage("evaluating", cardId);
       }
     } else {
       this.moveCard(cardId, "needs_attention", "ready", "install scripts approved");
