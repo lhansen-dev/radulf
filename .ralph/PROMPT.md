@@ -4,6 +4,12 @@ Your branch conflicts with `beta`, which changed while you worked. `beta` has be
 
 ---
 
+## Merge conflict — resolve this first
+
+Your branch conflicts with `beta`, which changed while you worked. `beta` has been merged into your branch and the conflicted files now contain `<<<<<<<` / `=======` / `>>>>>>>` markers. Resolve every marker (keep both your work and the base's intent), remove the markers, and write the normal completion signals so the orchestrator can record the merge. Only once the working tree is clean, finish the task and write DONE as usual.
+
+---
+
 You are working on: finishing the plan critic stage (spec 30) by fixing the reviewer's findings — remove the "Numbered 30 because 28…" paragraph from the spec, add the critic fields to the request-validation test's expected object, map `critique` runs to `critique.jsonl` in the runs API route with a route test, and name the plan critic in stage diagnoses.
 
 Your task for this iteration is given in the `## Your assigned task` block at

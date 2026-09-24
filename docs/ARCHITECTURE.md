@@ -117,7 +117,7 @@ session. The role is what decides the tool set — see the capability split belo
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Plan critic | `src/server/planCriticService.ts` | `runCritic(cardId)` | `criticTimeoutMinutes` setting, 10 min default; read-only review of a finished plan (spec 30), run when `planCriticMode` or the card's `planCritic` override says so |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
-| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default; runs the repository's gate command first through `gate.ts` when one is set, under `gateTimeoutMinutes` |
+| Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default; reads the repository gate result the loop's DONE path left in `.ralph/GATE.md` (spec 29), and runs the gate itself through `gate.ts` only when that file is missing, under `gateTimeoutMinutes` |
 
 Scoping is not a pipeline stage (spec 17): it runs on demand from the card's
 API route, outside the orchestrator's slots, as a read-only session against the
@@ -170,7 +170,12 @@ run that the still-unchecked task gets credit for.
 On a DONE signal the run-end ordering matters and is deliberate: reap the
 process group first (a surviving process could plant hooks after a check that
 already passed), then verify parent-repo integrity, then force the install-script
-gate, and only then hand to the evaluator.
+gate, then run the acceptance-criteria probe, then merge the base branch into
+the worktree (`baseSync.ts`, after waiting for the repo's delivery lease to be
+free; a conflict becomes a resolve task for the loop and the next bookkeeping
+commit completes the merge), then run the repository gate (`gate.ts`; a failure
+becomes a repair task), and only then hand to the evaluator. Sync conflicts and
+gate failures together get at most two rounds per run (spec 29).
 
 A DONE signal is accepted only when the iteration was assigned the final
 unchecked task. Earlier signals are removed; normal iteration bookkeeping

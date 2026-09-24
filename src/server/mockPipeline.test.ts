@@ -27,6 +27,7 @@ const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator")
 const { runHarness } = await import("./harness");
 const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
 const { runTranscriptDir } = await import("./retention");
+const { recordRefWrite } = await import("./integrity");
 
 const TERMINAL = new Set(["review", "needs_attention", "done", "plan_review"]);
 
@@ -77,9 +78,14 @@ function seedRepo(name: string) {
 async function runScenario(
   scenario: string,
   repo = seedRepo(scenario),
-  opts: { planCritic?: 0 | 1; cardId?: string } = {},
+  opts: {
+    planCritic?: 0 | 1;
+    cardId?: string;
+    afterLoopStarts?: (repo: ReturnType<typeof seedRepo>) => void;
+  } = {},
 ) {
   const cardId = opts.cardId ?? `card-${scenario}`;
+  const { afterLoopStarts } = opts;
   db.insert(cards)
     .values({
       id: cardId,
@@ -98,6 +104,10 @@ async function runScenario(
     })
     .run();
   orch.startCard(cardId);
+  if (afterLoopStarts) {
+    await waitFor(() => Boolean(cardRuns(cardId, "loop")[0]?.worktreePath));
+    afterLoopStarts(repo);
+  }
   await waitFor(() => TERMINAL.has(cardStatus(cardId)) && !orch.hasInFlightWork());
   return { cardId, repo };
 }
@@ -254,6 +264,40 @@ describe("mock provider — full pipeline", () => {
     expect(gitIn(repo.repoPath, "rev-parse", "escaped")).toBe(gitIn(repo.repoPath, "rev-parse", loop.branch));
     expect(gitIn(repo.repoPath, "log", "--format=%s", "-1", loop.branch)).toBe("ralph: sync plan v1");
   }, 30_000);
+
+  it("base-conflict: a base branch that moved with an overlapping edit is merged before evaluation, resolved by the loop, and approval merges cleanly", async () => {
+    const { cardId, repo } = await runScenario("base-conflict", undefined, {
+      afterLoopStarts: (r) => {
+        fs.mkdirSync(path.join(r.repoPath, "mock-output"), { recursive: true });
+        fs.writeFileSync(path.join(r.repoPath, "mock-output", "task-1.md"), "edited on main while the loop ran\n");
+        gitIn(r.repoPath, "add", ".");
+        gitIn(r.repoPath, "commit", "-q", "-m", "main moves under the loop");
+        // Stands in for the delivery worker that would have moved `main`, so
+        // the run-end integrity check excuses the move.
+        recordRefWrite(r.repoPath, "refs/heads/main", gitIn(r.repoPath, "rev-parse", "HEAD"), null);
+      },
+    });
+    expect(cardStatus(cardId)).toBe("review");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ exitReason: "done-signal", iterationsDone: 3 });
+    const conflicts = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, cardId), eq(events.type, "base.conflict")))
+      .all();
+    expect(conflicts).toHaveLength(1);
+    expect((JSON.parse(conflicts[0].payload as string) as { files: string[] }).files).toEqual([
+      "mock-output/task-1.md",
+    ]);
+    // The task-3 bookkeeping commit completed the merge, so it has two parents.
+    expect(gitIn(loop.worktreePath!, "log", "--merges", "--format=%s")).toContain("ralph: task 3");
+    expect(fs.readFileSync(path.join(loop.worktreePath!, "mock-output", "task-1.md"), "utf8")).not.toContain(
+      "<<<<<<<",
+    );
+    await orch.approve(loop.id);
+    expect(cardStatus(cardId)).toBe("done");
+    expect(gitIn(repo.repoPath, "show", "main:mock-output/task-1.md")).toContain("resolved by mock");
+  }, 40_000);
 
   it("graph epic: independent pieces run together, a dependent piece waits, an abandoned dependency does not block", async () => {
     patchSettings({ maxConcurrentCards: 2 });

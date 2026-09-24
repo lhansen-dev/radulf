@@ -768,22 +768,22 @@ describe("EvaluationService.runEvaluator — the repository gate (spec 27)", () 
     expect(eventsOfType("gate.started")).toHaveLength(0);
   });
 
-  it("runs the gate again when a new loop run has started a fresh cycle", async () => {
+  it("reuses the gate result the loop's DONE path left instead of running the gate again (spec 29)", async () => {
     const marker = path.join(testDataDir, "gate-ran-fresh");
     setGate(`touch ${marker}`);
     seedCard("card-fresh-gate");
     const planId = seedPlan("card-fresh-gate");
     const { worktreePath } = seedLoopRun("card-fresh-gate", planId);
-    fs.writeFileSync(gatePath(worktreePath), "# Repository gate\n\nCommand: `stale`\nResult: exit 1\n");
+    fs.writeFileSync(gatePath(worktreePath), "# Repository gate\n\nCommand: `from the loop`\nResult: exit 0\n");
     mockEvaluationVerdict("VERDICT: approve\n\nFine.");
 
     await new EvaluationService(makeDeps()).runEvaluator("card-fresh-gate");
 
-    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
     const gateMd = fs.readFileSync(gatePath(worktreePath), "utf8");
-    expect(gateMd).toContain(`Command: \`touch ${marker}\``);
-    expect(gateMd).not.toContain("stale");
-    expect(eventsOfType("gate.finished")).toHaveLength(1);
+    expect(gateMd).toContain("from the loop");
+    expect(eventsOfType("gate.started")).toHaveLength(0);
+    expect(mocks.runHarness.mock.calls[0][0].prompt).toContain("from the loop");
   });
 
   it("stops quietly when the card is cancelled while the gate runs", async () => {
