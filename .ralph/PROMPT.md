@@ -1,4 +1,4 @@
-You are working on: replacing the orchestrator's in-memory start guards and single-process boot recovery with database claims (`BEGIN IMMEDIATE`), a `workers` table with heartbeats, `runs.worker_id`, and a continuous stale reaper, so two worker processes can share one SQLite database.
+You are working on: replacing the orchestrator's in-memory start/pause/pending-evaluation state with database claims (`BEGIN IMMEDIATE`), worker heartbeats in a `workers` table, and a continuous stale reaper, so two worker processes can share one SQLite database (spec 25, decisions 2 and 3).
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -37,10 +37,19 @@ Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
 Task-specific hints:
-- Environment: `/tmp` is read-only here and `TMPDIR` is already set. Never set or override `TMPDIR`, and never point temp files inside the worktree.
-- `src/server/harness/` and `src/server/sandbox/` must not change. Only import from them.
-- Database access is drizzle over better-sqlite3 (`import { db, now, cards, runs, workers, ... } from "@/db"`). `db.transaction(fn, { behavior: "immediate" })` opens `BEGIN IMMEDIATE`; every `db` statement inside `fn` runs in that transaction.
-- Generate migrations only with `make db-generate` (drizzle-kit); never hand-write files under `drizzle/`.
-- Test files that touch the database call `setupTestDataDir(...)` from `@/testUtils/testDataDir` at top level BEFORE `await import("@/db")` — copy the pattern in `src/server/orchestrator.roles.test.ts` or `src/server/orchestrator.lifecycle.test.ts`.
-- `src/server/orchestrator.lifecycle.test.ts` has helpers `card(...)`, `plan(...)`, `completedRun(...)`, `getCard(...)`, `getRun(...)`, `settle()`, `successfulHarnessResult`, and `mocks.settings` for per-test settings overrides; read the helper definitions near the top of the file before adding tests.
-- Run only the targeted vitest command named in your task (`npx vitest run <file> [-t "<pattern>"]`). The split-process check (`RADULF_SPLIT_CHECK=1 npx vitest run src/server/splitProcesses.test.ts`) spawns real processes and is slow — run it only when your task names it.
+- Never set or override `TMPDIR`; the sandbox presets a writable one. Never
+  point temp files inside the worktree.
+- `src/server/harness/` and `src/server/sandbox/` must not change.
+- The schema (`workers` table, `runs.worker_id`, `cards.evaluation_pending`),
+  the migration `drizzle/0018_*.sql`, and the `workerStaleSeconds` setting
+  already exist on this branch — do not regenerate or redo them.
+- Drizzle's better-sqlite3 driver opens `BEGIN IMMEDIATE` with
+  `db.transaction((tx) => { ... }, { behavior: "immediate" })`; statements
+  inside must use `tx`, and the callback's return value is the transaction's.
+- `src/server/orchestrator.roles.test.ts` is the template for a small
+  DB-backed orchestrator test: `setupTestDataDir(...)`, a `vi.mock("./settings")`
+  built from `SETTING_DEFAULTS`, then `await import("@/db")` and
+  `await import("./orchestrator")`.
+- Run only the check named in your task. If it fails for a reason clearly
+  unrelated to your edit (a `/tmp` literal path, a nested sandbox runtime),
+  say so in `.ralph/ITERATION_DONE` rather than chasing it.
