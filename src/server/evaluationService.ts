@@ -6,7 +6,7 @@ import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
 import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
-import { GATE_FILE, gateFilePath, renderGateFile, renderGateSection, runGateCommand, type GateResult } from "./gate";
+import { gateFilePath, renderGateFile, renderGateSection, runGateCommand, type GateResult } from "./gate";
 import {
   EVALUATION_NOTES_FILE,
   EVALUATION_NOTES_SECTION,
@@ -161,14 +161,16 @@ export class EvaluationService {
       if (controller.signal.aborted) return; // cancelCard already finalized
       if (sandboxError) return fail(sandboxError);
 
-      // Spec 27: the repository gate runs here, by the orchestrator, so the
+      // Spec 27: the repository gate runs by the orchestrator, so the
       // evaluator judges its result instead of spending its budget producing
-      // it. Once per evaluation cycle: a retry reuses the file the cycle's
-      // first attempt left, a fresh cycle after a new loop run starts over.
-      // Before the status snapshot below, so whatever a build leaves in the
-      // worktree is never attributed to the evaluator.
+      // it. Since spec 29 the loop's DONE path runs the gate and writes
+      // `.ralph/GATE.md`, and a new loop run clears the file at its start, so
+      // a file present here is this cycle's result on a first attempt and on
+      // a retry alike. The evaluator runs the gate itself only when the file
+      // is missing (a loop run that predates spec 29, or a gate added after
+      // the loop finished). Before the status snapshot below, so whatever a
+      // build leaves in the worktree is never attributed to the evaluator.
       const gatePath = gateFilePath(worktreePath);
-      if (!previous) removeRalphFiles(worktreePath, [GATE_FILE]);
       const gateCommand = repo.gateCommand?.trim() ?? "";
       if (gateCommand && !fs.existsSync(/* turbopackIgnore: true */ gatePath)) {
         emitEvent("gate.started", { cardId, runId, payload: { command: gateCommand } });
