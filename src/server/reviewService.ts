@@ -404,10 +404,28 @@ export class ReviewService {
     }
   }
 
-  /** Atomically take the repo lease and flip the delivery pending → running. */
+  /** Atomically take the repo lease and flip the delivery pending → running.
+   * A pending delivery whose repo record has vanished is terminated here
+   * (finished as failed, card parked) rather than being polled forever. */
   private claimDelivery(row: Delivery): boolean {
     const repo = getRepo(row.repoId);
-    if (!repo) return false;
+    if (!repo) {
+      const error = "repository record vanished before delivery";
+      const { changes } = db
+        .update(reviewDeliveries)
+        .set({ status: "finished", ok: 0, error, endedAt: now() })
+        .where(and(eq(reviewDeliveries.id, row.id), eq(reviewDeliveries.status, "pending")))
+        .run();
+      if (changes === 1) {
+        this.deps.moveCard(row.cardId, "reviewing", "needs_attention", error);
+        emitEvent("review.decided", {
+          cardId: row.cardId,
+          runId: row.runId,
+          payload: { decision: "approved", deliveryFailed: error },
+        });
+      }
+      return false;
+    }
     const workerId = this.deps.workerId();
     return db.transaction(
       (tx) => {

@@ -369,4 +369,32 @@ describe("ReviewService — spec 25 worker-side delivery", () => {
     expect(db.select().from(repoLeases).all()).toEqual([]);
     expect(db.select().from(refWrites).where(eq(refWrites.ref, "refs/heads/main")).all()).toHaveLength(1);
   });
+
+  it("a pending delivery whose repo record vanished is finished as failed and its card parked", () => {
+    seedCard("card-gone");
+    const planId = seedPlan("card-gone");
+    const { id: runId } = seedLoopRun("card-gone", planId);
+    db.insert(reviewDeliveries)
+      .values({
+        id: "delivery-gone",
+        runId,
+        cardId: "card-gone",
+        repoId: "repo-gone",
+        fromStatus: "review",
+        approvedBy: "human",
+        status: "pending",
+        createdAt: now(),
+      })
+      .run();
+    const deps = makeDeps();
+
+    new ReviewService(deps).claimPendingDeliveries();
+
+    const row = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, "delivery-gone")).get();
+    expect(row).toMatchObject({ status: "finished", ok: 0 });
+    expect(row?.error).not.toBeNull();
+    expect(deps.moveCard).toHaveBeenCalledWith("card-gone", "reviewing", "needs_attention", expect.any(String));
+    expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    expect(db.select().from(repoLeases).all()).toEqual([]);
+  });
 });

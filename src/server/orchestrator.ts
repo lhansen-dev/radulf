@@ -620,8 +620,9 @@ export class Orchestrator {
 
     if (options.orphans) {
       // Any card still marked planning/looping/evaluating with no run at all
-      // lost its run some other way (a reviewing card lost the in-process
-      // merge claim). Only cards idle past the stale window count: a card
+      // lost its run some other way (a reviewing card whose delivery row was
+      // finished — or never created — without the card being moved on). Only
+      // cards idle past the stale window count: a card
       // that just moved into a running status may be about to get its run
       // inserted. Boot-only, see the JSDoc above.
       const orphans = db
