@@ -886,6 +886,24 @@ export class Orchestrator {
 
     if (step === "loop") {
       if (!this.latestPlan(cardId)) throw new ClientError("card has no plan to retry");
+      // A loop that ticked its last task and wrote DONE, then failed on a
+      // check after the work (the run-end integrity check, a timeout in the
+      // final bookkeeping), has nothing left to inject: another loop run would
+      // end on an exhausted checklist within seconds. Evaluation is next, the
+      // same resume-in-place rule approveInstallScripts applies.
+      const planMd = readPlanState(cardId);
+      const worktree = this.latestWorktreeRun(cardId);
+      if (planMd && !firstUnchecked(planMd) && worktree && doneFilePath(ralphDirPath(worktree.worktreePath))) {
+        if (this.passive) {
+          throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
+        }
+        if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
+        if (!this.moveCard(cardId, "needs_attention", "evaluating", "retrying: loop finished, evaluating")) {
+          throw new ClientError("card status changed before the evaluator could start");
+        }
+        this.startStage("evaluating", cardId);
+        return { ok: true, step: "evaluate" };
+      }
       if (!this.moveCard(cardId, "needs_attention", "ready", "retrying failed loop")) {
         throw new ClientError("card status changed before the loop could retry");
       }
