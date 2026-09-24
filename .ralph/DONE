@@ -1,5 +1,0 @@
-Test suite runnable inside Radulf's sandbox: no literal /tmp in tests, real-sandbox suites skip when nested, CLAUDE_CODE_TMPDIR makes srt's TMPDIR the run-private dir.
-- Replaced hardcoded `/tmp/...` paths in `src/server/bookkeeping.test.ts`, `src/server/git.test.ts`, `src/server/harness/index.test.ts`, `src/server/harness/streamLiveness.test.ts` with `os.tmpdir()` + `fs.mkdtempSync` (with cleanup), so tests work where `/tmp` is read-only.
-- `src/server/sandbox/srt.test.ts`: added `insideRadulfSandbox` (GIT_SSH_COMMAND=/bin/false or SANDBOX_RUNTIME=1) and `describeOnHost = describe.skipIf(...)`; the three real bubblewrap/Seatbelt suites now skip themselves when nested instead of failing.
-- `runSandboxedCommand` / `wrapUnderPolicy` / `createSandboxedBashOperations` accept an optional `tmpdir` and set `CLAUDE_CODE_TMPDIR` (restored afterwards) inside the serialized wrap window; plumbed at gate/installGate/acceptanceProbe/pi call sites; unit test + `SANDBOXING.md` paragraph added.
-- Task 5 note: the two `grep -rn '.../tmp...' src` acceptance checks exit 1 because there are no matches — that is the intended state; the checks need a leading `!` to assert absence.
