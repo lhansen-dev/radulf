@@ -1,0 +1,18 @@
+# Evaluation notes (attempt started 2026-09-24T12:56Z)
+- AC1 grep 'sqliteTable("review_deliveries"' FAILS literally: schema.ts declares reviewDeliveries/refWrites via multi-line `sqliteTable(\n  "review_deliveries",` (prettier wrap); all three tables ARE defined. Formatting artifact, substance met.
+- AC2 OK: drizzle/0020_wonderful_martin_li.sql has CREATE TABLE ref_writes; journal tags=21, sql files=21 (20 previous + 1).
+- AC4 OK: no liveBaselines/registerRunBaseline/releaseRunBaseline/noteRadulfRefWrite in src.
+- AC5 OK: recordRefWrite + capturedAt in integrity.ts.
+- AC8a OK: withRepoMergeLock gone from src.
+- AC9, AC11, AC14a greps OK. src/server/repoLeases.ts exists.
+- AC3/AC6/AC7/AC8b: npx vitest run schema.test integrity.test repoLeases.test git.test → 4 files, 57 tests passed
+- evaluationService.test.ts: 3 failures (spec 26 timeout tests + spec 27 gate test) — IDENTICAL failures on beta (git archive beta run in TMPDIR) → pre-existing, not this card.
+- reviewService.test, reviewService.pr.test, orchestrator.reaper.test, orchestrator.lifecycle.test, stage.test: all pass (5 files)
+- make build (turbopack) fails in this sandbox: 'Symlink node_modules points out of filesystem root' (node_modules -> /repos/radulf/node_modules); environmental. Built with 'next build --webpack' instead (20s, OK).
+- npx tsc --noEmit exit 0; npx eslint exit 0
+- 13:03 started RADULF_SPLIT_CHECK=1 vitest splitProcesses in background → $TMPDIR/split.log
+- 13:06 background split run did not survive tool return; rerunning in foreground with timeout
+- 13:06 RADULF_SPLIT_CHECK=1 vitest splitProcesses (worktree, webpack build): 8 passed, 1 FAILED — new test dies at line 863: ENOENT mock-output/contention-2.md. Cause: `git rm` of task-1.md+task-2.md empties mock-output/ and git deletes the dir; deterministic (mock loop writes exactly those two files, harness/mock.ts:87). Loop never ran this test (commit fedfb90 says "skipped vitest run").
+- Copied worktree to $TMPDIR/fixcheck, added fs.mkdirSync(mock-output) before the write, re-ran full split file 8 times: 6 pass, 2 fail with "overlapping card landed in needs_attention". Captured events on the 2nd failure: evaluate run.finished "repo integrity violation: ref moved: refs/heads/main (8e2fa396748f → a38eabce8f27)". Race: check's snapshotRefs runs after `git commit` moved main but refWritesSince() runs before the worker's recordRefWrite (the sliver noted in git.ts mergeBranch comment). Same window existed on beta with noteRadulfRefWrite; now it makes the new split test flaky (~1/4 here).
+- Note: new split test depends on "Contention 1/2" cards seeded by the preceding cap test (running with -t alone fails).
+- 13:15 verdict written: REVISE (split test ENOENT deterministic + integrity race flake). No files outside .ralph changed.
