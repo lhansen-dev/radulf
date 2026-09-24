@@ -115,6 +115,7 @@ session. The role is what decides the tool set — see the capability split belo
 |---|---|---|---|
 | Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)`, `proposeSplit(cardId)`, `proposeScopedPlan(cardId)` | 5 min per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
+| Plan critic | `src/server/planCriticService.ts` | `runCritic(cardId)` | `criticTimeoutMinutes` setting, 10 min default; read-only review of a finished plan (spec 30), run when `planCriticMode` or the card's `planCritic` override says so |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
 | Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default; runs the repository's gate command first through `gate.ts` when one is set, under `gateTimeoutMinutes` |
 

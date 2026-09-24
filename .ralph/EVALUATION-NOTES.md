@@ -1,13 +1,23 @@
-- grep criteria (AC1 a/b, AC2, AC3, AC4, AC5, AC9, AC10, AC12, AC13): all pass EXCEPT `grep -c '28' specs/30-plan-critic.md` prints 2 (expected 0) — task 11 commit 5853d65 added a numbering note citing spec 28.
-- drizzle/0022_greedy_the_professor.sql adds plan_critic + critic_model: ok
-- harness diff excluding mock.ts: 0 files: ok
-- vitest settings.test.ts: exit 0 (7 pass)
-- vitest planCriticService.test.ts: exit 0 (13 pass)
-- vitest planningService.test.ts: exit 0 (20 pass)
-- vitest cardValidation.test.ts transcriptWatchers.test.ts: exit 0 (13 pass)
-- vitest mockPipeline.test.ts -t critic: exit 0 (2 pass, 11 skipped)
-- vitest src/app/settings/page.test.tsx: exit 0 (12 pass) alone; timed out (2 tests, 5000ms) only under full-suite load — flaky/load, not deterministic
-- tsc --noEmit: exit 0; eslint: exit 0
-- full `vitest run` (once): 7 files failed. Environmental per card note: bookkeeping, harness/index (watchdog/stall), streamLiveness, srt. Pre-existing (fails identically at merge-base 620e94e): evaluationService.test.ts (3 spec26/27 timeout tests). REAL REGRESSION: src/server/requestValidation.test.ts "normalizes a valid create request" — expected object lacks criticModel: null (passes at merge-base, fails deterministically on HEAD).
-- code review: src/app/api/runs/[id]/route.ts singleFile map lacks critique → UI transcript fetch ?iteration=0 rejected (important); stageDiagnosis.ts:92 labels critique streak as evaluator (important); cardTransfer.ts drops planCritic/criticModel (suggestion)
-- VERDICT written: revise (AC1 grep '28' = 2; make check regression in requestValidation.test.ts; critique transcript unviewable). EVALUATION.md + SUMMARY.md written.
+# Evaluation notes (attempt started 2026-09-24T15:22Z)
+- grep -c '28' specs/30-plan-critic.md → 0 (exit 1) PASS
+- grep -c '^# 30: ' specs/30-plan-critic.md → 1 PASS
+- grep -q 'Decided 2026-09-24' / 'amends nothing else' → both exit 0 PASS
+- grep -q '30-plan-critic.md' docs/DESIGN_HISTORY.md → exit 0 PASS
+- grep -q 'criticModel: null' src/server/requestValidation.test.ts → exit 0 PASS
+- grep -q 'critique: "critique.jsonl"' src/app/api/runs/[id]/route.ts → exit 0 PASS
+- grep -q '"plan critic"' src/server/stageDiagnosis.ts → exit 0 PASS
+- harness diff vs origin/main → 18 (branch is off beta, 240 commits ahead of main; those are beta's history). vs beta (actual base 620e94e) only mock.ts changed → PASS in intent
+- npx vitest run src/server/requestValidation.test.ts → 33/33 PASS exit 0
+- npx vitest run src/server/stageDiagnosis.test.ts → 9/9 PASS exit 0
+- npx vitest run 'src/app/api/runs/[id]/runRoute.test.ts' → 2/2 PASS exit 0 (criterion's escaped `\[id\]` form finds no files — vitest filter quirk, not a defect)
+- vitest planCriticService(13)+planningService(20)+settings(7)+cardValidation(8) → 48/48 PASS exit 0
+- npx vitest run src/server/mockPipeline.test.ts -t critic → 2 pass (approve, revise-once), 11 skipped, exit 0
+- npx tsc --noEmit → exit 0; eslint on the four named files → exit 0
+- Code review of planCriticService/planningService/orchestrator/mock.ts/UI diffs: coherent; follow-up commits match prior revise feedback exactly (spec para removed, requestValidation expected obj, route singleFile critique, stageDiagnosis "plan critic").
+- Gate (pre-run by orchestrator): lint/typecheck/build OK; check-split failed with SQLITE_BUSY on web2 boot in db/index.ts createDb (untouched by card; 5 errors over 120s ≈ two 60s migration-lock timeouts). Prior gate on same branch passed. Judged environmental flake; confirming with a lone split run after the suite.
+- Full vitest suite started 15:25 in background → $TMPDIR/vitest-full.log
+- Stale doc found: docs/ARCHITECTURE.md role table lacks a Plan critic row (fix on approve).
+- Full vitest suite (foreground, 15:32): 5 files / 19 tests fail: bookkeeping (EROFS /tmp), harness/index watchdogs (10), streamLiveness (2), sandbox/srt (4) — all on the card's environmental list — plus evaluationService.test.ts (3 spec 26/27 timeout tests). Everything else passes (1303).
+- evaluationService.test.ts at merge base 620e94e (git archive export): same 3 tests fail identically → pre-existing, not this card's.
+- RADULF_SPLIT_CHECK=1 vitest splitProcesses.test.ts (same .next build as the gate) → 9/9 PASS exit 0; gate's SQLITE_BUSY confirmed a flake
+- VERDICT: approve written 15:36; SUMMARY.md written; docs reconciled: ARCHITECTURE.md role table row + HOW_IT_WORKS.md paragraph

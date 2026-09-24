@@ -61,6 +61,14 @@ finds too vague to plan gets questions instead of a guess: they land in the
 scoping thread and the card goes to Needs Attention. Answer them there and
 **Plan again**.
 
+When the **plan critic** is on — by default for the tasks of a breakdown, and
+for any card via its **Plan critic** setting — a read-only second model reads
+the plan against the card, its thread and the specs it names before anything
+runs. An approve sends the card on as usual; a revise sends the plan back to
+the planner with the critic's feedback, at most twice, after which the card
+goes to plan review for a person to decide. Its verdicts show in the card's
+events.
+
 **2 · Loop.** The loop agent implements one task at a time inside a per-card
 `git worktree`, running its targeted check each iteration. Every iteration is a
 fresh context — the agent remembers nothing from the previous pass. The repo is
