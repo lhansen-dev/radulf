@@ -1,0 +1,8 @@
+Split-process check now exercises two workers sharing one SQLite DB: cap contention and SIGKILL mid-loop handover
+- `src/server/splitProcesses.test.ts` spawns `worker` and `worker2` identically (RADULF_HEARTBEAT_INTERVAL_MS=1000, pump 500ms), pipes `out.worker2`, kills survivors in `afterAll`, and includes worker2 output in `waitFor`/failure text.
+- "both roles boot" additionally asserts the `workers` table has two rows with `roles == ["worker"]` (read via better-sqlite3 readonly).
+- PATCH /api/settings now sets `maxConcurrentCards: 1` and `workerStaleSeconds: 15`.
+- New test: three `Contention N` cards on one repo driven through two workers; samples `count(*) FROM runs WHERE status='running'` every 50ms (max <= 1), asserts consecutive `[started_at, ended_at]` intervals never overlap and every run has a `worker_id` — proving DB claims (`BEGIN IMMEDIATE`) enforce the per-repo cap across processes.
+- New test: `Killed mid-loop` card; once a loop run has `iterations_done >= 1`, SIGKILLs the owning worker (pid from `workers`), then asserts the other worker's reaper marks the run `interrupted`, resumes the card via a second loop run owned by the surviving worker (iterations sum 2 or 3, both mock-output task files present in the finisher's worktree), the dead worker row is deleted, and no `SQLITE_BUSY` appears.
+- Final SIGTERM drain test targets whichever worker is still alive.
+- Check: `RADULF_SPLIT_CHECK=1 npx vitest run src/server/splitProcesses.test.ts` → 5/5 pass (~22s), run twice.

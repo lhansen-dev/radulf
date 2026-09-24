@@ -21,7 +21,30 @@ let port: number;
 let baseUrl: string;
 let web: ChildProcess;
 let worker: ChildProcess;
-const out = { web: "", worker: "" };
+let worker2: ChildProcess;
+// Set by the SIGKILL test so afterAll and the SIGTERM test skip the corpse.
+let killedPid: number | null = null;
+const out = { web: "", worker: "", worker2: "" };
+
+function aliveWorkers(): Array<{ child: ChildProcess; key: "worker" | "worker2" }> {
+  return ([
+    { child: worker, key: "worker" as const },
+    { child: worker2, key: "worker2" as const },
+  ]).filter(({ child }) => child && child.pid !== killedPid && child.exitCode === null);
+}
+
+function openDb(): InstanceType<typeof Database> {
+  return new Database(path.join(dataDir, "radulf.db"), { readonly: true });
+}
+
+function dbQuery<T>(sql: string, ...params: unknown[]): T[] {
+  const db = openDb();
+  try {
+    return db.prepare(sql).all(...params) as T[];
+  } finally {
+    db.close();
+  }
+}
 
 function tail(s: string): string {
   return s.slice(-2000);
@@ -44,7 +67,7 @@ async function waitFor(
     await new Promise((r) => setTimeout(r, 250));
   }
   throw new Error(
-    `timed out after ${timeoutMs}ms waiting for ${what}\n--- web ---\n${tail(out.web)}\n--- worker ---\n${tail(out.worker)}`,
+    `timed out after ${timeoutMs}ms waiting for ${what}\n--- web ---\n${tail(out.web)}\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
   );
 }
 
@@ -141,29 +164,40 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
         },
       },
     );
-    // Worker: NODE_ENV=test skips the 2 GiB disk-watchdog ballast; PI_OFFLINE=1
-    // skips pi's model-catalog fetch.
+    // Workers: NODE_ENV=test skips the 2 GiB disk-watchdog ballast; PI_OFFLINE=1
+    // skips pi's model-catalog fetch. Two identical workers share the one
+    // database so claims, the cap, and the stale reaper are exercised across
+    // processes. A 1s heartbeat keeps the stale window (set to 15s below)
+    // meaningful within the test's budget.
+    const workerEnv: NodeJS.ProcessEnv = {
+      ...base,
+      RADULF_ROLES: "worker",
+      RADULF_DATA_DIR: dataDir,
+      RADULF_MOCK_LLM: "1",
+      PI_OFFLINE: "1",
+      NODE_ENV: "test",
+      RADULF_PUMP_INTERVAL_MS: "500",
+      RADULF_HEARTBEAT_INTERVAL_MS: "1000",
+    };
     worker = spawn(process.execPath, ["dist/worker.mjs"], {
       cwd: repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...base,
-        RADULF_ROLES: "worker",
-        RADULF_DATA_DIR: dataDir,
-        RADULF_MOCK_LLM: "1",
-        PI_OFFLINE: "1",
-        NODE_ENV: "test",
-        RADULF_PUMP_INTERVAL_MS: "500",
-      },
+      env: workerEnv,
+    });
+    worker2 = spawn(process.execPath, ["dist/worker.mjs"], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: workerEnv,
     });
     pipe(web, "web");
     pipe(worker, "worker");
+    pipe(worker2, "worker2");
 
     await waitFor(async () => (await fetch(`${baseUrl}/api/health`)).ok, 120_000, "web /api/health");
   }, 150_000);
 
   afterAll(async () => {
-    if (worker && worker.exitCode === null) worker.kill("SIGKILL");
+    for (const { child } of aliveWorkers()) child.kill("SIGKILL");
     if (web) {
       try {
         process.kill(-web.pid!, "SIGTERM");
@@ -194,11 +228,25 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
     expect(await res.json()).toMatchObject({ ok: true, roles: ["web"], restartRequired: false });
 
     await waitFor(
-      () => out.worker.includes("[radulf] roles: worker"),
+      () =>
+        out.worker.includes("[radulf] roles: worker") &&
+        out.worker2.includes("[radulf] roles: worker"),
       30_000,
-      "worker to log its roles",
+      "both workers to log their roles",
     );
     expect(worker.exitCode).toBeNull();
+    expect(worker2.exitCode).toBeNull();
+
+    // Each worker process registered exactly one row for itself.
+    await waitFor(
+      () => dbQuery<{ roles: string }>("SELECT roles FROM workers").length === 2,
+      15_000,
+      "two rows in the workers table",
+    );
+    const workerRows = dbQuery<{ roles: string; pid: number }>("SELECT roles, pid FROM workers");
+    expect(workerRows).toHaveLength(2);
+    for (const row of workerRows) expect(JSON.parse(row.roles)).toEqual(["worker"]);
+    expect(new Set(workerRows.map((r) => r.pid))).toEqual(new Set([worker.pid, worker2.pid]));
 
     expect(fs.readFileSync(path.join(dataDir, "auth-secret"), "utf8").trim()).toMatch(
       /^[0-9a-f]{64}$/,
@@ -216,7 +264,9 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       db.close();
     }
 
-    expect(out.web + out.worker).not.toMatch(/SQLITE_BUSY|database is locked|EEXIST|already exists/);
+    expect(out.web + out.worker + out.worker2).not.toMatch(
+      /SQLITE_BUSY|database is locked|EEXIST|already exists/,
+    );
   });
 
   it(
@@ -242,6 +292,8 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
         autoMode: false,
         sandboxEnabled: false,
         folderBrowserRoot: root,
+        maxConcurrentCards: 1,
+        workerStaleSeconds: 15,
       });
       expect(settings.status).toBe(200);
 
@@ -305,7 +357,9 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
         "card to reach review",
       );
       if (failed) {
-        throw new Error(`card landed in needs_attention\n--- worker ---\n${tail(out.worker)}`);
+        throw new Error(
+          `card landed in needs_attention\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+        );
       }
 
       const runs = detail!.runs;
@@ -328,16 +382,204 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
     150_000,
   );
 
+  it(
+    "two workers never run two runs of one repo at once with a cap of one",
+    async () => {
+      const repos = await api<Array<{ id: string; name: string }>>("GET", "/api/repos");
+      expect(repos.status).toBe(200);
+      const repoId = repos.json.find((r) => r.name === "fixture")!.id;
+
+      const cardIds: string[] = [];
+      for (const n of [1, 2, 3]) {
+        const card = await api<{ id: string }>("POST", "/api/cards", {
+          repoId,
+          title: `Contention ${n}`,
+          description: "Three cards racing two workers for one repo slot.",
+          plannerModel: "happy-path",
+          loopModel: "happy-path",
+          evaluatorModel: "happy-path",
+        });
+        expect(card.status).toBe(201);
+        cardIds.push(card.json.id);
+      }
+      for (const id of cardIds) {
+        expect((await api("POST", `/api/cards/${id}/move`, { to: "todo" })).status).toBe(200);
+        expect((await api("POST", `/api/cards/${id}/move`, { to: "in_progress" })).status).toBe(
+          200,
+        );
+      }
+
+      type CardRow = { id: string; status: string };
+      let maxRunning = 0;
+      let failed: CardRow | undefined;
+      const deadline = Date.now() + 240_000;
+      for (;;) {
+        const [running] = dbQuery<{ n: number }>(
+          "SELECT count(*) AS n FROM runs WHERE status = 'running'",
+        );
+        if (running.n > maxRunning) maxRunning = running.n;
+
+        let statuses: CardRow[] = [];
+        try {
+          statuses = (await api<CardRow[]>("GET", "/api/cards")).json.filter((c) =>
+            cardIds.includes(c.id),
+          );
+        } catch {
+          // web momentarily unreachable: not yet
+        }
+        failed = statuses.find((c) => c.status === "needs_attention");
+        if (failed) break;
+        if (statuses.length === 3 && statuses.every((c) => c.status === "review")) break;
+        if (Date.now() > deadline) {
+          throw new Error(
+            `timed out waiting for the three contention cards to reach review: ${JSON.stringify(statuses)}\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (failed) {
+        throw new Error(
+          `card ${failed.id} landed in needs_attention\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+        );
+      }
+
+      // The cap is per repo across processes: the sampled peak is one, and
+      // the recorded intervals are disjoint (ISO timestamps sort as strings).
+      expect(maxRunning).toBeLessThanOrEqual(1);
+      const intervals = dbQuery<{
+        started_at: string;
+        ended_at: string | null;
+        worker_id: string | null;
+      }>("SELECT started_at, ended_at, worker_id FROM runs ORDER BY started_at");
+      expect(intervals.length).toBeGreaterThan(0);
+      for (let i = 1; i < intervals.length; i++) {
+        const prev = intervals[i - 1];
+        const next = intervals[i];
+        expect(prev.ended_at).not.toBeNull();
+        expect(prev.ended_at! <= next.started_at).toBe(true);
+      }
+      for (const row of intervals) expect(row.worker_id).not.toBeNull();
+    },
+    260_000,
+  );
+
+  it(
+    "SIGKILL on a worker mid-loop hands the card to the other worker within the stale window",
+    async () => {
+      const repos = await api<Array<{ id: string; name: string }>>("GET", "/api/repos");
+      const repoId = repos.json.find((r) => r.name === "fixture")!.id;
+      const card = await api<{ id: string }>("POST", "/api/cards", {
+        repoId,
+        title: "Killed mid-loop",
+        description: "Its worker dies after the first iteration.",
+        plannerModel: "happy-path",
+        loopModel: "happy-path",
+        evaluatorModel: "happy-path",
+      });
+      expect(card.status).toBe(201);
+      const cardId = card.json.id;
+      expect((await api("POST", `/api/cards/${cardId}/move`, { to: "todo" })).status).toBe(200);
+      expect((await api("POST", `/api/cards/${cardId}/move`, { to: "in_progress" })).status).toBe(
+        200,
+      );
+
+      type LoopRow = { id: string; worker_id: string | null; iterations_done: number };
+      let victim: LoopRow | undefined;
+      const deadline = Date.now() + 120_000;
+      while (!victim) {
+        [victim] = dbQuery<LoopRow>(
+          "SELECT id, worker_id, iterations_done FROM runs WHERE kind = 'loop' AND status = 'running' AND iterations_done >= 1 AND card_id = ?",
+          cardId,
+        );
+        if (victim) break;
+        if (Date.now() > deadline) {
+          throw new Error(
+            `no running loop run with a finished iteration for the card\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(victim.worker_id).not.toBeNull();
+      const [ownerRow] = dbQuery<{ pid: number }>(
+        "SELECT pid FROM workers WHERE id = ?",
+        victim.worker_id,
+      );
+      expect(ownerRow).toBeDefined();
+      const pid = ownerRow.pid;
+      expect([worker.pid, worker2.pid]).toContain(pid);
+      killedPid = pid;
+      process.kill(pid, "SIGKILL");
+      const survivor = aliveWorkers();
+      expect(survivor).toHaveLength(1);
+
+      let failed = false;
+      await waitFor(
+        async () => {
+          const detail = (await api<{ card?: { status?: string } }>("GET", `/api/cards/${cardId}`))
+            .json;
+          const status = detail.card?.status;
+          if (status === "needs_attention") failed = true;
+          return failed || status === "review";
+        },
+        60_000,
+        "the killed card to reach review on the other worker",
+      );
+      if (failed) {
+        throw new Error(
+          `card landed in needs_attention after the kill\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+        );
+      }
+
+      type RunRow = {
+        id: string;
+        status: string;
+        worker_id: string | null;
+        iterations_done: number;
+        worktree_path: string;
+      };
+      const loops = dbQuery<RunRow>(
+        "SELECT id, status, worker_id, iterations_done, worktree_path FROM runs WHERE kind = 'loop' AND card_id = ? ORDER BY started_at",
+        cardId,
+      );
+      expect(loops).toHaveLength(2);
+      const interrupted = loops.find((r) => r.id === victim!.id)!;
+      const finisher = loops.find((r) => r.id !== victim!.id)!;
+      expect(interrupted.status).toBe("interrupted");
+      expect(finisher.status).toBe("completed");
+      expect(finisher.worker_id).not.toBeNull();
+      expect(finisher.worker_id).not.toBe(victim.worker_id);
+      const [survivorRow] = dbQuery<{ id: string }>(
+        "SELECT id FROM workers WHERE pid = ?",
+        survivor[0].child.pid,
+      );
+      expect(finisher.worker_id).toBe(survivorRow.id);
+      expect(interrupted.iterations_done).toBeGreaterThanOrEqual(1);
+      // 2 normally; 3 only when the kill landed after an iteration completed
+      // but before its bookkeeping tick, so the finisher redid that task.
+      expect([2, 3]).toContain(interrupted.iterations_done + finisher.iterations_done);
+      expect(fs.existsSync(path.join(finisher.worktree_path, "mock-output/task-1.md"))).toBe(true);
+      expect(fs.existsSync(path.join(finisher.worktree_path, "mock-output/task-2.md"))).toBe(true);
+
+      // The reaper dropped the dead worker's row.
+      expect(dbQuery("SELECT id FROM workers WHERE pid = ?", pid)).toHaveLength(0);
+      expect(out[survivor[0].key]).not.toMatch(/SQLITE_BUSY/);
+    },
+    200_000,
+  );
+
   it("SIGTERM drains the worker-only process", async () => {
+    const alive = aliveWorkers();
+    expect(alive).toHaveLength(1);
+    const { child, key } = alive[0];
     const exited = new Promise<number | null>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("worker did not exit within 15s")), 15_000);
-      worker.once("exit", (code) => {
+      const timer = setTimeout(() => reject(new Error(`${key} did not exit within 15s`)), 15_000);
+      child.once("exit", (code) => {
         clearTimeout(timer);
         resolve(code);
       });
     });
-    worker.kill("SIGTERM");
+    child.kill("SIGTERM");
     expect(await exited).toBe(0);
-    expect(out.worker).toContain("shutdown clean");
+    expect(out[key]).toContain("shutdown clean");
   });
 });
