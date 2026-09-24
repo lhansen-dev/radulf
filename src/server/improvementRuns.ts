@@ -18,6 +18,7 @@ import { assertBranchExists, git, isRalphBranch } from "./git";
 import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
+import { hasRole } from "./roles";
 import { sleep } from "@/shared/sleep";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -214,7 +215,11 @@ export async function createImprovementRun(
   }
 
   emitEvent("improvement.started", { payload: { runId: row.id, featureBranch } });
-  void driveRun(row.id);
+  // A web-only process (spec 25: RADULF_ROLES=web) only inserts the row and
+  // emits `improvement.started`; the worker adopts the still-`running` row
+  // from its pump timer via resumeImprovementRuns(). A pi session must never
+  // be constructed in a web-only process.
+  if (hasRole("worker")) void driveRun(row.id);
   return row;
 }
 
@@ -234,10 +239,13 @@ export function stopImprovementRun(runId: string): ImprovementRun {
     .get();
 }
 
-/** Restart drivers for every run still `running` after a boot (N3). Call
- * after `getOrchestrator()` so `recover()` has already flipped any orphaned
- * card to `needs_attention`. Fire-and-forget — a run's driver can legitimately
- * outlive the whole time budget, so this must never block startup. */
+/** Restart drivers for every run still `running` (N3). Called at boot — after
+ * `getOrchestrator()` so `recover()` has already flipped any orphaned card to
+ * `needs_attention` — and again on every worker pump tick, adopting runs a
+ * web-only process created (spec 25: web only inserts the row). Safe to call
+ * repeatedly because `driveRun` returns at once for a run this process already
+ * drives. Fire-and-forget — a run's driver can legitimately outlive the whole
+ * time budget, so this must never block startup or the pump. */
 export function resumeImprovementRuns(): void {
   const running = db.select().from(improvementRuns).where(eq(improvementRuns.status, "running")).all();
   for (const run of running) void driveRun(run.id);

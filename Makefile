@@ -28,8 +28,8 @@ HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 
 PORT := 3000
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start lint typecheck test check login \
-        db-generate db-migrate db-studio db-backup clean release
+.PHONY: help install dev build start lint typecheck test check check-split login \
+        worker build-worker db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -57,8 +57,17 @@ dev: ## Run the dev server (loopback-only unless auth is configured); restarts i
 	fi
 	$(BIN)/next dev -H $(HOST) -p $(PORT)
 
-build: ## Production build
+build: build-worker ## Production build: the Next.js bundle plus dist/worker.mjs
 	NODE_ENV=production $(BIN)/next build
+
+# esbuild resolves the `@/` alias from tsconfig.json and leaves every
+# node_modules package external, so the bundle is the `src/server` + `src/db`
+# graph and nothing else; Node runs it directly, no TypeScript loader needed.
+build-worker: ## Bundle the worker-only entry point (src/worker.ts) into dist/worker.mjs
+	$(BIN)/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
+
+worker: build-worker ## Run a worker-only process (orchestrator, no HTTP) against this checkout
+	@$(LOADENV) RADULF_ROLES=worker node dist/worker.mjs
 
 # NEXT_MANUAL_SIG_HANDLE: Next's own SIGTERM/SIGINT handler exits as soon as
 # open connections close and would pre-empt Radulf's drain (src/server/shutdown.ts).
@@ -74,7 +83,12 @@ typecheck: ## Type-check without emitting
 test: ## Run the test suite once
 	$(BIN)/vitest run
 
-check: test lint typecheck build ## Full gate: test + lint + typecheck + build (what CI runs)
+# Skipped by plain `make test` (describe.skipIf on RADULF_SPLIT_CHECK) because it
+# spawns a real `next dev` and a real worker process.
+check-split: ## Boot a web-only and a worker-only process against a temp data dir and drive a card through the web API
+	RADULF_SPLIT_CHECK=1 $(BIN)/vitest run src/server/splitProcesses.test.ts
+
+check: test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)
 
 db-generate: ## Generate a migration from schema changes
 	$(BIN)/drizzle-kit generate
@@ -94,7 +108,7 @@ db-backup: ## Back up the SQLite DB safely while the server is running
 	sqlite3 "$$dir/radulf.db" "VACUUM INTO '$$dir/radulf-backup-$$(date +%Y%m%d-%H%M%S).db'"
 
 clean: ## Remove build output and caches
-	rm -rf .next tsconfig.tsbuildinfo
+	rm -rf .next dist tsconfig.tsbuildinfo
 
 release: ## Cut a release: make release VERSION=1.0.0 (or 1.1.0-beta.1 from beta)
 	@test -n "$(VERSION)" || { echo "VERSION is required, e.g. make release VERSION=1.0.0"; exit 1; }

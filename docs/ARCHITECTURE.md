@@ -11,8 +11,9 @@ pipeline for someone using Radulf rather than changing it.
 
 ## The shape of it
 
-One Next.js app. The server half runs in-process: there are no workers, no
-queue, and no subprocesses for agent work — the pi SDK is a library call.
+One Next.js app. The server half runs in-process: by default one process does
+both roles (web and worker — see Boot below), there is no queue, and no
+subprocesses for agent work — the pi SDK is a library call.
 
 ```
   Next.js route handlers          Orchestrator             pi SDK session
@@ -27,10 +28,14 @@ queue, and no subprocesses for agent work — the pi SDK is a library call.
    (api/events/stream)   (src/server/events.ts)
 ```
 
-Boot is `src/instrumentation.ts`: it ensures the auth secret, runs the sandbox
-preflight (once, cached), constructs the orchestrator — whose `recover()` flips
-any run orphaned by a restart into Needs Attention — and only then reattaches
-improvement-run drivers.
+Boot is `src/server/boot.ts`, called from `src/instrumentation.ts` under Next
+and from `src/worker.ts` (`make worker`) as a plain Node process. `RADULF_ROLES`
+(`web`, `worker`, default both) decides what runs. A web-only process serves
+the UI and API and only moves cards. A worker-only process ensures the auth
+secret, runs the sandbox preflight (once, cached), then recovery — `recover()`
+flips any run orphaned by a restart into Needs Attention — the queue pump
+(event-driven plus a short timer), the stages, improvement-run drivers,
+schedules, retention and the shutdown drain, and listens on no port.
 
 ## The orchestrator
 
@@ -212,8 +217,8 @@ file over a branch name that only meant something where it came from.
 ## Scheduling
 
 `src/server/schedules.ts` is the whole scheduler (spec 22), ticked once a
-minute from `src/instrumentation.ts`. A schedule starts only what a button
-starts, by the path a button takes: `queue-drain` calls `startCard` on every
+minute from `src/server/boot.ts` in a process with the `worker` role. A schedule
+starts only what a button starts, by the path a button takes: `queue-drain` calls `startCard` on every
 card waiting in the Queue, and `improvement-run` calls `createImprovementRun`
 with the arguments stored on the schedule. Every cap those paths enforce still
 applies, and no schedule merges anything.

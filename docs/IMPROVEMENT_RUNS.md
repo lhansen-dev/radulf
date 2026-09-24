@@ -134,10 +134,13 @@ Review it like any other branch, then merge, cherry-pick, or delete it yourself.
 ## Persistence and resume
 
 Run state lives in the `improvement_runs` table, so a server restart does not
-silently kill a run. On boot, `resumeImprovementRuns()` runs from
-[`src/instrumentation.ts`](../src/instrumentation.ts) — *after* `getOrchestrator()`,
-so the orchestrator's `recover()` has already flipped any orphaned card to
-`needs_attention`. For each still-`running` run it re-attaches to
+silently kill a run. `resumeImprovementRuns()` runs from
+[`src/server/boot.ts`](../src/server/boot.ts) in a process with the `worker`
+role — once at boot *after* `getOrchestrator()`, so the orchestrator's
+`recover()` has already flipped any orphaned card to `needs_attention`, and
+again on every queue-pump tick so a run created by a web-only process (which
+only inserts the row) is adopted within one pump interval. For each
+still-`running` run it re-attaches to
 `currentCardId`:
 
 - already terminal ⇒ reconcile it (an interrupted card counts as a failure),
