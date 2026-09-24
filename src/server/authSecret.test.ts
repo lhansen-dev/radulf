@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,5 +32,32 @@ describe("ensureAuthSecret", () => {
 
     expect(mode()).toBe(0o600);
     expect(process.env.RADULF_AUTH_SECRET).toBe("a".repeat(64));
+  });
+
+  it("re-reads the secret another process is writing when the exclusive create collides", () => {
+    // An empty file stands in for a process that has created but not yet
+    // written the secret; the child fills it in shortly after.
+    fs.writeFileSync(secretFile, "");
+    spawn(
+      process.execPath,
+      [
+        "-e",
+        "setTimeout(() => require('node:fs').writeFileSync(process.env.SECRET_FILE, 'b'.repeat(64)), 150)",
+      ],
+      { env: { ...process.env, SECRET_FILE: secretFile }, stdio: "ignore" },
+    );
+
+    ensureAuthSecret(); // blocks until the child has written
+
+    expect(process.env.RADULF_AUTH_SECRET).toBe("b".repeat(64));
+    expect(mode()).toBe(0o600);
+  });
+
+  it("never overwrites an existing secret", () => {
+    fs.writeFileSync(secretFile, "a".repeat(64), "utf-8");
+
+    ensureAuthSecret();
+
+    expect(fs.readFileSync(secretFile, "utf-8")).toBe("a".repeat(64));
   });
 });

@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Worker bundle emitted by `make build-worker`.
+    "dist/**",
     // Runtime directories: agent worktrees, plans, scratch space, and
     // transcripts/SQLite under data/ (which also holds legacy worktrees).
     "worktrees/**",

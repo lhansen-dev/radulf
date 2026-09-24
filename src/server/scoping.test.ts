@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +20,8 @@ vi.mock("./settings", () => ({
 
 const testDataDir = setupTestDataDir("radulf-scoping-");
 
-const { db, cards, repos, scopingMessages, now } = await import("@/db");
+const { db, cards, events, repos, scopingMessages, now } = await import("@/db");
+const { bus } = await import("./events");
 const {
   addScopingMessage,
   listScopingMessages,
@@ -27,8 +29,10 @@ const {
   proposeScopedCard,
   parsePlanProposal,
   parseSplitProposal,
+  parseSplitRunMode,
   renderScopingPrompt,
   scopingTurn,
+  scopingTurnInFlight,
 } = await import("./scoping");
 
 describe("renderScopingPrompt", () => {
@@ -98,10 +102,12 @@ describe("parseSplitProposal", () => {
       {
         title: "Add the login rate limiter",
         description: "## Problem\nBrute force. Does NOT touch the UI.",
+        dependsOn: [],
       },
       {
         title: "Surface the lockout in the login form",
         description: "## Problem\nDepends on card 1.",
+        dependsOn: [],
       },
     ]);
   });
@@ -113,11 +119,39 @@ describe("parseSplitProposal", () => {
     );
 
     expect(cards).toEqual([
-      { title: "Rate limiting (1)", description: "First piece." },
-      { title: "Third", description: "Third piece." },
+      { title: "Rate limiting (1)", description: "First piece.", dependsOn: [] },
+      { title: "Third", description: "Third piece.", dependsOn: [] },
     ]);
     // The blank CARD 2 block is gone, so the fallback numbering follows the
     // cards that survived rather than the model's own numbering.
+  });
+
+  it("reads the run mode off the RUN line, defaulting to in order, and keeps the line out of the cards", () => {
+    const reply = "RUN: in parallel\n\nCARD 1\nTITLE: A\nDESCRIPTION:\nx\n\nCARD 2\nTITLE: B\nDESCRIPTION:\ny";
+    expect(parseSplitRunMode(reply)).toBe("parallel");
+    expect(parseSplitRunMode("RUN: in order\n\nCARD 1\nTITLE: A")).toBe("ordered");
+    expect(parseSplitRunMode("CARD 1\nTITLE: A")).toBe("ordered");
+    expect(parseSplitProposal(reply, "f").map((c) => c.title)).toEqual(["A", "B"]);
+  });
+
+  it("reads DEPENDS ON lines into 0-based indexes and keeps them out of the descriptions", () => {
+    const reply =
+      "RUN: as a graph\n\nCARD 1\nTITLE: A\nDEPENDS ON: none\nDESCRIPTION:\nx\n\nCARD 2\nTITLE: B\nDEPENDS ON: 1\nDESCRIPTION:\ny\n\nCARD 3\nTITLE: C\nDEPENDS ON: 1, 2\nDESCRIPTION:\nz";
+    const cards = parseSplitProposal(reply, "f");
+    expect(cards.map((c) => c.dependsOn)).toEqual([[], [0], [0, 1]]);
+    expect(cards.map((c) => c.description)).toEqual(["x", "y", "z"]);
+    expect(cards.map((c) => c.title)).toEqual(["A", "B", "C"]);
+    expect(parseSplitRunMode(reply)).toBe("graph");
+  });
+
+  it("maps dependency numbers onto surviving cards, dropping vanished cards and self-references", () => {
+    const reply =
+      "CARD 1\nTITLE: A\nDEPENDS ON: none\nDESCRIPTION:\nx\n\nCARD 2\n\nCARD 3\nTITLE: C\nDEPENDS ON: 1, 2, 3\nDESCRIPTION:\nz";
+    const cards = parseSplitProposal(reply, "f");
+    expect(cards).toEqual([
+      { title: "A", description: "x", dependsOn: [] },
+      { title: "C", description: "z", dependsOn: [0] },
+    ]);
   });
 
   it("returns nothing when the reply carries no card blocks at all", () => {
@@ -255,6 +289,40 @@ describe("the scoping thread", () => {
     // The turn released its claim on the way out.
     mocks.runHarness.mockResolvedValue(harnessReply("Reply to the third."));
     await expect(scopingTurn("c1", "third")).resolves.toBeDefined();
+  });
+
+  it("reports the turn in flight, pushes its transcript under the card's scoping run id, and marks both ends", async () => {
+    const pushes: { runId: string; lines: unknown[] }[] = [];
+    const onPush = (push: { runId: string; lines: unknown[] }) => { pushes.push(push); };
+    bus.on("transcript", onPush);
+    let finish!: (value: ReturnType<typeof harnessReply>) => void;
+    mocks.runHarness.mockImplementationOnce((opts: { transcriptPath: string }) => {
+      // What the harness does once the model answers: create the file the
+      // push is already watching for, and append to it. Delayed, as in a
+      // real run, so the watcher's first look finds nothing there yet.
+      setTimeout(() => {
+        fs.mkdirSync(path.dirname(opts.transcriptPath), { recursive: true });
+        fs.writeFileSync(opts.transcriptPath, `${JSON.stringify({ t: "tool", name: "read", input: { path: "src/a.ts" } })}\n`);
+      }, 400);
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const turn = scopingTurn("c1", "look around");
+    try {
+      await vi.waitFor(() => expect(scopingTurnInFlight("c1")).toMatchObject({ request: "reply" }));
+      await vi.waitFor(() => expect(pushes.some((p) => p.runId === "scoping:c1")).toBe(true), { timeout: 4000 });
+      expect(pushes.find((p) => p.runId === "scoping:c1")?.lines).toEqual([{ t: "tool", name: "read", input: { path: "src/a.ts" } }]);
+    } finally {
+      // Always let the turn finish, so a failure here cannot hold the card's
+      // one turn slot and fail every test after it too.
+      finish(harnessReply("Done looking."));
+      await turn;
+      bus.off("transcript", onPush);
+    }
+    expect(scopingTurnInFlight("c1")).toBeNull();
+    expect(db.select().from(events).where(eq(events.cardId, "c1")).all().map((e) => [e.type, e.payload])).toEqual([
+      ["scoping.started", JSON.stringify({ request: "reply" })],
+      ["scoping.finished", JSON.stringify({ request: "reply" })],
+    ]);
   });
 
   it("records an answer without a reply when asked, so the planner still sees it", async () => {

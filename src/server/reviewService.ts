@@ -1,7 +1,19 @@
 import fs from "node:fs";
 import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, cards, improvementRuns, plans, runs, reviews, repos, type CardStatus } from "@/db";
+import {
+  db,
+  now,
+  cards,
+  improvementRuns,
+  plans,
+  runs,
+  reviews,
+  reviewDeliveries,
+  repoLeases,
+  repos,
+  type CardStatus,
+} from "@/db";
 import { emitEvent } from "./events";
 import {
   hasRemote,
@@ -17,8 +29,9 @@ import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { getRepo } from "./repos";
+import { acquireRepoLease, releaseRepoLease } from "./repoLeases";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
-import { checkRepoIntegrity, loadBaseline, noteRadulfRefWrite, removeBaseline } from "./integrity";
+import { checkRepoIntegrity, loadBaseline, readRepoConfig, recordRefWrite, removeBaseline, saveBaseline } from "./integrity";
 import type { StageDependencies } from "./stage";
 
 /** Every iteration runs on an injected checklist task, so a merge-conflict
@@ -36,9 +49,12 @@ function appendFeedbackTask(cardId: string, text: string): string | null {
  * a delivered pull request; it describes the approval, not the card. */
 export type ApprovedBy = "human" | "auto";
 
+export type ConfigApproval = { runId: string; configHash: string };
+
 type Card = typeof cards.$inferSelect;
 type Run = typeof runs.$inferSelect;
 type Repo = typeof repos.$inferSelect;
+type Delivery = typeof reviewDeliveries.$inferSelect;
 
 /**
  * Is this card one an Improvement Run spawned onto its feature branch?
@@ -79,8 +95,13 @@ function pullRequestBody(card: Card, draft: boolean): string {
 
 export type ReviewServiceDependencies = Pick<
   StageDependencies,
-  "getCard" | "latestPlan" | "latestWorktreeRun" | "moveCard"
-> & { pump(): void };
+  "getCard" | "latestPlan" | "latestWorktreeRun" | "moveCard" | "workerId"
+> & {
+  pump(): void;
+  /** Spec 25 decision 6: a passive (web) process only enqueues deliveries and
+   * leaves running them to a worker. */
+  passive?(): boolean;
+};
 
 type ReviewResult = { ok: boolean; error?: string };
 
@@ -127,13 +148,16 @@ export class ReviewService {
    * second delivery target; the path is the same one either way, which is why
    * a failed push needs no separate retry of its own.
    */
-  async retryMerge(cardId: string): Promise<ReviewResult> {
+  async retryMerge(cardId: string, configApproval?: ConfigApproval): Promise<ReviewResult> {
     const card = this.deps.getCard(cardId);
     if (!card) throw new ClientError("card not found");
     if (card.status !== "needs_attention") {
       throw new ClientError(`cannot retry merge for card in status ${card.status}`);
     }
     const run = this.latestLoopRun(cardId);
+    if (configApproval && configApproval.runId !== run?.id) {
+      throw new ClientError("run changed; review the Git config again");
+    }
     if (
       !run ||
       run.status !== "completed" ||
@@ -159,7 +183,23 @@ export class ReviewService {
     }
     // Always "human": retry is an operator clicking a button on a card that
     // has already failed once.
-    return this.approveClaimedRun(run.id, "needs_attention", "human");
+    return this.approveClaimedRun(run.id, "needs_attention", "human", configApproval);
+  }
+
+  async reviewConfig(cardId: string) {
+    const card = this.deps.getCard(cardId);
+    if (!card || card.status !== "needs_attention") {
+      throw new ClientError("Git config review requires a card in Needs Attention");
+    }
+    const run = this.latestLoopRun(cardId);
+    if (!run || run.status !== "completed") throw new ClientError("no completed loop run to merge");
+    const baseline = loadBaseline(run.id);
+    if (!baseline) throw new ClientError("no integrity baseline for this run");
+    const repo = getRepo(card.repoId);
+    if (!repo) throw new ClientError("repo not found");
+    const config = await readRepoConfig(repo.path);
+    if (config.configHash === baseline.configHash) throw new ClientError("Git config has not changed");
+    return { runId: run.id, ...config };
   }
 
   /**
@@ -220,8 +260,10 @@ export class ReviewService {
     if (!this.deps.moveCard(cardId, card.status, "abandoned")) {
       throw new ClientError("card status changed while it was being abandoned");
     }
+    // Spec 25: a web-only process never writes to a repository. It leaves the
+    // worktree and branch behind for a worker's removeAbandonedWorktrees sweep.
     const run = this.deps.latestWorktreeRun(cardId);
-    if (run) await removeWorktree(repo.path, run.worktreePath, run.branch);
+    if (run && !this.deps.passive?.()) await removeWorktree(repo.path, run.worktreePath, run.branch);
     fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
   }
 
@@ -300,6 +342,7 @@ export class ReviewService {
     runId: string,
     expectedStatus: "review" | "needs_attention",
     approvedBy: ApprovedBy,
+    configApproval?: ConfigApproval,
   ): Promise<ReviewResult> {
     const existing = this.reviewForRun(runId);
     if (existing) {
@@ -307,6 +350,157 @@ export class ReviewService {
       throw new ClientError("run was already rejected");
     }
     const { run, card, repo } = this.claimReviewRun(runId, expectedStatus);
+
+    if (configApproval) {
+      await this.restoreOnThrow(card.id, expectedStatus, async () => {
+        const baseline = loadBaseline(run.id);
+        if (!baseline) throw new ClientError("no integrity baseline for this run");
+        const current = await readRepoConfig(repo.path);
+        if (current.configHash !== configApproval.configHash) {
+          throw new ClientError("Git config changed again; review it before accepting");
+        }
+        const previousConfigHash = baseline.configHash;
+        baseline.configHash = current.configHash;
+        saveBaseline(run.id, baseline);
+        emitEvent("repo.config_approved", {
+          cardId: card.id, runId: run.id,
+          payload: { previousConfigHash, configHash: current.configHash },
+        });
+      });
+    }
+
+    // Spec 25 decision 6: the delivery itself (integrity check, merge or PR)
+    // is a durable request a worker runs under the repo's lease. The card
+    // stays `reviewing` until that worker records the outcome.
+    const deliveryId = nanoid();
+    db.insert(reviewDeliveries)
+      .values({
+        id: deliveryId,
+        runId,
+        cardId: card.id,
+        repoId: card.repoId,
+        fromStatus: expectedStatus,
+        approvedBy,
+        status: "pending",
+        createdAt: now(),
+      })
+      .run();
+    emitEvent("review.delivery_requested", { cardId: card.id, runId, payload: { deliveryId } });
+    if (this.deps.passive?.()) return { ok: true };
+    return this.awaitDelivery(deliveryId);
+  }
+
+  /** Run the delivery ourselves if we can take the repo lease; otherwise wait
+   * for whichever worker does. */
+  private async awaitDelivery(deliveryId: string): Promise<ReviewResult> {
+    for (;;) {
+      const row = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, deliveryId)).get();
+      if (!row) return { ok: false, error: "delivery request vanished" };
+      if (row.status === "finished") {
+        return { ok: row.ok === 1, ...(row.error ? { error: row.error } : {}) };
+      }
+      if (row.status === "pending" && this.claimDelivery(row)) {
+        return await this.executeDelivery(row);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  /** Atomically take the repo lease and flip the delivery pending → running.
+   * A pending delivery whose repo record has vanished is terminated here
+   * (finished as failed, card parked) rather than being polled forever. */
+  private claimDelivery(row: Delivery): boolean {
+    const repo = getRepo(row.repoId);
+    if (!repo) {
+      const error = "repository record vanished before delivery";
+      const { changes } = db
+        .update(reviewDeliveries)
+        .set({ status: "finished", ok: 0, error, endedAt: now() })
+        .where(and(eq(reviewDeliveries.id, row.id), eq(reviewDeliveries.status, "pending")))
+        .run();
+      if (changes === 1) {
+        this.deps.moveCard(row.cardId, "reviewing", "needs_attention", error);
+        emitEvent("review.decided", {
+          cardId: row.cardId,
+          runId: row.runId,
+          payload: { decision: "approved", deliveryFailed: error },
+        });
+      }
+      return false;
+    }
+    const workerId = this.deps.workerId();
+    return db.transaction(
+      (tx) => {
+        if (!acquireRepoLease(repo.path, workerId, getSettings().workerStaleSeconds, tx)) return false;
+        const { changes } = tx
+          .update(reviewDeliveries)
+          .set({ status: "running", workerId, claimedAt: now() })
+          .where(and(eq(reviewDeliveries.id, row.id), eq(reviewDeliveries.status, "pending")))
+          .run();
+        if (changes !== 1) {
+          tx.delete(repoLeases)
+            .where(and(eq(repoLeases.repoPath, repo.path), eq(repoLeases.workerId, workerId)))
+            .run();
+          return false;
+        }
+        return true;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /** Worker side of an approval: everything that touches the repo. The caller
+   * must hold the claim (`claimDelivery`); the lease is released here. */
+  private async executeDelivery(row: Delivery): Promise<ReviewResult> {
+    const workerId = this.deps.workerId();
+    const run = db.select().from(runs).where(eq(runs.id, row.runId)).get();
+    const cardRow = this.deps.getCard(row.cardId);
+    const repo = getRepo(row.repoId);
+    let result: ReviewResult = { ok: false, error: "delivery request is stale" };
+    try {
+      if (!run || !cardRow || !repo) {
+        result = { ok: false, error: "run, card, or repo vanished before delivery" };
+        return result;
+      }
+      const card: Card = { ...cardRow, status: "reviewing" };
+      result = await this.deliver(card, run, repo, row.fromStatus, row.approvedBy);
+      return result;
+    } catch (e) {
+      this.deps.moveCard(row.cardId, "reviewing", row.fromStatus, "review operation failed");
+      result = { ok: false, error: String(e) };
+      return result;
+    } finally {
+      db.update(reviewDeliveries)
+        .set({ status: "finished", ok: result.ok ? 1 : 0, error: result.error ?? null, endedAt: now() })
+        .where(eq(reviewDeliveries.id, row.id))
+        .run();
+      if (repo) releaseRepoLease(repo.path, workerId);
+    }
+  }
+
+  /** Worker entry point: run every pending delivery whose repo lease is free. */
+  public claimPendingDeliveries(): void {
+    const pending = db
+      .select()
+      .from(reviewDeliveries)
+      .where(eq(reviewDeliveries.status, "pending"))
+      .orderBy(reviewDeliveries.createdAt)
+      .all();
+    for (const row of pending) {
+      if (this.claimDelivery(row)) {
+        void this.executeDelivery(row).catch((e) => console.error("[radulf] review delivery failed:", e));
+      }
+    }
+  }
+
+  private async deliver(
+    card: Card,
+    run: Run,
+    repo: Repo,
+    expectedStatus: "review" | "needs_attention",
+    approvedBy: ApprovedBy,
+  ): Promise<ReviewResult> {
+    const runId = run.id;
     const baseBranch = run.baseBranch ?? repo.defaultBranch;
 
     // Spec 14: THE load-bearing integrity check — re-verify the parent repo's
@@ -315,9 +509,10 @@ export class ReviewService {
     // branches may have moved legitimately since the run-end check.)
     const baseline = loadBaseline(run.id);
     if (baseline) {
-      const violations = await this.restoreOnThrow(card.id, expectedStatus, () =>
-        checkRepoIntegrity(repo.path, baseline, { runBranch: run.branch, checkRefs: false }),
-      );
+      const violations = await checkRepoIntegrity(repo.path, baseline, {
+        runBranch: run.branch,
+        checkRefs: false,
+      });
       if (violations.length > 0) {
         const reason = `pre-merge repo integrity violation: ${violations.join("; ")}`;
         this.deps.moveCard(card.id, "reviewing", "needs_attention", reason);
@@ -342,16 +537,17 @@ export class ReviewService {
     // namespace (spec 19), so nothing else would excuse this. Passed as a
     // callback rather than called after `mergeBranch` returns, so it fires the
     // instant the new oid is known instead of after mergeBranch's own
-    // post-commit checkout restore — see mergeBranchLocked's comment for the
-    // residual window this still leaves.
-    const result = await this.restoreOnThrow(card.id, expectedStatus, () =>
-      mergeBranch(
-        repo.path,
-        baseBranch,
-        run.branch,
-        `ralph: merge "${card.title}" (card ${card.id})`,
-        (mergeCommit) => noteRadulfRefWrite(repo.path, `refs/heads/${baseBranch}`, mergeCommit),
-      ),
+    // post-commit checkout restore. The sliver between `git commit` and this
+    // record is covered by the repo lease we hold until `executeDelivery`'s
+    // finally: the run-end check in integrity.ts waits for the lease to be
+    // released before judging an unexplained ref move, which closes it.
+    const result = await mergeBranch(
+      repo.path,
+      baseBranch,
+      run.branch,
+      `ralph: merge "${card.title}" (card ${card.id})`,
+      (mergeCommit) =>
+        recordRefWrite(repo.path, `refs/heads/${baseBranch}`, mergeCommit, this.deps.workerId()),
     );
     if (!result.ok) {
       if (result.conflict && (await this.reloopForConflict(card, run, baseBranch, result.error!))) {

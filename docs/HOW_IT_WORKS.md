@@ -28,9 +28,9 @@ takes a rough ask straight to that thread. Scoping is a role of its own in
 Settings, separate from the planner, because you wait on every turn.
 
 The thread can end three ways. **Draft the scoped task** rewrites this one
-card. **Propose a split** comes back with two or more cards in the order they
-should be done, for you to edit, drop or discard; applying it makes this card
-the first piece and queues the rest behind it. **Grill me while scoping**, on
+card. **Propose a breakdown** comes back with two or more tasks in the order
+they should be done and a recommended run mode, for you to edit, reorder, drop
+or add to; queueing them makes this card an epic (below). **Grill me while scoping**, on
 card creation or edit, makes the questioning relentless rather than a few
 questions a turn: the assistant maps the card as a design tree and asks every
 question it can at once, each with a recommended answer, until nothing is left
@@ -40,6 +40,24 @@ entirely — worth it when the planner is the weakest model you have configured.
 Tick **Review plan before implementation** alongside it to read the result
 before anything runs.
 
+**Epics.** A card broken down this way stays as the epic: it keeps its thread
+and description, never runs itself, and its page lists the tasks under it with
+their status, a progress bar, **Start all** and **Pause all**. The tasks are
+ordinary cards that inherit the epic's settings and may each target another
+repository. The epic's **run mode** decides how the queue treats them: **in
+order** starts a task only once every task before it is done, **in
+parallel** lets them all be eligible at once, and **as a graph** starts each
+task once the tasks it was marked as depending on are done or abandoned — all
+bounded by **Concurrent cards per repo** in Settings. In graph mode the
+breakdown editor shows a **Depends on** picker per task, the breakdown
+proposal suggests dependencies, a cycle is refused when you queue, and the
+Work feed says what each waiting task is waiting on. **Start now** on a task
+always starts it, order or dependencies notwithstanding.
+The epic reads as done when its tasks are. **Create and break down** in the
+New task dialog creates the card and asks for the breakdown straight away, and
+a Jira issue with child issues offers those children as the tasks, ticked, with
+a run mode, before the card exists.
+
 **1 · Plan.** The planner reads the card, its scoping thread, and the repo, then
 writes plan artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop
 to run, and a `CRITERIA.md` holding the acceptance criteria. This is a single
@@ -47,6 +65,14 @@ invocation, and the card shows you the plan when it lands. A card the planner
 finds too vague to plan gets questions instead of a guess: they land in the
 scoping thread and the card goes to Needs Attention. Answer them there and
 **Plan again**.
+
+When the **plan critic** is on — by default for the tasks of a breakdown, and
+for any card via its **Plan critic** setting — a read-only second model reads
+the plan against the card, its thread and the specs it names before anything
+runs. An approve sends the card on as usual; a revise sends the plan back to
+the planner with the critic's feedback, at most twice, after which the card
+goes to plan review for a person to decide. Its verdicts show in the card's
+events.
 
 **2 · Loop.** The loop agent implements one task at a time inside a per-card
 `git worktree`, running its targeted check each iteration. Every iteration is a
@@ -74,6 +100,17 @@ and runs every acceptance criterion, then returns one of two verdicts:
 The evaluator may only write its own verdict file and documentation. If source
 files or Git history change during evaluation the verdict is rejected outright,
 so the judge provably cannot edit the implementation it just judged.
+
+A repository can declare a **gate command** under Settings → Connected
+repositories, `make check` for instance. Radulf runs it in the worktree, under
+the run's sandbox, once the loop has signalled DONE and its branch has
+been synced with the base (see *When the loop says it is done*), and hands the
+evaluator the exit code and the end of the output in `.ralph/GATE.md`. A
+failing gate goes back to the loop as a repair task before any evaluation
+starts; the judge reads the build and test result instead of spending its
+budget producing it, and a retry of the evaluator reuses the result rather than
+running the gate again. **Gate timeout** under Evaluation caps it. Specs 27 and
+29 record the decisions.
 
 **4 · Review.** The diff waits for you in **In Review** with the transcript
 alongside it. Approve merges the branch into the repo's default branch and moves
@@ -113,12 +150,13 @@ If auto-approve and pull-request delivery are both on, the pull request is opene
 as a **draft** — nobody looked at the diff, and the draft says so. A pull request
 Radulf opens as ready-for-review is one a human approved.
 
-## The four agent roles
+## The five agent roles
 
 | Role | Job |
 |------|-----|
 | **Scoping** | Talks a rough card through with you, reading the repo read-only, and drafts the scoped task. Interactive; runs only when you ask. |
 | **Planner** | Turns a card and its scoping thread into a plan, a loop prompt, and acceptance criteria. |
+| **Plan critic** | Reads the finished plan against the card, its thread and the specs it names, read-only, and returns `approve` or `revise` with feedback before the loop starts (spec 30). On by default for breakdown pieces. |
 | **Loop** | Implements one task at a time against the worktree, running its targeted check each iteration. |
 | **Evaluator** | The sole whole-card verifier. Runs every criterion, inspects the diff, returns `approve` or `revise`, and on approve writes the summary and refreshes stale docs. |
 
@@ -163,6 +201,14 @@ them:
   about luck, and the card says which role and which model. Retry stays
   available — it is a reading, not a block.
 
+A retry of the planner or the evaluator also knows what the attempt before it
+did. Its prompt carries how that attempt ended, the model's last words, the
+commands it ran with the end of each output, and for the evaluator the running
+notes it kept in `.ralph/EVALUATION-NOTES.md`. Both stages are told their
+budget and asked to have their result on disk well before it runs out, and a
+complete verdict or plan left on disk when the watchdog fires is used rather
+than thrown away. Spec 26 records the decision.
+
 ## How many cards run at once
 
 By default, one. A single card occupies the planner, loop, or evaluator, and
@@ -197,6 +243,19 @@ evaluator still decides. Only check-shaped commands run — `test`, `grep`,
 `find`, `ls` and their kin — and anything else in backticks is left alone. The
 repair pass happens at most once per run, because a criterion can be written so
 that it can never pass.
+
+Once those checks pass, the orchestrator merges the base branch into the
+worktree, so the evaluator judges the code that will actually land. A clean
+merge becomes a merge commit on the run branch; a conflict becomes one more task
+for the loop, naming the conflicted files, and the loop's next completion signal
+lets the orchestrator finish the merge commit. The loop agent never runs git
+itself, and the base branch is only read, once any approval merge in flight for
+the repository has finished. Then, if the repository has a gate command, the
+gate runs; a non-zero exit is another task quoting the end of its output.
+Evaluation starts only once the branch is synced and the gate passes (or the
+repository has none). A run gets at most two such sync-or-gate rounds; a third
+conflict or gate failure ends the run with the reason on the card. Spec 29
+records the decision.
 
 ## Where the work happens
 

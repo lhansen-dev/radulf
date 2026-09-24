@@ -6,11 +6,12 @@ import { planStatePath } from "@/server/bookkeeping";
 import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
 import { getCard, requireCard } from "@/server/cards";
+import { listChildren } from "@/server/epics";
 import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo, requireRepo } from "@/server/repos";
 import { groupBy } from "@/server/queryGrouping";
 import { removeCardArtifacts } from "@/server/retention";
-import { listScopingMessages } from "@/server/scoping";
+import { listScopingMessages, scopingTurnInFlight } from "@/server/scoping";
 import { getSettings } from "@/server/settings";
 import { RUNNING_STATUSES } from "@/shared/cardStatus";
 import { json, err, handle } from "../../_lib";
@@ -72,7 +73,7 @@ export async function GET(_req: Request, { params }: Ctx) {
   // always the current global value, not necessarily what an old run used.
   const settings = getSettings();
   const models = Object.fromEntries(
-    (["planner", "loop", "evaluator"] as const).map((role) => [role, {
+    (["planner", "loop", "evaluator", "critic"] as const).map((role) => [role, {
       provider: settings[`${role}Provider`],
       model: card[`${role}Model`] || settings[`${role}Model`] || null,
       reasoningLevel: settings[`${role}ReasoningLevel`],
@@ -87,9 +88,14 @@ export async function GET(_req: Request, { params }: Ctx) {
     const items = parseChecklist(planMd)?.items ?? [];
     livePlan = { planMd, done: items.filter((item) => item.checked).length, total: items.length };
   }
+  // Spec 24: the epic this card is a piece of, and the pieces it has.
+  const parent = card.parentCardId ? getCard(card.parentCardId) : undefined;
   return json({
     card, repo, plans: cardPlans, livePlan, runs: cardRuns, events: cardEvents, models,
     scoping: listScopingMessages(id),
+    scopingTurn: scopingTurnInFlight(id),
+    children: listChildren(id),
+    parent: parent ? { id: parent.id, title: parent.title, runMode: parent.runMode } : null,
   });
 }
 

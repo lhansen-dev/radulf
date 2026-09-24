@@ -2,7 +2,7 @@ import { asc } from "drizzle-orm";
 import { db, repos } from "@/db";
 import { assertInsideBrowsableRoot } from "@/server/folderBrowser";
 import { assertBranchExists, assertUsableRepo, tryGit } from "@/server/git";
-import { registerRepo } from "@/server/repos";
+import { parseGateCommand, registerRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../_lib";
@@ -32,6 +32,6 @@ export async function POST(req: Request) {
       const head = await tryGit(path, "rev-parse", "--abbrev-ref", "HEAD");
       defaultBranch = head.ok && head.out !== "HEAD" ? head.out : "main";
     }
-    return json(registerRepo(name, path, defaultBranch), 201);
+    return json(registerRepo(name, path, defaultBranch, parseGateCommand(body.gateCommand)), 201);
   });
 }

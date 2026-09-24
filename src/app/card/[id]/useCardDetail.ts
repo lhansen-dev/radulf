@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, useEventStream } from "../../ui/api";
 import type { Run } from "./metricsPanel";
+import type { EpicRunMode } from "@/shared/epics";
 
 export type Plan = {
   id: string;
@@ -26,6 +27,25 @@ export type ScopingMessage = {
   createdAt: string;
 };
 
+/** What a scoping turn was asked for (spec 17's three concrete outputs, plus
+ * the next message). */
+export type ScopingRequest = "reply" | "proposal" | "split" | "plan";
+
+/** A scoping turn in flight for the card: the server holds one per card, so
+ * this is set after a reload or in a second tab as well. */
+export type ScopingTurn = { request: ScopingRequest; startedAt: string };
+
+/** Spec 24: one piece of an epic, as its page lists them. */
+export type ChildCard = {
+  id: string;
+  title: string;
+  status: string;
+  position: number;
+  repoId: string;
+  startedAt: string | null;
+  updatedAt: string;
+};
+
 export type CardDetailData = {
   card: {
     id: string;
@@ -40,11 +60,17 @@ export type CardDetailData = {
     reviewPlanBeforeImplementation: number;
     grillMe: number;
     scopingAuthorsPlan: number;
+    /** Spec 30: null inherits the global critic mode, 1 on, 0 off. */
+    planCritic: number | null;
+    criticModel: string | null;
     autoApprove: number;
     summary: string | null;
     startedAt: string | null;
     createdAt: string;
     baseBranch: string | null;
+    /** Spec 24. Absent on older cached responses. */
+    parentCardId?: string | null;
+    runMode?: EpicRunMode | null;
   };
   repo: { id: string; name: string; path: string; defaultBranch: string } | null;
   plans: Plan[];
@@ -69,9 +95,16 @@ export type CardDetailData = {
     planner: { provider: string; model: string | null; reasoningLevel: string };
     loop: { provider: string; model: string | null; reasoningLevel: string };
     evaluator: { provider: string; model: string | null; reasoningLevel: string };
+    /** Spec 30: the plan critic. Absent on responses cached before it existed. */
+    critic?: { provider: string; model: string | null; reasoningLevel: string };
   };
   /** The card's scoping thread, oldest first. Absent on older cached responses. */
   scoping?: ScopingMessage[];
+  /** The scoping turn running right now, if any. Absent on older cached responses. */
+  scopingTurn?: ScopingTurn | null;
+  /** Spec 24: this card's pieces, in queue order, and the epic it belongs to. */
+  children?: ChildCard[];
+  parent?: { id: string; title: string; runMode: EpicRunMode | null } | null;
 };
 
 /** Card detail data and card-scoped live refresh. */

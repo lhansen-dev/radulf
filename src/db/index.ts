@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { withMigrationLock } from "./migrationLock";
 import * as schema from "./schema";
 
 export const DATA_DIR = process.env.RADULF_DATA_DIR
@@ -55,7 +56,11 @@ function createDb() {
   for (const suffix of ["-wal", "-shm"]) tighten(dbFile + suffix);
   sqlite.pragma("foreign_keys = ON");
   const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
+  // Spec 25: web and worker may boot the same data dir concurrently, and
+  // migrate() alone races (see migrationLock.ts), so serialize it.
+  withMigrationLock(path.join(DATA_DIR, "radulf-migrate.lock"), () => {
+    migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
+  });
   return db;
 }
 

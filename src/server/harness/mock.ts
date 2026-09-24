@@ -43,7 +43,7 @@ type AssistantEvent = EventStream extends AsyncIterable<infer E> ? E : never;
 type Block = AssistantMessage["content"][number];
 type ToolArgs = Extract<Block, { type: "toolCall" }>["arguments"];
 
-type MockRole = "planner" | "loop" | "evaluator" | "readOnly";
+type MockRole = "planner" | "critic" | "loop" | "evaluator" | "readOnly";
 
 /** What a script sees of the request. */
 type Turn = {
@@ -120,6 +120,13 @@ const loop: Script = ({ prompt, step }) => {
   }
 };
 
+/** The plan critic (spec 30): the planner's tool set less `edit`, which is
+ * how the two are told apart. */
+const critic: Script = ({ step }) =>
+  step === 0
+    ? [write(".ralph/CRITIQUE.md", "VERDICT: approve\n\nMock critique: the plan covers the card.\n")]
+    : [say("Critique written.")];
+
 const approve = (): Block[] => [
   write(".ralph/EVALUATION.md", "VERDICT: approve\n\nMock evaluation: every task left its file.\n"),
   write(".ralph/SUMMARY.md", "Mock run: created one file per planned task under mock-output/.\n"),
@@ -150,7 +157,7 @@ const readOnly: Script = () => [
   ),
 ];
 
-const HAPPY: Record<MockRole, Script> = { planner, loop, evaluator, readOnly };
+const HAPPY: Record<MockRole, Script> = { planner, critic, loop, evaluator, readOnly };
 
 // ---------------------------------------------------------------------------
 // Scenarios — the model id. Each overrides the happy path for some roles.
@@ -158,6 +165,7 @@ const HAPPY: Record<MockRole, Script> = { planner, loop, evaluator, readOnly };
 
 const everyRole = (script: Script): Record<MockRole, Script> => ({
   planner: script,
+  critic: script,
   loop: script,
   evaluator: script,
   readOnly: script,
@@ -177,6 +185,20 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
         if (turn.lastToolOutput.includes("ralph: evaluation — revise")) return approve();
         return [
           write(".ralph/EVALUATION.md", "VERDICT: revise\n\nMock revision: add mock-output/feedback.md.\n"),
+        ];
+      },
+    },
+  },
+  "critic-revise-once": {
+    description: "Plan critic sends the first plan back once, then approves the re-plan.",
+    scripts: {
+      critic: ({ prompt, step }) => {
+        if (step !== 0) return [say("Critique written.")];
+        // The critic prompt inlines PLAN.md; the mock planner's re-plan
+        // carries the feedback task, the first plan does not.
+        if (prompt.includes("Address the reviewer feedback")) return critic({ prompt, step, lastToolOutput: "" });
+        return [
+          write(".ralph/CRITIQUE.md", "VERDICT: revise\n\nMock critique: the plan must add mock-output/feedback.md.\n"),
         ];
       },
     },
@@ -235,6 +257,27 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
       },
     },
   },
+  "base-conflict": {
+    description:
+      "The base branch moves under the loop with an overlapping edit; the loop resolves the orchestrator's conflict task and evaluation follows a clean merge.",
+    scripts: {
+      loop: (turn) => {
+        const task = assignedTask(turn.prompt);
+        const m = /^Resolve the merge conflicts left in (.+?) after the orchestrator merged the base branch /.exec(task.text);
+        if (!m) return loop(turn);
+        const files = m[1].split(", ");
+        const signal = task.last ? ".ralph/DONE" : ".ralph/ITERATION_DONE";
+        switch (turn.step) {
+          case 0:
+            return files.map((f) => write(f, `resolved by mock ${Date.now()}\n`));
+          case 1:
+            return [write(signal, `Resolved conflicts in ${files.join(", ")}\n`)];
+          default:
+            return [say("Conflicts resolved.")];
+        }
+      },
+    },
+  },
 };
 
 export const DEFAULT_MOCK_SCENARIO = "happy-path";
@@ -275,11 +318,12 @@ function declaredTools(ctx: Context): Set<string> {
 }
 
 /** Role from the tool set toolsForRole() bound (pi.ts): only loop and
- * evaluator hold bash, only the planner writes without it. */
+ * evaluator hold bash; the planner and the plan critic write without it,
+ * and only the planner holds edit. */
 function roleOf(ctx: Context, prompt: string): MockRole {
   const tools = declaredTools(ctx);
   if (tools.has("bash")) return /^LAST_TASK=/m.test(prompt) ? "loop" : "evaluator";
-  if (tools.has("write")) return "planner";
+  if (tools.has("write")) return tools.has("edit") ? "planner" : "critic";
   return "readOnly";
 }
 

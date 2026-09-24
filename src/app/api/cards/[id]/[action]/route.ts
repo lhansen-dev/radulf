@@ -1,4 +1,5 @@
 import { getOrchestrator } from "@/server/orchestrator";
+import { parseBreakdown } from "@/server/cardValidation";
 import { ClientError } from "@/server/clientError";
 import { record } from "@/server/requestValidation";
 import type { ApprovedInstallScript } from "@/db";
@@ -30,7 +31,29 @@ const ok = { ok: true };
 
 /** POST /api/cards/:id/:action — the card's single-verb state transitions. */
 const ACTIONS: Record<string, (id: string, req: Request) => unknown | Promise<unknown>> = {
+  "review-config": async (id) => {
+    const response = json(await getOrchestrator().reviewConfig(id));
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  },
+  "approve-config": async (id, req) => {
+    const body = record(await req.json(), "approve-config body");
+    if (typeof body.runId !== "string" || !body.runId ||
+        typeof body.configHash !== "string" || !/^(?:[a-f0-9]{64})?$/.test(body.configHash)) {
+      throw new ClientError("runId and configHash are required");
+    }
+    const result = await getOrchestrator().retryMerge(id, { runId: body.runId, configHash: body.configHash });
+    return result.ok ? ok : err(result.error ?? "merge failed", 409);
+  },
   abandon: async (id) => (await getOrchestrator().abandon(id), ok),
+  // Spec 24: the epic's own verbs. Body: { pieces: { title, description,
+  // repoId? }[], runMode?: "ordered" | "parallel" }.
+  breakdown: async (id, req) => {
+    const { pieces, runMode } = parseBreakdown(await req.json());
+    return { cards: getOrchestrator().applyBreakdown(id, pieces, runMode) };
+  },
+  "start-all": (id) => getOrchestrator().startEpic(id),
+  "pause-all": (id) => getOrchestrator().pauseEpic(id),
   "approve-plan": (id) => (getOrchestrator().approvePlan(id), ok),
   "approve-install": async (id, req) =>
     getOrchestrator().approveInstallScripts(id, await installPackages(req)),

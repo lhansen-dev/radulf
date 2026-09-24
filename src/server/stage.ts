@@ -8,7 +8,6 @@ import { providerBreakerStatus, recordProviderOutcome } from "./circuitBreaker";
 import { recordProviderFailure } from "./providerRateLimit";
 import { createWorktree, currentBranch, recordWorktree } from "./git";
 import { runTranscriptDir } from "./retention";
-import { startTranscriptPush } from "./transcript";
 import type { RunSandboxContext } from "./sandbox/context";
 import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
 import { checkRepoIntegrity, type RepoIntegrityBaseline } from "./integrity";
@@ -94,8 +93,14 @@ export async function sandboxUnavailableReason(settings: Pick<Settings, "sandbox
   return preflight.ok ? null : `sandbox unavailable: ${preflight.errors.join("; ")}`;
 }
 
-/** Run one harness invocation with its transcript pushed live over SSE.
- * Single-file transcripts (plan/evaluate) use iteration 0. */
+/** Run one harness invocation writing its transcript under the run's
+ * transcript directory. The stage deliberately does NOT call
+ * `startTranscriptPush` itself: the web process's watcher registry
+ * (`src/server/transcriptWatchers.ts`) owns exactly one `startTranscriptPush`
+ * watcher per running run and pushes the transcript live over SSE, so a split
+ * web/worker deployment sees it too and a single process never pushes the same
+ * chunk twice (spec 25, decision 5). Single-file transcripts (plan/evaluate)
+ * use iteration 0. */
 export async function runWithTranscript(
   opts: Omit<Parameters<typeof runHarness>[0], "transcriptPath"> & {
     runId: string;
@@ -103,14 +108,12 @@ export async function runWithTranscript(
     iteration?: number;
   },
 ): Promise<RunnerResult> {
-  const { runId, file, iteration = 0, ...harnessOpts } = opts;
+  // `iteration` is kept in the signature for callers; the watcher registry
+  // derives it from the run row, so it is not needed here.
+  const { runId, file, iteration: _iteration, ...harnessOpts } = opts;
+  void _iteration;
   const transcriptPath = path.join(runTranscriptDir(runId), file);
-  const stop = startTranscriptPush(transcriptPath, runId, iteration);
-  try {
-    return await runHarness({ ...harnessOpts, transcriptPath });
-  } finally {
-    stop();
-  }
+  return await runHarness({ ...harnessOpts, transcriptPath });
 }
 
 /** Classify a single-invocation stage's harness failure (timeout, stall,
@@ -118,10 +121,11 @@ export async function runWithTranscript(
 export function harnessFailure(
   result: RunnerResult,
   provider: ProviderId,
-  label: "planner" | "evaluator",
+  label: "planner" | "evaluator" | "critic",
 ): { status: FinishStatus; exitReason: string; moveReason: string } | null {
   if (result.timedOut) {
-    const reason = label === "planner" ? "planning timed out" : "evaluation timed out";
+    const reason =
+      label === "planner" ? "planning timed out" : label === "critic" ? "plan critique timed out" : "evaluation timed out";
     return { status: "timeout", exitReason: reason, moveReason: reason };
   }
   // A dead stream, not the model's answer — worth its own reason.
@@ -166,6 +170,8 @@ export async function integrityViolationReason(
  * service stays independently testable. */
 export type StageDependencies = {
   getCard(cardId: string): Card | undefined;
+  /** The owning orchestrator's `workers.id`, stamped on every run it starts. */
+  workerId(): string;
   latestPlan(cardId: string): Plan | undefined;
   latestWorktreeRun(cardId: string): Run | undefined;
   moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean;

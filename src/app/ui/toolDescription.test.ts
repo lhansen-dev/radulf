@@ -10,6 +10,9 @@ describe("describeToolCall", () => {
     ["Write", { file_path: "CHANGELOG.md" }, "CHANGELOG.md"],
     ["MultiEdit", { file_path: "src/lib/util.ts" }, "src/lib/util.ts"],
     ["read", { filePath: "src/foo.ts" }, "src/foo.ts"],
+    ["read", { path: "src/server/scoping.ts" }, "src/server/scoping.ts"],
+    ["edit", { path: "src/a.ts", oldText: "x", newText: "y" }, "src/a.ts"],
+    ["write", { path: "docs/NEW.md", content: "# New" }, "docs/NEW.md"],
     ["edit", { filePath: "src/bar.ts" }, "src/bar.ts"],
     ["write", { filePath: "src/baz.ts" }, "src/baz.ts"],
     ["Grep", { pattern: "TODO" }, "TODO"],
@@ -17,6 +20,10 @@ describe("describeToolCall", () => {
     ["WebFetch", { url: "https://example.com" }, "https://example.com"],
     ["Task", { description: "Do the thing" }, "Do the thing"],
     ["Task", { subject: "A task title" }, "A task title"],
+    ["find", { pattern: "**/*.ts", path: "src" }, "**/*.ts"],
+    ["find", { path: "src/server" }, "src/server"],
+    ["ls", { path: "src/app" }, "src/app"],
+    ["web_search", { query: "drizzle self reference" }, "drizzle self reference"],
     ["bash", { command: "echo hello\nworld" }, "echo hello world"],
   ])("describes %s %j", (name, input, expected) => {
     expect(describeToolCall(name, input)).toBe(expected);

@@ -43,11 +43,11 @@ describe("SettingsPage", () => {
       }
       if (url === "/api/repos/init" && init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as { parentPath: string; name: string };
-        repositories = [{ id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-21" }];
+        repositories = [{ id: "made-repo", name: body.name, path: `${body.parentPath}/${body.name}`, defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-21" }];
         return json(repositories[0], 201);
       }
       if (url === "/api/repos/clone" && init?.method === "POST") {
-        repositories = [{ id: "cloned-repo", name: "repo", path: "/var/lib/radulf/repos/repo", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-22" }];
+        repositories = [{ id: "cloned-repo", name: "repo", path: "/var/lib/radulf/repos/repo", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-22" }];
         return json(repositories[0], 201);
       }
       if (url === "/api/repos") {
@@ -124,7 +124,7 @@ describe("SettingsPage", () => {
 
   it("shows a repository removal conflict on that repository's row", async () => {
     repositories = [
-      { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", approvedInstallScripts: "[]", createdAt: "2026-09-12" },
+      { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-12" },
     ];
     vi.stubGlobal("confirm", vi.fn(() => true));
     window.history.replaceState(null, "", "/settings#repos");
@@ -253,20 +253,22 @@ describe("SettingsPage", () => {
   });
 
   it("flags a role whose provider does not suit it, and applies the suggested split", async () => {
-    savedSettings = { ...initialSettings, scopingProvider: "omlx", scopingModel: "llm", plannerProvider: "omlx", plannerModel: "llm", evaluatorProvider: "omlx", evaluatorModel: "llm" };
+    savedSettings = { ...initialSettings, scopingProvider: "omlx", scopingModel: "llm", plannerProvider: "omlx", plannerModel: "llm", evaluatorProvider: "omlx", evaluatorModel: "llm", criticProvider: "omlx", criticModel: "llm" };
     render(<SettingsPage />);
     await screen.findByRole("heading", { name: "General", level: 2 });
     section("Agents & models");
 
-    // Scoping, the planner and the evaluator are on the self-hosted endpoint,
-    // the looper on a subscription, so every role is off the split and all
-    // four are named.
+    // Scoping, the planner, the evaluator and the plan critic are on the
+    // self-hosted endpoint, the looper on a subscription, so every role is off
+    // the split and all five are named.
     const summary = screen.getByRole("region", { name: "Suggested model split" });
     expect(summary.textContent).toContain("Scoping agent");
     expect(summary.textContent).toContain("Planner agent");
     expect(summary.textContent).toContain("Looper agent");
     expect(summary.textContent).toContain("Evaluator agent");
+    expect(summary.textContent).toContain("Plan critic agent");
     expect(screen.getByText(/Scoping is a live conversation/)).toBeTruthy();
+    expect(screen.getByText(/plan critic is a second reader/)).toBeTruthy();
     expect(screen.getByText(/Planning is the pipeline's hardest reasoning/)).toBeTruthy();
     expect(screen.getByText(/only gate that runs the whole-card acceptance criteria/)).toBeTruthy();
     expect(screen.getByText(/drives most of your token spend/)).toBeTruthy();
@@ -276,6 +278,7 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(savedSettings.plannerProvider).toBe("anthropic"));
     expect(savedSettings.scopingProvider).toBe("anthropic");
     expect(savedSettings.evaluatorProvider).toBe("anthropic");
+    expect(savedSettings.criticProvider).toBe("anthropic");
     expect(savedSettings.loopProvider).toBe("omlx");
     // The callout goes quiet once every role suits its stage.
     expect(screen.queryByRole("region", { name: "Suggested model split" })).toBeNull();

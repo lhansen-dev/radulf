@@ -1,0 +1,1 @@
+ALTER TABLE `repos` ADD `gate_command` text;

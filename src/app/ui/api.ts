@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 
 export type { CardStatus } from "@/shared/cardStatus";
 import type { CardStatus } from "@/shared/cardStatus";
+import type { EpicRunMode } from "@/shared/epics";
 
 export type BoardCard = {
   id: string;
@@ -19,9 +20,13 @@ export type BoardCard = {
   updatedAt: string;
   repoName: string;
   baseBranch: string | null;
+  /** Spec 24: the epic this card is a piece of, and how an epic's pieces run. */
+  parentCardId: string | null;
+  runMode: EpicRunMode | null;
+  dependsOn: string[] | null;
   latestRun: {
     id: string;
-    kind: "plan" | "loop" | "evaluate";
+    kind: "plan" | "loop" | "evaluate" | "critique";
     status: string;
     iterationsDone: number;
     exitReason: string | null;

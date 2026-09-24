@@ -147,8 +147,8 @@ The SQLite database and every runtime directory (`./data`, plus the agent-writab
 run and are all gitignored — **no manual migration step needed**.
 
 Running it on a server? [`docs/DOCKER.md`](docs/DOCKER.md) builds the same thing
-into a container: `docker compose up -d --build`, one volume for state, and restarts
-handled by Docker instead of a service unit.
+into one image run as two containers, `web` and `worker`: `docker compose up -d --build`,
+one volume for state, and restarts handled by Docker instead of a service unit.
 
 > [!TIP]
 > **First time here?** Once the dev server is up, open the in-app **Docs** tab
@@ -473,10 +473,13 @@ these same targets.
 | `make dev` | 🔥 Start the Next.js dev server with hot reload |
 | `make build` | 📦 Build the application for production |
 | `make start` | 🚀 Start the production server (run `build` first) |
+| `make worker` | ⚙️ Run a worker-only process (orchestrator, no HTTP) against this checkout — builds `dist/worker.mjs` first |
+| `make build-worker` | 📦 Bundle the worker entry point `src/worker.ts` into `dist/worker.mjs` |
+| `make check-split` | 🔀 Boot two web-only and a worker-only process against a temp data dir, drive a card through the web API, and assert events and live transcripts fan out across processes (runs `make build` first) |
 | `make lint` | 🧹 Run ESLint across the codebase |
 | `make test` | 🧪 Run unit, component, route, and lifecycle integration tests |
 | `make typecheck` | 🔍 Type-check without emitting files |
-| `make check` | ✅ Run tests, lint, type-checking, and a production build (the CI gate) |
+| `make check` | ✅ Run tests, lint, type-checking, a production build, and the split-process check (the CI gate) |
 | `make db-generate` | 🗂️ Generate a migration from schema changes |
 | `make db-migrate` | ⬆️ Apply pending migrations |
 | `make db-studio` | 🔎 Open Drizzle Studio |

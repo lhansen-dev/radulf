@@ -40,8 +40,29 @@ export type TranscriptPush = {
 // per process. Same hazard applies to anything crossing this bus — a custom
 // class `instanceof` check is unreliable if the checking module and the
 // throwing/emitting module ended up in different bundler module graphs.
-const g = globalThis as unknown as { __radulfBus?: EventEmitter };
+const g = globalThis as unknown as {
+  __radulfBus?: EventEmitter;
+  __radulfLocalEventIds?: Set<number>;
+};
 export const bus = (g.__radulfBus ??= new EventEmitter().setMaxListeners(100));
+
+/** Ids of events this process inserted and already emitted on `bus` itself.
+ * The events tailer (src/server/eventsTail.ts, spec 25 decision 5) polls the
+ * `events` table so split web/worker processes see each other's events; it
+ * consults this set so a locally-emitted event is not delivered twice. The
+ * tailer prunes it via `forgetLocalEventsThrough` once it has passed an id. */
+const localEventIds = (g.__radulfLocalEventIds ??= new Set<number>());
+
+export function wasEmittedLocally(id: number): boolean {
+  return localEventIds.has(id);
+}
+
+/** Drop every recorded local id `<= id`, keeping the set bounded. */
+export function forgetLocalEventsThrough(id: number): void {
+  for (const recorded of localEventIds) {
+    if (recorded <= id) localEventIds.delete(recorded);
+  }
+}
 
 export function emitEvent(
   type: string,
@@ -58,6 +79,7 @@ export function emitEvent(
     })
     .returning()
     .get();
+  localEventIds.add(row.id);
   bus.emit("event", row as RalphEvent);
   return row;
 }

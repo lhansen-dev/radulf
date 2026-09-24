@@ -23,9 +23,11 @@ process.env.PI_OFFLINE = "1";
 
 const { db, cards, runs, plans, repos, events, now } = await import("@/db");
 const { patchSettings, getSettings } = await import("./settings");
-const { Orchestrator } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
 const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
+const { runTranscriptDir } = await import("./retention");
+const { recordRefWrite } = await import("./integrity");
 
 const TERMINAL = new Set(["review", "needs_attention", "done", "plan_review"]);
 
@@ -37,6 +39,8 @@ beforeAll(() => {
     loopProvider: "mock",
     evaluatorProvider: "mock",
     scopingProvider: "mock",
+    criticProvider: "mock",
+    criticModel: "",
     plannerModel: "",
     loopModel: "",
     evaluatorModel: "",
@@ -48,6 +52,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  disposeAllOrchestrators();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -70,8 +75,17 @@ function seedRepo(name: string) {
 }
 
 /** Start a Todo card whose every role runs `scenario`; resolve once it rests. */
-async function runScenario(scenario: string, repo = seedRepo(scenario)) {
-  const cardId = `card-${scenario}`;
+async function runScenario(
+  scenario: string,
+  repo = seedRepo(scenario),
+  opts: {
+    planCritic?: 0 | 1;
+    cardId?: string;
+    afterLoopStarts?: (repo: ReturnType<typeof seedRepo>) => void;
+  } = {},
+) {
+  const cardId = opts.cardId ?? `card-${scenario}`;
+  const { afterLoopStarts } = opts;
   db.insert(cards)
     .values({
       id: cardId,
@@ -83,11 +97,17 @@ async function runScenario(scenario: string, repo = seedRepo(scenario)) {
       plannerModel: scenario,
       loopModel: scenario,
       evaluatorModel: scenario,
+      criticModel: scenario,
+      planCritic: opts.planCritic ?? null,
       createdAt: now(),
       updatedAt: now(),
     })
     .run();
   orch.startCard(cardId);
+  if (afterLoopStarts) {
+    await waitFor(() => Boolean(cardRuns(cardId, "loop")[0]?.worktreePath));
+    afterLoopStarts(repo);
+  }
   await waitFor(() => TERMINAL.has(cardStatus(cardId)) && !orch.hasInFlightWork());
   return { cardId, repo };
 }
@@ -95,7 +115,7 @@ async function runScenario(scenario: string, repo = seedRepo(scenario)) {
 const cardStatus = (cardId: string) =>
   db.select().from(cards).where(eq(cards.id, cardId)).get()!.status;
 
-const cardRuns = (cardId: string, kind?: "plan" | "loop" | "evaluate") =>
+const cardRuns = (cardId: string, kind?: "plan" | "critique" | "loop" | "evaluate") =>
   db
     .select()
     .from(runs)
@@ -154,6 +174,32 @@ describe("mock provider — full pipeline", () => {
     expect(cardRuns(cardId, "plan")).toHaveLength(2);
     const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
     expect(replan?.feedback).toContain("Mock revision");
+  }, 30_000);
+
+  it("critic approve: with the critic on, planning is followed by a critique run and the card still reaches review", async () => {
+    const { cardId } = await runScenario("happy-path", seedRepo("critic-approve"), {
+      planCritic: 1,
+      cardId: "card-critic-approve",
+    });
+    expect(cardStatus(cardId)).toBe("review");
+    const critiques = cardRuns(cardId, "critique");
+    expect(critiques).toHaveLength(1);
+    const [critique] = critiques;
+    expect(critique).toMatchObject({ status: "completed", exitReason: "approve", provider: "mock" });
+    expect(critique.promptTokens).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(runTranscriptDir(critique.id), "critique.jsonl"))).toBe(true);
+    expect(
+      db.select().from(events).where(eq(events.cardId, cardId)).all().filter((e) => e.type === "critique.decided"),
+    ).toHaveLength(1);
+  }, 30_000);
+
+  it("critic-revise-once: a critic revise re-plans with the feedback, then the critic approves", async () => {
+    const { cardId } = await runScenario("critic-revise-once", seedRepo("critic-revise"), { planCritic: 1 });
+    expect(cardStatus(cardId)).toBe("review");
+    expect(cardRuns(cardId, "critique").map((r) => r.exitReason)).toEqual(["revise", "approve"]);
+    expect(cardRuns(cardId, "plan")).toHaveLength(2);
+    const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+    expect(replan?.feedback).toContain("Mock critique");
   }, 30_000);
 
   it("planner-questions: parks the card for a human", async () => {
@@ -218,6 +264,101 @@ describe("mock provider — full pipeline", () => {
     expect(gitIn(repo.repoPath, "rev-parse", "escaped")).toBe(gitIn(repo.repoPath, "rev-parse", loop.branch));
     expect(gitIn(repo.repoPath, "log", "--format=%s", "-1", loop.branch)).toBe("ralph: sync plan v1");
   }, 30_000);
+
+  it("base-conflict: a base branch that moved with an overlapping edit is merged before evaluation, resolved by the loop, and approval merges cleanly", async () => {
+    const { cardId, repo } = await runScenario("base-conflict", undefined, {
+      afterLoopStarts: (r) => {
+        fs.mkdirSync(path.join(r.repoPath, "mock-output"), { recursive: true });
+        fs.writeFileSync(path.join(r.repoPath, "mock-output", "task-1.md"), "edited on main while the loop ran\n");
+        gitIn(r.repoPath, "add", ".");
+        gitIn(r.repoPath, "commit", "-q", "-m", "main moves under the loop");
+        // Stands in for the delivery worker that would have moved `main`, so
+        // the run-end integrity check excuses the move.
+        recordRefWrite(r.repoPath, "refs/heads/main", gitIn(r.repoPath, "rev-parse", "HEAD"), null);
+      },
+    });
+    expect(cardStatus(cardId)).toBe("review");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ exitReason: "done-signal", iterationsDone: 3 });
+    const conflicts = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, cardId), eq(events.type, "base.conflict")))
+      .all();
+    expect(conflicts).toHaveLength(1);
+    expect((JSON.parse(conflicts[0].payload as string) as { files: string[] }).files).toEqual([
+      "mock-output/task-1.md",
+    ]);
+    // The task-3 bookkeeping commit completed the merge, so it has two parents.
+    expect(gitIn(loop.worktreePath!, "log", "--merges", "--format=%s")).toContain("ralph: task 3");
+    expect(fs.readFileSync(path.join(loop.worktreePath!, "mock-output", "task-1.md"), "utf8")).not.toContain(
+      "<<<<<<<",
+    );
+    await orch.approve(loop.id);
+    expect(cardStatus(cardId)).toBe("done");
+    expect(gitIn(repo.repoPath, "show", "main:mock-output/task-1.md")).toContain("resolved by mock");
+  }, 40_000);
+
+  it("graph epic: independent pieces run together, a dependent piece waits, an abandoned dependency does not block", async () => {
+    patchSettings({ maxConcurrentCards: 2 });
+    try {
+      const repo = seedRepo("graph-epic");
+      db.insert(cards)
+        .values({
+          id: "card-graph-epic",
+          repoId: repo.id,
+          title: "Mock graph epic",
+          description: "Three pieces: A and B independent, C depends on both.",
+          status: "backlog",
+          position: 1,
+          plannerModel: "happy-path",
+          loopModel: "happy-path",
+          evaluatorModel: "happy-path",
+          createdAt: now(),
+          updatedAt: now(),
+        })
+        .run();
+      const [a, b, c] = orch.applyBreakdown(
+        "card-graph-epic",
+        [
+          { title: "A", description: "first" },
+          { title: "B", description: "second" },
+          { title: "C", description: "third", dependsOn: [0, 1] },
+        ],
+        "graph",
+      );
+      expect(c.dependsOn).toEqual([a.id, b.id]);
+
+      orch.startEpic("card-graph-epic");
+      // A and B share the two slots; C waits on both of them.
+      await waitFor(() => cardStatus(a.id) === "review" && cardStatus(b.id) === "review", 60_000);
+      expect(cardStatus(c.id)).toBe("todo");
+
+      await orch.approve(cardRuns(a.id, "loop")[0].id);
+      expect(cardStatus(a.id)).toBe("done");
+      expect(cardStatus(c.id)).toBe("todo");
+
+      // Abandoning B releases C: Abandoned counts as finished for a dependency.
+      await orch.abandon(b.id);
+      orch.pump();
+      await waitFor(() => cardStatus(c.id) !== "todo");
+      await waitFor(() => cardStatus(c.id) === "review" && !orch.hasInFlightWork(), 60_000);
+
+      await orch.approve(cardRuns(c.id, "loop")[0].id);
+      expect(cardStatus(c.id)).toBe("done");
+      expect(cardStatus("card-graph-epic")).toBe("done");
+      expect(
+        db
+          .select()
+          .from(events)
+          .where(eq(events.cardId, "card-graph-epic"))
+          .all()
+          .some((e) => e.type === "epic.dependency_abandoned" && JSON.parse(e.payload).pieceId === c.id),
+      ).toBe(true);
+    } finally {
+      patchSettings({ maxConcurrentCards: 1 });
+    }
+  }, 90_000);
 });
 
 describe("mock provider — outside the pipeline", () => {

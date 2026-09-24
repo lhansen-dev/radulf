@@ -1,13 +1,16 @@
 import path from "node:path";
 import { asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, scopingMessages, TRANSCRIPTS_DIR, type ScopingRole } from "@/db";
+import { db, now, scopingMessages, TRANSCRIPTS_DIR, type EpicRunMode, type ScopingRole } from "@/db";
 import { ClientError } from "./clientError";
 import { requireCard as requireCardRow } from "./cards";
+import { emitEvent } from "./events";
 import { requireRepo } from "./repos";
 import { runHarness } from "./harness";
 import { normalizeProvider } from "./providers";
 import { getSettings } from "./settings";
+import { startTranscriptPush } from "./transcript";
+import { scopingRunId } from "@/shared/scopingRunId";
 
 export type ScopingMessage = typeof scopingMessages.$inferSelect;
 
@@ -142,15 +145,18 @@ const SPLIT_REQUEST =
   "cards in the order they should be done, each piece independently useful and independently " +
   "reviewable, and each one small enough for a single agent to carry out. Do not split work " +
   "that only makes sense together, and do not invent scope the conversation did not settle. " +
-  "Output EXACTLY this format and nothing else, repeating the block per card:\n\n" +
+  "Output EXACTLY this format and nothing else: one RUN line, then one block per card:\n\n" +
+  "RUN: <`in order` when each card builds on the one before it, `in parallel` when every card " +
+  "stands alone, `as a graph` when only some cards depend on others>\n\n" +
   "CARD 1\n" +
   "TITLE: <one line, action-oriented>\n" +
+  "DEPENDS ON: <the card numbers this card needs finished first, comma-separated, or `none`>\n" +
   "DESCRIPTION:\n" +
   "<the same Markdown sections a single scoped card would carry, written for a fresh agent " +
-  "with no access to this conversation. Say explicitly what this card does NOT do and which " +
-  "earlier card it depends on.>\n\n" +
+  "with no access to this conversation. Say explicitly what this card does NOT do.>\n\n" +
   "CARD 2\n" +
   "TITLE: ...\n" +
+  "DEPENDS ON: ...\n" +
   "DESCRIPTION:\n" +
   "...";
 
@@ -200,8 +206,11 @@ export function parseScopedCardProposal(
   return { title, description };
 }
 
-/** One card of a split proposal, in the order the session put it. */
-export type SplitCard = { title: string; description: string };
+/**
+ * One card of a split proposal, in the order the session put it. `dependsOn`
+ * holds 0-based indexes into the returned array (spec 28).
+ */
+export type SplitCard = { title: string; description: string; dependsOn: number[] };
 
 /**
  * Split a split proposal into its cards.
@@ -213,16 +222,57 @@ export type SplitCard = { title: string; description: string };
  * that omits its TITLE line still yields a usable card, numbered after the
  * original. The operator edits the result before it is applied, and applying
  * refuses a card with no title.
+ *
+ * Spec 28: a block's `DEPENDS ON:` line names the 1-based CARD numbers it
+ * needs finished first. Those are mapped to indexes of the surviving blocks;
+ * numbers that name no surviving block, or the card itself, are dropped. A
+ * missing line means no dependencies.
  */
 export function parseSplitProposal(text: string, fallbackTitle: string): SplitCard[] {
   let body = text.trim();
   const fenced = /^```[a-z]*\n([\s\S]*?)\n```$/i.exec(body);
   if (fenced) body = fenced[1].trim();
-  return body
-    .split(/^CARD\s+\d+\s*$/m)
-    .slice(1)
-    .filter((block) => block.trim())
-    .map((block, i) => parseScopedCardProposal(block, `${fallbackTitle} (${i + 1})`));
+
+  const separators = [...body.matchAll(/^CARD\s+(\d+)\s*$/gm)];
+  const blocks: { number: number; text: string }[] = [];
+  separators.forEach((sep, i) => {
+    const start = (sep.index ?? 0) + sep[0].length;
+    const end = i + 1 < separators.length ? (separators[i + 1].index ?? body.length) : body.length;
+    const text = body.slice(start, end);
+    if (text.trim()) blocks.push({ number: Number(sep[1]), text });
+  });
+
+  const indexByNumber = new Map<number, number>();
+  blocks.forEach((block, i) => {
+    if (!indexByNumber.has(block.number)) indexByNumber.set(block.number, i);
+  });
+
+  return blocks.map((block, i) => {
+    const dependsLine = /^DEPENDS ON:[ \t]*(.*)$/m.exec(block.text);
+    const rest = dependsLine
+      ? block.text.slice(0, dependsLine.index) + block.text.slice(dependsLine.index + dependsLine[0].length)
+      : block.text;
+    const numbers = dependsLine ? (dependsLine[1].match(/\d+/g) ?? []).map(Number) : [];
+    const dependsOn = [
+      ...new Set(
+        numbers
+          .map((n) => indexByNumber.get(n))
+          .filter((idx): idx is number => idx !== undefined && idx !== i),
+      ),
+    ].sort((a, b) => a - b);
+    return { ...parseScopedCardProposal(rest, `${fallbackTitle} (${i + 1})`), dependsOn };
+  });
+}
+
+/**
+ * Spec 24: the run mode a split proposal recommends for its pieces. In order
+ * unless the reply says in parallel, because in order is what the queue did
+ * before the line existed, and a missing line should not loosen that.
+ * Spec 28: `as a graph` picks the dependency-driven mode.
+ */
+export function parseSplitRunMode(text: string): EpicRunMode {
+  if (/^RUN:.*\bgraph\b/im.test(text)) return "graph";
+  return /^RUN:.*\bparallel\b/im.test(text) ? "parallel" : "ordered";
 }
 
 /** The three artifacts a planning run would have produced. */
@@ -255,24 +305,41 @@ function requireCard(cardId: string) {
   return { card, repo: requireRepo(card.repoId) };
 }
 
+/** A scoping turn in flight: what it was asked for, and since when. */
+export type ScopingTurnInFlight = { request: ScopingRequest; startedAt: string };
+
 /**
  * Cards with a scoping turn in flight. Scoping runs outside the pipeline
  * slots, so nothing else bounds it: every POST started another model session
  * against the repository for up to TURN_TIMEOUT_MS, however many were already
  * running for the same card. One turn per card at a time; the thread is
- * sequential anyway.
+ * sequential anyway. The entry is also how the card page learns a turn is
+ * running when it was not the one to start it: after a reload, or in a
+ * second tab.
  */
-const turnsInFlight = new Set<string>();
+const turnsInFlight = new Map<string, ScopingTurnInFlight>();
 
-async function oneTurnAtATime<T>(cardId: string, turn: () => Promise<T>): Promise<T> {
+export function scopingTurnInFlight(cardId: string): ScopingTurnInFlight | null {
+  return turnsInFlight.get(cardId) ?? null;
+}
+
+async function oneTurnAtATime<T>(
+  cardId: string,
+  request: ScopingRequest,
+  turn: () => Promise<T>,
+): Promise<T> {
   if (turnsInFlight.has(cardId)) {
     throw new ClientError("a scoping turn is already running for this card", 409);
   }
-  turnsInFlight.add(cardId);
+  turnsInFlight.set(cardId, { request, startedAt: now() });
+  // Both events refresh the card page: the start so a second tab sees the
+  // turn running, the finish so the reply lands without a manual reload.
+  emitEvent("scoping.started", { cardId, payload: { request } });
   try {
     return await turn();
   } finally {
     turnsInFlight.delete(cardId);
+    emitEvent("scoping.finished", { cardId, payload: { request } });
   }
 }
 
@@ -284,16 +351,25 @@ async function ask(
   request: ScopingRequest,
 ): Promise<string> {
   const settings = getSettings();
-  const result = await runHarness({
-    provider: normalizeProvider(settings.scopingProvider, "anthropic"),
-    model: settings.scopingModel,
-    reasoningLevel: settings.scopingReasoningLevel,
-    prompt: renderScopingPrompt(card, messages, request),
-    cwd: repo.path,
-    transcriptPath: path.join(TRANSCRIPTS_DIR, `scoping-${card.id}-${nanoid()}.jsonl`),
-    timeoutMs: TURN_TIMEOUT_MS,
-    readOnly: true,
-  });
+  const transcriptPath = path.join(TRANSCRIPTS_DIR, `scoping-${card.id}-${nanoid()}.jsonl`);
+  // Pushed live under the card's scoping run id, so the panel can say what
+  // the session is reading while the operator waits on the turn.
+  const stop = startTranscriptPush(transcriptPath, scopingRunId(card.id), 0);
+  let result: Awaited<ReturnType<typeof runHarness>>;
+  try {
+    result = await runHarness({
+      provider: normalizeProvider(settings.scopingProvider, "anthropic"),
+      model: settings.scopingModel,
+      reasoningLevel: settings.scopingReasoningLevel,
+      prompt: renderScopingPrompt(card, messages, request),
+      cwd: repo.path,
+      transcriptPath,
+      timeoutMs: TURN_TIMEOUT_MS,
+      readOnly: true,
+    });
+  } finally {
+    stop();
+  }
   if (result.error) throw new Error(result.error);
   if (result.timedOut) throw new Error("the scoping session timed out");
   if (!result.lastText) throw new Error("the scoping session returned an empty reply");
@@ -318,7 +394,7 @@ export async function scopingTurn(
     addScopingMessage(cardId, "user", text);
     return listScopingMessages(cardId);
   }
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "reply", async () => {
     addScopingMessage(cardId, "user", text);
     const reply = await ask(card, repo, listScopingMessages(cardId), "reply");
     addScopingMessage(cardId, "assistant", reply);
@@ -335,7 +411,7 @@ export async function proposeScopedCard(
   cardId: string,
 ): Promise<{ title: string; description: string; messages: ScopingMessage[] }> {
   const { card, repo } = requireCard(cardId);
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "proposal", async () => {
     const raw = await ask(card, repo, listScopingMessages(cardId), "proposal");
     addScopingMessage(cardId, "assistant", raw);
     return { ...parseScopedCardProposal(raw, card.title), messages: listScopingMessages(cardId) };
@@ -344,15 +420,16 @@ export async function proposeScopedCard(
 
 /**
  * The session's second concrete output (spec 17): the work turned out to be
- * more than one card, so here are the pieces in order. A proposal and nothing
- * more — applying it is a separate, operator-driven step, the same posture
- * decision 6 takes on merging. The reply joins the thread either way.
+ * more than one card, so here are the pieces in order, with the run mode the
+ * session recommends for them (spec 24). A proposal and nothing more —
+ * applying it is a separate, operator-driven step, the same posture decision
+ * 6 takes on merging. The reply joins the thread either way.
  */
 export async function proposeSplit(
   cardId: string,
-): Promise<{ cards: SplitCard[]; messages: ScopingMessage[] }> {
+): Promise<{ cards: SplitCard[]; runMode: EpicRunMode; messages: ScopingMessage[] }> {
   const { card, repo } = requireCard(cardId);
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "split", async () => {
     const raw = await ask(card, repo, listScopingMessages(cardId), "split");
     addScopingMessage(cardId, "assistant", raw);
     const split = parseSplitProposal(raw, card.title);
@@ -361,7 +438,7 @@ export async function proposeSplit(
         "the session did not come back with two or more cards — its reply is in the thread",
       );
     }
-    return { cards: split, messages: listScopingMessages(cardId) };
+    return { cards: split, runMode: parseSplitRunMode(raw), messages: listScopingMessages(cardId) };
   });
 }
 
@@ -379,7 +456,7 @@ export async function proposeScopedPlan(
   if (!card.scopingAuthorsPlan) {
     throw new ClientError("this card does not let its scoping session write the plan");
   }
-  return oneTurnAtATime(cardId, async () => {
+  return oneTurnAtATime(cardId, "plan", async () => {
     const raw = await ask(card, repo, listScopingMessages(cardId), "plan");
     addScopingMessage(cardId, "assistant", raw);
     const artifacts = parsePlanProposal(raw);

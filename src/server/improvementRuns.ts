@@ -18,6 +18,13 @@ import { assertBranchExists, git, isRalphBranch } from "./git";
 import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
+import { hasRole } from "./roles";
+import {
+  claimImprovementRun,
+  heartbeatImprovementRun,
+  releaseImprovementRun,
+} from "./improvementRunLeases";
+import { HEARTBEAT_INTERVAL_MS } from "./workers";
 import { sleep } from "@/shared/sleep";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -86,20 +93,10 @@ function priorCardTitles(run: ImprovementRun): string[] {
 // hot-reload without losing track of which runs are already being driven.
 const g = globalThis as unknown as {
   __radulfImprovementDrivers?: Set<string>;
-  __radulfImprovementStopRequests?: Set<string>;
 };
 
 function driverGuard(): Set<string> {
   return (g.__radulfImprovementDrivers ??= new Set());
-}
-
-// In-process only: distinguishes an operator-requested stop from the
-// deadline simply elapsing, both of which the loop observes the same way
-// (deadlineAt <= now). Lost across a restart mid-stop — the run then just
-// reports "completed" instead of "stopped", which is a labeling nicety, not
-// a correctness issue (decision 5: the timer is a soft gate either way).
-function stopRequests(): Set<string> {
-  return (g.__radulfImprovementStopRequests ??= new Set());
 }
 
 /**
@@ -214,30 +211,40 @@ export async function createImprovementRun(
   }
 
   emitEvent("improvement.started", { payload: { runId: row.id, featureBranch } });
-  void driveRun(row.id);
+  // A web-only process (spec 25: RADULF_ROLES=web) only inserts the row and
+  // emits `improvement.started`; the worker adopts the still-`running` row
+  // from its pump timer via resumeImprovementRuns(). A pi session must never
+  // be constructed in a web-only process.
+  if (hasRole("worker")) void driveRun(row.id);
   return row;
 }
 
 /** Soft-stop (decision/ruling 5): the deadline moves to now, so the driver
  * stops proposing new work the next time it checks between tasks — a task
- * already in flight finishes untouched. */
+ * already in flight finishes untouched. `stopRequestedAt` is what tells the
+ * driver — in this process or in the worker that holds the run's lease — that
+ * the deadline was an operator's Stop and not the budget elapsing. */
 export function stopImprovementRun(runId: string): ImprovementRun {
   const run = getRun(runId);
   if (!run) throw new ClientError("improvement run not found", 404);
   if (run.status !== "running") throw new ClientError(`cannot stop a ${run.status} run`);
-  stopRequests().add(runId);
   return db
     .update(improvementRuns)
-    .set({ deadlineAt: now(), updatedAt: now() })
+    .set({ deadlineAt: now(), stopRequestedAt: now(), updatedAt: now() })
     .where(eq(improvementRuns.id, runId))
     .returning()
     .get();
 }
 
-/** Restart drivers for every run still `running` after a boot (N3). Call
- * after `getOrchestrator()` so `recover()` has already flipped any orphaned
- * card to `needs_attention`. Fire-and-forget — a run's driver can legitimately
- * outlive the whole time budget, so this must never block startup. */
+/** Restart drivers for every run still `running` (N3). Called at boot — after
+ * `getOrchestrator()` so `recover()` has already flipped any orphaned card to
+ * `needs_attention` — and again on every worker pump tick, adopting runs a
+ * web-only process created (spec 25: web only inserts the row). Each run is
+ * claimed through its driver lease (spec 25 decision 7): `driveRun` returns at
+ * once for a run this process already drives or another live worker holds,
+ * and a run whose driver went stale is adopted by whichever worker's pump tick
+ * claims it first. Fire-and-forget — a run's driver can legitimately outlive
+ * the whole time budget, so this must never block startup or the pump. */
 export function resumeImprovementRuns(): void {
   const running = db.select().from(improvementRuns).where(eq(improvementRuns.status, "running")).all();
   for (const run of running) void driveRun(run.id);
@@ -254,7 +261,6 @@ function finishRun(
     .set({ status, endedAt: now(), updatedAt: now(), currentCardId: null })
     .where(eq(improvementRuns.id, runId))
     .run();
-  stopRequests().delete(runId);
   emitEvent("improvement.completed", {
     payload: {
       runId,
@@ -280,7 +286,7 @@ function finishRun(
 /** The run ran out of time or work: "stopped" when an operator asked for
  * it, "completed" when the deadline simply arrived. */
 function endRun(runId: string, reason: string): void {
-  finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", reason);
+  finishRun(runId, getRun(runId)?.stopRequestedAt ? "stopped" : "completed", reason);
 }
 
 /** Record a just-finished task's outcome (decision 3): success resets the
@@ -304,26 +310,49 @@ function recordCardOutcome(runId: string, success: boolean): void {
   }
 }
 
-/** Guarded singleton entry point (N3): a run is driven at most once per
- * process. Never throws — an unexpected failure lands the run in `failed`
- * rather than an unhandled rejection, so callers can always fire-and-forget. */
-export async function driveRun(runId: string): Promise<void> {
+/** Guarded entry point: a run is driven by exactly one worker at a time
+ * (spec 25 decision 7). The in-process guard set (N3) still protects against
+ * Next.js dev hot-reload double-driving within one process; across processes
+ * the run is claimed through its lease on the `improvement_runs` row
+ * (`workerId`/`heartbeatAt`), heartbeated every `HEARTBEAT_INTERVAL_MS` while
+ * driving and released when the driver returns. A claim fails when another
+ * live worker holds the lease; a run whose driver went stale is adopted by
+ * whichever worker's pump tick claims it first. Never throws — an unexpected
+ * failure lands the run in `failed` rather than an unhandled rejection, so
+ * callers can always fire-and-forget. */
+export async function driveRun(
+  runId: string,
+  workerId: string = getOrchestrator().workerId,
+): Promise<void> {
   const drivers = driverGuard();
   if (drivers.has(runId)) return;
   drivers.add(runId);
+  if (!claimImprovementRun(runId, workerId, getSettings().workerStaleSeconds)) {
+    drivers.delete(runId);
+    return;
+  }
+  const beat = setInterval(() => {
+    heartbeatImprovementRun(runId, workerId);
+  }, HEARTBEAT_INTERVAL_MS);
+  beat.unref?.();
   try {
-    await runDriverLoop(runId);
+    await runDriverLoop(runId, workerId);
   } finally {
+    clearInterval(beat);
+    releaseImprovementRun(runId, workerId);
     drivers.delete(runId);
   }
 }
 
-async function runDriverLoop(runId: string): Promise<void> {
+async function runDriverLoop(runId: string, workerId: string): Promise<void> {
   let emptyStreak = 0;
   try {
     for (;;) {
       const run = getRun(runId);
       if (!run || run.status !== "running") return;
+      // Another worker took the lease over while this one was stale — it is
+      // the driver now; stop touching the run.
+      if (run.workerId !== workerId) return;
 
       // Resume path (N3): reattach to an in-flight card before doing
       // anything else. A card `recover()` already flipped to a terminal

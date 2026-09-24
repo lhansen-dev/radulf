@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -26,7 +27,7 @@ let template: string;
 const dirs: string[] = [];
 
 beforeAll(async () => {
-  template = fs.mkdtempSync("/tmp/ralph-test-template-");
+  template = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-test-template-"));
   await tryGit(template, "init");
   await tryGit(template, "config", "user.email", "test@test.com");
   await tryGit(template, "config", "user.name", "Test");
@@ -44,7 +45,7 @@ afterAll(() => {
 });
 
 function tmpDir(): string {
-  const dir = fs.mkdtempSync("/tmp/ralph-test-");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-test-"));
   dirs.push(dir);
   return dir;
 }

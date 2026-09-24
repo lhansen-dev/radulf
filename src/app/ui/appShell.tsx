@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { OpenTasksStrip } from "./openTasksStrip";
 
 const destinations = [
   { href: "/", label: "Work", icon: "▤" },
@@ -53,7 +54,10 @@ export function AppShell({
         </div>
       </aside>
 
-      <div className="min-w-0">{children}</div>
+      <div className="min-w-0">
+        <OpenTasksStrip pathname={pathname} />
+        {children}
+      </div>
 
       {onNewTask && (
         <button type="button" onClick={onNewTask} className="mobile-new-task" aria-label="New task">

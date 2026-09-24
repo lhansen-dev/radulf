@@ -5,7 +5,7 @@ import { SchedulesSection } from "./schedulesSection";
 import type { Repo } from "../ui/api";
 
 const repos = [
-  { id: "repo-1", name: "Radulf", path: "/repos/radulf", defaultBranch: "beta", approvedInstallScripts: "[]", createdAt: "2026-09-01" },
+  { id: "repo-1", name: "Radulf", path: "/repos/radulf", defaultBranch: "beta", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-01" },
 ] as unknown as Repo[];
 
 /** What GET /api/schedules answers with. */

@@ -16,8 +16,9 @@ const mocks = vi.hoisted(() => ({
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
   startDiskWatchdog: vi.fn(),
-  registerRunBaseline: vi.fn(),
-  releaseRunBaseline: vi.fn(),
+  syncWithBase: vi.fn(),
+  abortMerge: vi.fn(),
+  mergeInProgress: vi.fn(),
   /** Per-test settings overrides, spread over the defaults below. Cleared in
    * beforeEach, so a test that needs a realistic ceiling can say so without
    * moving the defaults every other test relies on. */
@@ -45,18 +46,6 @@ vi.mock("./providers", () => ({
   normalizeProvider: (value: string) => value,
   preflightProvider: mocks.preflightProvider,
 }));
-// Real registerRunBaseline/releaseRunBaseline (wrapped so a test can assert
-// they stay paired), everything else in the module untouched.
-vi.mock("./integrity", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./integrity")>();
-  mocks.registerRunBaseline.mockImplementation(actual.registerRunBaseline);
-  mocks.releaseRunBaseline.mockImplementation(actual.releaseRunBaseline);
-  return {
-    ...actual,
-    registerRunBaseline: mocks.registerRunBaseline,
-    releaseRunBaseline: mocks.releaseRunBaseline,
-  };
-});
 vi.mock("./settings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./settings")>()),
   getSettings: () =>
@@ -80,6 +69,13 @@ vi.mock("./settings", async (importOriginal) => ({
       improvePromptTemplate: "Existing cards:\n{{EXISTING_CARDS}}\n{{FOCUS}}",
       ...(mocks.settings as Partial<Settings>),
     }),
+}));
+vi.mock("./baseSync", () => ({
+  syncWithBase: mocks.syncWithBase,
+  abortMerge: mocks.abortMerge,
+  mergeInProgress: mocks.mergeInProgress,
+  resolveConflictsTaskText: (base: string, files: string[]) =>
+    `Resolve the merge conflicts left in ${files.join(", ")} after the orchestrator merged the base branch ${base} into your branch.`,
 }));
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
@@ -109,7 +105,8 @@ const {
   settings,
   worktrees,
 } = await import("@/db");
-const { Orchestrator, iterationBudgetMs, promptBloatRatio, slowIterationMs } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators, iterationBudgetMs, promptBloatRatio, slowIterationMs } =
+  await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome, providerBreakerStatus } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
@@ -315,11 +312,17 @@ describe("Orchestrator cancellation lifecycle", () => {
     mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.startDiskWatchdog.mockImplementation(() => ({ stop: vi.fn() }));
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
+    mocks.syncWithBase.mockResolvedValue({ status: "up-to-date" });
+    mocks.mergeInProgress.mockResolvedValue(false);
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "no verdict written in test" });
     delete (globalThis as typeof globalThis & {
       __radulfOrchestrator?: InstanceType<typeof Orchestrator>;
     })
       .__radulfOrchestrator;
+  });
+
+  afterEach(() => {
+    disposeAllOrchestrators();
   });
 
   it.each(["DONE", "DONE.md"])("ignores premature %s and assigns the next task before evaluation", async (doneName) => {
@@ -790,6 +793,99 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(getCard("cap-third").status).toBe("ready");
     });
 
+    function graphEpic(pieces: { id: string; status?: "todo" | "abandoned"; dependsOn?: string[] }[]) {
+      db.insert(cards)
+        .values({
+          id: "graph-epic",
+          repoId: "repo-1",
+          title: "Epic",
+          status: "backlog",
+          runMode: "graph",
+          position: 0,
+          createdAt: now(),
+          updatedAt: now(),
+        })
+        .run();
+      pieces.forEach((piece, index) => {
+        db.insert(cards)
+          .values({
+            id: piece.id,
+            repoId: "repo-1",
+            parentCardId: "graph-epic",
+            title: `Piece ${piece.id}`,
+            status: piece.status ?? "todo",
+            dependsOn: piece.dependsOn ?? null,
+            position: index + 1,
+            startedAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+            createdAt: now(),
+            updatedAt: now(),
+          })
+          .run();
+      });
+    }
+
+    /** Finish a piece the way a completed loop would: card Done, run no
+     * longer running (the cap counts running runs as well as card status). */
+    function finishPiece(id: string) {
+      db.update(runs).set({ status: "completed" }).where(eq(runs.cardId, id)).run();
+      db.update(cards).set({ status: "done" }).where(eq(cards.id, id)).run();
+    }
+
+    it("starts a graph epic's pieces as their dependencies finish, under the cap (spec 28)", async () => {
+      mocks.settings.maxConcurrentCards = 2;
+      graphEpic([
+        { id: "g-a" },
+        { id: "g-b" },
+        { id: "g-c", dependsOn: ["g-a"] },
+        { id: "g-d", dependsOn: ["g-x"] },
+        { id: "g-x", status: "abandoned" },
+      ]);
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.pump();
+
+      await vi.waitFor(() => {
+        expect(getCard("g-a").status).toBe("planning");
+        expect(getCard("g-b").status).toBe("planning");
+      });
+      await settle();
+      // The cap of two is full: the unblocked g-d and the blocked g-c both wait.
+      expect(getCard("g-c").status).toBe("todo");
+      expect(getCard("g-d").status).toBe("todo");
+
+      finishPiece("g-a");
+      orchestrator.pump();
+      await vi.waitFor(() => expect(getCard("g-c").status).toBe("planning"));
+      await settle();
+      expect(getCard("g-d").status).toBe("todo");
+
+      finishPiece("g-b");
+      orchestrator.pump();
+      await vi.waitFor(() => expect(getCard("g-d").status).toBe("planning"));
+
+      const noted = db
+        .select()
+        .from(events)
+        .all()
+        .filter((event) => event.type === "epic.dependency_abandoned");
+      expect(noted).toHaveLength(1);
+      expect(noted[0].cardId).toBe("graph-epic");
+      expect(JSON.parse(noted[0].payload)).toEqual({ pieceId: "g-d", abandoned: ["g-x"] });
+    });
+
+    it("Start now starts a graph piece whose dependencies are unfinished (spec 28)", async () => {
+      mocks.settings.maxConcurrentCards = 1;
+      graphEpic([{ id: "g-a" }, { id: "g-c", dependsOn: ["g-a"] }]);
+      mocks.runHarness.mockImplementation(() => new Promise(() => {}));
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("g-c");
+
+      expect(getCard("g-c").status).toBe("planning");
+      expect(getCard("g-a").status).toBe("todo");
+    });
+
     it("keeps the queue serial on a local loop provider whatever the cap says", async () => {
       mocks.settings.maxConcurrentCards = 4;
       mocks.settings.loopProvider = "omlx";
@@ -814,8 +910,8 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
-  describe("loop start CAS loss", () => {
-    it("releases the integrity baseline it registered when the card leaves the queue first", async () => {
+  describe("cancel during loop start", () => {
+    it("leaves the run cancelled when the card is cancelled during setup", async () => {
       card("cas-loss", "ready");
       plan("cas-loss");
       // A usable git-common-dir, so snapshotRepoIntegrity returns a real
@@ -829,24 +925,24 @@ describe("Orchestrator cancellation lifecycle", () => {
       const orchestrator = new Orchestrator({ autoStart: false });
 
       orchestrator.pump();
-      // pump() runs runLoop synchronously up to its first await, so the card
-      // is still captured as "ready" in the loop's closure — flip the real
-      // row out from under it here to force the loop-start CAS to lose.
-      db.update(cards).set({ status: "backlog" }).where(eq(cards.id, "cas-loss")).run();
+      // The claim moved the card to looping and inserted its run row
+      // synchronously; runLoop is still in its awaited worktree setup. Cancel
+      // out from under it so the loop finds its run already finalized.
+      expect(getCard("cas-loss").status).toBe("looping");
+      expect(getRun("cas-loss").status).toBe("running");
+      orchestrator.cancelCard("cas-loss");
+      expect(getRun("cas-loss")).toMatchObject({ status: "cancelled", exitReason: "cancelled by user" });
+      expect(getCard("cas-loss").status).toBe("backlog");
 
+      await settle();
+      // Whichever shape the loop's early exit takes, the stale continuation
+      // must not have touched the cancelled run or pushed the re-queued card
+      // anywhere.
       await vi.waitFor(() => {
-        expect(getRun("cas-loss")).toMatchObject({
-          status: "cancelled",
-          exitReason: "card left the queue before the loop started",
-        });
+        expect(getRun("cas-loss").status).toBe("cancelled");
       });
-      // A card left the queue before the try/finally that owns the baseline
-      // ever opens, so it must never have been registered either — proving
-      // the fix (moving the register call inside that try) rather than just
-      // its symptom. Whichever shape a future fix takes, every register must
-      // still be matched by a release.
-      expect(mocks.registerRunBaseline).not.toHaveBeenCalled();
-      expect(mocks.registerRunBaseline.mock.calls.length).toBe(mocks.releaseRunBaseline.mock.calls.length);
+      expect(getCard("cas-loss").status).toBe("backlog");
+      expect(mocks.runHarness).not.toHaveBeenCalled();
     });
   });
 
@@ -1106,6 +1202,229 @@ describe("Orchestrator cancellation lifecycle", () => {
 
       expect(loopCalls()).toHaveLength(1);
       expect(db.select().from(events).all().filter((e) => e.type === "acceptance.probe")).toHaveLength(0);
+    });
+  });
+
+  describe("the sync with base (spec 29)", () => {
+    const loopRun = (cardId: string) =>
+      db.select().from(runs).all().find((r) => r.cardId === cardId && r.kind === "loop");
+    const loopCalls = () => mocks.runHarness.mock.calls.filter(([opts]) => opts.role === "loop");
+    const eventsOfType = (cardId: string, type: string) =>
+      db.select().from(events).all().filter((e) => e.type === type && e.cardId === cardId);
+
+    /** A loop agent that signals DONE every iteration. Non-loop roles fall
+     * through to the suite default so the evaluator's own failure cannot be
+     * mistaken for the loop's — or, with `evaluatorHangs`, never return, so
+     * the card can be observed resting in `evaluating`. */
+    function doneEveryIteration({ evaluatorHangs = false } = {}) {
+      let call = 0;
+      mocks.runHarness.mockImplementation(({ cwd, role }: { cwd: string; role: string }) => {
+        if (role !== "loop") {
+          if (evaluatorHangs) return new Promise(() => {});
+          return Promise.resolve({ timedOut: false, error: "no verdict written in test" });
+        }
+        call += 1;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), `work ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), `iteration ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "DONE"), "all done");
+        return Promise.resolve(successfulHarnessResult);
+      });
+    }
+
+    beforeEach(() => {
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+    });
+
+    it("commits a clean merge from the base and evaluates once", async () => {
+      card("sync-clean");
+      plan("sync-clean");
+      doneEveryIteration();
+      mocks.syncWithBase.mockResolvedValue({ status: "merged", mergeCommit: "m1" });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-clean");
+      await vi.waitFor(() => expect(loopRun("sync-clean")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      const synced = eventsOfType("sync-clean", "base.synced");
+      expect(synced).toHaveLength(1);
+      expect(JSON.parse(synced[0].payload)).toEqual({ baseBranch: "main", mergeCommit: "m1" });
+    });
+
+    it("hands a conflict back as a task and evaluates once resolved", async () => {
+      card("sync-conflict");
+      plan("sync-conflict");
+      doneEveryIteration({ evaluatorHangs: true });
+      mocks.syncWithBase
+        .mockResolvedValueOnce({ status: "conflicted", files: ["src/a.ts", "src/b.ts"], out: "CONFLICT" })
+        .mockResolvedValue({ status: "up-to-date" });
+      const statuses: string[] = [];
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-conflict");
+      await vi.waitFor(() => {
+        statuses.push(getCard("sync-conflict").status);
+        expect(loopRun("sync-conflict")?.exitReason).toBe("done-signal");
+      });
+      await vi.waitFor(() => expect(getCard("sync-conflict").status).toBe("evaluating"));
+
+      // The first DONE was handed back with the conflict as a task; the
+      // second, with the merge resolved, went to the evaluator.
+      expect(loopCalls()).toHaveLength(2);
+      expect(loopCalls()[1][0].prompt).toContain("Resolve the merge conflicts left in src/a.ts, src/b.ts");
+      expect(eventsOfType("sync-conflict", "base.conflict")).toHaveLength(1);
+      expect(statuses).not.toContain("needs_attention");
+      expect(getCard("sync-conflict").status).toBe("evaluating");
+      expect(mocks.abortMerge).not.toHaveBeenCalled();
+    });
+
+    it("ends the run after two conflict rounds", async () => {
+      card("sync-stuck");
+      plan("sync-stuck");
+      doneEveryIteration();
+      mocks.syncWithBase.mockResolvedValue({ status: "conflicted", files: ["src/a.ts"], out: "CONFLICT" });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-stuck");
+      await vi.waitFor(() => expect(loopRun("sync-stuck")?.status).toBe("failed"));
+
+      expect(loopRun("sync-stuck")?.exitReason).toContain("sync-and-gate round limit reached");
+      // Two repair rounds and the attempt that hit the limit.
+      expect(loopCalls()).toHaveLength(3);
+      expect(getCard("sync-stuck").status).toBe("needs_attention");
+      expect(mocks.abortMerge).toHaveBeenCalledTimes(1);
+    });
+
+    it("aborts a merge a dead run left in progress before the loop reuses the worktree", async () => {
+      card("sync-stale-merge");
+      plan("sync-stale-merge");
+      // The previous loop run was reaped mid conflict round: its worktree is
+      // still on disk, MERGE_HEAD and all.
+      completedRun("sync-stale-merge", "stale-merge-loop", { status: "interrupted" });
+      mocks.mergeInProgress.mockResolvedValue(true);
+      doneEveryIteration({ evaluatorHangs: true });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("sync-stale-merge");
+      const newLoopRun = () =>
+        db.select().from(runs).all().find((r) => r.cardId === "sync-stale-merge" && r.kind === "loop" && r.id !== "stale-merge-loop");
+      await vi.waitFor(() => expect(newLoopRun()?.exitReason).toBe("done-signal"));
+
+      expect(mocks.createWorktree).not.toHaveBeenCalled();
+      expect(mocks.abortMerge).toHaveBeenCalledTimes(1);
+      expect(mocks.abortMerge).toHaveBeenCalledWith(path.join(testDataDir, "worktrees", "stale-merge-loop"));
+      expect(eventsOfType("sync-stale-merge", "base.merge_aborted")).toHaveLength(1);
+      // The abort happened before the loop's first iteration, not after DONE.
+      const abortOrder = mocks.abortMerge.mock.invocationCallOrder[0];
+      const firstLoopOrder = Math.min(...mocks.runHarness.mock.invocationCallOrder);
+      expect(abortOrder).toBeLessThan(firstLoopOrder);
+    });
+  });
+
+  describe("the gate before DONE (spec 29)", () => {
+    const loopRun = (cardId: string) =>
+      db.select().from(runs).all().find((r) => r.cardId === cardId && r.kind === "loop");
+    const loopCalls = () => mocks.runHarness.mock.calls.filter(([opts]) => opts.role === "loop");
+    const eventsOfType = (cardId: string, type: string) =>
+      db.select().from(events).all().filter((e) => e.type === type && e.cardId === cardId);
+    const gateFile = (cardId: string) => path.join(loopRun(cardId)!.worktreePath, ".ralph", "GATE.md");
+    const setGate = (gateCommand: string | null) =>
+      db.update(repos).set({ gateCommand }).where(eq(repos.id, "repo-1")).run();
+
+    /** A loop agent that signals DONE every iteration, plus whatever `extra`
+     * does to the worktree on that iteration. Sandboxing is off here, so
+     * `runGateCommand` really runs the gate in the mkdtemp worktree. */
+    function doneEveryIteration(extra: (cwd: string, call: number) => void = () => {}) {
+      let call = 0;
+      mocks.runHarness.mockImplementation(async ({ cwd, role }: { cwd: string; role: string }) => {
+        if (role !== "loop") return { timedOut: false, error: "no verdict written in test" };
+        call += 1;
+        fs.writeFileSync(path.join(cwd, "feature.txt"), `work ${call}`);
+        extra(cwd, call);
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), `iteration ${call}`);
+        fs.writeFileSync(path.join(cwd, ".ralph", "DONE"), "all done");
+        return successfulHarnessResult;
+      });
+    }
+
+    beforeEach(() => {
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+    });
+
+    it("repairs a failing gate before evaluation", async () => {
+      card("gate-repair");
+      plan("gate-repair");
+      setGate("test -f gate-ok.txt");
+      // The second attempt writes the file the gate is looking for.
+      doneEveryIteration((cwd, call) => {
+        if (call === 2) fs.writeFileSync(path.join(cwd, "gate-ok.txt"), "ok");
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-repair");
+      await vi.waitFor(() => expect(loopRun("gate-repair")?.exitReason).toBe("done-signal"));
+
+      // The first DONE was handed back with the gate failure as a task; the
+      // second, with the gate green, went to the evaluator.
+      expect(loopCalls()).toHaveLength(2);
+      expect(loopCalls()[1][0].prompt).toContain("Repair the repository gate");
+      expect(loopCalls()[1][0].prompt).toContain("test -f gate-ok.txt");
+      expect(fs.readFileSync(gateFile("gate-repair"), "utf8")).toContain("Result: exit 0");
+      expect(eventsOfType("gate-repair", "gate.repair")).toHaveLength(1);
+      // Two from the loop run; the evaluator's own gate run (spec 27) is its own.
+      const runId = loopRun("gate-repair")!.id;
+      expect(eventsOfType("gate-repair", "gate.finished").filter((e) => e.runId === runId)).toHaveLength(2);
+    });
+
+    it("starts evaluation directly when the gate passes", async () => {
+      card("gate-pass");
+      plan("gate-pass");
+      setGate("true");
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-pass");
+      await vi.waitFor(() => expect(loopRun("gate-pass")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      expect(fs.existsSync(gateFile("gate-pass"))).toBe(true);
+    });
+
+    it("runs no gate for a repository without one", async () => {
+      card("gate-none");
+      plan("gate-none");
+      setGate(null);
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-none");
+      await vi.waitFor(() => expect(loopRun("gate-none")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      expect(eventsOfType("gate-none", "gate.started")).toHaveLength(0);
+      expect(fs.existsSync(gateFile("gate-none"))).toBe(false);
+    });
+
+    it("ends the run after two failing gate rounds", async () => {
+      card("gate-stuck");
+      plan("gate-stuck");
+      setGate("false");
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("gate-stuck");
+      await vi.waitFor(() => expect(loopRun("gate-stuck")?.status).toBe("failed"));
+
+      expect(loopRun("gate-stuck")?.exitReason).toContain("sync-and-gate round limit reached");
+      // Two repair rounds and the attempt that hit the limit.
+      expect(loopCalls()).toHaveLength(3);
+      expect(getCard("gate-stuck").status).toBe("needs_attention");
     });
   });
 
@@ -1424,6 +1743,109 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
+  describe("control signals from a web-only process", () => {
+    it("a passive cancel reaches the worker's harness through runs.control", async () => {
+      card("remote-cancel");
+      plan("remote-cancel");
+      const harness = deferred<never>();
+      mocks.runHarness.mockReturnValueOnce(harness.promise);
+      const worker = new Orchestrator({ autoStart: false });
+      const web = new Orchestrator({ passive: true });
+
+      worker.startCard("remote-cancel");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+      // The web process moves the card and finishes the run at once, but it
+      // holds no controller for the worker's harness (spec 25 decision 4).
+      web.cancelCard("remote-cancel");
+      expect(getRun("remote-cancel")).toMatchObject({
+        status: "cancelled",
+        exitReason: "cancelled by user",
+        control: "cancel",
+      });
+      expect(getCard("remote-cancel").status).toBe("backlog");
+      expect(mocks.runHarness.mock.calls[0][0].signal.aborted).toBe(false);
+
+      // The worker's poll picks the column up and fires its own abort.
+      worker.applyControlSignals();
+      expect(mocks.runHarness.mock.calls[0][0].signal.aborted).toBe(true);
+      expect(getRun("remote-cancel").control).toBeNull();
+
+      harness.reject(new Error("child exited after abort"));
+      await settle();
+      expect(getRun("remote-cancel").status).toBe("cancelled");
+      expect(getCard("remote-cancel").status).toBe("backlog");
+      expect(db.select().from(runs).all().filter((r) => r.cardId === "remote-cancel")).toHaveLength(1);
+      const runId = getRun("remote-cancel").id;
+      const finished = db.select().from(events).all()
+        .filter((e) => e.type === "run.finished" && e.runId === runId);
+      expect(finished).toHaveLength(1);
+    });
+
+    it("a cancel the worker's poll never saw is still consumed when its run exits", async () => {
+      card("stale-cancel");
+      plan("stale-cancel");
+      const harness = deferred<never>();
+      mocks.runHarness.mockReturnValueOnce(harness.promise);
+      const worker = new Orchestrator({ autoStart: false });
+      const web = new Orchestrator({ passive: true });
+
+      worker.startCard("stale-cancel");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+      web.cancelCard("stale-cancel");
+      expect(getRun("stale-cancel").control).toBe("cancel");
+
+      // The worker never polls the column; the run exits on its own and the
+      // owner clears the stale cancel in runLoop's finally block.
+      harness.reject(new Error("child exited"));
+      await settle();
+      expect(getRun("stale-cancel").status).toBe("cancelled");
+      expect(getRun("stale-cancel").control).toBeNull();
+      expect(getCard("stale-cancel").status).toBe("backlog");
+      const runId = getRun("stale-cancel").id;
+      const finished = db.select().from(events).all()
+        .filter((e) => e.type === "run.finished" && e.runId === runId);
+      expect(finished).toHaveLength(1);
+    });
+
+    it("a passive pause closes the run at the worker's iteration boundary", async () => {
+      card("remote-pause");
+      plan("remote-pause");
+      db.update(plans)
+        .set({ planMd: "## Tasks\n- [ ] first task\n- [ ] second task\n" })
+        .where(eq(plans.cardId, "remote-pause"))
+        .run();
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      const worker = new Orchestrator({ autoStart: false });
+      const web = new Orchestrator({ passive: true });
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        fs.writeFileSync(path.join(cwd, "feature.txt"), "first task");
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), "first task complete");
+        web.pauseCard("remote-pause");
+        return successfulHarnessResult;
+      });
+
+      worker.startCard("remote-pause");
+      await vi.waitFor(() => expect(getCard("remote-pause").status).toBe("paused"));
+      await vi.waitFor(() => expect(getRun("remote-pause").status).toBe("paused"));
+
+      expect(getRun("remote-pause")).toMatchObject({
+        status: "paused",
+        exitReason: "paused by user",
+        control: "pause",
+      });
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+      const runId = getRun("remote-pause").id;
+      const finished = db.select().from(events).all()
+        .filter((e) => e.type === "run.finished" && e.runId === runId);
+      expect(finished).toHaveLength(1);
+    });
+  });
+
   describe("pausing a loop", () => {
     it("records the run as paused rather than completed", async () => {
       // Spec 18 §6: a pause used to write status "completed", which put a run
@@ -1449,6 +1871,9 @@ describe("Orchestrator cancellation lifecycle", () => {
 
       orchestrator.startCard("pause-status");
       await vi.waitFor(() => expect(getCard("pause-status").status).toBe("paused"));
+      // The card moves the moment the pause is requested (spec 25 decision
+      // 4); the run only closes at the iteration boundary.
+      await vi.waitFor(() => expect(getRun("pause-status").status).toBe("paused"));
 
       const run = getRun("pause-status");
       expect(run.status).toBe("paused");
@@ -1625,7 +2050,10 @@ describe("Orchestrator cancellation lifecycle", () => {
       // recover() puts it back in Ready and pump() takes it straight back
       // into the loop, with no human in the path. The tick from the last
       // committed iteration is what stops it redoing the first task.
-      await vi.waitFor(() => expect(getCard("recover-resume").status).toBe("looping"));
+      // The claim moves the card to looping synchronously, before the loop's
+      // awaited setup reaches the harness — wait for the harness call itself.
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalled());
+      expect(getCard("recover-resume").status).toBe("looping");
       expect(mocks.runHarness.mock.calls[0][0].prompt).toContain("second task");
       orchestrator.cancelCard("recover-resume");
       await settle();
@@ -1734,7 +2162,8 @@ describe("Orchestrator cancellation lifecycle", () => {
       const orchestrator = new Orchestrator({ autoStart: false });
 
       expect(orchestrator.retryFailedStep("retry-loop")).toEqual({ ok: true, step: "loop" });
-      await vi.waitFor(() => expect(getCard("retry-loop").status).toBe("looping"));
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalled());
+      expect(getCard("retry-loop").status).toBe("looping");
 
       const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "retry-loop");
       expect(cardRuns.map((run) => run.kind)).toEqual(["loop", "loop"]);
@@ -1744,6 +2173,32 @@ describe("Orchestrator cancellation lifecycle", () => {
       orchestrator.cancelCard("retry-loop");
       retry.reject(new Error("child exited after abort"));
       await settle();
+    });
+
+    it("retries a loop that finished its checklist and wrote DONE straight into evaluation", async () => {
+      card("retry-done-loop", "needs_attention");
+      plan("retry-done-loop");
+      completedRun("retry-done-loop", "done-loop", {
+        status: "failed",
+        exitReason: "repo integrity violation: ref moved: refs/remotes/origin/beta",
+      });
+      const worktreePath = db.select().from(runs).where(eq(runs.id, "done-loop")).get()!.worktreePath;
+      fs.writeFileSync(path.join(worktreePath, ".ralph", "DONE"), "Every task done.\n");
+      fs.mkdirSync(path.dirname(planStatePath("retry-done-loop")), { recursive: true });
+      fs.writeFileSync(planStatePath("retry-done-loop"), "## Tasks\n- [x] implement the task\n");
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writeEvaluation(worktreePath, "VERDICT: approve\n\nFinished work, evaluated.");
+        return successfulHarnessResult;
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      // Nothing left to inject, so the retry is the evaluation, not another loop.
+      expect(orchestrator.retryFailedStep("retry-done-loop")).toEqual({ ok: true, step: "evaluate" });
+      await vi.waitFor(() => expect(getCard("retry-done-loop").status).toBe("review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "retry-done-loop");
+      expect(cardRuns.map((run) => run.kind)).toEqual(["loop", "evaluate"]);
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
     });
 
     it("retries a failed evaluator without rerunning the loop", async () => {
@@ -2577,12 +3032,13 @@ describe("Orchestrator cancellation lifecycle", () => {
     );
 
     it("refuses to remove a repository while a loop is still tearing down", async () => {
+      // A loop tearing down: its card has already left the running statuses
+      // but its run row is still `running`. The load is read from the
+      // database alone, so this is what pipelineLoad sees.
       card("teardown-card", "needs_attention");
-      const orchestrator = routeOrchestrator();
-      (orchestrator as unknown as { activeLoopCards: Map<string, string> }).activeLoopCards.set(
-        "teardown-card",
-        "repo-1",
-      );
+      plan("teardown-card");
+      completedRun("teardown-card", "teardown-run", { status: "running" });
+      routeOrchestrator();
 
       const response = await removeRepo1();
 

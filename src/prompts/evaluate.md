@@ -71,7 +71,8 @@ RULES
   or otherwise touch Git history — the pipeline commits your `.ralph/` verdict
   and any approved doc edits for you. Editing code, or committing, rejects the
   verdict to Needs Attention.
-- Your writable outputs are `.ralph/EVALUATION.md`, `.ralph/SUMMARY.md`, and —
+- Your writable outputs are `.ralph/EVALUATION.md`, `.ralph/EVALUATION-NOTES.md`,
+  `.ralph/SUMMARY.md`, and —
   on approve only — the doc paths listed above. A post-run check rejects any
   other changed path.
 - A missing or malformed verdict fails the pipeline loudly — always write the

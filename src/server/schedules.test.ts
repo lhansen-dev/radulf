@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
@@ -9,6 +10,7 @@ setupTestDataDir("radulf-schedules-");
 
 const { db, cards, events, repos, schedules, now } = await import("@/db");
 const {
+  claimScheduleFire,
   createSchedule,
   deleteSchedule,
   fireDueSchedules,
@@ -255,6 +257,39 @@ describe("fireDueSchedules", () => {
 
     expect(result.outcome).toBe("skipped");
     expect(stored(row.id).lastError).toBeNull();
+  });
+
+  it("fires once across two workers in the same minute", () => {
+    const { id } = createSchedule(nightly);
+    queuedCard("card-1");
+    // Both workers read the same snapshot before either stamps it.
+    const row = stored(id);
+
+    expect(claimScheduleFire(row, at3am)).toBe(true);
+    expect(claimScheduleFire(row, at3am)).toBe(false);
+    expect(stored(id).lastFiredAt).toBe(at3am.toISOString());
+  });
+
+  it("a peer's stamp between the read and the fire wins", async () => {
+    const { id } = createSchedule(nightly);
+    queuedCard("card-1");
+    // The peer got there first: it stamped the minute this tick is about to claim.
+    db.update(schedules).set({ lastFiredAt: at3am.toISOString() }).where(eq(schedules.id, id)).run();
+
+    expect(await fireDueSchedules(at3am, deps)).toEqual([]);
+    expect(deps.startCard).not.toHaveBeenCalled();
+  });
+
+  it("two overlapping ticks start the work exactly once between them", async () => {
+    createSchedule(nightly);
+    queuedCard("card-1");
+    const depsA = { startCard: vi.fn(), createImprovementRun: vi.fn().mockResolvedValue({}) };
+    const depsB = { startCard: vi.fn(), createImprovementRun: vi.fn().mockResolvedValue({}) };
+
+    await Promise.all([fireDueSchedules(at3am, depsA), fireDueSchedules(at3am, depsB)]);
+
+    expect(depsA.startCard.mock.calls.length + depsB.startCard.mock.calls.length).toBe(1);
+    expect(eventTypes().filter((type) => type === "schedule.fired")).toHaveLength(1);
   });
 
   it("records a real failure and stays enabled, so the next tick can pick the work back up", async () => {

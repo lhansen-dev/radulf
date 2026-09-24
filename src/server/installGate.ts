@@ -239,7 +239,7 @@ export function sandboxedNpmRunner(ctx: RunSandboxContext): NpmRunner {
       // Only the wrap can throw here — execBounded reports failures in its
       // result. Could not contain it, so do not run it.
       outcome = ctx.srtConfig
-        ? await runSandboxedCommand(prefixed, ctx.srtConfig, run)
+        ? await runSandboxedCommand(prefixed, ctx.srtConfig, run, { tmpdir: ctx.tmpdir })
         : await run(prefixed);
     } catch (e) {
       return { ok: false, out: `could not sandbox npm rebuild: ${errorMessage(e)}` };

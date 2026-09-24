@@ -13,7 +13,6 @@ import {
   listBranches,
   mergeBranch,
   offRunBranchReason,
-  withRepoMergeLock,
   worktreeIsDirty,
   worktreeDiff,
   worktreeDiffStat,
@@ -23,7 +22,7 @@ describe("repository inspection", () => {
   let repo: string;
   let emptyRepo: string;
   let nonGitDir: string;
-  const missingPath = "/tmp/nonexistent-ralph-test-path-12345";
+  const missingPath = path.join(os.tmpdir(), "nonexistent-ralph-test-path-12345");
 
   beforeAll(() => {
     repo = initScratchRepo("ralph-git-test-");
@@ -270,66 +269,6 @@ describe("review diff generation (worktreeDiff / worktreeDiffStat)", () => {
   });
 });
 
-describe("withRepoMergeLock", () => {
-  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  it("never lets two calls for the same key run at once, even when one throws", async () => {
-    const events: string[] = [];
-    let active = 0;
-    let sawOverlap = false;
-    const task = (label: string, ms: number, fail: boolean) => async () => {
-      active++;
-      if (active > 1) sawOverlap = true;
-      events.push(`${label}:enter`);
-      await wait(ms);
-      active--;
-      events.push(`${label}:exit`);
-      if (fail) throw new Error(`${label} failed`);
-      return label;
-    };
-
-    const first = withRepoMergeLock("repo-a", task("first", 20, true));
-    const second = withRepoMergeLock("repo-a", task("second", 5, false));
-
-    await expect(first).rejects.toThrow("first failed");
-    await expect(second).resolves.toBe("second");
-    expect(sawOverlap).toBe(false);
-    // "first" throwing must not skip "second" or reorder it ahead of "first".
-    expect(events).toEqual(["first:enter", "first:exit", "second:enter", "second:exit"]);
-  });
-
-  it("lets calls for different keys run concurrently", async () => {
-    const events: string[] = [];
-    const task = (label: string, ms: number) => async () => {
-      events.push(`${label}:enter`);
-      await wait(ms);
-      events.push(`${label}:exit`);
-    };
-
-    await Promise.all([
-      withRepoMergeLock("repo-b", task("b", 20)),
-      withRepoMergeLock("repo-c", task("c", 5)),
-    ]);
-
-    // Different repos don't wait on each other, so the shorter task ("c")
-    // exits before the longer one ("b") — a shared lock would force "b" to
-    // exit first since it was queued first.
-    expect(events).toEqual(["b:enter", "c:enter", "c:exit", "b:exit"]);
-  });
-
-  it("a repo whose lock is still held by a slow call does not block a fast call on another repo", async () => {
-    const start = Date.now();
-    let dTook = 0;
-    const slow = withRepoMergeLock("repo-slow", async () => wait(40));
-    const fast = withRepoMergeLock("repo-fast", async () => {
-      dTook = Date.now() - start;
-    });
-    await Promise.all([slow, fast]);
-    // "repo-fast" must not have waited behind "repo-slow"'s 40ms hold.
-    expect(dTook).toBeLessThan(30);
-  });
-});
-
 describe("mergeBranch concurrency (spec 20: different cards, same repo)", () => {
   let tmpDir: string;
   let defaultBranch: string;
@@ -366,14 +305,13 @@ describe("mergeBranch concurrency (spec 20: different cards, same repo)", () => 
   });
 
   it("two cards' merges against the same shared repo checkout don't clobber each other", async () => {
-    // Without the per-repo lock, these interleave on the same index the way
-    // the bug describes: one's `--no-commit` merge can be clobbered by the
-    // other's `status --porcelain` still reading clean before the first
-    // commits. Firing them together via Promise.all is the reproduction.
-    const [resultA, resultB] = await Promise.all([
-      mergeBranch(tmpDir, defaultBranch, "ralph/card-a", "ralph: merge card a"),
-      mergeBranch(tmpDir, defaultBranch, "ralph/card-b", "ralph: merge card b"),
-    ]);
+    // mergeBranch no longer carries an in-process lock: serializing merges
+    // against the same repo is the repo lease's job (src/server/repoLeases.ts,
+    // spec 25 decision 6), so callers run them one after another. Run the two
+    // sequentially here the way a lease holder would, and check that each
+    // lands cleanly on the shared checkout.
+    const resultA = await mergeBranch(tmpDir, defaultBranch, "ralph/card-a", "ralph: merge card a");
+    const resultB = await mergeBranch(tmpDir, defaultBranch, "ralph/card-b", "ralph: merge card b");
 
     expect(resultA.ok).toBe(true);
     expect(resultB.ok).toBe(true);
@@ -447,7 +385,7 @@ describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window
     );
 
     expect(result.ok).toBe(true);
-    // mergeBranchLocked commits, then calls onCommitted, then restores the
+    // mergeBranch commits, then calls onCommitted, then restores the
     // operator's original checkout — at callback time HEAD is still on the
     // base branch, not yet moved back to operator-branch.
     expect(branchAtCallback).toBe(defaultBranch);

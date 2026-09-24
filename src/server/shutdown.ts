@@ -10,7 +10,10 @@ import { sleep } from "@/shared/sleep";
 // Makefile's `start` target and the Dockerfile set it): otherwise `next
 // start` installs its own SIGTERM/SIGINT handler that exits with 143/130 as
 // soon as open connections close, which is milliseconds when no browser tab
-// or SSE stream is attached, and this drain never gets to run.
+// or SSE stream is attached, and this drain never gets to run. That caveat
+// applies only under `next start`: a plain Node worker process
+// (src/worker.ts) installs these handlers directly and drains on SIGTERM
+// as-is.
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 const SHUTDOWN_POLL_MS = 500;
 

@@ -64,12 +64,16 @@ let cardRuns: Array<Record<string, unknown>> = [];
 let cardPlans: Array<Record<string, unknown>> = [];
 let cardEvents: Array<Record<string, unknown>> = [];
 let cardScoping: Array<Record<string, unknown>> = [];
+let cardChildren: Array<Record<string, unknown>> = [];
+let cardParent: Record<string, unknown> | null = null;
 
 beforeEach(() => {
   cleanup();
   cardStatus = "plan_review";
   cardEvents = [];
   cardScoping = [];
+  cardChildren = [];
+  cardParent = null;
   cardRuns = [
     {
       id: "r1",
@@ -133,6 +137,8 @@ beforeEach(() => {
               loopModel: null,
               evaluatorModel: null,
               reviewPlanBeforeImplementation: 0,
+              planCritic: null,
+              criticModel: null,
               autoApprove: 0,
               summary: null,
               startedAt: null,
@@ -144,6 +150,8 @@ beforeEach(() => {
             runs: cardRuns,
             events: cardEvents,
             scoping: cardScoping,
+            children: cardChildren,
+            parent: cardParent,
             models: {
               planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
               loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
@@ -170,6 +178,52 @@ beforeEach(() => {
 });
 
 describe("CardDetail", () => {
+  it("shows the plan critic flag, inherited by default", async () => {
+    render(<CardDetail />);
+    expect(await screen.findByText(/Plan critic/)).toBeTruthy();
+    expect(screen.getByText(/Plan critic/).textContent).toContain("Default");
+  });
+
+  it("reviews current config before posting approval for the exact run and hash", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    // The API returns events oldest first. An earlier delivery failure must
+    // not hide the newer config blocker (the live card's regression).
+    cardEvents = [
+      { id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ prFailed: "remote is not a GitHub host" }), createdAt: "" },
+      { id: 2, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" },
+    ];
+    const originalFetch = globalThis.fetch;
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (input === "/api/cards/c1/review-config") {
+        return Promise.resolve(new Response(JSON.stringify({ runId: "r1", configHash: "a".repeat(64), content: "[user]\nname = Trusted identity" })));
+      }
+      if (input === "/api/cards/c1/approve-config") return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+      return originalFetch(input, init);
+    });
+    globalThis.fetch = fetch;
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review Git config" }));
+    expect(await screen.findByText(/name = Trusted identity/)).toBeTruthy();
+    expect(fetch.mock.calls.some(([url]) => url === "/api/cards/c1/approve-config")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Accept config and retry merge" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/cards/c1/approve-config", expect.objectContaining({
+      body: JSON.stringify({ runId: "r1", configHash: "a".repeat(64) }),
+    })));
+  });
+
+  it("hides the old config blocker after config approval", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    cardEvents = [
+      { id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" },
+      { id: 2, runId: "r1", type: "repo.config_approved", payload: "{}", createdAt: "" },
+    ];
+    render(<CardDetail />);
+    await screen.findByRole("button", { name: "Retry merge" });
+    expect(screen.queryByRole("button", { name: "Review Git config" })).toBeNull();
+  });
+
   it("shows the planner badge and each role's resolved provider, model, and reasoning level", async () => {
     render(<CardDetail />);
 
@@ -318,9 +372,59 @@ describe("CardDetail", () => {
     expect(patches[0]).toMatchObject({ plannerModel: null, loopModel: null, evaluatorModel: "haiku" });
   });
 
+  it("shows an epic's tasks and progress, offers Start all and Pause all, and changes the run mode", async () => {
+    cardStatus = "backlog";
+    cardRuns = [];
+    cardPlans = [];
+    cardChildren = [
+      { id: "a", title: "Add the limiter", status: "done", position: 1, repoId: "r", startedAt: null, updatedAt: "" },
+      { id: "b", title: "Surface the lockout", status: "looping", position: 2, repoId: "r", startedAt: "", updatedAt: "" },
+      { id: "c", title: "Document it", status: "todo", position: 3, repoId: "r", startedAt: null, updatedAt: "" },
+    ];
+    const posts: string[] = [];
+    const patches: unknown[] = [];
+    const baseFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(url);
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      if (init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)));
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("confirm", () => true);
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("Epic · 1 of 3 tasks done")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Surface the lockout" }).getAttribute("href")).toBe("/card/b");
+    expect(screen.getByText("Running")).toBeTruthy();
+    // The epic never runs itself: the set's actions replace the card's.
+    expect(screen.queryByRole("button", { name: "Add to Todo" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Start all" }));
+    await waitFor(() => expect(posts).toContain("/api/cards/c1/start-all"));
+    fireEvent.click(screen.getByRole("button", { name: "Pause all" }));
+    await waitFor(() => expect(posts).toContain("/api/cards/c1/pause-all"));
+    fireEvent.change(screen.getByLabelText("Run mode"), { target: { value: "parallel" } });
+    await waitFor(() => expect(patches).toEqual([{ runMode: "parallel" }]));
+    vi.unstubAllGlobals();
+  });
+
+  it("names the epic a task belongs to", async () => {
+    cardParent = { id: "e1", title: "Harden login", runMode: "ordered" };
+
+    render(<CardDetail />);
+
+    expect((await screen.findByRole("link", { name: "Harden login" })).getAttribute("href")).toBe("/card/e1");
+    expect(screen.getByText(/its tasks run in order/)).toBeTruthy();
+  });
+
   // The plan lives on the Task tab, which is the default — no click needed.
   it.each([
-    ["planning", "Plan is running…"],
+    ["planning", "Plan is running"],
     ["todo", "No plan yet — start the task to run planning."],
   ])("shows a %s card with no plan as %j", async (status, text) => {
     cardStatus = status;

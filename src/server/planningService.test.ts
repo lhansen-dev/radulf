@@ -4,7 +4,6 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
-import { planningDestination, clearPlannerArtifacts, renderPlanPrompt } from "./planningService";
 
 describe("planningDestination", () => {
   it("routes on truthiness, not `=== 1`, so DB drift cannot misroute a card", () => {
@@ -121,14 +120,21 @@ vi.mock("./settings", async (importOriginal) => ({
       plannerTimeoutMinutes: 42,
       plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
       sandboxEnabled: false,
+      // Spec 30: the routing tests below expect a plan to go straight to
+      // ready; a card opts into the critic explicitly where it is tested.
+      planCriticMode: "off",
     }),
 }));
 
 const testDataDir = setupTestDataDir("radulf-planningService-");
 const { testSettings } = await import("@/testUtils/testSettings");
 
-const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
-const { PlanningService, pendingReplanFeedback } = await import("./planningService");
+const { db, cards, plans, runs, repos, scopingMessages, worktrees, events, now } = await import("@/db");
+// Imported after setupTestDataDir, like everything else that reaches @/db: a
+// static import of this module fixes DATA_DIR at load and puts the file on
+// the checkout's own database, where it raced other test files.
+const { PlanningService, pendingReplanFeedback, planningDestination, clearPlannerArtifacts, renderPlanPrompt } =
+  await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
 function seedRepo() {
@@ -143,7 +149,7 @@ function seedRepo() {
     .run();
 }
 
-function seedCard(id: string, reviewPlanBeforeImplementation: 0 | 1 = 0) {
+function seedCard(id: string, reviewPlanBeforeImplementation: 0 | 1 = 0, planCritic: 0 | 1 | null = null) {
   db.insert(cards)
     .values({
       id,
@@ -153,6 +159,7 @@ function seedCard(id: string, reviewPlanBeforeImplementation: 0 | 1 = 0) {
       status: "planning",
       baseBranch: "main",
       reviewPlanBeforeImplementation,
+      planCritic,
       position: 1,
       createdAt: now(),
       updatedAt: now(),
@@ -174,6 +181,7 @@ function mockPlannerHarness(artifacts: Record<string, string>) {
 function makeDeps() {
   return {
     getCard: (id: string) => db.select().from(cards).where(eq(cards.id, id)).get(),
+    workerId: () => "worker-test",
     latestPlan: (id: string) => db.select().from(plans).where(eq(plans.cardId, id)).get(),
     latestWorktreeRun: (id: string) => db.select().from(runs).where(eq(runs.cardId, id)).get(),
     moveCard: vi.fn(() => true),
@@ -181,6 +189,7 @@ function makeDeps() {
     registerController: vi.fn(),
     releaseController: vi.fn(),
     pump: vi.fn(),
+    critique: vi.fn(),
   };
 }
 
@@ -192,6 +201,7 @@ const completeArtifacts = {
 
 describe("PlanningService.runPlanning", () => {
   beforeEach(() => {
+    db.delete(events).run();
     db.delete(worktrees).run();
     db.delete(runs).run();
     db.delete(plans).run();
@@ -239,6 +249,51 @@ describe("PlanningService.runPlanning", () => {
     await new PlanningService(deps).runPlanning("card-plan-review");
 
     expect(deps.moveCard).toHaveBeenCalledWith("card-plan-review", "planning", "plan_review");
+  });
+
+  it("hands a completed plan to the critic instead of moving the card when the card opts in (spec 30)", async () => {
+    seedCard("card-x", 0, 1);
+    mockPlannerHarness(completeArtifacts);
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-x");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "plan artifacts written",
+      expect.any(Object),
+    );
+    expect(deps.critique).toHaveBeenCalledWith("card-x");
+    expect(deps.moveCard).not.toHaveBeenCalledWith("card-x", "planning", "ready");
+    expect(deps.moveCard).not.toHaveBeenCalled();
+    expect(db.select().from(events).where(eq(events.type, "plan.critique_requested")).all()).toHaveLength(1);
+  });
+
+  it("re-plans from a plan critic revise verdict, saying who the feedback came from (spec 30)", () => {
+    seedCard("card-critiqued");
+    db.insert(plans)
+      .values({ id: "plan-critiqued", cardId: "card-critiqued", version: 1, planMd: "## Tasks\n- [ ] a\n", promptMd: "p", acceptanceCriteria: "c", createdAt: now() })
+      .run();
+    db.insert(runs)
+      .values({
+        id: "run-critique",
+        cardId: "card-critiqued",
+        planId: "plan-critiqued",
+        kind: "critique",
+        status: "completed",
+        worktreePath: "/tmp/wt",
+        branch: "ralph/x",
+        exitReason: "revise",
+        feedback: "Task 2 names a spec file that does not exist.",
+        startedAt: "2026-09-21T16:14:00.000Z",
+        endedAt: "2026-09-21T16:15:00.000Z",
+      })
+      .run();
+
+    const feedback = pendingReplanFeedback("card-critiqued")!;
+    expect(feedback.startsWith("The plan critic reviewed")).toBe(true);
+    expect(feedback).toContain("Task 2 names a spec file that does not exist.");
   });
 
   it("finishes the run and parks the card when the planner harness throws", async () => {
@@ -367,5 +422,119 @@ describe("PlanningService.runPlanning", () => {
       "needs_attention",
       "plan checklist unparseable or has no unchecked tasks",
     );
+  });
+});
+
+// Spec 26: a retry inherits the attempt it retries.
+const { runTranscriptDir } = await import("./retention");
+
+describe("PlanningService.runPlanning — retries inherit the failed attempt (spec 26)", () => {
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(worktrees).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.createWorktree.mockImplementation((_repoPath: string, _base: string, _title: string, runId: string) => {
+      const worktreePath = path.join(testDataDir, "worktrees", String(runId));
+      fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+      return { worktreePath, branch: `ralph/${runId}` };
+    });
+    seedRepo();
+  });
+
+  /** A timed-out planning attempt with its own worktree, which the retry reuses. */
+  function seedFailedPlanRun(cardId: string) {
+    const id = `plan-failed-${cardId}`;
+    const worktreePath = path.join(testDataDir, "worktrees", id);
+    fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+    const started = new Date(Date.now() + 60_000);
+    db.insert(runs)
+      .values({
+        id,
+        cardId,
+        kind: "plan",
+        status: "timeout",
+        exitReason: "planning timed out",
+        worktreePath,
+        branch: `ralph/${id}`,
+        baseBranch: "main",
+        startedAt: started.toISOString(),
+        endedAt: new Date(started.getTime() + 60_000).toISOString(),
+      })
+      .run();
+    return { id, worktreePath };
+  }
+
+  it("forwards the killed attempt's drafts and digest into the retry prompt", async () => {
+    seedCard("card-retry");
+    const { id, worktreePath } = seedFailedPlanRun("card-retry");
+    fs.writeFileSync(path.join(worktreePath, ".ralph", "PLAN.md"), "## Tasks\n- [ ] half a plan\n");
+    const dir = runTranscriptDir(id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "plan.jsonl"), `${JSON.stringify({ t: "tool", name: "read", input: { path: "README.md" } })}\n`);
+    mockPlannerHarness(completeArtifacts);
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-retry");
+
+    const call = mocks.runHarness.mock.calls[0][0];
+    expect(call.cwd).toBe(worktreePath);
+    expect(call.prompt).toContain("PREVIOUS ATTEMPT OF THIS STAGE");
+    expect(call.prompt).toContain("ended with: planning timed out after 1 minute.");
+    expect(call.prompt).toContain("Its draft .ralph/PLAN.md, incomplete and unverified:\n## Tasks\n- [ ] half a plan");
+    expect(call.prompt).toContain("1. read: README.md");
+    expect(call.prompt).toContain("ATTEMPT BUDGET");
+    expect(call.prompt).toContain("hard budget is 42 minutes");
+    expect(deps.moveCard).toHaveBeenCalledWith("card-retry", "planning", "ready");
+    const forwarded = db.select().from(events).where(eq(events.type, "attempt.forwarded")).all();
+    expect(forwarded).toHaveLength(1);
+    expect(JSON.parse(forwarded[0].payload)).toMatchObject({ kind: "plan", previousRunId: id, toolCalls: 1 });
+  });
+
+  it("gives a first attempt the budget but no previous-attempt section", async () => {
+    seedCard("card-first");
+    mockPlannerHarness(completeArtifacts);
+
+    await new PlanningService(makeDeps()).runPlanning("card-first");
+
+    const prompt = mocks.runHarness.mock.calls[0][0].prompt as string;
+    expect(prompt).not.toContain("PREVIOUS ATTEMPT OF THIS STAGE");
+    expect(prompt).toContain("the three plan artifacts in `.ralph/` written by");
+  });
+
+  it("honours complete artifacts the attempt wrote before the watchdog killed it", async () => {
+    seedCard("card-late");
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      for (const [name, content] of Object.entries(completeArtifacts)) {
+        fs.writeFileSync(path.join(cwd, ".ralph", name), content);
+      }
+      return { timedOut: true, stalled: false, error: "stopReason: aborted", code: 1, lastText: "" };
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-late");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "plan artifacts written", expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-late", "planning", "ready");
+    expect(db.select().from(plans).where(eq(plans.cardId, "card-late")).all()).toHaveLength(1);
+    expect(db.select().from(events).where(eq(events.type, "plan.recovered_after_timeout")).all()).toHaveLength(1);
+  });
+
+  it("still fails a timeout that left the artifacts incomplete", async () => {
+    seedCard("card-dead");
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      fs.writeFileSync(path.join(cwd, ".ralph", "PLAN.md"), "## Tasks\n- [ ] only the plan\n");
+      return { timedOut: true, stalled: false, error: "", code: 1, lastText: "" };
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-dead");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "timeout", "planning timed out", expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-dead", "planning", "needs_attention", "planning timed out");
   });
 });

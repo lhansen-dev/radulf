@@ -3,6 +3,7 @@ import path from "node:path";
 import { desc, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 
 // Direct unit tests for ReviewService. `appendFeedbackTask` (private) is
 // exercised only through its public call site's observable effect —
@@ -24,8 +25,9 @@ vi.mock("./git", async (importOriginal) => ({
 }));
 
 const testDataDir = setupTestDataDir("radulf-reviewService-");
+const { loadBaseline, saveBaseline, snapshotRepoIntegrity } = await import("./integrity");
 
-const { db, cards, plans, runs, repos, reviews, now } = await import("@/db");
+const { db, cards, plans, runs, repos, reviews, reviewDeliveries, repoLeases, refWrites, now } = await import("@/db");
 const { ReviewService } = await import("./reviewService");
 const { planStatePath } = await import("./bookkeeping");
 const { pendingReplanFeedback } = await import("./planningService");
@@ -42,7 +44,7 @@ function seedRepo() {
     .run();
 }
 
-function seedCard(id: string, status: "review" = "review") {
+function seedCard(id: string, status: "review" | "needs_attention" = "review") {
   db.insert(cards)
     .values({
       id,
@@ -112,18 +114,65 @@ function makeDeps() {
       db.select().from(runs).where(eq(runs.cardId, id)).orderBy(desc(runs.startedAt)).limit(1).get(),
     moveCard: vi.fn(() => true),
     pump: vi.fn(),
+    workerId: () => "worker-test",
   };
 }
 
 describe("ReviewService — feedback re-entry", () => {
   beforeEach(() => {
     db.delete(reviews).run();
+    db.delete(reviewDeliveries).run();
+    db.delete(repoLeases).run();
+    db.delete(refWrites).run();
     db.delete(runs).run();
     db.delete(plans).run();
     db.delete(cards).run();
     db.delete(repos).run();
     vi.clearAllMocks();
     seedRepo();
+  });
+
+  it.each(["accept", "stale config", "stale run", "hook"])("config approval: %s", async (scenario) => {
+    const repoPath = initScratchRepo("radulf-config-review-");
+    try {
+      db.update(repos).set({ path: repoPath }).where(eq(repos.id, "repo-1")).run();
+      seedCard("config-card", "needs_attention");
+      const run = seedLoopRun("config-card", seedPlan("config-card"));
+      const baseline = (await snapshotRepoIntegrity(repoPath))!;
+      saveBaseline(run.id, baseline);
+      git(repoPath, "config", "user.name", "Approved identity");
+      const deps = makeDeps();
+      const service = new ReviewService(deps);
+      const preview = await service.reviewConfig("config-card");
+      expect(preview.content).toContain("Approved identity");
+      mocks.mergeBranch.mockClear();
+      mocks.mergeBranch.mockResolvedValue({ ok: false, error: "delivery attempted" });
+
+      // Ordinary retry remains blocked until an explicit config approval.
+      expect(await service.retryMerge("config-card")).toMatchObject({ ok: false, error: expect.stringContaining(".git/config changed") });
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+
+      if (scenario === "stale config") git(repoPath, "config", "user.name", "Changed again");
+      if (scenario === "stale run") preview.runId = "old-run";
+      if (scenario === "hook") fs.writeFileSync(path.join(repoPath, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n");
+      if (scenario.startsWith("stale")) {
+        await expect(service.retryMerge("config-card", preview)).rejects.toThrow(/changed/);
+        expect(loadBaseline(run.id)?.configHash).toBe(baseline.configHash);
+        expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      } else {
+        const result = await service.retryMerge("config-card", preview);
+        expect(loadBaseline(run.id)).toEqual({ ...baseline, configHash: preview.configHash });
+        if (scenario === "hook") {
+          expect(result.error).toContain("hook appeared");
+          expect(mocks.mergeBranch).not.toHaveBeenCalled();
+        } else {
+          expect(result.error).toBe("delivery attempted");
+          expect(mocks.mergeBranch).toHaveBeenCalledTimes(1);
+        }
+      }
+    } finally {
+      fs.rmSync(repoPath, { recursive: true, force: true });
+    }
   });
 
   it("reject() sends the card back to the planner with the feedback pending", async () => {
@@ -243,5 +292,150 @@ describe("ReviewService — feedback re-entry", () => {
       .all()
       .map((p) => p.promptMd);
     expect(promptMds.some((p) => p.includes("## Rebased onto"))).toBe(true);
+  });
+});
+
+describe("ReviewService — spec 25 worker-side delivery", () => {
+  beforeEach(() => {
+    db.delete(reviews).run();
+    db.delete(reviewDeliveries).run();
+    db.delete(repoLeases).run();
+    db.delete(refWrites).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    seedRepo();
+  });
+
+  function mergeCleanly() {
+    mocks.mergeBranch.mockImplementationOnce(
+      async (_repo: string, _base: string, _head: string, _msg: string, onCommitted?: (sha: string) => void) => {
+        onCommitted?.("abc");
+        return { ok: true, mergeCommit: "abc" };
+      },
+    );
+  }
+
+  it("a non-passive approve runs the delivery itself under the repo lease and records the ref write", async () => {
+    seedCard("card-deliver");
+    const planId = seedPlan("card-deliver");
+    const { id: runId } = seedLoopRun("card-deliver", planId);
+    mergeCleanly();
+    const deps = makeDeps();
+
+    const result = await new ReviewService(deps).approve(runId);
+
+    expect(result).toEqual({ ok: true });
+    expect(mocks.mergeBranch).toHaveBeenCalledTimes(1);
+    const deliveries = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.runId, runId)).all();
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({ status: "finished", ok: 1, workerId: "worker-test", error: null });
+    expect(db.select().from(repoLeases).all()).toEqual([]);
+    const writes = db.select().from(refWrites).where(eq(refWrites.ref, "refs/heads/main")).all();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ sha: "abc", workerId: "worker-test" });
+    expect(deps.moveCard).toHaveBeenCalledWith("card-deliver", "reviewing", "done");
+  });
+
+  it("a passive approve only enqueues the delivery; claimPendingDeliveries() on a worker runs it", async () => {
+    seedCard("card-passive");
+    const planId = seedPlan("card-passive");
+    const { id: runId } = seedLoopRun("card-passive", planId);
+    const webDeps = { ...makeDeps(), passive: () => true };
+
+    const result = await new ReviewService(webDeps).approve(runId);
+
+    expect(result).toEqual({ ok: true });
+    expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    expect(webDeps.moveCard).toHaveBeenCalledWith("card-passive", "review", "reviewing");
+    expect(webDeps.moveCard).not.toHaveBeenCalledWith("card-passive", "reviewing", "done");
+    const pending = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.runId, runId)).get();
+    expect(pending).toMatchObject({ status: "pending", workerId: null, fromStatus: "review", approvedBy: "human" });
+
+    mergeCleanly();
+    const workerDeps = makeDeps();
+    new ReviewService(workerDeps).claimPendingDeliveries();
+
+    await vi.waitFor(() => {
+      const row = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, pending!.id)).get();
+      expect(row?.status).toBe("finished");
+    });
+    const finished = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, pending!.id)).get();
+    expect(finished).toMatchObject({ ok: 1, workerId: "worker-test" });
+    expect(mocks.mergeBranch).toHaveBeenCalledTimes(1);
+    expect(workerDeps.moveCard).toHaveBeenCalledWith("card-passive", "reviewing", "done");
+    expect(db.select().from(repoLeases).all()).toEqual([]);
+    expect(db.select().from(refWrites).where(eq(refWrites.ref, "refs/heads/main")).all()).toHaveLength(1);
+  });
+
+  it("a pending delivery whose repo record vanished is finished as failed and its card parked", () => {
+    seedCard("card-gone");
+    const planId = seedPlan("card-gone");
+    const { id: runId } = seedLoopRun("card-gone", planId);
+    db.insert(reviewDeliveries)
+      .values({
+        id: "delivery-gone",
+        runId,
+        cardId: "card-gone",
+        repoId: "repo-gone",
+        fromStatus: "review",
+        approvedBy: "human",
+        status: "pending",
+        createdAt: now(),
+      })
+      .run();
+    const deps = makeDeps();
+
+    new ReviewService(deps).claimPendingDeliveries();
+
+    const row = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, "delivery-gone")).get();
+    expect(row).toMatchObject({ status: "finished", ok: 0 });
+    expect(row?.error).not.toBeNull();
+    expect(deps.moveCard).toHaveBeenCalledWith("card-gone", "reviewing", "needs_attention", expect.any(String));
+    expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    expect(db.select().from(repoLeases).all()).toEqual([]);
+  });
+});
+
+describe("ReviewService — abandon", () => {
+  beforeEach(() => {
+    db.delete(reviews).run();
+    db.delete(reviewDeliveries).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    seedRepo();
+  });
+
+  it("a worker removes the worktree and the plan state", async () => {
+    seedCard("card-abandon");
+    const { worktreePath } = seedLoopRun("card-abandon", seedPlan("card-abandon"));
+    seedPlanState("card-abandon");
+    const deps = makeDeps();
+
+    await new ReviewService(deps).abandon("card-abandon");
+
+    expect(deps.moveCard).toHaveBeenCalledWith("card-abandon", "review", "abandoned");
+    expect(mocks.removeWorktree).toHaveBeenCalledWith(path.join(testDataDir, "repo"), worktreePath, "ralph/loop-card-abandon");
+    expect(fs.existsSync(planStatePath("card-abandon"))).toBe(false);
+  });
+
+  // Spec 25: web never writes to a repository. The worktree waits for a
+  // worker's removeAbandonedWorktrees sweep (retention.ts).
+  it("a passive (web) abandon moves the card but leaves the repository alone", async () => {
+    seedCard("card-abandon-web");
+    seedLoopRun("card-abandon-web", seedPlan("card-abandon-web"));
+    seedPlanState("card-abandon-web");
+    const deps = { ...makeDeps(), passive: () => true };
+
+    await new ReviewService(deps).abandon("card-abandon-web");
+
+    expect(deps.moveCard).toHaveBeenCalledWith("card-abandon-web", "review", "abandoned");
+    expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    expect(fs.existsSync(planStatePath("card-abandon-web"))).toBe(false);
   });
 });

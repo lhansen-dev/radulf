@@ -10,6 +10,8 @@ import { DetailsMenu } from "../../ui/detailsMenu";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
+import { LiveActivity } from "../../ui/liveActivity";
+import { EpicTasks } from "./epicTasks";
 import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
@@ -29,8 +31,16 @@ import { parsePayload } from "@/shared/eventPayload";
 import { errorMessage } from "@/shared/errorMessage";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
 import { scriptKey } from "@/shared/installScripts";
+import type { EpicRunMode } from "@/shared/epics";
 
 const TABS = ["Task", "Activity"] as const;
+
+/** How a parent epic's run mode reads in the "Part of" line. */
+const RUN_MODE_PHRASES: Record<EpicRunMode, string> = {
+  ordered: "in order",
+  parallel: "in parallel",
+  graph: "as a graph",
+};
 
 /** Exporting a card never depends on where it is in its lifecycle. */
 const ALL_STATUSES = Object.keys(STATUS_LABELS);
@@ -51,6 +61,10 @@ export default function CardDetail() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Task");
   const [transcript, setTranscript] = useState<TranscriptTarget | null>(null);
   const [showEdit, setShowEdit] = useState(false);
+  const [configReview, setConfigReview] = useState<{ runId: string; configHash: string; content: string | null } | null>(null);
+  const [configBusy, setConfigBusy] = useState(false);
+  // Spec 24: Create and break down lands here with ?breakdown=propose.
+  const [autoBreakdown, setAutoBreakdown] = useState(false);
 
   useEffect(() => {
     const readTab = () => {
@@ -58,7 +72,16 @@ export default function CardDetail() {
       const found = TABS.find((item) => item.toLowerCase() === raw) ?? RETIRED_TABS[raw];
       if (found) setTab(found);
     };
+    const readBreakdown = () => {
+      const query = new URLSearchParams(window.location.search);
+      if (query.get("breakdown") !== "propose") return;
+      setAutoBreakdown(true);
+      // Off the URL at once: a reload must not spend another model turn.
+      query.delete("breakdown");
+      window.history.replaceState({}, "", `${window.location.pathname}${query.size ? `?${query}` : ""}`);
+    };
     readTab();
+    readBreakdown();
     window.addEventListener("popstate", readTab);
     return () => window.removeEventListener("popstate", readTab);
   }, []);
@@ -73,6 +96,11 @@ export default function CardDetail() {
   if (!detail)
     return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading task…"}</div></AppShell>;
   const { card, repo, plans, runs } = detail;
+  // Spec 24: a card with pieces is an epic. It never runs itself, so its
+  // actions are the set's: Start all and Pause all.
+  const epicTasks = detail.children ?? [];
+  const isEpic = epicTasks.length > 0;
+  const epicDone = epicTasks.filter((task) => task.status === "done").length;
   const planTag = plannerModelTag(runs);
   const latestPlan = plans[0];
   // plan_review means the planner is done and the human gate is open — the
@@ -85,6 +113,11 @@ export default function CardDetail() {
     (latestEvaluatorRun.status === "completed" &&
       (EVALUATOR_CLEARED_EXITS as readonly string[]).includes(latestEvaluatorRun.exitReason ?? ""));
   const canRetryMerge = latestLoopRun?.status === "completed" && evaluatorCleared;
+  const latestIntegrityDecision = detail.events.filter((event) =>
+    event.runId === latestLoopRun?.id && ["review.decided", "repo.config_approved"].includes(event.type),
+  ).at(-1);
+  const configBlocked = card.status === "needs_attention" && canRetryMerge && latestIntegrityDecision &&
+    String((parsePayload(latestIntegrityDecision.payload) as { integrityViolation?: string }).integrityViolation ?? "").includes(".git/config changed");
   const failedStep = retryableFailedStep(runs);
   const canRetryFailedStep = Boolean(failedStep && card.status === "needs_attention");
   // Spec 18 §3: the provider rejected the request itself, so retrying the same
@@ -168,13 +201,18 @@ export default function CardDetail() {
     paused: { label: "Continue", run: () => post("resume") },
   };
   const headerActions: { label: string; show: boolean; primary?: boolean; run: () => void }[] = [
-    { ...statusAction[card.status], show: card.status in statusAction, primary: true },
+    { label: "Review Git config", show: Boolean(configBlocked), run: () => action(async () => {
+      setConfigReview(await api(`/api/cards/${id}/review-config`, { json: {} }));
+    }) },
+    { ...statusAction[card.status], show: !isEpic && card.status in statusAction, primary: true },
+    { label: "Start all", show: isEpic && epicTasks.some((task) => task.status === "backlog" || task.status === "todo"), primary: true, run: () => post("start-all") },
+    { label: "Pause all", show: isEpic && epicTasks.some((task) => task.status === "looping"), run: () => confirm("Pause every running task in this epic after its current iteration?") && post("pause-all") },
     { label: "Pause", show: card.status === "looping", run: () => confirm("Pause this task after the current iteration?") && post("pause") },
     // Every stage reads the card's model override when it starts, so a change
     // made here takes effect on Continue / Retry failed step without
     // discarding the worktree, plan, or iterations so far.
     { label: "Edit model overrides", show: ["paused", "needs_attention"].includes(card.status), run: () => setShowEdit(true) },
-    { label: "View activity", show: ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
+    { label: "View activity", show: !isEpic && ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
     { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
   ];
   const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
@@ -204,7 +242,7 @@ export default function CardDetail() {
       label: "Delete task",
       danger: true,
       when: ["backlog", "todo", "done", "abandoned", "needs_attention"],
-      run: confirmThen("Delete this task and all its history?", () => action(async () => {
+      run: confirmThen(isEpic ? "Delete this epic? Its tasks stay, as standalone tasks." : "Delete this task and all its history?", () => action(async () => {
         await api(`/api/cards/${id}`, { method: "DELETE" });
         router.push("/");
       })),
@@ -225,7 +263,11 @@ export default function CardDetail() {
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 grow">
             <p className="text-sm text-foreground/75">{repo?.name ?? "Unknown repository"}</p>
-            <p className="mt-1 text-xs text-foreground/45">{plainStatus(card.status)}{card.startedAt && ` · ${timeAgo(card.startedAt)} elapsed`}</p>
+            <p className="mt-1 text-xs text-foreground/45">
+              {isEpic
+                ? `Epic · ${epicDone} of ${epicTasks.length} tasks done`
+                : <>{plainStatus(card.status)}{card.startedAt && ` · ${timeAgo(card.startedAt)} elapsed`}</>}
+            </p>
           </div>
         {headerActions.filter((a) => a.show).map((a) => (
           <ActionButton key={a.label} primary={a.primary} onClick={a.run}>{a.label}</ActionButton>
@@ -245,6 +287,32 @@ export default function CardDetail() {
           onClose={() => setShowEdit(false)}
           onSaved={() => { setShowEdit(false); refetch(); }}
         />
+      )}
+      {configReview && (
+        <DialogShell
+          titleId="review-config-title"
+          title="Review Git config"
+          closeLabel="Close Git config review"
+          onRequestClose={() => { if (!configBusy) setConfigReview(null); }}
+          footer={<>
+            <button type="button" disabled={configBusy} onClick={() => setConfigReview(null)}>Cancel</button>
+            <button type="button" disabled={configBusy} onClick={() => action(async () => {
+              setConfigBusy(true);
+              try {
+                await api(`/api/cards/${id}/approve-config`, { json: { runId: configReview.runId, configHash: configReview.configHash } });
+              } finally {
+                setConfigBusy(false);
+                setConfigReview(null);
+                refetch();
+              }
+            })} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">
+              Accept config and retry merge
+            </button>
+          </>}
+        >
+          <p className="mb-3 text-sm">The repository’s Git config changed since this run started. Review the current file below. The original contents were not saved, so a diff is unavailable. Accept only if you recognize and trust this configuration; Git settings can execute commands. Approval applies to this run and this exact version. Hook checks still apply.</p>
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-foreground/5 p-3 text-xs">{configReview.content ?? "(config file is absent)"}</pre>
+        </DialogShell>
       )}
       {error && <p className="text-red-400 text-sm">{error}</p>}
       {unretryableRun && (
@@ -326,10 +394,28 @@ export default function CardDetail() {
             <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
             <span className="text-foreground/40">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
           </div>
+          {detail.parent && (
+            <p className="text-sm text-foreground/60">
+              Part of <Link href={`/card/${detail.parent.id}`} className="text-amber-300 hover:underline">{detail.parent.title}</Link>
+              {detail.parent.runMode && <span className="text-foreground/40"> · its tasks run {RUN_MODE_PHRASES[detail.parent.runMode]}</span>}
+            </p>
+          )}
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
             {card.description || "(no description)"}
           </pre>
-          <ScopingPanel cardId={id} status={card.status} scopingAuthorsPlan={Boolean(card.scopingAuthorsPlan)} messages={scoping} onChanged={refetch} />
+          {isEpic && (
+            <EpicTasks cardId={id} runMode={card.runMode ?? null} tasks={epicTasks} onChanged={refetch} onError={setError} />
+          )}
+          <ScopingPanel
+            cardId={id}
+            status={card.status}
+            scopingAuthorsPlan={Boolean(card.scopingAuthorsPlan)}
+            messages={scoping}
+            turn={detail.scopingTurn ?? null}
+            homeRepoId={repo?.id ?? null}
+            autoPropose={autoBreakdown}
+            onChanged={refetch}
+          />
           <div className="text-sm text-foreground/60">
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes
@@ -349,6 +435,7 @@ export default function CardDetail() {
             />
             <WorkflowFlag on={Boolean(card.grillMe)} label="Grill me while scoping" />
             <WorkflowFlag on={Boolean(card.scopingAuthorsPlan)} label="Scoping writes the plan" />
+            <WorkflowFlag on={card.planCritic == null ? undefined : Boolean(card.planCritic)} label="Plan critic" />
             <WorkflowFlag
               on={Boolean(card.autoApprove)}
               label="Auto-approve on evaluator pass"
@@ -363,15 +450,25 @@ export default function CardDetail() {
             <h3 className={`text-sm font-medium mb-1 ${awaitingPlanApproval ? "text-cyan-300" : ""}`}>
               {awaitingPlanApproval ? "Generated plan — awaiting your approval" : "Plan"}
             </h3>
+            {/* What the planner is doing right now, from its live transcript:
+                a re-plan shows it above the plan it is replacing. */}
+            {card.status === "planning" && (
+              <LiveActivity
+                runId={latestPlanRun?.id ?? null}
+                startedAt={latestPlanRun?.startedAt}
+                idleLabel="Plan is running"
+                className="mb-2 text-sm"
+              />
+            )}
             {latestPlan ? (
               <>
                 <PlanModelBadge tag={planTag} />
                 <PlanVersions plans={plans} livePlan={detail.livePlan} />
               </>
             ) : (
-              <p className="text-foreground/50 text-sm">
-                {card.status === "planning" ? "Plan is running…" : "No plan yet — start the task to run planning."}
-              </p>
+              card.status !== "planning" && (
+                <p className="text-foreground/50 text-sm">No plan yet — start the task to run planning.</p>
+              )
             )}
           </div>
 
@@ -413,17 +510,52 @@ export default function CardDetail() {
           )}
           <div>
             <h3 className="text-sm font-medium mb-1">Events</h3>
-            {detail.events.map((e) => (
-              <div key={e.id} className="text-xs text-foreground/50 font-mono">
-                {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
-              </div>
-            ))}
+            {detail.events.map((e) => {
+              const critique = e.type === "critique.decided" ? parseCritiqueDecided(e.payload) : null;
+              if (critique) {
+                const approved = critique.verdict === "approve";
+                return (
+                  <div
+                    key={e.id}
+                    data-testid="critique-decided"
+                    className={`my-1 rounded border p-2 text-xs ${approved ? "border-green-800/50 bg-green-950/30" : "border-amber-800/50 bg-amber-950/40"}`}
+                  >
+                    <span className="font-mono text-foreground/50">{e.createdAt.slice(11, 19)} </span>
+                    <span className={`font-medium ${approved ? "text-green-300" : "text-amber-300"}`}>
+                      ⚖ Plan critic: {critique.verdict}
+                    </span>
+                    {critique.feedback && (
+                      <p className="mt-1 whitespace-pre-wrap text-foreground/70">{critique.feedback}</p>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <div key={e.id} className="text-xs text-foreground/50 font-mono">
+                  {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
+                </div>
+              );
+            })}
           </div>
         </section>
       ))}
     </div>
     </AppShell>
   );
+}
+
+/** The `critique.decided` event payload (planCriticService): the verdict and
+ * the first 500 characters of the critic's feedback. Null when the payload
+ * is not shaped that way, so the row falls back to the raw event line. */
+function parseCritiqueDecided(payload: string): { verdict: string; feedback: string } | null {
+  try {
+    const parsed = JSON.parse(payload) as { verdict?: unknown; feedback?: unknown };
+    if (typeof parsed.verdict !== "string") return null;
+    const feedback = typeof parsed.feedback === "string" ? parsed.feedback.slice(0, 500) : "";
+    return { verdict: parsed.verdict, feedback };
+  } catch {
+    return null;
+  }
 }
 
 type GatePackage = {
@@ -514,8 +646,10 @@ function InstallGateBanner({
 }
 
 /** Compact chip for a per-card workflow toggle. An "on" auto-approve flag is
- * amber to flag that this card can merge without human review. */
-function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; warnWhenOn?: boolean }) {
+ * amber to flag that this card can merge without human review. `on` of
+ * `undefined` means the card inherits the global default (tri-state flags
+ * such as the plan critic). */
+function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean | undefined; label: string; warnWhenOn?: boolean }) {
   const tone = on
     ? warnWhenOn
       ? "border-amber-600/50 bg-amber-950/30 text-amber-300"
@@ -523,8 +657,8 @@ function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; w
     : "border-foreground/10 text-foreground/40";
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${tone}`}>
-      <span aria-hidden>{on ? "●" : "○"}</span>
-      {label}: {on ? "On" : "Off"}
+      <span aria-hidden>{on ? "●" : on === undefined ? "◌" : "○"}</span>
+      {label}: {on === undefined ? "Default" : on ? "On" : "Off"}
     </span>
   );
 }
@@ -947,6 +1081,9 @@ function EditCardModal({
   });
   const [grillMe, setGrillMe] = useState(Boolean(detail.card.grillMe));
   const [scopingAuthorsPlan, setScopingAuthorsPlan] = useState(Boolean(detail.card.scopingAuthorsPlan));
+  const [planCritic, setPlanCritic] = useState<boolean | null>(
+    detail.card.planCritic == null ? null : Boolean(detail.card.planCritic),
+  );
   const { providers, models } = useRoleModelOptions();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -966,6 +1103,7 @@ function EditCardModal({
           evaluatorModel: roleModels.evaluator || null,
           grillMe,
           scopingAuthorsPlan,
+          planCritic,
         },
       });
       onSaved();
@@ -1013,6 +1151,18 @@ function EditCardModal({
             className="size-4 accent-amber-600"
           />
           Let scoping write the plan
+        </label>
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          Plan critic
+          <select
+            value={planCritic === null ? "default" : planCritic ? "on" : "off"}
+            onChange={(e) => setPlanCritic(e.target.value === "default" ? null : e.target.value === "on")}
+            className={fieldCls}
+          >
+            <option value="default">Default (on for breakdown pieces)</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
         </label>
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>

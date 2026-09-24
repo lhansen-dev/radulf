@@ -9,12 +9,20 @@ import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
 import { errorMessage } from "@/shared/errorMessage";
 import { getSettings } from "./settings";
 import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
+import {
+  attemptTranscriptPath,
+  digestTranscript,
+  previousFailedAttempt,
+  renderDeadlineSection,
+  renderPreviousAttemptSection,
+} from "./previousAttempt";
 import { firstUnchecked } from "./checklist";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
+import { criticEnabled } from "./planCriticService";
 import {
   circuitOpenReason,
   harnessFailure,
@@ -36,6 +44,13 @@ function readRalphFile(worktreePath: string, name: string): string {
  * attempt's output. Each invocation must earn a complete artifact set. */
 export function clearPlannerArtifacts(worktreePath: string) {
   removeRalphFiles(worktreePath, PLANNER_FILES);
+}
+
+/** The three artifacts are present and PLAN.md has a task to run: what a
+ * completed planning run must leave, and what a killed one may have. */
+function plannerArtifactsComplete(worktreePath: string): boolean {
+  const contents = RALPH_FILES.map((f) => readRalphFile(worktreePath, f));
+  return contents.every(Boolean) && firstUnchecked(contents[0]) !== null;
 }
 
 const SCOPING_SPEAKER: Record<ScopingRole, string> = {
@@ -65,6 +80,9 @@ function loopStopFeedback(exitReason: string, feedback: string | null): string {
     "branch. The scoping thread holds anything the operator added since."
   );
 }
+
+const CRITIC_REVISE_PREFIX =
+  "The plan critic reviewed the previous plan before any code was written and asked for changes:\n\n";
 
 export function renderPlanPrompt(
   template: string,
@@ -96,7 +114,8 @@ export function renderPlanPrompt(
 
 /**
  * Feedback the planner has not re-planned from yet: a human rejection of the
- * diff, or an evaluator `revise` verdict.
+ * diff, an evaluator `revise` verdict, or a plan critic `revise` verdict
+ * (spec 30).
  *
  * Both send the card back through planning rather than straight to the loop,
  * so pending feedback is also what tells `startCard` to re-plan a card that
@@ -121,13 +140,19 @@ export function pendingReplanFeedback(cardId: string): string | null {
     .orderBy(desc(reviews.createdAt))
     .limit(1)
     .get();
-  const revise = db
-    .select({ feedback: runs.feedback, at: runs.startedAt })
+  const reviseRow = db
+    .select({ feedback: runs.feedback, kind: runs.kind, at: runs.startedAt })
     .from(runs)
-    .where(and(onLatestPlan, eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")))
+    .where(and(onLatestPlan, inArray(runs.kind, ["evaluate", "critique"]), eq(runs.exitReason, "revise")))
     .orderBy(desc(runs.startedAt))
     .limit(1)
     .get();
+  // The critic judged the plan alone, before any code existed: say so, or the
+  // planner reads its feedback as a review of an implementation.
+  const revise =
+    reviseRow?.kind === "critique" && reviseRow.feedback
+      ? { ...reviseRow, feedback: CRITIC_REVISE_PREFIX + reviseRow.feedback }
+      : reviseRow;
   // A loop that stopped for the planner: blocked, or exhausted without DONE.
   // Older exhausted rows carry no feedback of their own, so the wording is
   // supplied here rather than read from the row.
@@ -208,7 +233,13 @@ export function planningDestination(
  * injected callbacks.
  */
 export class PlanningService {
-  constructor(private readonly deps: StageDependencies & { pump(): void }) {}
+  constructor(
+    private readonly deps: StageDependencies & {
+      pump(): void;
+      /** Spec 30: hand a finished plan to the critic; the card stays in `planning`. */
+      critique(cardId: string): void;
+    },
+  ) {}
 
   async runPlanning(cardId: string) {
     const deps = this.deps;
@@ -223,13 +254,20 @@ export class PlanningService {
     const { worktreePath, branch, baseBranch, created } = await resolveWorktree(
       repo, card, runId, deps.latestWorktreeRun(cardId),
     );
+    // Spec 26: a retry inherits the attempt it retries, drafts included.
+    // Decided before this run's row exists, since the rule reads the card's
+    // latest run, and before the clear below removes what it left.
+    const previous = previousFailedAttempt(cardId, "plan");
+    const drafts = previous
+      ? Object.fromEntries(RALPH_FILES.map((f) => [f, readRalphFile(worktreePath, f)]))
+      : undefined;
     clearPlannerArtifacts(worktreePath);
     // Spec 14 Phase 3: the planner's ONLY L2 write root is the worktree's
     // `.ralph/` — ensure it exists so the write root resolves.
     fs.mkdirSync(/* turbopackIgnore: true */ ralphDirPath(worktreePath), { recursive: true });
     const ctx = await createRunSandbox(runId);
     startRunRow(
-      { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model },
+      { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model, workerId: deps.workerId() },
       ctx,
       settings,
       created ? repo.id : undefined,
@@ -257,21 +295,38 @@ export class PlanningService {
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
 
+      // Spec 26: the killed attempt's drafts and command digest, then the
+      // clock, appended outside the template so a customized one still gets them.
+      let previousSection = "";
+      if (previous) {
+        const digest = digestTranscript(attemptTranscriptPath(previous));
+        previousSection = renderPreviousAttemptSection({ stage: "planner", attempt: previous, digest, drafts });
+        emitEvent("attempt.forwarded", {
+          cardId,
+          runId,
+          payload: { kind: "plan", previousRunId: previous.runId, toolCalls: digest.toolCalls },
+        });
+      }
+      const timeoutMs = settings.plannerTimeoutMinutes * 60 * 1000;
+      const prompt =
+        renderPlanPrompt(
+          settings.plannerPromptTemplate,
+          card.title,
+          card.description,
+          replanFeedback ?? prevPlan?.feedback ?? undefined,
+          listScopingMessages(cardId),
+        ) +
+        previousSection +
+        renderDeadlineSection("planner", new Date(), timeoutMs);
       const result = await runWithTranscript({
         runId,
         file: "plan.jsonl",
         provider,
         model,
         reasoningLevel: settings.plannerReasoningLevel,
-        prompt: renderPlanPrompt(
-          settings.plannerPromptTemplate,
-          card.title,
-          card.description,
-          replanFeedback ?? prevPlan?.feedback ?? undefined,
-          listScopingMessages(cardId),
-        ),
+        prompt,
         cwd: worktreePath,
-        timeoutMs: settings.plannerTimeoutMinutes * 60 * 1000,
+        timeoutMs,
         signal: controller.signal,
         role: "planner",
         runContext: ctx,
@@ -279,8 +334,20 @@ export class PlanningService {
       if (controller.signal.aborted) return; // cancelCard already finalized
 
       telemetry = runTelemetry(result);
-      const failure = harnessFailure(result, provider, "planner");
-      if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+      // Spec 26 decision 4: complete artifacts on disk outlive the watchdog
+      // that killed the session (spec 18 item 1 for the planner). Every
+      // check below still applies to them.
+      const recovered = (result.timedOut || result.stalled) && plannerArtifactsComplete(worktreePath);
+      if (recovered) {
+        emitEvent("plan.recovered_after_timeout", {
+          cardId,
+          runId,
+          payload: { cause: result.timedOut ? "timeout" : "stalled" },
+        });
+      } else {
+        const failure = harnessFailure(result, provider, "planner");
+        if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
+      }
 
       // Both commits below land in this worktree. The planner itself has no
       // bash and writes only `.ralph/`, but a worktree reused from an earlier
@@ -333,7 +400,14 @@ export class PlanningService {
       await tryGit(worktreePath, "commit", "-m", `ralph: plan v${version} for "${card.title}"`);
 
       deps.finishRun(runId, "completed", "plan artifacts written", telemetry);
-      deps.moveCard(cardId, "planning", planningDestination(card));
+      if (criticEnabled(card, settings)) {
+        // Spec 30: the critic reads the plan while the card keeps its slot in
+        // `planning`; it moves the card on (or re-plans) itself.
+        emitEvent("plan.critique_requested", { cardId, runId, payload: { version } });
+        deps.critique(cardId);
+      } else {
+        deps.moveCard(cardId, "planning", planningDestination(card));
+      }
     } catch (error) {
       if (!controller.signal.aborted) {
         const reason = `planner failed: ${errorMessage(error)}`;

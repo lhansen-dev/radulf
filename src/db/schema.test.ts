@@ -14,6 +14,9 @@ const {
   runs,
   cards,
   worktrees,
+  reviewDeliveries,
+  repoLeases,
+  refWrites,
   settings,
   readSettingJson,
   upsertSettingJson,
@@ -52,6 +55,42 @@ describe("schema defaults and constraints", () => {
     const row = db.select().from(worktrees).where(eq(worktrees.id, "wt1")).get()!;
     expect(row.runId).toBeNull();
     expect(row.removedAt).toBeNull();
+  });
+});
+
+describe("spec 25 decision 6 review-delivery tables", () => {
+  it("inserts and reads back a review_deliveries row that defaults to pending", () => {
+    db.insert(runs)
+      .values({ id: "run2", cardId: "c1", kind: "loop", worktreePath: "/tmp/wt2", branch: "ralph/y", startedAt: now() })
+      .run();
+    db.insert(reviewDeliveries)
+      .values({ id: "rd1", runId: "run2", cardId: "c1", repoId: "r1", fromStatus: "review", approvedBy: "human", createdAt: now() })
+      .run();
+
+    const row = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, "rd1")).get()!;
+    expect(row.status).toBe("pending");
+    expect(row.fromStatus).toBe("review");
+    expect(row.approvedBy).toBe("human");
+    expect(row.workerId).toBeNull();
+    expect(row.ok).toBeNull();
+    expect(row.claimedAt).toBeNull();
+    expect(row.endedAt).toBeNull();
+  });
+
+  it("inserts and reads back a repo_leases row", () => {
+    db.insert(repoLeases).values({ repoPath: "/tmp/repo", workerId: "w1", acquiredAt: now() }).run();
+    const row = db.select().from(repoLeases).where(eq(repoLeases.repoPath, "/tmp/repo")).get()!;
+    expect(row.workerId).toBe("w1");
+  });
+
+  it("inserts and reads back a ref_writes row with an autoincrement id", () => {
+    db.insert(refWrites)
+      .values({ repoPath: "/tmp/repo", ref: "refs/heads/main", sha: "abc123", workerId: "w1", writtenAt: now() })
+      .run();
+    const row = db.select().from(refWrites).where(eq(refWrites.repoPath, "/tmp/repo")).get()!;
+    expect(typeof row.id).toBe("number");
+    expect(row.ref).toBe("refs/heads/main");
+    expect(row.sha).toBe("abc123");
   });
 });
 

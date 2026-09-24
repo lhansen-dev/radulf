@@ -17,6 +17,8 @@ import {
   type ImprovementRun,
   type Repo,
 } from "./ui/api";
+import { groupEpics, waitingOn, type EpicGroup } from "./ui/epics";
+import { ActivityDot } from "./ui/liveActivity";
 import { NewTaskDialog } from "./ui/newTaskDialog";
 import { ImprovementRunDialog } from "./ui/improvementRunDialog";
 import { DetailsMenu } from "./ui/detailsMenu";
@@ -163,10 +165,19 @@ export default function WorkPage() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const scoped = useMemo(
+  const scopedAll = useMemo(
     () => cards.filter((card) => (!repoFilter || card.repoId === repoFilter) && cardMatches(card, query)),
     [cards, repoFilter, query]
   );
+  // Spec 24: an epic has a row of its own below, with its pieces' progress, so
+  // it is left out of the status lists; the pieces are listed like any card,
+  // each naming its epic. An epic shows when it or any piece is in scope.
+  const { epics, parentOf, epicIds } = useMemo(() => groupEpics(cards), [cards]);
+  const scoped = useMemo(() => scopedAll.filter((card) => !epicIds.has(card.id)), [scopedAll, epicIds]);
+  const visibleEpics = useMemo(() => {
+    const inScope = new Set(scopedAll.map((card) => card.id));
+    return epics.filter((group) => group.epic.status !== "done" && (inScope.has(group.epic.id) || group.tasks.some((task) => inScope.has(task.id))));
+  }, [epics, scopedAll]);
   const needs = useMemo(
     () => scoped.filter((card) => ATTENTION_STATUSES.includes(card.status)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
     [scoped]
@@ -296,7 +307,7 @@ export default function WorkPage() {
     }, 60_000);
   }
 
-  const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction };
+  const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction, parentOf };
   const showSection = (section: View) => view === "overview" || view === section;
   // Keyed off the unfiltered set, not `scoped`: a repo filter or a search that
   // matches nothing leaves `scoped` empty too, and that is exactly when the
@@ -414,6 +425,11 @@ export default function WorkPage() {
                 {active.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
               </WorkSection>
             )}
+            {(view === "overview" || view === "backlog") && visibleEpics.length > 0 && (
+              <WorkSection title="Epics" count={visibleEpics.length} tone="text-cyan-300">
+                {visibleEpics.map((group) => <EpicRow key={group.epic.id} group={group} />)}
+              </WorkSection>
+            )}
             {showSection("queue") && queue.length > 0 && (
               <WorkSection title="Up next" count={queue.length} tone="text-slate-300">
                 {queue.map((card, index) => (
@@ -506,7 +522,7 @@ function ImprovementRunRow({ run, repos, cards, onStop }: { run: ImprovementRun;
   );
 }
 
-function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, canMoveUp, canMoveDown }: {
+function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, canMoveUp, canMoveDown, parentOf }: {
   card: BoardCard;
   position?: number;
   repos: Repo[];
@@ -516,8 +532,11 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   onMove?: (direction: -1 | 1) => void;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
+  /** Spec 24: each piece's epic, for the row to name. */
+  parentOf?: Map<string, BoardCard>;
 }) {
   const state = statusDetails(card);
+  const epic = parentOf?.get(card.id);
   const repo = repos.find((r) => r.id === card.repoId);
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
   const currentTask = card.latestRun?.currentTask ?? null;
@@ -557,7 +576,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {ACTIVE_STATUSES.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
-          <span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span> · {position ? `Queue position ${position}` : state.detail}
+          {epic && <><span className="text-cyan-300/80">↳ {epic.title}</span> · </>}<span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>} · {position ? `Queue position ${position}` : state.detail}
         </p>
         {card.status === "looping" && (currentTask ? (
           <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-xs text-foreground/40">
@@ -583,6 +602,39 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
             </DetailsMenu>
           </div>
         )}
+      </div>
+    </article>
+  );
+}
+
+/** Spec 24: an epic on the feed, standing for its pieces' progress. */
+function EpicRow({ group }: { group: EpicGroup }) {
+  const { epic, tasks } = group;
+  const done = tasks.filter((task) => task.status === "done").length;
+  const running = tasks.filter((task) => RUNNING_STATUSES.includes(task.status)).length;
+  const waiting = tasks.filter((task) => ATTENTION_STATUSES.includes(task.status)).length;
+  return (
+    <article className="group relative flex min-w-0 gap-3 py-3.5 hover:bg-foreground/[0.025]">
+      <Link href={`/card/${epic.id}`} aria-hidden="true" tabIndex={-1} className="absolute inset-0" />
+      <span className="mt-1 flex size-5 shrink-0 items-center justify-center text-sm font-bold text-cyan-300" aria-hidden="true">▣</span>
+      <div className="relative z-10 min-w-0 grow">
+        <Link href={`/card/${epic.id}`} className="text-[0.95rem] font-medium leading-5 text-foreground/90 hover:underline">{epic.title}</Link>
+        <p className="mt-1 text-xs leading-5 text-foreground/48">
+          <span className="text-foreground/65">{epic.repoName}</span> · <span className="text-cyan-300">Epic</span> · {done} of {tasks.length} done
+          {running > 0 && ` · ${running} running`}{waiting > 0 && ` · ${waiting} need you`} · runs {{ ordered: "in order", parallel: "in parallel", graph: "as a graph" }[epic.runMode ?? "ordered"]}
+        </p>
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/10" aria-hidden="true">
+          <div className="h-full bg-green-400" style={{ width: `${Math.round((done / tasks.length) * 100)}%` }} />
+        </div>
+        {tasks.map((task) => {
+          const blockers = waitingOn(task, tasks, epic.runMode);
+          if (blockers.length === 0) return null;
+          return (
+            <p key={task.id} className="mt-1 truncate text-xs text-foreground/40">
+              {task.title} · waiting on {blockers.map((blocker) => blocker.title).join(", ")}
+            </p>
+          );
+        })}
       </div>
     </article>
   );

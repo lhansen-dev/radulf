@@ -115,6 +115,7 @@ function makeDeps() {
       db.select().from(runs).where(eq(runs.cardId, id)).orderBy(desc(runs.startedAt)).limit(1).get(),
     moveCard: vi.fn(() => true),
     pump: vi.fn(),
+    workerId: () => "worker-test",
   };
 }
 

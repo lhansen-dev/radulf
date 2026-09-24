@@ -473,11 +473,11 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
 /**
  * Pipeline role (spec 14): containment is per-role as well as per-run, so the
  * two dangerous primitives — arbitrary command execution and network egress —
- * never sit in the same role. The planner can reach the web but cannot spawn
- * a process; the loop and evaluator can spawn processes but hold no network
- * primitive outside L1's proxy.
+ * never sit in the same role. The planner and the plan critic can reach the
+ * web but cannot spawn a process; the loop and evaluator can spawn processes
+ * but hold no network primitive outside L1's proxy.
  */
-export type AgentRole = "planner" | "loop" | "evaluator";
+export type AgentRole = "planner" | "critic" | "loop" | "evaluator";
 
 /**
  * The built-in tool list for a session (spec 14 role capability split).
@@ -499,6 +499,13 @@ export function toolsForRole(role: AgentRole | undefined, readOnly: boolean): st
     // no bash — a planner needing command execution is being manipulated.
     return ["read", "grep", "find", "ls", "write", "edit", "web_search"];
   }
+  if (role === "critic") {
+    // Spec 30 decision 5: the planner's set less `edit` — the critic writes
+    // exactly one file, its verdict, and never changes an existing one. The
+    // difference is also what lets a provider that sees only the bound tool
+    // set (the scripted mock) tell the two roles apart.
+    return ["read", "grep", "find", "ls", "write", "web_search"];
+  }
   return ["read", "bash", "edit", "write", "grep", "find", "ls"];
 }
 
@@ -509,6 +516,7 @@ export function toolsForRole(role: AgentRole | undefined, readOnly: boolean): st
  * | Role      | Read roots      | Write roots        |
  * |-----------|-----------------|--------------------|
  * | planner   | repo checkout   | `<worktree>/.ralph`|
+ * | critic    | worktree        | `<worktree>/.ralph`|
  * | loop      | worktree        | worktree           |
  * | evaluator | worktree        | worktree           |
  * | (none)    | cwd             | nothing            |
@@ -531,7 +539,7 @@ export function pathRootsForRole(
   cwd: string,
 ): { readRoots: string[]; writeRoots: string[] } {
   if (role === undefined) return { readRoots: [cwd], writeRoots: [] };
-  if (role === "planner") {
+  if (role === "planner" || role === "critic") {
     return { readRoots: [cwd], writeRoots: [path.join(cwd, ".ralph")] };
   }
   return { readRoots: [cwd], writeRoots: [cwd] };
@@ -619,7 +627,7 @@ export async function createRalphSession(
     spawnHook: (ctx) => ({ ...ctx, env: runContext?.env ?? agentEnv() }),
     operations:
       shouldSandboxBash(opts.role, runContext?.srtConfig) && runContext?.srtConfig
-        ? createSandboxedBashOperations(runContext.srtConfig)
+        ? createSandboxedBashOperations(runContext.srtConfig, { tmpdir: runContext.tmpdir })
         : undefined,
   }) as unknown as ToolDefinition;
 

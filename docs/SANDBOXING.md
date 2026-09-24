@@ -112,6 +112,23 @@ pipeline, in two parts:
   still run concurrently — only the wrap step is one at a time — so an
   `npm install` in one repo does not block another repo's bash.
 
+**`TMPDIR` inside the sandbox.** srt overrides `TMPDIR` in every wrapped
+command (default `/tmp/claude`, honouring `CLAUDE_CODE_TMPDIR` in the *server
+process* at wrap time). `/tmp/claude` does not exist in the container image, so
+`runSandboxedCommand` sets `CLAUDE_CODE_TMPDIR` to the run's private `tmpdir`
+inside the same serialized window (and restores it before releasing the turn),
+making the sandboxed `TMPDIR` the spec 14 run-private directory.
+
+**Running Radulf's own test suite inside the sandbox.** A sandbox cannot be
+started from inside a sandbox, so the tests that need a real srt runtime (the
+preflight and real-runtime rows in `src/server/sandbox/srt.test.ts`, and the
+sandbox-on Phase 18.1 test in `src/server/evaluationService.test.ts`) skip
+themselves when `SANDBOX_RUNTIME=1` — the variable srt exports into every
+wrapped command — via the shared predicate in
+`src/testUtils/insideRadulfSandbox.ts`. On a plain host nothing is skipped.
+Leave `TMPDIR` as the sandbox sets it; every test takes scratch space from
+`os.tmpdir()`.
+
 Today nothing trips that check, because network policy comes from global
 settings with nothing per-card or per-role in it. **Making network policy
 genuinely per-run is what must not be done casually**: it would turn that
@@ -314,6 +331,15 @@ card's ordinary commit shows up as tampering in this run's snapshot and throws
 away a finished run (spec 19). Base branches, `main`, tags and remotes are
 still compared, as are hooks and `.git/config`.
 
+If delivery is blocked by `.git/config changed`, the card offers **Review Git
+config**. It shows the current file; the baseline stores only a hash, so the
+original contents cannot be shown as a diff. After verifying the configuration,
+choose **Accept config and retry merge** to approve that exact version for this
+run and retry delivery. A changed configuration or a newer run requires a fresh
+review. Approval preserves the hook and ref baselines and records only config
+hashes in the activity history, never the file contents. Other cards still
+require their own approval.
+
 ### Install-script gate
 
 After an install, the orchestrator enumerates every `preinstall`/`install`/
@@ -379,8 +405,14 @@ The human diff review is the last gate, so it is treated as a security control
 
 There is **no** automatic "sandbox unavailable, run unsandboxed" fallback.
 
+In the compose deployment ([Running in Docker](DOCKER.md)) only the `worker`
+container carries the sandbox and the `security_opt` relaxations it needs
+(`seccomp`, `apparmor`, `systempaths` unconfined). The web container runs no
+sandbox and no agent: it serves HTTP under Docker's default profiles, so there
+is nothing there to contain and the preflight below never runs in it.
+
 - **Startup preflight** (`sandboxPreflight` in `srt.ts`, run once at boot in
-  [`src/instrumentation.ts`](../src/instrumentation.ts)): platform support, srt's
+  [`src/server/boot.ts`](../src/server/boot.ts) (worker role only)): platform support, srt's
   dependency check, and (Linux) the Ubuntu 24.04+ AppArmor
   `kernel.apparmor_restrict_unprivileged_userns` gate — each with a specific
   remediation message. Cached via `initializeSandboxRuntimeOnce`.
@@ -460,7 +492,7 @@ only via the human-facing `/api/settings` route. The disk-limit env vars
 | Repo integrity check | `src/server/integrity.ts` |
 | Install-script gate | `src/server/installGate.ts` |
 | Run lifecycle (watchdog, reaping, integrity, gate) | `src/server/orchestrator.ts` |
-| Startup preflight | `src/instrumentation.ts` |
+| Startup preflight | `src/server/boot.ts` |
 | Settings store | `src/server/settings.ts` |
 | Review-surface: Unicode | `src/shared/diffSafety.ts` |
 | Review-surface: sensitive paths | `src/app/review/[id]/sensitivePaths.ts` |

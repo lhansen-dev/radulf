@@ -195,6 +195,13 @@ const AGENTS = [
     demand:
       "Runs once per loop and is the only stage that executes the whole-card acceptance criteria, which the looper never sees. A reviewer that rubber-stamps sends broken work straight to you.",
   },
+  {
+    role: "critic",
+    title: "Plan critic agent",
+    subtitle: "Reads each plan before the loop starts.",
+    demand:
+      "Runs once per plan, read-only, and only when the critic is on for the card. A second reader from a different model than the planner is the point: it names the gap the planner could not see in its own plan.",
+  },
 ] as const;
 
 type AgentRole = (typeof AGENTS)[number]["role"];
@@ -216,6 +223,9 @@ function roleFitWarning(role: AgentRole, provider: string): string | undefined {
   if (role === "evaluator" && providerClass === "local") {
     return "The evaluator is the only gate that runs the whole-card acceptance criteria. A self-hosted model that approves work it did not really verify sends it straight to you. A subscription model costs you one run per loop here.";
   }
+  if (role === "critic" && providerClass === "local") {
+    return "The plan critic is a second reader whose whole job is to catch what the planner missed, and it runs read-only once per plan. A self-hosted model that waves a plan through leaves every iteration after it building on the gap. A subscription model costs you one short run per plan here.";
+  }
   if (role === "loop" && providerClass === "subscription") {
     return "The looper runs every iteration up to the max-iterations budget, so it drives most of your token spend and rate-limit pressure. A self-hosted or low-cost model is usually the right seat for this role.";
   }
@@ -225,6 +235,7 @@ function roleFitWarning(role: AgentRole, provider: string): string | undefined {
 const TEMPLATES = [
   { key: "plannerPromptTemplate", title: "Planning artifacts", description: "Instructions for generating PLAN.md, CRITERIA.md, and the loop's PROMPT.md.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{SCOPING_SECTION}}", "{{FEEDBACK_SECTION}}"] },
   { key: "evaluatorPromptTemplate", title: "Evaluation", description: "Instructions used when the evaluator reviews a completed loop.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{BASE_BRANCH}}", "{{CRITERIA}}"] },
+  { key: "criticPromptTemplate", title: "Plan critique", description: "Instructions used when the plan critic reviews a plan before the loop starts.", placeholders: ["{{TITLE}}", "{{DESCRIPTION}}", "{{SCOPING_SECTION}}", "{{SPEC_FILES}}", "{{PLAN_VERSION}}", "{{PLAN_MD}}", "{{CRITERIA_MD}}", "{{PROMPT_MD}}"] },
   { key: "improvePromptTemplate", title: "Self-improvement", description: "Instructions used by an improvement run to propose the next change from a repository review.", placeholders: ["{{EXISTING_CARDS}}", "{{FOCUS}}"] },
 ] as const;
 
@@ -449,6 +460,7 @@ export default function SettingsPage() {
                     scopingProvider: "anthropic", scopingModel: "",
                     plannerProvider: "anthropic", plannerModel: "",
                     evaluatorProvider: "anthropic", evaluatorModel: "",
+                    criticProvider: "anthropic", criticModel: "",
                     loopProvider: "omlx", loopModel: "",
                   })}
                 />
@@ -507,6 +519,22 @@ export default function SettingsPage() {
                 <section id="planner-defaults" className={sectionCls}>
                   <SectionHeading title="Planning" />
                   {numberInput("plannerTimeoutMinutes", "Timeout (minutes)", "Caps each card's planning pass.", 1, "max-w-xs text-sm text-foreground/70")}
+                  {numberInput("criticTimeoutMinutes", "Critic timeout (minutes)", "Caps each plan critique pass.", 1)}
+                  <label className="block max-w-xs text-sm text-foreground/70">
+                    Plan critic
+                    <select
+                      value={settings.planCriticMode}
+                      onChange={(e) => set({ planCriticMode: e.target.value as Settings["planCriticMode"] })}
+                      className={inputCls}
+                    >
+                      <option value="breakdown">On for tasks created from a breakdown</option>
+                      <option value="always">On for every card</option>
+                      <option value="off">Off</option>
+                    </select>
+                    <span className="mt-1 block text-xs text-foreground/45">
+                      Which cards get a read-only critique of their plan before the loop starts.
+                    </span>
+                  </label>
                 </section>
                 <section id="defaults" className={sectionCls}>
                   <SectionHeading title="Loop execution" />
@@ -516,6 +544,7 @@ export default function SettingsPage() {
                     {numberInput("defaultTimeoutMinutes", "Timeout (minutes)")}
                     {numberInput("iterationHardTimeoutMinutes", "Iteration hard timeout (minutes)", "Caps one iteration; a single timeout retries, two in a row end the run.")}
                     {numberInput("stallTimeoutSeconds", "Stall timeout (seconds)", "Kills any model call — planner, looper, evaluator, proposer, scoping — that emits nothing for this long (hung stream, sleep, lost wifi). Streamed reasoning counts as output, so this never cuts off a merely slow model.", 30)}
+                    {numberInput("workerStaleSeconds", "Worker stale window (seconds)", "How long a worker process may go without a heartbeat before another worker treats it as dead and reclaims its runs.", 15)}
                   </div>
                   <div className="border-t border-foreground/10 pt-4">
                     <ToggleRow title="Minimal tool set" description="Deny tool permissions by default for the looper agent." {...toggle("minimalToolset")} />
@@ -523,7 +552,10 @@ export default function SettingsPage() {
                 </section>
                 <section id="evaluator-defaults" className={sectionCls}>
                   <SectionHeading title="Evaluation" />
-                  {numberInput("evaluatorTimeoutMinutes", "Timeout (minutes)", "Caps each evaluation pass after the looper finishes.", 1, "max-w-xs text-sm text-foreground/70")}
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    {numberInput("evaluatorTimeoutMinutes", "Timeout (minutes)", "Caps each evaluation pass after the looper finishes.", 1)}
+                    {numberInput("gateTimeoutMinutes", "Gate timeout (minutes)", "Caps a repository's gate command, which runs in the worktree before each evaluation on repositories that declare one under Connected repositories.", 1)}
+                  </div>
                 </section>
               </div>
             </SettingsPanel>
@@ -965,10 +997,57 @@ function AgentSection({
   );
 }
 
+/** Spec 27: the repository's gate command, edited in place on its row. */
+function GateCommandField({ repo, onChange }: { repo: Repo; onChange: () => void }) {
+  const [value, setValue] = useState(repo.gateCommand ?? "");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const dirty = value.trim() !== (repo.gateCommand ?? "");
+
+  async function save() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/api/repos/${repo.id}`, { method: "PATCH", json: { gateCommand: value.trim() } });
+      onChange();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <label className="flex min-w-0 grow items-center gap-2 text-xs text-foreground/60">
+        <span className="shrink-0">Gate command</span>
+        <input
+          aria-label={`Gate command for ${repo.name}`}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void save();
+          }}
+          placeholder="None. Runs before each evaluation, e.g. make check"
+          className={`${inputCls} mt-0 font-mono text-xs`}
+        />
+      </label>
+      {dirty && (
+        <button onClick={() => void save()} disabled={saving} className="min-h-9 rounded border border-foreground/15 px-2 text-xs hover:bg-foreground/5">
+          {saving ? "Saving…" : "Save gate"}
+        </button>
+      )}
+      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
+
 function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void }) {
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [branch, setBranch] = useState("");
+  const [gate, setGate] = useState("");
   const [error, setError] = useState("");
   // Shown on the row it belongs to — e.g. the conflict when a repo still has
   // running work — rather than below the add form.
@@ -1002,10 +1081,11 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   async function add() {
     setError("");
     try {
-      await api("/api/repos", { json: { name, path, defaultBranch: branch } });
+      await api("/api/repos", { json: { name, path, defaultBranch: branch, gateCommand: gate } });
       setName("");
       setPath("");
       setBranch("");
+      setGate("");
       onChange();
     } catch (e) {
       setError(errorMessage(e));
@@ -1028,6 +1108,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                 <span className="rounded border border-foreground/10 px-1.5 py-0.5 font-mono text-[11px] text-foreground/50">{r.defaultBranch}</span>
               </div>
               <p title={r.path} className="mt-1.5 truncate font-mono text-xs text-foreground/45">{r.path}</p>
+              <GateCommandField key={r.gateCommand ?? ""} repo={r} onChange={onChange} />
               {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
             </div>
             <button
@@ -1063,6 +1144,10 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
           <label className="text-sm text-foreground/70">
             Default branch
             <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="Auto-detect" className={inputCls} />
+          </label>
+          <label className="text-sm text-foreground/70 sm:col-span-2">
+            Gate command
+            <input value={gate} onChange={(e) => setGate(e.target.value)} placeholder="Optional, e.g. make check" className={`${inputCls} font-mono`} />
           </label>
           <div className="min-w-0 text-sm text-foreground/70 sm:col-span-2">
             <label htmlFor={typePath ? "repo-path" : "repo-folder"}>Repository folder</label>

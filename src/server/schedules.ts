@@ -179,11 +179,40 @@ export type FireResult = {
 };
 
 /**
+ * Claim the right to fire `row` at `at`: a compare-and-set on `lastFiredAt`.
+ *
+ * The single UPDATE succeeds only if the row is still enabled and
+ * `lastFiredAt` is still the value the caller read, so of any number of
+ * workers holding the same snapshot exactly one sees `changes === 1`. The
+ * rest lost the race to a peer that already fired this minute and must run,
+ * record and emit nothing.
+ */
+export function claimScheduleFire(row: Schedule, at: Date): boolean {
+  const result = db
+    .update(schedules)
+    .set({ lastFiredAt: at.toISOString() })
+    .where(
+      and(
+        eq(schedules.id, row.id),
+        eq(schedules.enabled, 1),
+        row.lastFiredAt === null
+          ? isNull(schedules.lastFiredAt)
+          : eq(schedules.lastFiredAt, row.lastFiredAt),
+      ),
+    )
+    .run();
+  return result.changes === 1;
+}
+
+/**
  * Fire every enabled schedule whose expression names `at`.
  *
- * Called once a minute. `lastFiredAt` is compared at minute resolution so a
- * tick that runs twice in the same minute — two overlapping timers, a clock
- * nudge — cannot start the same work twice.
+ * Called once a minute, and the tick runs in every worker process (spec 25
+ * decision 7) — no worker is elected to own it. `lastFiredAt` is compared at
+ * minute resolution so a tick that runs twice in the same minute — two
+ * overlapping timers, a clock nudge — cannot start the same work twice, and
+ * the compare-and-set in `claimScheduleFire` is what makes two workers never
+ * fire a schedule twice: both read the same snapshot, only one UPDATE lands.
  */
 export async function fireDueSchedules(
   at = new Date(),
@@ -199,10 +228,11 @@ export async function fireDueSchedules(
 
   const results: FireResult[] = [];
   for (const row of due) {
-    // Stamp before running, not after: an improvement run's creation awaits
+    // Claim before running, not after: an improvement run's creation awaits
     // git, and a tick that overlapped it would otherwise see the schedule as
-    // unfired and start a second one.
-    db.update(schedules).set({ lastFiredAt: at.toISOString() }).where(eq(schedules.id, row.id)).run();
+    // unfired and start a second one. A lost CAS means a peer worker already
+    // fired this schedule this minute, so nothing is run, recorded or emitted.
+    if (!claimScheduleFire(row, at)) continue;
     const result = await fireOne(row, deps);
     db.update(schedules)
       .set({

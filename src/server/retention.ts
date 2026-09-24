@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
-import { cards, db, events, runs, TRANSCRIPTS_DIR } from "@/db";
+import { and, eq, inArray, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
+import { cards, db, events, repos, runs, settings, worktrees, TRANSCRIPTS_DIR } from "@/db";
 import { planStatePath } from "./bookkeeping";
 import { ClientError } from "./clientError";
 import { markWorktreeRemoved, removeWorktree } from "./git";
@@ -41,6 +41,36 @@ async function removeTree(target: string): Promise<boolean> {
   }
 }
 
+/** The `settings` key holding the UTC day the retention sweep last ran on.
+ * A plain key/value row; `getSettings()` ignores keys it does not know. */
+export const RETENTION_SWEEP_MARKER_KEY = "retentionSweepDay";
+
+/** The UTC calendar day (`YYYY-MM-DD`) a sweep at `at` belongs to. */
+export function sweepDayKey(at = new Date()): string {
+  return at.toISOString().slice(0, 10);
+}
+
+/**
+ * Claim today's retention sweep (spec 25 decision 7). Every worker runs the
+ * sweep timer; this compare-and-set on the marker row decides which one
+ * prunes. The upsert only writes when the stored day differs from today's,
+ * so the first worker to call on a given UTC day sees one changed row and
+ * returns true, and every later caller that day sees zero and returns false.
+ */
+export function claimDailySweep(at = new Date()): boolean {
+  const value = sweepDayKey(at);
+  const result = db
+    .insert(settings)
+    .values({ key: RETENTION_SWEEP_MARKER_KEY, value })
+    .onConflictDoUpdate({
+      target: settings.key,
+      set: { value },
+      setWhere: ne(settings.value, value),
+    })
+    .run();
+  return result.changes === 1;
+}
+
 export async function removeRunTranscripts(runIds: string[]): Promise<number> {
   let removed = 0;
   for (const runId of new Set(runIds)) {
@@ -65,6 +95,25 @@ export async function removeCardArtifacts(repoPath: string, artifacts: CardArtif
   if (worktreeRun) await removeWorktree(repoPath, worktreeRun.worktreePath, worktreeRun.branch);
   await removeRunTranscripts(runIds);
   fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
+}
+
+/** Spec 25: a web-only process abandons a card without touching the
+ * repository (reviewService.abandon), so the worktree and branch the card
+ * leaves behind are reclaimed here, by a worker, on its pump tick. Safe to
+ * repeat and to run from several workers: `removeWorktree` swallows a
+ * worktree or branch that is already gone, and the row stamp is a no-op the
+ * second time. */
+export async function removeAbandonedWorktrees(): Promise<number> {
+  const rows = db
+    .select({ path: worktrees.path, branch: worktrees.branch, repoPath: repos.path })
+    .from(worktrees)
+    .innerJoin(runs, eq(worktrees.runId, runs.id))
+    .innerJoin(cards, eq(runs.cardId, cards.id))
+    .innerJoin(repos, eq(worktrees.repoId, repos.id))
+    .where(and(isNull(worktrees.removedAt), eq(cards.status, "abandoned")))
+    .all();
+  for (const row of rows) await removeWorktree(row.repoPath, row.path, row.branch);
+  return rows.length;
 }
 
 /** Delete terminal run history/events older than the requested window and

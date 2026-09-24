@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { DATA_DIR } from "@/db";
+import { and, asc, eq, gte } from "drizzle-orm";
+import { DATA_DIR, db, now, refWrites } from "@/db";
 import { tryGit } from "./git";
+import { leaseHolder } from "./repoLeases";
 
 /**
  * Parent-repo integrity check (spec 14 L3). A worktree shares the parent
@@ -24,10 +26,29 @@ export type RepoIntegrityBaseline = {
   configHash: string;
   /** refname → object id, from for-each-ref. */
   refs: Record<string, string>;
+  /** ISO timestamp taken BEFORE the refs were read, so a `ref_writes` row
+   * written while the snapshot was in progress still counts as "since".
+   * Missing on baselines persisted before spec 25 — read as "". */
+  capturedAt: string;
 };
 
 function sha256(data: string | Buffer): string {
   return crypto.createHash("sha256").update(data).digest("hex");
+}
+
+/** Read the exact bytes being approved; never include config contents in events. */
+export async function readRepoConfig(repoPath: string) {
+  const commonDir = await gitCommonDir(repoPath);
+  if (!commonDir) throw new Error("repository is no longer usable");
+  try {
+    const bytes = fs.readFileSync(path.join(commonDir, "config"));
+    return { content: bytes.toString("utf8"), configHash: sha256(bytes) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { content: null, configHash: "" };
+    }
+    throw error;
+  }
 }
 
 /** Resolve the shared .git dir; null when the path is not a usable repo. */
@@ -95,7 +116,8 @@ export async function snapshotRepoIntegrity(
 ): Promise<RepoIntegrityBaseline | null> {
   const commonDir = await gitCommonDir(repoPath);
   if (commonDir === null) return null;
-  return { ...snapshotHooksAndConfig(commonDir), refs: await snapshotRefs(repoPath) };
+  const capturedAt = new Date().toISOString();
+  return { ...snapshotHooksAndConfig(commonDir), refs: await snapshotRefs(repoPath), capturedAt };
 }
 
 /**
@@ -151,19 +173,56 @@ export async function checkRepoIntegrity(
     const allowed = `refs/heads/${opts.runBranch}`;
     const managed = (ref: string) => ref === allowed || isManagedRef(ref);
     const refsNow = await snapshotRefs(repoPath);
-    for (const [ref, oid] of Object.entries(refsNow)) {
-      if (managed(ref)) continue;
-      if (!(ref in baseline.refs)) violations.push(`ref appeared: ${ref}`);
-      else if (baseline.refs[ref] !== oid) {
-        violations.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
+    // Spec 25 decision 6: refs Radulf moved itself since the baseline was
+    // taken (a delivery worker's approved merge on the base branch) are not
+    // tampering, provided the ref now sits exactly where we left it.
+    const since = baseline.capturedAt ?? "";
+    const compareRefs = (written: Map<string, string>): string[] => {
+      const found: string[] = [];
+      for (const [ref, oid] of Object.entries(refsNow)) {
+        if (managed(ref)) continue;
+        if (written.get(ref) === oid) continue;
+        if (!(ref in baseline.refs)) found.push(`ref appeared: ${ref}`);
+        else if (baseline.refs[ref] !== oid) {
+          found.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
+        }
       }
+      for (const ref of Object.keys(baseline.refs)) {
+        if (!managed(ref) && !(ref in refsNow)) found.push(`ref deleted: ${ref}`);
+      }
+      return found;
+    };
+
+    let refViolations = compareRefs(refWritesSince(repoPath, since));
+    if (refViolations.some((v) => v.startsWith("ref moved:") || v.startsWith("ref appeared:"))) {
+      // A delivery worker's `mergeBranch` moves the base branch at `git
+      // commit` and only afterwards records the write (`recordRefWrite`), but
+      // it holds the per-repo lease from before any git work until after that
+      // record lands. Reading refs inside that sliver sees a moved ref with no
+      // `ref_writes` row yet. Wait for the lease to be released, then re-read
+      // the record against the SAME ref snapshot: once the lease is free every
+      // ref write Radulf made is recorded, so a moved ref still unexplained
+      // after that is real tampering. With no lease held this returns at once.
+      await waitForRepoLeaseRelease(repoPath, LEASE_SETTLE_MS);
+      refViolations = compareRefs(refWritesSince(repoPath, since));
     }
-    for (const ref of Object.keys(baseline.refs)) {
-      if (!managed(ref) && !(ref in refsNow)) violations.push(`ref deleted: ${ref}`);
-    }
+    violations.push(...refViolations);
   }
 
   return violations;
+}
+
+/** Upper bound on how long the run-end check waits for a delivery worker to
+ * release the repo lease before judging an unexplained ref move. */
+export const LEASE_SETTLE_MS = 30_000;
+
+/** Poll `leaseHolder(repoPath)` every 50 ms until the lease is free or `maxMs`
+ * elapses. Resolves immediately when nobody holds it. */
+export async function waitForRepoLeaseRelease(repoPath: string, maxMs: number): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (leaseHolder(repoPath) !== null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -197,46 +256,41 @@ export function removeBaseline(runId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Live baselines (spec 20) — the in-memory copy a run is actually checked
-// against, so Radulf can record a ref it moved itself while the run is open.
+// Ref writes (spec 20 / spec 25 decision 6) — the durable record of refs
+// Radulf moved itself, so runs open against that repo in ANY process do not
+// report the server's own work as tampering.
 // ---------------------------------------------------------------------------
 
-/** runId -> the repo it watches and the baseline it will be checked against. */
-const liveBaselines = new Map<string, { repoPath: string; baseline: RepoIntegrityBaseline }>();
-
-/** Register a run's baseline for the duration of the run. The entry holds the
- * caller's own object rather than a copy, so a `noteRadulfRefWrite` reaches
- * the baseline the run is checked against without the run re-reading it.
- * Always paired with `releaseRunBaseline` in a finally, or a long-lived server
- * leaks one entry per run. */
-export function registerRunBaseline(
-  runId: string,
-  repoPath: string,
-  baseline: RepoIntegrityBaseline,
-): void {
-  liveBaselines.set(runId, { repoPath, baseline });
-}
-
-export function releaseRunBaseline(runId: string): void {
-  liveBaselines.delete(runId);
-}
-
 /**
- * Record a ref Radulf itself just wrote, so the runs open against that repo do
- * not report the server's own work as tampering (spec 20).
- *
- * Used for the base branch after an approved merge: every other card looping
- * in that repo holds a baseline that still has the pre-merge oid, and the base
- * branch is deliberately NOT in the managed namespace, because a human reviews
- * a run branch against its base and tampering with base is invisible to that
- * review. Telling the baselines what moved keeps the check's teeth while
- * removing the false positive.
+ * Record a ref Radulf itself just wrote. Used for the base branch after an
+ * approved merge: every other card looping in that repo holds a baseline that
+ * still has the pre-merge oid, and the base branch is deliberately NOT in the
+ * managed namespace, because a human reviews a run branch against its base
+ * and tampering with base is invisible to that review. Recording what moved
+ * keeps the check's teeth while removing the false positive.
  *
  * `repoPath` is matched exactly, as the repo record stores it, which is also
  * what every caller passes to `snapshotRepoIntegrity`.
  */
-export function noteRadulfRefWrite(repoPath: string, ref: string, oid: string): void {
-  for (const entry of liveBaselines.values()) {
-    if (entry.repoPath === repoPath) entry.baseline.refs[ref] = oid;
-  }
+export function recordRefWrite(
+  repoPath: string,
+  ref: string,
+  sha: string,
+  workerId: string | null,
+): void {
+  db.insert(refWrites).values({ repoPath, ref, sha, workerId, writtenAt: now() }).run();
+}
+
+/** ref → the latest sha Radulf wrote to it in `repoPath` at or after
+ * `sinceIso`. Rows are applied in id order, so a later write wins. */
+export function refWritesSince(repoPath: string, sinceIso: string): Map<string, string> {
+  const rows = db
+    .select({ ref: refWrites.ref, sha: refWrites.sha })
+    .from(refWrites)
+    .where(and(eq(refWrites.repoPath, repoPath), gte(refWrites.writtenAt, sinceIso)))
+    .orderBy(asc(refWrites.id))
+    .all();
+  const latest = new Map<string, string>();
+  for (const row of rows) latest.set(row.ref, row.sha);
+  return latest;
 }

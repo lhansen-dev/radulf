@@ -200,8 +200,9 @@ type RunHarnessOpts = {
    * protection without opting in. Pass 0 to disable (tests only). */
   stallTimeoutMs?: number;
   signal?: AbortSignal;
-  /** Pipeline role (spec 14) — decides the per-role tool set (planner gets
-   * web_search but no bash; loop/evaluator get bash but no web_search). Each
+  /** Pipeline role (spec 14) — decides the per-role tool set (planner and
+   * critic get web_search but no bash; loop/evaluator get bash but no
+   * web_search). Each
    * pipeline entry point passes its own role. Omit for human-interactive,
    * non-pipeline sessions (chat, improvement proposer), which use `readOnly` instead. */
   role?: AgentRole;

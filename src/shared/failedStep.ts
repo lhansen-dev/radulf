@@ -1,4 +1,4 @@
-export type PipelineStep = "plan" | "loop" | "evaluate";
+export type PipelineStep = "plan" | "loop" | "evaluate" | "critique";
 
 export type PipelineRun = {
   kind: PipelineStep;
@@ -23,7 +23,9 @@ export const CHECKLIST_EXHAUSTED_EXIT = "plan checklist exhausted without a DONE
  * `pendingReplanFeedback` turns them into a re-plan on top of the branch. */
 export const REPLAN_LOOP_EXITS: ReadonlySet<string> = new Set([LOOP_BLOCKED_EXIT, CHECKLIST_EXHAUSTED_EXIT]);
 
-const FAILED_STATUSES = new Set(["failed", "timeout", "interrupted"]);
+/** Run statuses a retry follows. Spec 26 reads it too: the run a planner or
+ * evaluator attempt inherits from is the card's latest run in one of these. */
+export const FAILED_RUN_STATUSES: ReadonlySet<string> = new Set(["failed", "timeout", "interrupted"]);
 
 /** Pick the run with the latest start or completion activity. */
 function latestPipelineRun<T extends PipelineRun>(runRows: T[]): T | undefined {
@@ -64,7 +66,7 @@ function latestPipelineRun<T extends PipelineRun>(runRows: T[]): T | undefined {
  */
 export function retryableFailedStep(runRows: PipelineRun[]): PipelineStep | null {
   const latest = latestPipelineRun(runRows);
-  if (!latest || !FAILED_STATUSES.has(latest.status)) return null;
+  if (!latest || !FAILED_RUN_STATUSES.has(latest.status)) return null;
   if (latest.failureKind === "config") return null;
   if (latest.kind === "loop" && latest.exitReason && REPLAN_LOOP_EXITS.has(latest.exitReason)) return null;
   return latest.kind;

@@ -24,12 +24,15 @@ import {
   toolchainReadRootsFromPath,
   runSandboxedCommand,
 } from "./srt";
+import { insideRadulfSandbox } from "@/testUtils/insideRadulfSandbox";
 
 const execFileAsync = promisify(execFile);
 
 function git(dir: string, ...args: string[]) {
   return execFileAsync("git", ["-C", dir, ...args], { encoding: "utf8" });
 }
+
+const describeOnHost = describe.skipIf(insideRadulfSandbox);
 
 describe("credentialBackstopDenylist", () => {
   it("expands every entry under $HOME, including .ssh and .aws", () => {
@@ -310,7 +313,7 @@ describe("gitWorktreeDenies", () => {
   });
 });
 
-describe("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)", () => {
+describeOnHost("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)", () => {
   it("reports this platform as supported", () => {
     // This suite only runs in this repo's dev/CI environment (macOS or
     // Linux); srt itself gates unsupported platforms structurally.
@@ -347,7 +350,7 @@ describe("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)",
   });
 });
 
-describe("runSandboxedCommand / createSandboxedBashOperations (real sandboxed process)", () => {
+describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandboxed process)", () => {
   let worktree: string;
   let outside: string;
 
@@ -588,7 +591,7 @@ describe("runSandboxedCommand / createSandboxedBashOperations (real sandboxed pr
  * doesn't have) — but every row exercised here is a genuine, unmocked
  * check of the mechanism the table names.
  */
-describe("acceptance-test table — individual rows verified directly (spec 14 §Acceptance tests)", () => {
+describeOnHost("acceptance-test table — individual rows verified directly (spec 14 §Acceptance tests)", () => {
   /** Seed contents of the per-worktree git config the deny must preserve. */
   const WT_CONFIG = "# pre-existing\n";
   let worktree: string;
@@ -739,5 +742,56 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
   it("connect to /var/run/docker.sock — L1 socket policy (Unix sockets denied by default)", async () => {
     if (!fs.existsSync("/var/run/docker.sock")) return; // not every dev host has Docker installed
     await expect(run(`nc -G 3 -w 3 -U /var/run/docker.sock </dev/null`)).rejects.toThrow();
+  });
+});
+
+describe("runSandboxedCommand sets CLAUDE_CODE_TMPDIR for the wrap", () => {
+  // No real sandbox needed: srt reads process.env.CLAUDE_CODE_TMPDIR on the
+  // wrap path (sandbox-utils.js generateProxyEnvVars), so what matters is
+  // the value in force while wrapWithSandbox runs, and that it is restored.
+  const cfg = () =>
+    buildRunSandboxConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/data/repo/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      networkAllowlistText: "",
+    });
+
+  async function wrapAndObserve(): Promise<string | undefined> {
+    let seen: string | undefined;
+    const update = vi.spyOn(SandboxManager, "updateConfig").mockImplementation(() => {});
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandbox").mockImplementation(async (cmd) => {
+      seen = process.env.CLAUDE_CODE_TMPDIR;
+      return cmd;
+    });
+    try {
+      await runSandboxedCommand("true", cfg(), async (w) => w, { tmpdir: "/data/runtmp/run-1/tmp" });
+    } finally {
+      update.mockRestore();
+      wrap.mockRestore();
+    }
+    return seen;
+  }
+
+  it("publishes the run tmpdir during the wrap and unsets it afterwards when previously unset", async () => {
+    vi.stubEnv("CLAUDE_CODE_TMPDIR", undefined);
+    try {
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBeUndefined();
+      expect(await wrapAndObserve()).toBe("/data/runtmp/run-1/tmp");
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("publishes the run tmpdir during the wrap and restores a previously-set value afterwards", async () => {
+    vi.stubEnv("CLAUDE_CODE_TMPDIR", "/elsewhere");
+    try {
+      expect(await wrapAndObserve()).toBe("/data/runtmp/run-1/tmp");
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBe("/elsewhere");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

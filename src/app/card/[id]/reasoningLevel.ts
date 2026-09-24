@@ -6,11 +6,12 @@ import type { CardDetailData } from "./useCardDetail";
  * current global value — not necessarily what an old run actually used.
  */
 export function reasoningLevelForKind(
-  kind: "plan" | "loop" | "evaluate",
+  kind: "plan" | "loop" | "evaluate" | "critique",
   models: CardDetailData["models"],
 ): string | undefined {
   if (!models) return undefined;
   if (kind === "plan") return models.planner.reasoningLevel;
   if (kind === "loop") return models.loop.reasoningLevel;
+  if (kind === "critique") return models.critic?.reasoningLevel;
   return models.evaluator.reasoningLevel;
 }
