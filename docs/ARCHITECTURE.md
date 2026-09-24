@@ -32,7 +32,10 @@ Boot is `src/server/boot.ts`, called from `src/instrumentation.ts` under Next
 and from `src/worker.ts` (`make worker`) as a plain Node process. `RADULF_ROLES`
 (`web`, `worker`, default both) decides what runs. A web-only process serves
 the UI and API, only moves cards, tails events, and watches running runs'
-transcripts. It holds no `AbortController` for a run another process owns, so
+transcripts; it never writes to a repository. Approving a card in a web-only
+process moves it to `reviewing` and enqueues a `review_deliveries` row, which a
+worker claims under the repo's `repo_leases` row before running the merge or
+pull-request delivery (spec 25 decision 6). It holds no `AbortController` for a run another process owns, so
 cancel, reset and pause also write the nullable `runs.control` column
 (`cancel` | `pause`); the owning worker polls that column every
 `RADULF_CONTROL_POLL_INTERVAL_MS` ms (default 1000) for the runs whose
@@ -257,14 +260,19 @@ branch, refuses a dirty tree, merges `--no-ff --no-commit` so `.ralph/` can be
 dropped before committing, and restores your original branch on every path
 including failure. It distinguishes a content conflict (`conflict: true`,
 recoverable — the card goes back to the loop via `mergeBaseIntoWorktree`) from
-an unrecoverable failure.
+an unrecoverable failure. It carries no lock of its own: the caller holds the
+repo's `repo_leases` row (`src/server/repoLeases.ts`), which serializes merges
+per repo across processes, and records the base branch's new oid in
+`ref_writes` so sibling runs' run-end integrity checks do not read the move as
+tampering.
 
 ## Persistence
 
 `src/db/schema.ts`, Drizzle over SQLite, created on first run with no manual
-migration step. Twelve tables: `repos`, `cards`, `plans`, `scopingMessages`,
-`runs`, `iterations`, `reviews`, `events`, `improvementRuns`, `schedules`,
-`settings`, `worktrees`.
+migration step. Sixteen tables: `repos`, `cards`, `plans`, `scopingMessages`,
+`runs`, `workers`, `iterations`, `reviews`, `events`, `improvementRuns`,
+`schedules`, `settings`, `worktrees`, `reviewDeliveries`, `repoLeases`,
+`refWrites`.
 
 Transcripts are **not** in the database — they are JSONL files on disk, read in
 chunks by `src/server/transcript.ts` (`TRANSCRIPT_CHUNK_BYTES`, 512 KB). A long

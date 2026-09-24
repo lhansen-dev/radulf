@@ -71,6 +71,10 @@ baseline belonging to that repo. A base branch that moves for any *other*
 reason is still a violation at run end. This is the general principle spec 19
 applied by namespace, applied here by event: **Radulf ignores the ref changes
 it made, and only those.**
+*Amended by spec 25 decision 6 (2026-09-24): the registered in-memory baseline
+is gone. The merge records each ref it moved in the `ref_writes` table, and the
+run-end check excuses a moved ref whose current oid matches a write recorded
+for that repo since the run's baseline was captured — from any process.*
 
 **4. Managed refs include what pull-request delivery writes.**
 
