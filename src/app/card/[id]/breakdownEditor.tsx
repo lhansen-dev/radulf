@@ -4,8 +4,12 @@ import { api, type Repo } from "../../ui/api";
 import type { EpicRunMode } from "@/shared/epics";
 import { errorMessage } from "@/shared/errorMessage";
 
-/** One piece as the editor holds it. `repoId` unset means the epic's own repository. */
-export type BreakdownPiece = { title: string; description: string; repoId?: string };
+/**
+ * One piece as the editor holds it. `repoId` unset means the epic's own
+ * repository; `dependsOn` holds 0-based indexes of sibling pieces (spec 28)
+ * and only matters in graph mode.
+ */
+export type BreakdownPiece = { title: string; description: string; repoId?: string; dependsOn?: number[] };
 
 const RUN_MODE_LABELS: Record<EpicRunMode, string> = {
   ordered: "In order",
@@ -22,9 +26,43 @@ const RUN_MODE_HELP: Record<EpicRunMode, string> = {
     "Each task starts once the tasks it depends on are done. Pick this when only some tasks build on others.",
 };
 
+const RUN_MODE_PHRASES: Record<EpicRunMode, string> = {
+  ordered: "in order",
+  parallel: "in parallel",
+  graph: "as a graph",
+};
+
 /** What applying did, in the panel's words. */
 export function breakdownNotice(count: number, runMode: EpicRunMode): string {
-  return `Queued ${count} task${count === 1 ? "" : "s"} under this epic, to run ${runMode === "ordered" ? "in order" : "in parallel"}.`;
+  return `Queued ${count} task${count === 1 ? "" : "s"} under this epic, to run ${RUN_MODE_PHRASES[runMode]}.`;
+}
+
+const sortedUnique = (indexes: number[]) => [...new Set(indexes)].sort((a, b) => a - b);
+
+const withDependsOn = (piece: BreakdownPiece, dependsOn: number[]): BreakdownPiece => {
+  const { dependsOn: _drop, ...rest } = piece;
+  return dependsOn.length ? { ...rest, dependsOn } : rest;
+};
+
+/** Swaps pieces `i` and `j`, remapping every `dependsOn` so it still points at the same piece. */
+export function swapPieces(pieces: BreakdownPiece[], i: number, j: number): BreakdownPiece[] {
+  const remap = (k: number) => (k === i ? j : k === j ? i : k);
+  const next = pieces.map((piece) =>
+    piece.dependsOn ? withDependsOn(piece, sortedUnique(piece.dependsOn.map(remap))) : piece,
+  );
+  [next[i], next[j]] = [next[j], next[i]];
+  return next;
+}
+
+/** Removes piece `i`, dropping it from every `dependsOn` and shifting higher indexes down. */
+export function dropPiece(pieces: BreakdownPiece[], i: number): BreakdownPiece[] {
+  return pieces
+    .filter((_, k) => k !== i)
+    .map((piece) =>
+      piece.dependsOn
+        ? withDependsOn(piece, sortedUnique(piece.dependsOn.filter((k) => k !== i).map((k) => (k > i ? k - 1 : k))))
+        : piece,
+    );
 }
 
 /**
@@ -67,9 +105,12 @@ export function BreakdownEditor({
   const move = (index: number, direction: -1 | 1) => {
     const target = index + direction;
     if (target < 0 || target >= pieces.length) return;
-    const next = [...pieces];
-    [next[index], next[target]] = [next[target], next[index]];
-    setPieces(next);
+    setPieces(swapPieces(pieces, index, target));
+  };
+  const toggleDependency = (index: number, dep: number) => {
+    const current = pieces[index].dependsOn ?? [];
+    const next = current.includes(dep) ? current.filter((k) => k !== dep) : sortedUnique([...current, dep]);
+    setPieces(pieces.map((piece, i) => (i === index ? withDependsOn(piece, next) : piece)));
   };
   const apply = async () => {
     setBusy(true);
@@ -77,10 +118,11 @@ export function BreakdownEditor({
     try {
       await api(`/api/cards/${cardId}/breakdown`, {
         json: {
-          pieces: pieces.map(({ title, description, repoId }) => ({
+          pieces: pieces.map(({ title, description, repoId, dependsOn }) => ({
             title,
             description,
             ...(repoId && repoId !== homeRepoId ? { repoId } : {}),
+            ...(runMode === "graph" && dependsOn && dependsOn.length ? { dependsOn } : {}),
           })),
           runMode,
         },
@@ -134,6 +176,28 @@ export function BreakdownEditor({
             Description
             <textarea value={piece.description} onChange={(e) => update(i, { description: e.target.value })} rows={6} disabled={busy} className={`mt-1 font-mono ${fieldCls}`} />
           </label>
+          {runMode === "graph" && count > 1 && (
+            <fieldset className="flex flex-col gap-1">
+              <legend className="text-xs text-foreground/70">Depends on</legend>
+              <div className="flex flex-wrap gap-x-4">
+                {pieces.map((other, j) =>
+                  j === i ? null : (
+                    <label key={j} className="flex min-h-11 items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        aria-label={`Task ${i + 1} depends on task ${j + 1}`}
+                        checked={(piece.dependsOn ?? []).includes(j)}
+                        onChange={() => toggleDependency(i, j)}
+                        disabled={busy}
+                        className="size-4 accent-amber-600"
+                      />
+                      {j + 1}. {other.title || "Untitled"}
+                    </label>
+                  ),
+                )}
+              </div>
+            </fieldset>
+          )}
           {repos.length > 1 && (
             <label className="block text-xs text-foreground/70">
               Repository
@@ -152,7 +216,7 @@ export function BreakdownEditor({
             <button type="button" disabled={busy || i === 0} onClick={() => move(i, -1)} aria-label={`Move task ${i + 1} up`} className="size-11 rounded-md text-lg text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↑</button>
             <button type="button" disabled={busy || i === count - 1} onClick={() => move(i, 1)} aria-label={`Move task ${i + 1} down`} className="size-11 rounded-md text-lg text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↓</button>
             {count > 1 && (
-              <button type="button" onClick={() => setPieces(pieces.filter((_, j) => j !== i))} disabled={busy} className="min-h-11 px-2 text-xs text-foreground/50 hover:text-red-300">
+              <button type="button" onClick={() => setPieces(dropPiece(pieces, i))} disabled={busy} className="min-h-11 px-2 text-xs text-foreground/50 hover:text-red-300">
                 Drop this task
               </button>
             )}
