@@ -37,9 +37,9 @@ private plan naming the conflicted files, in the same way the acceptance
 probe appends its repair task, and the loop continues. The loop agent edits
 the files and signals ITERATION_DONE, and the orchestrator's bookkeeping
 commit for that iteration completes the merge. The base branch is never
-written by this step, and the sync waits for the repository's delivery lease
-to be free before reading it, so it never sees a base that an approval merge
-is halfway through changing.
+written by this step, and the sync takes the repository's delivery lease for
+the duration of the read, so it never sees a base that an approval merge is
+halfway through changing.
 
 **2. The gate before DONE.** If the repository has a gate command, the gate
 runs in the worktree after the sync, with the spec 27 runner and the spec 27

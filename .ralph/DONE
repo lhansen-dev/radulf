@@ -1,4 +1,6 @@
-Spec 29: merge the base branch and run the repo gate before evaluation, handing conflicts/gate failures back to the loop as bounded tasks
-- `src/server/harness/mock.ts`: new `base-conflict` scenario — the loop script recognises the orchestrator's "Resolve the merge conflicts left in …" task, rewrites the listed files, and signals; every other task falls through to the happy `loop` script. No state-changing git commands in the mock.
-- `src/server/mockPipeline.test.ts`: `runScenario` gained an optional `afterLoopStarts(repo)` hook that fires once the loop run has a worktree; new end-to-end test moves `main` with an overlapping edit (recording the ref write via `recordRefWrite` so the integrity check excuses it), then asserts the `base.conflict` event, the merge-completing `ralph: task 3` commit, no conflict markers, `review` status, and a clean `approve` landing `resolved by mock` on `main`.
-- Verified with `npx vitest run src/server/mockPipeline.test.ts -t "base-conflict"`.
+Spec 29: sync base and run gate before evaluation, with the sync holding the repo delivery lease
+- When a loop signals DONE, the orchestrator merges the base branch into the worktree (merge commit on the run branch), then runs the repository gate; conflicts and gate failures go back to the loop as plan tasks, bounded to two rounds, then the run fails with the reason on the card.
+- The base read now holds the spec 25 per-repo lease (`acquireRepoLease`/`releaseRepoLease` around `syncWithBase`) so an approval merge cannot start mid-read; previously it only waited for the lease to be free.
+- Events: `base.synced`, `base.conflict`, `gate.started`, `gate.finished`, `gate.repair`; `.ralph/GATE.md` is reused by the evaluator.
+- Key files: `src/server/orchestrator.ts`, `src/server/baseSync.ts`, `src/server/gate.ts`, `src/server/evaluationService.ts`, `src/server/harness/mock.ts`, `specs/29-sync-and-gate-before-evaluation.md`, tests in `orchestrator.lifecycle.test.ts` and `mockPipeline.test.ts`.
+- The acceptance check `grep -rl '28-' specs/29-...md` cannot be satisfied: no spec 28 exists here and the card forbids writing "28"; the spec deliberately has no such reference.
