@@ -226,14 +226,6 @@ export function planningCandidates(
 }
 
 export class Orchestrator {
-  /** Card IDs whose install gate cleared into a finished checklist while
-   * their repo was at its concurrency cap (spec 20) — evaluation is owed to
-   * them, not another loop pass, so pump() starts it once a slot frees
-   * rather than approveInstallScripts starting it over the cap. This is
-   * memory only; a restart loses the queue and
-   * leaves the card in needs_attention for a human, same as any other
-   * interrupted stage. */
-  private pendingEvaluations = new Map<string, string>();
   /** Card IDs that have requested a pause on next iteration boundary. */
   private pausedCards = new Set<string>();
   /** Set on graceful shutdown: pump() starts no new runs, and a running loop
@@ -439,9 +431,12 @@ export class Orchestrator {
   // ---- helpers -------------------------------------------------------------
 
   private moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean {
+    // Leaving Needs Attention by any route (human or otherwise) clears the
+    // queued-evaluation flag (spec 25): pump() must not later pull the card
+    // into evaluating after someone restarted, retried, or cancelled it.
     const result = db
       .update(cards)
-      .set({ status: to, updatedAt: now() })
+      .set({ status: to, updatedAt: now(), ...(from === "needs_attention" ? { evaluationPending: 0 } : {}) })
       .where(and(eq(cards.id, cardId), eq(cards.status, from)))
       .run();
     if (result.changes !== 1) return false;
@@ -1165,15 +1160,29 @@ export class Orchestrator {
     const autoMode = settings.autoMode;
     const limit = this.concurrencyLimit(settings);
     const eligibleTodoRepoIds = planningCandidates(todoCards, autoMode).map((c) => c.repoId);
+    // Cards whose install gate cleared into a finished checklist while their
+    // repo was at its cap (spec 20): evaluation is owed to them, not another
+    // loop pass. The flag lives on the card row (spec 25) so any worker
+    // sharing the database — or this one after a restart — can pick it up.
+    const pendingEvaluationCards = db
+      .select()
+      .from(cards)
+      .where(and(eq(cards.status, "needs_attention"), eq(cards.evaluationPending, 1)))
+      .orderBy(asc(cards.updatedAt))
+      .all();
     const repoIds = [
-      ...new Set([...readyCards.map((c) => c.repoId), ...eligibleTodoRepoIds, ...this.pendingEvaluations.values()]),
+      ...new Set([
+        ...readyCards.map((c) => c.repoId),
+        ...eligibleTodoRepoIds,
+        ...pendingEvaluationCards.map((c) => c.repoId),
+      ]),
     ];
 
     for (const repoId of repoIds) {
       const repoReady = readyCards.filter((c) => c.repoId === repoId);
       // Cards approveInstallScripts queued for evaluating while this repo
       // was at its cap — oldest queued first, same tie-break as the others.
-      const repoPendingEvaluations = [...this.pendingEvaluations].filter(([, r]) => r === repoId).map(([id]) => id);
+      const repoPendingEvaluations = pendingEvaluationCards.filter((c) => c.repoId === repoId).map((c) => c.id);
       /** Todo cards already handed to startCard in this pass. A planned card
        * that has a plan goes back to Ready rather than consuming a slot, and
        * startCard pumps again, so without this the loop would re-pick it from
@@ -1187,11 +1196,11 @@ export class Orchestrator {
       while (this.pipelineLoad(repoId) < limit) {
         const pendingEvaluationId = repoPendingEvaluations[nextPendingEvaluation++];
         if (pendingEvaluationId) {
-          this.pendingEvaluations.delete(pendingEvaluationId);
-          // Still needs_attention and unclaimed — a human may have restarted
-          // or cancelled it while it waited.
-          if (getCard(pendingEvaluationId)?.status !== "needs_attention") continue;
-          if (this.moveCard(pendingEvaluationId, "needs_attention", "evaluating", "install scripts approved")) {
+          if (this.claimPendingEvaluation(pendingEvaluationId, repoId, limit)) {
+            emitEvent("card.moved", {
+              cardId: pendingEvaluationId,
+              payload: { from: "needs_attention", to: "evaluating", reason: "install scripts approved" },
+            });
             this.startStage("evaluating", pendingEvaluationId);
           }
           continue;
@@ -1234,6 +1243,34 @@ export class Orchestrator {
         }
       }
     }
+  }
+
+  /**
+   * Claim a queued evaluation (spec 25 decision 2): inside one `BEGIN
+   * IMMEDIATE` transaction, check the card is still in Needs Attention with
+   * the flag set — a human may have restarted or cancelled it while it
+   * waited — and that the repo has a free slot, then move it to evaluating
+   * and clear the flag. Two workers sharing the database cannot both win.
+   */
+  private claimPendingEvaluation(cardId: string, repoId: string, limit: number): boolean {
+    return db.transaction(
+      (tx) => {
+        const fresh = tx
+          .select({ status: cards.status, evaluationPending: cards.evaluationPending })
+          .from(cards)
+          .where(eq(cards.id, cardId))
+          .get();
+        if (fresh?.status !== "needs_attention" || fresh.evaluationPending !== 1) return false;
+        if (this.loadFor(repoId, tx) >= limit) return false;
+        const moved = tx
+          .update(cards)
+          .set({ status: "evaluating", evaluationPending: 0, updatedAt: now() })
+          .where(and(eq(cards.id, cardId), eq(cards.status, "needs_attention")))
+          .run();
+        return moved.changes === 1;
+      },
+      { behavior: "immediate" },
+    );
   }
 
   private async runLoop(claim: LoopClaim) {
@@ -1932,9 +1969,15 @@ export class Orchestrator {
       // holding the repo's only slot. Starting evaluating straight away
       // would push the repo over its cap (spec 20) — queue it the same way
       // the ready branch below does, but for evaluating: pump() resumes it,
-      // still skipping the loop, once a slot is free.
+      // still skipping the loop, once a slot is free. The queue is the
+      // card row's evaluationPending flag (spec 25), so it survives a
+      // restart and is visible to every worker on the database.
       if (this.pipelineBusy(card.repoId)) {
-        this.pendingEvaluations.set(cardId, card.repoId);
+        db.update(cards).set({ evaluationPending: 1, updatedAt: now() }).where(eq(cards.id, cardId)).run();
+        emitEvent("card.evaluation_queued", {
+          cardId,
+          payload: { reason: "install scripts approved while the repo was at its cap" },
+        });
       } else if (this.moveCard(cardId, "needs_attention", "evaluating", "install scripts approved")) {
         this.startStage("evaluating", cardId);
       }

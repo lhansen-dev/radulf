@@ -120,3 +120,73 @@ describe("claimLoopRun", () => {
     expect(card("c3").status).toBe("ready");
   });
 });
+
+describe("pending evaluations", () => {
+  function seedCard(id: string, status: "needs_attention" | "looping", evaluationPending: 0 | 1) {
+    db.insert(cards)
+      .values({
+        id,
+        repoId: "repo-1",
+        title: `Card ${id}`,
+        description: "Rough ask",
+        status,
+        evaluationPending,
+        position: 10,
+        createdAt: now(),
+        updatedAt: now(),
+      })
+      .run();
+    db.insert(plans)
+      .values({
+        id: `plan-${id}`,
+        cardId: id,
+        version: 1,
+        planMd: "## Tasks\n- [x] one\n",
+        promptMd: "p",
+        acceptanceCriteria: "",
+        createdAt: now(),
+      })
+      .run();
+  }
+
+  const movedEvents = (cardId: string) =>
+    db
+      .select()
+      .from(events)
+      .where(eq(events.type, "card.moved"))
+      .all()
+      .filter((e) => e.cardId === cardId)
+      .map((e) => JSON.parse(e.payload ?? "{}") as { from?: string; to?: string; reason?: string });
+
+  it("pump() claims a queued evaluation through the database once a slot frees", () => {
+    db.delete(plans).run();
+    db.delete(cards).run();
+    seedCard("e1", "needs_attention", 1);
+    seedCard("busy", "looping", 0);
+
+    const orchestrator = new Orchestrator({ autoStart: false });
+    orchestrator.pump();
+    expect(card("e1").status).toBe("needs_attention");
+    expect(card("e1").evaluationPending).toBe(1);
+
+    db.update(cards).set({ status: "done", updatedAt: now() }).where(eq(cards.id, "busy")).run();
+    orchestrator.pump();
+    expect(card("e1").status).toBe("evaluating");
+    expect(card("e1").evaluationPending).toBe(0);
+    expect(movedEvents("e1")).toContainEqual({
+      from: "needs_attention",
+      to: "evaluating",
+      reason: "install scripts approved",
+    });
+    orchestrator.startDraining();
+  });
+
+  it("a human action out of Needs Attention clears the flag", () => {
+    seedCard("e2", "needs_attention", 1);
+    const orchestrator = new Orchestrator({ autoStart: false });
+    orchestrator.startCard("e2");
+    expect(card("e2").status).not.toBe("needs_attention");
+    expect(card("e2").evaluationPending).toBe(0);
+    orchestrator.startDraining();
+  });
+});
