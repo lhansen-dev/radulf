@@ -134,6 +134,13 @@
       "when": 1790211009836,
       "tag": "0018_chunky_nightcrawler",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1790250992188,
+      "tag": "0019_far_hawkeye",
+      "breakpoints": true
     }
   ]
 }

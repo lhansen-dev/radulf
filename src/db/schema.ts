@@ -200,6 +200,9 @@ export type RunStatus =
   | "interrupted"
   | "paused";
 
+// Spec 25 decision 4: the pending operator signal on a run row.
+export type RunControl = "cancel" | "pause";
+
 export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),
   cardId: text("card_id")
@@ -253,6 +256,10 @@ export const runs = sqliteTable("runs", {
   // deliberately without a foreign key: a worker row may be reaped while its
   // orphaned run still needs recovering, and historical runs predate workers.
   workerId: text("worker_id"),
+  // Pending operator signal, written by whichever process performed the verb
+  // (cancel/reset write "cancel", pause writes "pause"). The owning worker
+  // polls it and fires its local AbortController; null when nothing is pending.
+  control: text("control").$type<RunControl>(),
 }, (table) => [index("runs_card_started_idx").on(table.cardId, table.startedAt)]);
 
 // One row per live orchestrator process. A worker heartbeats `heartbeatAt`

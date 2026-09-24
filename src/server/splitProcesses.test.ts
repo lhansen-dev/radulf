@@ -193,6 +193,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       "RADULF_PUMP_INTERVAL_MS",
       "RADULF_EVENTS_TAIL_INTERVAL_MS",
       "RADULF_TRANSCRIPT_SCAN_INTERVAL_MS",
+      "RADULF_CONTROL_POLL_INTERVAL_MS",
     ]) {
       delete base[key];
     }
@@ -245,6 +246,9 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       NODE_ENV: "test",
       RADULF_PUMP_INTERVAL_MS: "500",
       RADULF_HEARTBEAT_INTERVAL_MS: "1000",
+      // Fast control poll so the cross-process cancel below lands within a
+      // couple of polls instead of waiting on the default.
+      RADULF_CONTROL_POLL_INTERVAL_MS: "200",
     };
     worker = spawn(process.execPath, ["dist/worker.mjs"], {
       cwd: repoRoot,
@@ -541,6 +545,209 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       expect(out.web2).not.toMatch(/mock provider is disabled/);
     },
     150_000,
+  );
+
+  it(
+    "cancelling a looping card from the web-only process ends the run in the worker",
+    async () => {
+      const repos = await api<Array<{ id: string; name: string }>>("GET", "/api/repos");
+      expect(repos.status).toBe(200);
+      const repoId = repos.json.find((r) => r.name === "fixture")!.id;
+
+      // The stall scenario hangs the mock stream until aborted, so this run
+      // can only end through the worker consuming the control signal.
+      const card = await api<{ id: string }>("POST", "/api/cards", {
+        repoId,
+        title: "Cancelled mid-loop",
+        description: "Its loop stalls until the owning worker aborts it.",
+        plannerModel: "happy-path",
+        loopModel: "stall",
+        evaluatorModel: "happy-path",
+      });
+      expect(card.status).toBe(201);
+      const cardId = card.json.id;
+      expect((await api("POST", `/api/cards/${cardId}/move`, { to: "todo" })).status).toBe(200);
+      expect((await api("POST", `/api/cards/${cardId}/move`, { to: "in_progress" })).status).toBe(
+        200,
+      );
+
+      type LoopRow = { id: string };
+      let running: LoopRow | undefined;
+      const deadline = Date.now() + 90_000;
+      while (!running) {
+        [running] = dbQuery<LoopRow>(
+          "SELECT id FROM runs WHERE kind = 'loop' AND status = 'running' AND worker_id IS NOT NULL AND card_id = ?",
+          cardId,
+        );
+        if (running) break;
+        if (Date.now() > deadline) {
+          throw new Error(
+            `no claimed running loop run for the card\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const runId = running.id;
+
+      // The first `iterations` row is written after the worker registers its
+      // AbortController and right before it starts the harness, so from here on
+      // the cancel must travel through the worker's `runs.control` poll.
+      await waitFor(
+        () => dbQuery<{ id: string }>("SELECT id FROM iterations WHERE run_id = ?", runId).length > 0,
+        60_000,
+        "the loop's first iteration to start",
+      );
+
+      // The web process moves the card at once without waiting on the worker.
+      expect((await api("POST", `/api/cards/${cardId}/move`, { to: "backlog" })).status).toBe(
+        200,
+      );
+      const moved = await api<{ card?: { status?: string } }>("GET", `/api/cards/${cardId}`);
+      expect(moved.json.card?.status).toBe("backlog");
+
+      // The owning worker polls runs.control, aborts, and clears the signal.
+      type RunRow = {
+        status: string;
+        exit_reason: string | null;
+        control: string | null;
+        ended_at: string | null;
+      };
+      let run: RunRow | undefined;
+      await waitFor(
+        () => {
+          [run] = dbQuery<RunRow>(
+            "SELECT status, exit_reason, control, ended_at FROM runs WHERE id = ?",
+            runId,
+          );
+          return run?.status === "cancelled" && run.control === null;
+        },
+        5_000,
+        "the worker to cancel the stalled run and consume the control signal",
+      );
+      expect(run!.exit_reason).toBe("cancelled by user");
+      expect(run!.ended_at).not.toBeNull();
+
+      const finished = dbQuery<{ payload: string }>(
+        "SELECT payload FROM events WHERE run_id = ? AND type = 'run.finished'",
+        runId,
+      );
+      expect(finished).toHaveLength(1);
+      expect(JSON.parse(finished[0].payload)).toMatchObject({ status: "cancelled" });
+
+      const iterations = dbQuery<{ status: string }>(
+        "SELECT status FROM iterations WHERE run_id = ?",
+        runId,
+      );
+      for (const row of iterations) expect(row.status).toBe("failed");
+
+      // The worker's cleanup removed the run's scratch directory.
+      const scratch = path.join(root, "runtmp");
+      await waitFor(
+        () =>
+          !fs.existsSync(scratch) ||
+          fs.readdirSync(scratch).every((name) => !name.startsWith(runId)),
+        10_000,
+        "the cancelled run's scratch directory to be removed",
+      );
+    },
+    120_000,
+  );
+
+  it(
+    "pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run",
+    async () => {
+      const repos = await api<Array<{ id: string; name: string }>>("GET", "/api/repos");
+      expect(repos.status).toBe(200);
+      const repoId = repos.json.find((r) => r.name === "fixture")!.id;
+
+      // The phantom scenario runs three short no-progress iterations and then
+      // fails as stalled, so the run ends on its own if pause never lands.
+      const card = await api<{ id: string }>("POST", "/api/cards", {
+        repoId,
+        title: "Paused mid-loop",
+        description: "Paused from the web process, resumed onto a fresh run.",
+        plannerModel: "happy-path",
+        loopModel: "phantom",
+        evaluatorModel: "happy-path",
+      });
+      expect(card.status).toBe(201);
+      const cardId = card.json.id;
+      expect((await api("POST", `/api/cards/${cardId}/move`, { to: "todo" })).status).toBe(200);
+      expect((await api("POST", `/api/cards/${cardId}/move`, { to: "in_progress" })).status).toBe(
+        200,
+      );
+
+      const deadline = Date.now() + 90_000;
+      for (;;) {
+        const [row] = dbQuery<{ status: string }>(
+          "SELECT status FROM cards WHERE id = ?",
+          cardId,
+        );
+        if (row?.status === "looping") break;
+        if (Date.now() > deadline) {
+          throw new Error(
+            `card never reached looping (last: ${row?.status})\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      // The web process pauses the card at once; the worker pauses the run
+      // at the next iteration boundary.
+      expect((await api("POST", `/api/cards/${cardId}/pause`)).status).toBe(200);
+      const pausedCard = await api<{ card?: { status?: string } }>("GET", `/api/cards/${cardId}`);
+      expect(pausedCard.json.card?.status).toBe("paused");
+
+      type LoopRow = {
+        id: string;
+        status: string;
+        exit_reason: string | null;
+        control: string | null;
+        worker_id: string | null;
+      };
+      const loopRuns = () =>
+        dbQuery<LoopRow>(
+          "SELECT id, status, exit_reason, control, worker_id FROM runs WHERE kind = 'loop' AND card_id = ? ORDER BY started_at",
+          cardId,
+        );
+      let loops: LoopRow[] = [];
+      await waitFor(
+        () => {
+          loops = loopRuns();
+          return loops[0]?.status === "paused";
+        },
+        60_000,
+        "the worker to pause the loop run",
+      );
+      expect(loops[0].exit_reason).toBe("paused by user");
+      expect(loops[0].control).toBe("pause");
+
+      // Resume starts a fresh run that a worker claims.
+      expect((await api("POST", `/api/cards/${cardId}/resume`)).status).toBe(200);
+      await waitFor(
+        () => {
+          loops = loopRuns();
+          return loops.length === 2 && loops[1].worker_id !== null;
+        },
+        60_000,
+        "a second claimed loop run after resume",
+      );
+      expect(loops).toHaveLength(2);
+      expect(loops[1].worker_id).not.toBeNull();
+
+      // Let the resumed run finish so nothing of this card is in flight when
+      // the later tests assert every run has ended.
+      await waitFor(
+        async () => {
+          const status = (await api<{ card?: { status?: string } }>("GET", `/api/cards/${cardId}`))
+            .json.card?.status;
+          return status === "needs_attention" || status === "review";
+        },
+        120_000,
+        "the resumed card to settle",
+      );
+    },
+    180_000,
   );
 
   it(

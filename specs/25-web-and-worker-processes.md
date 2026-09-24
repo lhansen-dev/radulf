@@ -95,7 +95,13 @@ UI never waits on a worker. The frontend also writes a control column on the
 run row; the owning worker polls it on a short interval and fires its local
 abort controller. The abort path, the transcript ending, and the telemetry are
 the ones that exist today, and the first terminal cause still wins when
-cancellation and watchdogs race.
+cancellation and watchdogs race. *Amended at implementation (2026-09-24): the
+column is the nullable `runs.control` (`"cancel"` | `"pause"`). A worker
+polls it every `RADULF_CONTROL_POLL_INTERVAL_MS` (default 1000 ms, floor 100)
+for the runs whose controllers it holds, firing its local abort on `cancel`
+and clearing the column; a `pause` is observed by the loop at its iteration
+boundary. `finishRun` is a compare-and-set on `status = running`, so the first
+terminal cause wins across processes.*
 
 **5. Events fan out through the table.** `emitEvent` keeps writing the row and
 emitting on the local bus. Every process also runs a tailer that reads events

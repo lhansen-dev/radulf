@@ -1431,6 +1431,109 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
   });
 
+  describe("control signals from a web-only process", () => {
+    it("a passive cancel reaches the worker's harness through runs.control", async () => {
+      card("remote-cancel");
+      plan("remote-cancel");
+      const harness = deferred<never>();
+      mocks.runHarness.mockReturnValueOnce(harness.promise);
+      const worker = new Orchestrator({ autoStart: false });
+      const web = new Orchestrator({ passive: true });
+
+      worker.startCard("remote-cancel");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+      // The web process moves the card and finishes the run at once, but it
+      // holds no controller for the worker's harness (spec 25 decision 4).
+      web.cancelCard("remote-cancel");
+      expect(getRun("remote-cancel")).toMatchObject({
+        status: "cancelled",
+        exitReason: "cancelled by user",
+        control: "cancel",
+      });
+      expect(getCard("remote-cancel").status).toBe("backlog");
+      expect(mocks.runHarness.mock.calls[0][0].signal.aborted).toBe(false);
+
+      // The worker's poll picks the column up and fires its own abort.
+      worker.applyControlSignals();
+      expect(mocks.runHarness.mock.calls[0][0].signal.aborted).toBe(true);
+      expect(getRun("remote-cancel").control).toBeNull();
+
+      harness.reject(new Error("child exited after abort"));
+      await settle();
+      expect(getRun("remote-cancel").status).toBe("cancelled");
+      expect(getCard("remote-cancel").status).toBe("backlog");
+      expect(db.select().from(runs).all().filter((r) => r.cardId === "remote-cancel")).toHaveLength(1);
+      const runId = getRun("remote-cancel").id;
+      const finished = db.select().from(events).all()
+        .filter((e) => e.type === "run.finished" && e.runId === runId);
+      expect(finished).toHaveLength(1);
+    });
+
+    it("a cancel the worker's poll never saw is still consumed when its run exits", async () => {
+      card("stale-cancel");
+      plan("stale-cancel");
+      const harness = deferred<never>();
+      mocks.runHarness.mockReturnValueOnce(harness.promise);
+      const worker = new Orchestrator({ autoStart: false });
+      const web = new Orchestrator({ passive: true });
+
+      worker.startCard("stale-cancel");
+      await vi.waitFor(() => expect(mocks.runHarness).toHaveBeenCalledOnce());
+
+      web.cancelCard("stale-cancel");
+      expect(getRun("stale-cancel").control).toBe("cancel");
+
+      // The worker never polls the column; the run exits on its own and the
+      // owner clears the stale cancel in runLoop's finally block.
+      harness.reject(new Error("child exited"));
+      await settle();
+      expect(getRun("stale-cancel").status).toBe("cancelled");
+      expect(getRun("stale-cancel").control).toBeNull();
+      expect(getCard("stale-cancel").status).toBe("backlog");
+      const runId = getRun("stale-cancel").id;
+      const finished = db.select().from(events).all()
+        .filter((e) => e.type === "run.finished" && e.runId === runId);
+      expect(finished).toHaveLength(1);
+    });
+
+    it("a passive pause closes the run at the worker's iteration boundary", async () => {
+      card("remote-pause");
+      plan("remote-pause");
+      db.update(plans)
+        .set({ planMd: "## Tasks\n- [ ] first task\n- [ ] second task\n" })
+        .where(eq(plans.cardId, "remote-pause"))
+        .run();
+      mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => ({
+        ok: true,
+        out: args[0] === "status" ? " M feature.txt" : "",
+      }));
+      const worker = new Orchestrator({ autoStart: false });
+      const web = new Orchestrator({ passive: true });
+      mocks.runHarness.mockImplementation(async ({ cwd }: { cwd: string }) => {
+        fs.writeFileSync(path.join(cwd, "feature.txt"), "first task");
+        fs.writeFileSync(path.join(cwd, ".ralph", "ITERATION_DONE"), "first task complete");
+        web.pauseCard("remote-pause");
+        return successfulHarnessResult;
+      });
+
+      worker.startCard("remote-pause");
+      await vi.waitFor(() => expect(getCard("remote-pause").status).toBe("paused"));
+      await vi.waitFor(() => expect(getRun("remote-pause").status).toBe("paused"));
+
+      expect(getRun("remote-pause")).toMatchObject({
+        status: "paused",
+        exitReason: "paused by user",
+        control: "pause",
+      });
+      expect(mocks.runHarness).toHaveBeenCalledTimes(1);
+      const runId = getRun("remote-pause").id;
+      const finished = db.select().from(events).all()
+        .filter((e) => e.type === "run.finished" && e.runId === runId);
+      expect(finished).toHaveLength(1);
+    });
+  });
+
   describe("pausing a loop", () => {
     it("records the run as paused rather than completed", async () => {
       // Spec 18 §6: a pause used to write status "completed", which put a run

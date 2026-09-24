@@ -17,7 +17,7 @@ vi.mock("./settings", async (importOriginal) => {
 
 setupTestDataDir("radulf-orchestrator-roles-");
 
-const { db, cards, events, plans, repos, runs, workers, now } = await import("@/db");
+const { db, cards, events, iterations, plans, repos, runs, workers, now } = await import("@/db");
 const { Orchestrator, disposeAllOrchestrators, getOrchestrator } = await import("./orchestrator");
 
 type Global = { __radulfOrchestrator?: unknown };
@@ -141,6 +141,68 @@ describe("passive orchestrator (web role only)", () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as { status?: number }).status).toBe(409);
     expect(card("c1").status).toBe("needs_attention");
+  });
+});
+
+describe("operator verbs from a web-only process write runs.control", () => {
+  const finishedEvents = (runId: string) =>
+    db
+      .select()
+      .from(events)
+      .where(eq(events.runId, runId))
+      .all()
+      .filter((e) => e.type === "run.finished");
+
+  it("cancelCard finishes the run, moves the card and asks the owning worker to abort", () => {
+    seedCard("c1", { status: "looping" });
+    seedRun("r1", "c1");
+
+    new Orchestrator({ passive: true }).cancelCard("c1");
+
+    expect(run("r1")).toMatchObject({
+      status: "cancelled",
+      exitReason: "cancelled by user",
+      control: "cancel",
+    });
+    expect(card("c1").status).toBe("backlog");
+    expect(finishedEvents("r1")).toHaveLength(1);
+  });
+
+  it("pauseCard moves the card at once and leaves the run to close at the worker's boundary", () => {
+    seedCard("c2", { status: "looping" });
+    seedRun("r2", "c2");
+
+    new Orchestrator({ passive: true }).pauseCard("c2");
+
+    expect(card("c2").status).toBe("paused");
+    expect(run("r2")).toMatchObject({ status: "running", control: "pause" });
+  });
+
+  it("cancelCard leaves a run that already finished on its own untouched", () => {
+    seedCard("c3", { status: "looping" });
+    seedRun("r3", "c3", { status: "completed", endedAt: now() });
+
+    new Orchestrator({ passive: true }).cancelCard("c3");
+
+    expect(run("r3").status).toBe("completed");
+    expect(run("r3").control).toBeNull();
+    expect(finishedEvents("r3")).toHaveLength(0);
+  });
+
+  it("cancelCard does not fail iterations or write control when a peer finished the run first", () => {
+    seedCard("c4", { status: "looping" });
+    seedRun("r4", "c4");
+    db.insert(iterations)
+      .values({ id: 4, runId: "r4", n: 1, status: "running", transcriptPath: "iter-001.jsonl", startedAt: now() })
+      .run();
+    const orch = new Orchestrator({ passive: true });
+    vi.spyOn(orch as unknown as { finishRun: () => boolean }, "finishRun").mockReturnValue(false);
+
+    orch.cancelCard("c4");
+
+    expect(db.select().from(iterations).where(eq(iterations.id, 4)).get()!.status).toBe("running");
+    expect(run("r4").control).toBeNull();
+    expect(card("c4").status).toBe("backlog");
   });
 });
 
