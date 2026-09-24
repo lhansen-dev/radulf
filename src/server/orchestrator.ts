@@ -703,7 +703,11 @@ export class Orchestrator {
     });
   }
 
-  /** Mark a run finished — only if it is still `running` (guards cancel races). */
+  /** Mark a run finished — only if it is still `running` (guards cancel races).
+   * The status flip is a compare-and-set on `status = 'running'`: when a peer
+   * process already ended the run, its cause wins and this call returns false
+   * without emitting a second `run.finished` (spec 25 decision 4: the first
+   * terminal cause wins across processes). */
   private finishRun(
     runId: string,
     status: FinishStatus,
@@ -722,7 +726,7 @@ export class Orchestrator {
     const failureKind = status === "completed" || status === "paused"
       ? null
       : classifyProviderError(exitReason);
-    db.update(runs)
+    const result = db.update(runs)
       .set({
         status,
         exitReason,
@@ -730,8 +734,9 @@ export class Orchestrator {
         endedAt: now(),
         ...(rollup ?? {}),
       })
-      .where(eq(runs.id, runId))
+      .where(and(eq(runs.id, runId), eq(runs.status, "running")))
       .run();
+    if (result.changes !== 1) return false;
     emitEvent("run.finished", { cardId: run.cardId, runId, payload: { status, exitReason } });
     // Spec 18 §4: judge the sequence, not just this attempt. Emitted from
     // here because every stage ends through finishRun, so there is one place
@@ -820,6 +825,10 @@ export class Orchestrator {
     if (!active) return;
     this.finishRun(active.id, status, reason);
     this.failIterations(active.id, reason);
+    // Spec 25 decision 4: the owning worker (possibly another process) polls
+    // this column and aborts its local controller. The local abort below
+    // still runs so a single-process deployment stays exactly as fast.
+    db.update(runs).set({ control: "cancel" }).where(eq(runs.id, active.id)).run();
     this.controllers.get(active.id)?.abort();
   }
 
@@ -1047,7 +1056,10 @@ export class Orchestrator {
    * next iteration boundary (spec 25 decision 4: the card moves at once). */
   pauseEpic(cardId: string): { paused: number } {
     const looping = listChildren(cardId).filter((child) => child.status === "looping");
-    for (const child of looping) this.moveCard(child.id, "looping", "paused", "pause requested");
+    for (const child of looping) {
+      this.moveCard(child.id, "looping", "paused", "pause requested");
+      this.requestPause(child.id);
+    }
     return { paused: looping.length };
   }
 
@@ -1057,6 +1069,16 @@ export class Orchestrator {
     // Spec 25 decision 4: the pause is an immediate card transition, visible
     // to every worker through the database. The loop stops at its boundary.
     this.moveCard(cardId, "looping", "paused", "pause requested");
+    this.requestPause(cardId);
+  }
+
+  /** Spec 25 decision 4: tell the worker that owns the card's live run
+   * (possibly another process) to stop at its next iteration boundary. */
+  private requestPause(cardId: string): void {
+    db.update(runs)
+      .set({ control: "pause" })
+      .where(and(eq(runs.cardId, cardId), eq(runs.status, "running")))
+      .run();
   }
 
   resumeCard(cardId: string) {

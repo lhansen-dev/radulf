@@ -144,6 +144,52 @@ describe("passive orchestrator (web role only)", () => {
   });
 });
 
+describe("operator verbs from a web-only process write runs.control", () => {
+  const finishedEvents = (runId: string) =>
+    db
+      .select()
+      .from(events)
+      .where(eq(events.runId, runId))
+      .all()
+      .filter((e) => e.type === "run.finished");
+
+  it("cancelCard finishes the run, moves the card and asks the owning worker to abort", () => {
+    seedCard("c1", { status: "looping" });
+    seedRun("r1", "c1");
+
+    new Orchestrator({ passive: true }).cancelCard("c1");
+
+    expect(run("r1")).toMatchObject({
+      status: "cancelled",
+      exitReason: "cancelled by user",
+      control: "cancel",
+    });
+    expect(card("c1").status).toBe("backlog");
+    expect(finishedEvents("r1")).toHaveLength(1);
+  });
+
+  it("pauseCard moves the card at once and leaves the run to close at the worker's boundary", () => {
+    seedCard("c2", { status: "looping" });
+    seedRun("r2", "c2");
+
+    new Orchestrator({ passive: true }).pauseCard("c2");
+
+    expect(card("c2").status).toBe("paused");
+    expect(run("r2")).toMatchObject({ status: "running", control: "pause" });
+  });
+
+  it("cancelCard leaves a run that already finished on its own untouched", () => {
+    seedCard("c3", { status: "looping" });
+    seedRun("r3", "c3", { status: "completed", endedAt: now() });
+
+    new Orchestrator({ passive: true }).cancelCard("c3");
+
+    expect(run("r3").status).toBe("completed");
+    expect(run("r3").control).toBeNull();
+    expect(finishedEvents("r3")).toHaveLength(0);
+  });
+});
+
 describe("worker registration", () => {
   it("a passive orchestrator registers a workers row with the web role", () => {
     const orchestrator = new Orchestrator({ passive: true });
