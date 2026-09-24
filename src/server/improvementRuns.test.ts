@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => ({
   assertBranchExists: vi.fn(),
 }));
 
-vi.mock("./orchestrator", () => ({ getOrchestrator: () => ({ startCard: mocks.startCard }) }));
+vi.mock("./orchestrator", () => ({
+  getOrchestrator: () => ({ startCard: mocks.startCard, workerId: "worker-test" }),
+}));
 vi.mock("./improvementProposer", () => ({ proposeOneImprovement: mocks.proposeOneImprovement }));
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
@@ -19,7 +21,7 @@ vi.mock("./git", async (importOriginal) => ({
 
 setupTestDataDir("radulf-improvement-runs-");
 
-const { db, cards, repos, improvementRuns, events, now } = await import("@/db");
+const { db, cards, repos, improvementRuns, events, workers, now } = await import("@/db");
 const { emitEvent } = await import("./events");
 const {
   createImprovementRun,
@@ -66,6 +68,14 @@ function insertRun(overrides: Partial<typeof improvementRuns.$inferInsert> & { i
   return overrides.id;
 }
 
+const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+function seedWorker(id: string, heartbeatAt: string = now()) {
+  db.insert(workers)
+    .values({ id, host: "h", pid: 1, roles: "[]", startedAt: heartbeatAt, heartbeatAt })
+    .run();
+}
+
 function getRunRow(id: string) {
   return db.select().from(improvementRuns).where(eq(improvementRuns.id, id)).get()!;
 }
@@ -80,10 +90,12 @@ beforeEach(() => {
   db.delete(improvementRuns).run();
   db.delete(repos).run();
   db.delete(events).run();
+  db.delete(workers).run();
   vi.clearAllMocks();
   mocks.assertBranchExists.mockResolvedValue(undefined);
   mocks.git.mockResolvedValue("");
   insertRepo();
+  seedWorker("worker-test");
 });
 
 describe("awaitCardTerminal", () => {
@@ -254,6 +266,89 @@ describe("driveRun", () => {
     // No 3rd consecutive failure here, so the run only ends because the
     // (already-past) deadline is checked right after reconciling.
     expect(run.status).toBe("completed");
+  });
+});
+
+describe("driver lease", () => {
+  it("lets exactly one of two workers drive the same run and releases the lease at the end", async () => {
+    seedWorker("w-a");
+    seedWorker("w-b");
+    const runId = insertRun({ id: "run-lease-race" });
+    mocks.proposeOneImprovement
+      .mockResolvedValueOnce({ title: "Only one", description: "d", rationale: "r" })
+      .mockResolvedValue(null);
+    let inFlightCardId: string | undefined;
+    let holderWhileInFlight: string | null | undefined;
+    mocks.startCard.mockImplementation((cardId: string) => {
+      inFlightCardId = cardId;
+      holderWhileInFlight = getRunRow(runId).workerId;
+    });
+
+    const a = driveRun(runId, "w-a");
+    const b = driveRun(runId, "w-b");
+    // Let the winning driver get as far as creating and starting its card.
+    await vi.waitFor(() => expect(mocks.startCard).toHaveBeenCalledTimes(1));
+    expect(db.select().from(cards).all()).toHaveLength(1);
+    expect(inFlightCardId).toBeDefined();
+    expect(["w-a", "w-b"]).toContain(holderWhileInFlight);
+    expect(getRunRow(runId).workerId).toBe(holderWhileInFlight);
+
+    resolveCardAs(inFlightCardId!, "done");
+    // The proposer now returns null forever; end the run rather than letting
+    // the empty-proposal backoff drag the test out.
+    stopImprovementRun(runId);
+    await Promise.all([a, b]);
+
+    expect(mocks.startCard).toHaveBeenCalledTimes(1);
+    expect(db.select().from(cards).all()).toHaveLength(1);
+    const run = getRunRow(runId);
+    expect(run.status).not.toBe("running");
+    expect(run.tasksSucceeded).toBe(1);
+    expect(run.workerId).toBeNull();
+    expect(run.heartbeatAt).toBeNull();
+  });
+
+  it("adopts a run whose driver went stale", async () => {
+    seedWorker("w-b");
+    seedWorker("w-dead", minutesAgo(10));
+    const runId = insertRun({
+      id: "run-lease-stale",
+      workerId: "w-dead",
+      heartbeatAt: minutesAgo(10),
+    });
+    let observedHolder: string | null | undefined;
+    mocks.proposeOneImprovement.mockImplementation(async () => {
+      observedHolder = getRunRow(runId).workerId;
+      // Stop mid-pass so the run ends right after this call instead of
+      // sitting in the empty-proposal backoff.
+      stopImprovementRun(runId);
+      return { title: "Adopted", description: "d", rationale: "r" };
+    });
+
+    await driveRun(runId, "w-b");
+
+    expect(mocks.proposeOneImprovement).toHaveBeenCalledTimes(1);
+    expect(observedHolder).toBe("w-b");
+    expect(mocks.startCard).not.toHaveBeenCalled();
+    const run = getRunRow(runId);
+    expect(run.status).toBe("stopped");
+    expect(run.workerId).toBeNull();
+  });
+
+  it("does not touch a run another live worker is driving", async () => {
+    seedWorker("w-a");
+    seedWorker("w-b");
+    const runId = insertRun({ id: "run-lease-held", workerId: "w-a", heartbeatAt: now() });
+    mocks.proposeOneImprovement.mockResolvedValue({ title: "Nope", description: "d", rationale: "r" });
+
+    await driveRun(runId, "w-b");
+
+    expect(mocks.proposeOneImprovement).not.toHaveBeenCalled();
+    expect(mocks.startCard).not.toHaveBeenCalled();
+    expect(db.select().from(cards).all()).toHaveLength(0);
+    const run = getRunRow(runId);
+    expect(run.workerId).toBe("w-a");
+    expect(run.status).toBe("running");
   });
 });
 

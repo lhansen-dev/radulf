@@ -19,6 +19,12 @@ import { ClientError } from "./clientError";
 import { getCard } from "./cards";
 import { getRepo } from "./repos";
 import { hasRole } from "./roles";
+import {
+  claimImprovementRun,
+  heartbeatImprovementRun,
+  releaseImprovementRun,
+} from "./improvementRunLeases";
+import { HEARTBEAT_INTERVAL_MS } from "./workers";
 import { sleep } from "@/shared/sleep";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -242,10 +248,12 @@ export function stopImprovementRun(runId: string): ImprovementRun {
 /** Restart drivers for every run still `running` (N3). Called at boot — after
  * `getOrchestrator()` so `recover()` has already flipped any orphaned card to
  * `needs_attention` — and again on every worker pump tick, adopting runs a
- * web-only process created (spec 25: web only inserts the row). Safe to call
- * repeatedly because `driveRun` returns at once for a run this process already
- * drives. Fire-and-forget — a run's driver can legitimately outlive the whole
- * time budget, so this must never block startup or the pump. */
+ * web-only process created (spec 25: web only inserts the row). Each run is
+ * claimed through its driver lease (spec 25 decision 7): `driveRun` returns at
+ * once for a run this process already drives or another live worker holds,
+ * and a run whose driver went stale is adopted by whichever worker's pump tick
+ * claims it first. Fire-and-forget — a run's driver can legitimately outlive
+ * the whole time budget, so this must never block startup or the pump. */
 export function resumeImprovementRuns(): void {
   const running = db.select().from(improvementRuns).where(eq(improvementRuns.status, "running")).all();
   for (const run of running) void driveRun(run.id);
@@ -312,26 +320,49 @@ function recordCardOutcome(runId: string, success: boolean): void {
   }
 }
 
-/** Guarded singleton entry point (N3): a run is driven at most once per
- * process. Never throws — an unexpected failure lands the run in `failed`
- * rather than an unhandled rejection, so callers can always fire-and-forget. */
-export async function driveRun(runId: string): Promise<void> {
+/** Guarded entry point: a run is driven by exactly one worker at a time
+ * (spec 25 decision 7). The in-process guard set (N3) still protects against
+ * Next.js dev hot-reload double-driving within one process; across processes
+ * the run is claimed through its lease on the `improvement_runs` row
+ * (`workerId`/`heartbeatAt`), heartbeated every `HEARTBEAT_INTERVAL_MS` while
+ * driving and released when the driver returns. A claim fails when another
+ * live worker holds the lease; a run whose driver went stale is adopted by
+ * whichever worker's pump tick claims it first. Never throws — an unexpected
+ * failure lands the run in `failed` rather than an unhandled rejection, so
+ * callers can always fire-and-forget. */
+export async function driveRun(
+  runId: string,
+  workerId: string = getOrchestrator().workerId,
+): Promise<void> {
   const drivers = driverGuard();
   if (drivers.has(runId)) return;
   drivers.add(runId);
+  if (!claimImprovementRun(runId, workerId, getSettings().workerStaleSeconds)) {
+    drivers.delete(runId);
+    return;
+  }
+  const beat = setInterval(() => {
+    heartbeatImprovementRun(runId, workerId);
+  }, HEARTBEAT_INTERVAL_MS);
+  beat.unref?.();
   try {
-    await runDriverLoop(runId);
+    await runDriverLoop(runId, workerId);
   } finally {
+    clearInterval(beat);
+    releaseImprovementRun(runId, workerId);
     drivers.delete(runId);
   }
 }
 
-async function runDriverLoop(runId: string): Promise<void> {
+async function runDriverLoop(runId: string, workerId: string): Promise<void> {
   let emptyStreak = 0;
   try {
     for (;;) {
       const run = getRun(runId);
       if (!run || run.status !== "running") return;
+      // Another worker took the lease over while this one was stale — it is
+      // the driver now; stop touching the run.
+      if (run.workerId !== workerId) return;
 
       // Resume path (N3): reattach to an in-flight card before doing
       // anything else. A card `recover()` already flipped to a terminal
