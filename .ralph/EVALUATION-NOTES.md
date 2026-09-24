@@ -1,13 +1,22 @@
-# Evaluator notes (Thu Sep 24 12:03:01 UTC 2026)
-- static greps (schema, migration 0019, journal idx 19, applyControlSignals, POLL env, control cancel/pause, finishRun CAS x1, split test greps, spec amended x2): all PASS
-- git diff --stat beta...HEAD -- src/server/harness/ : empty PASS
-- npx tsc --noEmit: exit 0 PASS
-- npx vitest run src/server/orchestrator.roles.test.ts: 13 passed PASS
-- npx vitest run src/server/orchestrator.lifecycle.test.ts: 101 passed PASS
-- stage services + boot: planningService/reviewService/boot pass; evaluationService has 3 failures (timeout/gate tests) — reproduced identically on pristine beta export => pre-existing, not this card
-- eslint on the 5 listed files: exit 0 PASS
-- make build: exit 0
-- RADULF_SPLIT_CHECK=1 vitest splitProcesses.test.ts (worktree): FAIL — "cancelling a looping card..." times out after 5s (same as gate); 7/8 pass
-- Debug copy in $TMPDIR/dbg (test patched to dump DB): run row = status cancelled, control still 'cancel'; events show run.finished(cancelled) BEFORE run.started(loop) => web cancelled during worker's run setup, before controllers.set(); worker bailed at the !active() guard and never consumed the column
-- Debug copy with test waiting for an iterations row before cancelling: 8/8 pass (twice) => race in the test's cancel timing + stale control never consumed on non-poll exit paths
-- Verdict written: revise (check-split fails; root cause + verified fix documented)
+# Evaluator running notes (attempt started 2026-09-24T12:22:47Z)
+- grep -n 'control: null' src/server/orchestrator.ts | wc -l -> 2 (PASS, >=2)
+- awk finally-clears-cancel -> printed 1 line (PASS)
+- grep endActiveRun CAS line -> PASS
+- grep 'SELECT id FROM iterations WHERE run_id = ?' splitProcesses.test.ts -> PASS
+- grep -c lifecycle test name -> 1 (PASS)
+- grep -c roles test name -> 1 (PASS)
+- git diff --stat merge-base...HEAD -- src/server/harness/ -> empty (PASS)
+- grep -c 'SELECT id FROM iterations WHERE run_id' splitProcesses.test.ts -> 1 (PASS, pre-check-split)
+- npx vitest run src/server/orchestrator.lifecycle.test.ts -> exit 0, 102 passed (PASS)
+- npx vitest run src/server/orchestrator.roles.test.ts -> exit 0, 14 passed (PASS)
+- npx tsc --noEmit -> exit 0 (PASS)
+- npx eslint <4 files> -> exit 0 (PASS)
+- Repository gate (make lint typecheck build check-split) ran by orchestrator -> exit 0, split cancel + pause tests passed (run #1 of check-split)
+- make build && make check-split (run #2, mine) -> exit 0; cancel test 760ms, pause/resume test 1279ms, 8/8 (PASS)
+- make build && make check-split (run #3, mine) -> exit 0; cancel 653ms, pause/resume 933ms, 8/8 (PASS)
+- post check-split grep -c 'SELECT id FROM iterations WHERE run_id' -> 1 (PASS, fix not reverted)
+- drizzle 0019 snapshot: prevId chains to 0018, only diff is nullable runs.control text (PASS)
+- Code review: verbs cancel/reset->endActiveRun (CAS + control=cancel); pause/pauseEpic->requestPause; abandon refuses active run (pre-existing); restart only from needs_attention (no live run) -> same as today
+- npx vitest run (full suite, run #1 of max 2) -> exit 1; 5 failing files, all on the environmental list: bookkeeping.test.ts (/tmp mkdtemp EROFS), harness/index.test.ts 10x "runHarness watchdogs" (mkdir /tmp/ralph-stall-test), streamLiveness.test.ts 2x (mkdir /tmp/ralph-liveness-test), srt.test.ts 4x real-runtime rows (bwrap/socket EPERM), evaluationService.test.ts 3x timeout/gate. 128 files passed. No card-related failure. (PASS by the card's rule)
+- VERDICT written: approve (.ralph/EVALUATION.md); SUMMARY.md written
+- Doc reconciliation (approve only): docs/ARCHITECTURE.md — web-only role paragraph mentions runs.control + poll interval; finishRun sentence notes the status='running' CAS. specs/25 already amended by the loop.

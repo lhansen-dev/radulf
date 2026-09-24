@@ -1,30 +1,103 @@
 # Repository gate
 
 Command: `make lint typecheck build check-split`
-Result: exit 2
-Duration: 50s
-Ran at: 2026-09-24T12:01:43.154Z
+Result: exit 0
+Duration: 40s
+Ran at: 2026-09-24T12:22:07.991Z
 
 ## Output, last 8000 characters
 
 ```
-…the-runn-jQxdtckEnXRD_aXiciIve'
+…urbopack)
+✓ Running next.config.ts took 21ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1150ms
+  Running TypeScript ...
+  Finished TypeScript in 4.4s ...
+  Collecting page data using 15 workers ...
+  Generating static pages using 15 workers (0/39) ...
+  Generating static pages using 15 workers (9/39) 
+  Generating static pages using 15 workers (19/39) 
+  Generating static pages using 15 workers (29/39) 
+✓ Generating static pages using 15 workers (39/39) in 109ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ƒ /_not-found
+├ ƒ /analytics
+├ ƒ /api/analytics
+├ ƒ /api/auth/login
+├ ƒ /api/auth/logout
+├ ƒ /api/benchmarks
+├ ƒ /api/cards
+├ ƒ /api/cards/[id]
+├ ƒ /api/cards/[id]/[action]
+├ ƒ /api/cards/[id]/diff
+├ ƒ /api/cards/[id]/move
+├ ƒ /api/cards/[id]/scoping
+├ ƒ /api/cards/[id]/scoping/plan
+├ ƒ /api/cards/[id]/scoping/proposal
+├ ƒ /api/cards/[id]/scoping/split
+├ ƒ /api/cards/export
+├ ƒ /api/cards/import
+├ ƒ /api/events/stream
+├ ƒ /api/folder-browser
+├ ƒ /api/github/status
+├ ƒ /api/health
+├ ƒ /api/improvement-runs
+├ ƒ /api/improvement-runs/[id]/stop
+├ ƒ /api/jira/issue
+├ ƒ /api/maintenance/cleanup
+├ ƒ /api/provider-login
+├ ƒ /api/provider-login/[id]
+├ ƒ /api/providers/[provider]/models
+├ ƒ /api/providers/usage
+├ ƒ /api/repos
+├ ƒ /api/repos/[id]
+├ ƒ /api/repos/[id]/branches
+├ ƒ /api/repos/clone
+├ ƒ /api/repos/init
+├ ƒ /api/restart
+├ ƒ /api/reviews
+├ ƒ /api/runs/[id]
+├ ƒ /api/schedules
+├ ƒ /api/schedules/[id]
+├ ƒ /api/settings
+├ ƒ /api/settings/prompt-template-defaults
+├ ƒ /benchmarks
+├ ƒ /card/[id]
+├ ƒ /docs
+├ ƒ /docs/[slug]
+├ ƒ /login
+├ ƒ /review/[id]
+└ ƒ /settings
+
+
+ƒ Proxy (Middleware)
+
+ƒ  (Dynamic)  server-rendered on demand
+
+RADULF_SPLIT_CHECK=1 node_modules/.bin/vitest run src/server/splitProcesses.test.ts
+
+ RUN  v4.1.11 /var/lib/radulf/worktrees/deliver-cancel-pause-resume-and-the-runn-jQxdtckEnXRD_aXiciIve
+
+make[1]: Entering directory '/var/lib/radulf/worktrees/deliver-cancel-pause-resume-and-the-runn-jQxdtckEnXRD_aXiciIve'
 node_modules/.bin/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
 make[1]: Leaving directory '/var/lib/radulf/worktrees/deliver-cancel-pause-resume-and-the-runn-jQxdtckEnXRD_aXiciIve'
- ❯ src/server/splitProcesses.test.ts (8 tests | 1 failed) 25974ms
-     ✓ both roles boot one fresh data directory at once 15ms
-     ✓ fans a card created on one web process out to the other web process's event stream  326ms
-     ✓ drives a card from Todo to In Review through the web-only process  2079ms
-     × cancelling a looping card from the web-only process ends the run in the worker 5563ms
-     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1268ms
-     ✓ two workers never run two runs of one repo at once with a cap of one  834ms
-     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  15052ms
-     ✓ SIGTERM drains the worker-only process 12ms
+ ✓ src/server/splitProcesses.test.ts (8 tests) 22133ms
+     ✓ fans a card created on one web process out to the other web process's event stream  333ms
+     ✓ drives a card from Todo to In Review through the web-only process  2610ms
+     ✓ cancelling a looping card from the web-only process ends the run in the worker  1000ms
+     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1276ms
+     ✓ two workers never run two runs of one repo at once with a cap of one  918ms
+     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  15145ms
 
- Test Files  1 failed (1)
-      Tests  1 failed | 7 passed (8)
-   Start at  12:02:06
-   Duration  26.09s (transform 33ms, setup 0ms, import 48ms, tests 25.97s, environment 0ms)
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  12:22:25
+   Duration  22.27s (transform 45ms, setup 0ms, import 65ms, tests 22.13s, environment 0ms)
 
 Turbopack build encountered 3 warnings:
 ./src/server/docs.ts:173:15
@@ -133,49 +206,4 @@ Import traces:
 (!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
   - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
 Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
-
-⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
-
- FAIL  src/server/splitProcesses.test.ts > split web/worker processes > cancelling a looping card from the web-only process ends the run in the worker
-Error: timed out after 5000ms waiting for the worker to cancel the stalled run and consume the control signal
---- web ---
-▲ Next.js 16.3.4
-- Local:         http://127.0.0.1:45081
-- Network:       http://127.0.0.1:45081
-✓ Ready in 73ms
-✓ Running next.config.ts took 22ms
-[radulf] roles: web
-
---- web2 ---
-▲ Next.js 16.3.4
-- Local:         http://127.0.0.1:36739
-- Network:       http://127.0.0.1:36739
-✓ Ready in 67ms
-✓ Running next.config.ts took 25ms
-[radulf] roles: web
-
---- worker ---
-[radulf] roles: worker
-sysctl: cannot stat /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
-[radulf] sandbox preflight failed — every sandboxEnabled run will fail into Needs Attention until this is fixed (or sandboxEnabled is turned off in Settings):
-  - sandbox startup failed: listen EPERM: operation not permitted /tmp/claude/srt-mux-577-0.sock
-
---- worker2 ---
-[radulf] roles: worker
-sysctl: cannot stat /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
-[radulf] sandbox preflight failed — every sandboxEnabled run will fail into Needs Attention until this is fixed (or sandboxEnabled is turned off in Settings):
-  - sandbox startup failed: listen EPERM: operation not permitted /tmp/claude/srt-mux-578-0.sock
-
- ❯ waitFor src/server/splitProcesses.test.ts:78:9
-     76|     await new Promise((r) => setTimeout(r, 250));
-     77|   }
-     78|   throw new Error(
-       |         ^
-     79|     `timed out after ${timeoutMs}ms waiting for ${what}\n--- web ---\n…
-     80|   );
- ❯ src/server/splitProcesses.test.ts:607:7
-
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
-
-make: *** [Makefile:90: check-split] Error 1
 ```

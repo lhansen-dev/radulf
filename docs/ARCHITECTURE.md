@@ -32,7 +32,12 @@ Boot is `src/server/boot.ts`, called from `src/instrumentation.ts` under Next
 and from `src/worker.ts` (`make worker`) as a plain Node process. `RADULF_ROLES`
 (`web`, `worker`, default both) decides what runs. A web-only process serves
 the UI and API, only moves cards, tails events, and watches running runs'
-transcripts. A worker-only process ensures the auth
+transcripts. It holds no `AbortController` for a run another process owns, so
+cancel, reset and pause also write the nullable `runs.control` column
+(`cancel` | `pause`); the owning worker polls that column every
+`RADULF_CONTROL_POLL_INTERVAL_MS` ms (default 1000) for the runs whose
+controller it holds, fires its local abort on `cancel`, and observes `pause` at
+the loop's iteration boundary (spec 25 decision 4). A worker-only process ensures the auth
 secret, runs the sandbox preflight (once, cached), then recovery — `recover()`
 flips any run orphaned by a restart into Needs Attention — the queue pump
 (event-driven plus a short timer), the stages, improvement-run drivers,
@@ -54,8 +59,10 @@ State transitions go through `moveCard(cardId, from, to, reason)`, which is
 compare-and-swap on the current status: it returns false if the card moved
 underneath you. That is the concurrency discipline in this codebase — there are
 no locks, and a stale card snapshot is expected. `finishRun` is the same idea
-for runs, and its boolean return is what lets the disk watchdog and the abort
-guard agree on who finalized a run.
+for runs — its `UPDATE` is conditioned on `status = 'running'` — and its
+boolean return is what lets the disk watchdog, the abort guard and a cancel
+from another process agree on who finalized a run: the first terminal cause
+wins and only it emits `run.finished`.
 
 Card statuses are `CARD_STATUSES` in `src/db/schema.ts` — thirteen of them, and
 the mapping to the five board columns is in the comment above the list.
