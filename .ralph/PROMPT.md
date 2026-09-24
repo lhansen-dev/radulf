@@ -1,4 +1,4 @@
-You are working on: Fan out events and live transcripts to every Radulf process — an events tailer that polls the `events` table and re-emits on the local bus (skipping locally emitted ids), and a web-owned per-running-run transcript watcher registry, so split web/worker processes see every event and every live transcript (spec 25, decision 5).
+You are working on: finishing the spec 25 decision 5 card — events and live transcripts fan out to every Radulf web process via a polling events tailer and a per-run transcript watcher registry; the remaining work is verifying the three-process split check (`make build && make check-split`) and documenting the mechanism.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -37,18 +37,14 @@ Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
 Task-specific hints:
-- Read the files the task names just in time (`src/server/events.ts`,
-  `src/server/transcript.ts`, `src/server/boot.ts`, `src/server/boot.test.ts`,
-  `src/server/splitProcesses.test.ts`, `src/testUtils/testDataDir.ts`) and copy
-  the conventions you see there: `@/db` imports, globalThis-backed singletons
-  (`__radulf...`), drizzle queries (`eq`, `gt`, `desc`, `asc`, `sql` from
-  `drizzle-orm`), `vi.spyOn(fs, "watch")` mocking as in `transcript.test.ts`.
-- Tests that touch the database must call `setupTestDataDir(prefix)` at module
-  top BEFORE `await import("@/db")`; temp paths come from `os.tmpdir()`. Never
-  write to a literal `/tmp`, never override `TMPDIR`, never put temp dirs inside
-  the worktree.
-- The tailer and the watcher registry must write nothing to the database.
-- Do not change anything under `src/app/ui` or `src/app/card`, and leave
-  `src/server/scoping.ts` alone.
-- Run only the check named in your task. `make check-split` builds and spawns
-  real processes and takes minutes; run it at most once per iteration.
+- The sandbox presets `TMPDIR` and `/tmp` is read-only: never set or override
+  `TMPDIR`, and never point a temp directory inside this worktree.
+- Never edit `src/app/layout.tsx` (fonts stay on `next/font/google`; the
+  operator allow-listed fonts.googleapis.com and fonts.gstatic.com so
+  `next build` can fetch them).
+- `make build` and `make check-split` each take minutes; run them with a
+  generous timeout and wait for them to finish rather than re-running.
+- `src/server/splitProcesses.test.ts` is skipped unless `RADULF_SPLIT_CHECK=1`
+  is set; `make check-split` sets it for you.
+- Do not add a client-interest protocol, client ids in the SSE stream, a watch
+  endpoint, or any browser change — the web process watches every running run.
