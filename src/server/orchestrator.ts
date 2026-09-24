@@ -35,16 +35,16 @@ import {
 import { appendTask, firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
 import { TELEMETRY_KEYS, runTelemetry, type RunTelemetry } from "./harness";
-import { listProviderModels, normalizeProvider, preflightProvider } from "./providers";
+import { listProviderModels, normalizeProvider, preflightProvider, type ProviderId } from "./providers";
 import { classifyProviderError, recordProviderOutcome } from "./circuitBreaker";
 import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { recordProviderFailure } from "./providerRateLimit";
-import { offRunBranchReason, removeWorktree, tryGit } from "./git";
+import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { getCard, requireCard, type Card } from "./cards";
-import { getRepo, requireRepo } from "./repos";
+import { getRepo, requireRepo, type Repo } from "./repos";
 import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
@@ -88,12 +88,24 @@ import {
   resolveWorktree,
   runWithTranscript,
   sandboxUnavailableReason,
-  startRunRow,
   type FinishStatus,
   type StageDependencies,
 } from "./stage";
 
 type Run = typeof runs.$inferSelect;
+type Plan = typeof plans.$inferSelect;
+
+/** Everything a claimed loop run needs, read once inside `claimLoopRun`. */
+export type LoopClaim = {
+  runId: string;
+  card: Card;
+  repo: Repo;
+  plan: Plan;
+  settings: Settings;
+  prev: Run | undefined;
+  provider: ProviderId;
+  loopModel: string;
+};
 
 /** How often to look for a card that has been waiting on a human (spec 18 §5).
  * Well under the smallest useful staleness setting — the setting decides when
@@ -214,14 +226,11 @@ export function planningCandidates(
 }
 
 export class Orchestrator {
-  /** Card ID → repoId for every async loop currently running in the
-   * background, so pipelineBusy(repoId) needs no extra DB round-trip. */
-  private activeLoopCards = new Map<string, string>();
   /** Card IDs whose install gate cleared into a finished checklist while
    * their repo was at its concurrency cap (spec 20) — evaluation is owed to
    * them, not another loop pass, so pump() starts it once a slot frees
-   * rather than approveInstallScripts starting it over the cap. Like
-   * activeLoopCards, this is memory only; a restart loses the queue and
+   * rather than approveInstallScripts starting it over the cap. This is
+   * memory only; a restart loses the queue and
    * leaves the card in needs_attention for a human, same as any other
    * interrupted stage. */
   private pendingEvaluations = new Map<string, string>();
@@ -866,6 +875,15 @@ export class Orchestrator {
   resumeCard(cardId: string) {
     const card = requireCard(cardId);
     if (card.status !== "paused") throw new ClientError(`cannot resume a ${card.status} card`);
+    const stillRunning = db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.cardId, cardId), eq(runs.status, "running")))
+      .limit(1)
+      .get();
+    if (stillRunning) {
+      throw new ClientError("the loop is still finishing its current iteration — try again in a moment", 409);
+    }
     this.pausedCards.delete(cardId);
     this.moveCard(cardId, "paused", "ready");
     this.pump();
@@ -969,20 +987,102 @@ export class Orchestrator {
   /** How many of `repoId`'s cards are actively running a harness. Queued or
    * human-waiting cards do not count, and repos never share slots.
    *
-   * Counted over distinct card ids: a loop appears in `activeLoopCards` from
-   * before its card reaches `looping` until after it leaves, so the two
-   * sources overlap for most of a run. */
+   * Counted over distinct card ids from the database alone: a card in a
+   * running status, or a card with a `running` run row (a loop still tearing
+   * down after its card moved on), each hold a slot — whichever worker owns
+   * them. */
   private pipelineLoad(repoId: string): number {
+    return this.loadFor(repoId);
+  }
+
+  /** `pipelineLoad` through `q` — `db` or the transaction handle inside
+   * `claimLoopRun`, so the claim counts under `BEGIN IMMEDIATE`. */
+  private loadFor(repoId: string, q: Pick<typeof db, "select"> = db): number {
     const running = new Set(
-      db
+      q
         .select({ id: cards.id })
         .from(cards)
         .where(and(inArray(cards.status, [...RUNNING_STATUSES]), eq(cards.repoId, repoId)))
         .all()
         .map((c) => c.id),
     );
-    for (const [cardId, id] of this.activeLoopCards) if (id === repoId) running.add(cardId);
+    for (const row of q
+      .select({ id: runs.cardId })
+      .from(runs)
+      .innerJoin(cards, eq(runs.cardId, cards.id))
+      .where(and(eq(runs.status, "running"), eq(cards.repoId, repoId)))
+      .all()) {
+      running.add(row.id);
+    }
     return running.size;
+  }
+
+  /**
+   * Claim the loop run for a Ready card (spec 25 decision 2). Everything the
+   * run needs is read up front; the claim itself — card still Ready, no run
+   * already `running` for it, a free slot in its repo — is checked and taken
+   * inside one `BEGIN IMMEDIATE` transaction, so two workers sharing the
+   * database can never both start the same card or overfill a repo. Returns
+   * null when the card is not claimable; the card is untouched except for a
+   * planless card, which lands in Needs Attention.
+   */
+  claimLoopRun(cardId: string): LoopClaim | null {
+    const card = getCard(cardId);
+    if (!card || card.status !== "ready") return null;
+    const repo = getRepo(card.repoId);
+    if (!repo) return null;
+    const plan = this.latestPlan(cardId);
+    if (!plan) {
+      this.moveCard(cardId, "ready", "needs_attention", "card has no plan");
+      return null;
+    }
+    const settings = getSettings();
+    const provider = normalizeProvider(settings.loopProvider, "anthropic");
+    const loopModel = card.loopModel || settings.loopModel;
+    const prev = this.latestWorktreeRun(cardId);
+    const runId = nanoid();
+    const limit = this.concurrencyLimit(settings);
+
+    const claimed = db.transaction(
+      (tx) => {
+        const fresh = tx.select({ status: cards.status }).from(cards).where(eq(cards.id, cardId)).get();
+        if (fresh?.status !== "ready") return false;
+        const live = tx
+          .select({ id: runs.id })
+          .from(runs)
+          .where(and(eq(runs.cardId, cardId), eq(runs.status, "running")))
+          .get();
+        if (live) return false;
+        if (this.loadFor(card.repoId, tx) >= limit) return false;
+        const moved = tx
+          .update(cards)
+          .set({ status: "looping", updatedAt: now() })
+          .where(and(eq(cards.id, cardId), eq(cards.status, "ready")))
+          .run();
+        if (moved.changes !== 1) return false;
+        tx.insert(runs)
+          .values({
+            id: runId,
+            cardId,
+            planId: plan.id,
+            kind: "loop",
+            worktreePath: prev?.worktreePath ?? "",
+            branch: prev?.branch ?? "",
+            baseBranch: prev?.baseBranch ?? card.baseBranch ?? null,
+            provider,
+            model: loopModel,
+            startedAt: now(),
+            sandboxed: settings.sandboxEnabled ? 1 : 0,
+            workerId: this.workerId,
+          })
+          .run();
+        return true;
+      },
+      { behavior: "immediate" },
+    );
+    if (!claimed) return null;
+    emitEvent("card.moved", { cardId, payload: { from: "ready", to: "looping" } });
+    return { runId, card, repo, plan, settings, prev, provider, loopModel };
   }
 
   /**
@@ -1098,31 +1198,24 @@ export class Orchestrator {
         }
         const readyCard = repoReady[nextReady++];
         if (readyCard) {
-          // A nested pump may have claimed it since the list was read — or a
-          // loop may already be starting it: the ready→looping claim comes
-          // after runLoop's awaited worktree and sandbox setup, so the card
-          // still reads as Ready for those seconds, and with a cap above 1 a
-          // pump from any other event in that window would start it twice.
-          // activeLoopCards is set synchronously below, so it is the guard.
-          if (getCard(readyCard.id)?.status !== "ready" || this.activeLoopCards.has(readyCard.id)) {
-            continue;
-          }
+          // The claim is the guard: it moves the card to `looping` and
+          // inserts its run row atomically, so a nested pump, another event
+          // in this process, or another worker on the same database cannot
+          // start it twice.
+          const claim = this.claimLoopRun(readyCard.id);
+          if (!claim) continue;
           const id = readyCard.id;
-          this.activeLoopCards.set(id, repoId);
-          void this.runLoop(id)
+          void this.runLoop(claim)
             .catch((err) => {
               const reason = String(err);
-              // A throw after startRunRow would otherwise leave the run row
+              // A throw after the claim would otherwise leave the run row
               // `running` until the next recover().
               this.endActiveRun(id, "failed", reason);
               if (getCard(id)?.status === "looping") {
                 this.moveCard(id, "looping", "needs_attention", reason);
               }
             })
-            .finally(() => {
-              this.activeLoopCards.delete(id);
-              this.pump();
-            });
+            .finally(() => this.pump());
           continue;
         }
 
@@ -1143,22 +1236,15 @@ export class Orchestrator {
     }
   }
 
-  private async runLoop(cardId: string) {
-    const card = getCard(cardId)!;
-    const repo = getRepo(card.repoId);
-    if (!repo) throw new Error("repo not found");
-    const plan = this.latestPlan(cardId);
-    if (!plan) throw new Error("card has no plan");
-    const settings = getSettings();
+  private async runLoop(claim: LoopClaim) {
+    const { card, repo, plan, settings, runId, prev, provider, loopModel } = claim;
+    const cardId = card.id;
     const maxIterations = card.maxIterations ?? settings.defaultMaxIterations;
     const timeoutMs = (card.timeoutMinutes ?? settings.defaultTimeoutMinutes) * 60 * 1000;
-    const provider = normalizeProvider(settings.loopProvider, "anthropic");
-    const loopModel = card.loopModel || settings.loopModel;
 
-    const runId = nanoid();
-    const { worktreePath, branch, baseBranch, created } = await resolveWorktree(
-      repo, card, runId, this.latestWorktreeRun(cardId),
-    );
+    const { worktreePath, branch, baseBranch, created } = await resolveWorktree(repo, card, runId, prev);
+    db.update(runs).set({ worktreePath, branch, baseBranch }).where(eq(runs.id, runId)).run();
+    if (created) recordWorktree(repo.id, runId, worktreePath, branch);
     // Ensure the worktree carries the current plan's artifacts.
     const ralphDir = ralphDirPath(worktreePath);
     const ralphFile = (name: string) => path.join(/* turbopackIgnore: true */ ralphDir, name);
@@ -1199,25 +1285,19 @@ export class Orchestrator {
     // baseline. The baseline persists to disk because the pre-merge re-check
     // may run long after this process is gone.
     const ctx = await createRunSandbox(runId, { cwd: worktreePath, s: settings });
+    db.update(runs).set({ diskLimitMechanism: ctx.diskLimitMechanism }).where(eq(runs.id, runId)).run();
+    if (ctx.weakerIsolationEnabled) {
+      emitEvent("sandbox.weaker_isolation_enabled", {
+        cardId,
+        runId,
+        payload: { reason: "sandboxWeakerIsolationForGoTls" },
+      });
+    }
     // Multi-GB allocation — skipped under test, fire-and-forget otherwise.
     if (process.env.NODE_ENV !== "test") void ensureBallast(this.ballastPath());
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
     if (integrityBaseline) saveBaseline(runId, integrityBaseline);
 
-    startRunRow(
-      { id: runId, cardId, planId: plan.id, kind: "loop", worktreePath, branch, baseBranch, provider, model: loopModel },
-      ctx,
-      settings,
-      created ? repo.id : undefined,
-    );
-    // The awaited git calls above open a window where the user can cancel
-    // before this run row existed — the CAS failing means the card left the
-    // queue, so never start the loop for it.
-    if (!this.moveCard(cardId, card.status, "looping")) {
-      this.finishRun(runId, "cancelled", "card left the queue before the loop started");
-      await ctx.cleanup();
-      return;
-    }
     emitEvent("run.started", {
       cardId,
       runId,
