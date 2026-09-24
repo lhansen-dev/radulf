@@ -151,6 +151,29 @@ describe("startTranscriptPush", () => {
     expect(push.fromCursor).toBe(0); // PLAN.md Phase 18.3: 0 on the first pump
   });
 
+  // Spec 25: in a split web/worker deployment the web process starts the
+  // watcher when it first sees the run as running, which may be well after
+  // the worker began writing. Attaching must catch up on what's already
+  // there without waiting for a further fs event.
+  it("catches up on lines written before the watcher attached, without a watch event", async () => {
+    fs.writeFileSync(file, `${JSON.stringify({ t: "raw", line: "before-attach" })}\n`);
+    let watchCallback: (() => void) | undefined;
+    vi.spyOn(fs, "watch").mockImplementation(((_path: unknown, cb: () => void) => {
+      watchCallback = cb;
+      return { close: vi.fn() } as unknown as fs.FSWatcher;
+    }) as typeof fs.watch);
+
+    const pending = nextTranscriptPush("run-late");
+    stop = startTranscriptPush(file, "run-late", 1);
+    expect(watchCallback).toBeDefined();
+
+    // Deliberately never invoke watchCallback: the attach itself must pump.
+    const push = await pending;
+    expect(push.fromCursor).toBe(0);
+    expect(push.lines).toEqual([{ t: "raw", line: "before-attach" }]);
+    expect(push.cursor).toBe(fs.statSync(file).size);
+  });
+
   // PLAN.md Phase 18.3: fromCursor is the byte offset THIS batch started at
   // (the watcher's cursor before the pump's readTranscriptChunk call), so a
   // client that applied every prior push can tell a clean handoff (its own

@@ -84,8 +84,9 @@ test: ## Run the test suite once
 	$(BIN)/vitest run
 
 # Skipped by plain `make test` (describe.skipIf on RADULF_SPLIT_CHECK) because it
-# spawns a real `next dev` and a real worker process.
-check-split: ## Boot a web-only and a worker-only process against a temp data dir and drive a card through the web API
+# spawns two real `next start` web processes and a real worker process. Needs
+# the production build because both web processes run `next start`.
+check-split: build ## Boot two web-only and a worker-only process against a temp data dir and drive a card through the web API (needs the production build)
 	RADULF_SPLIT_CHECK=1 $(BIN)/vitest run src/server/splitProcesses.test.ts
 
 check: test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)

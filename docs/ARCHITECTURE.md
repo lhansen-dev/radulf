@@ -31,7 +31,8 @@ subprocesses for agent work — the pi SDK is a library call.
 Boot is `src/server/boot.ts`, called from `src/instrumentation.ts` under Next
 and from `src/worker.ts` (`make worker`) as a plain Node process. `RADULF_ROLES`
 (`web`, `worker`, default both) decides what runs. A web-only process serves
-the UI and API and only moves cards. A worker-only process ensures the auth
+the UI and API, only moves cards, tails events, and watches running runs'
+transcripts. A worker-only process ensures the auth
 secret, runs the sandbox preflight (once, cached), then recovery — `recover()`
 flips any run orphaned by a restart into Needs Attention — the queue pump
 (event-driven plus a short timer), the stages, improvement-run drivers,
@@ -286,6 +287,28 @@ timestamped snapshot instead.
 `src/server/events.ts` is an `EventEmitter` on a global, so a Next.js hot reload
 does not orphan subscribers. `emitEvent` writes to the `events` table *and*
 publishes to the bus.
+
+Every process also runs the events tailer in `src/server/eventsTail.ts`,
+started from `src/server/boot.ts` for every role. It polls the `events` table
+every `RADULF_EVENTS_TAIL_INTERVAL_MS` ms (default 500) for rows with an id past
+the last one it saw and re-emits them on the local bus, skipping ids the process
+emitted itself (`wasEmittedLocally` in `src/server/events.ts`) so no local
+consumer sees an event twice. The tailer writes nothing: the `events` table
+stays the only durable copy, and this is how a web-only process learns what a
+worker-only process did.
+
+Live transcript pushes are owned by the web role. `src/server/transcriptWatchers.ts`
+keeps exactly one `startTranscriptPush` watcher per run in status `running` per
+process — never one per SSE client. A watcher starts when the bus delivers
+`run.started`/`iteration.started` for that run, or when a periodic scan every
+`RADULF_TRANSCRIPT_SCAN_INTERVAL_MS` ms (default 5000) of the `runs` table finds
+it; for a loop run it follows the latest iteration file. It stops on
+`run.finished` or when the row is no longer running. The stage runner
+(`src/server/stage.ts`) no longer starts a push; scoping turns
+(`src/server/scoping.ts`) still start their own because they stay in the web
+process. The SSE route `src/app/api/events/stream/route.ts` still broadcasts
+every push to every client and the browser filters by run id. In the default
+single process both roles share one registry, so no line is pushed twice.
 
 `src/app/api/events/stream/route.ts` is the SSE feed the board subscribes to,
 with a 25s heartbeat. This is why the board updates without polling.

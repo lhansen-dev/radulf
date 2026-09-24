@@ -1,6 +1,8 @@
-// Two-process check: a web-only `next dev` and a worker-only `dist/worker.mjs`
-// boot together against one fresh data directory and race on migrations and
-// auth-secret creation. This spawns real servers, so it runs only from
+// Three-process check: two web-only `next start` processes and a worker-only
+// `dist/worker.mjs` boot together against one fresh data directory and race on
+// migrations and auth-secret creation; events and live transcripts must fan
+// out from the worker to a web process that never executed anything. This
+// spawns real servers (and needs the production build), so it runs only from
 // `make check-split` (RADULF_SPLIT_CHECK=1), never on a plain `make test`.
 //
 // Deliberately never imports `@/db`: the two child processes own the
@@ -19,9 +21,15 @@ let root: string;
 let dataDir: string;
 let port: number;
 let baseUrl: string;
+let port2: number;
+let baseUrl2: string;
 let web: ChildProcess;
+let web2: ChildProcess;
 let worker: ChildProcess;
-const out = { web: "", worker: "" };
+const out = { web: "", web2: "", worker: "" };
+// Shared between the fan-out test and the drive test.
+let repoId: string;
+let cardId: string;
 
 function tail(s: string): string {
   return s.slice(-2000);
@@ -44,7 +52,7 @@ async function waitFor(
     await new Promise((r) => setTimeout(r, 250));
   }
   throw new Error(
-    `timed out after ${timeoutMs}ms waiting for ${what}\n--- web ---\n${tail(out.web)}\n--- worker ---\n${tail(out.worker)}`,
+    `timed out after ${timeoutMs}ms waiting for ${what}\n--- web ---\n${tail(out.web)}\n--- web2 ---\n${tail(out.web2)}\n--- worker ---\n${tail(out.worker)}`,
   );
 }
 
@@ -81,6 +89,47 @@ async function api<T = unknown>(
   return { status: res.status, json: (await res.json()) as T };
 }
 
+// Subscribes to an SSE endpoint and collects every `data:` frame as parsed
+// JSON. `ready` resolves once the response headers arrived (the subscription
+// is live), so frames emitted after awaiting it cannot be missed.
+function openEventStream(url: string): {
+  frames: Array<Record<string, unknown>>;
+  ready: Promise<void>;
+  close: () => void;
+} {
+  const frames: Array<Record<string, unknown>> = [];
+  const controller = new AbortController();
+  const ready = (async () => {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok || !res.body) throw new Error(`event stream ${url} responded ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    void (async () => {
+      let buffer = "";
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buffer.indexOf("\n\n")) !== -1) {
+            const block = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            for (const line of block.split("\n")) {
+              if (line.startsWith("data: ")) {
+                frames.push(JSON.parse(line.slice(6)) as Record<string, unknown>);
+              }
+            }
+          }
+        }
+      } catch {
+        // aborted by close()
+      }
+    })();
+  })();
+  return { frames, ready, close: () => controller.abort() };
+}
+
 function pipe(child: ChildProcess, key: keyof typeof out) {
   for (const stream of [child.stdout, child.stderr]) {
     stream?.setEncoding("utf8");
@@ -97,10 +146,15 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
     // creating the directory, the DB, and the auth secret.
     dataDir = path.join(root, "data");
 
+    if (!fs.existsSync(path.join(repoRoot, ".next", "BUILD_ID"))) {
+      throw new Error("run `make build` first (make check-split depends on it)");
+    }
     execFileSync("make", ["build-worker"], { cwd: repoRoot, stdio: "inherit" });
 
     port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
+    port2 = await freePort();
+    baseUrl2 = `http://127.0.0.1:${port2}`;
 
     // Strip anything from the developer's shell or .env.local that would make
     // the two children share state or change the behaviour under test.
@@ -113,9 +167,20 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       "RADULF_WORKTREES_DIR",
       "RADULF_PLANS_DIR",
       "RADULF_PUMP_INTERVAL_MS",
+      "RADULF_EVENTS_TAIL_INTERVAL_MS",
+      "RADULF_TRANSCRIPT_SCAN_INTERVAL_MS",
     ]) {
       delete base[key];
     }
+    // Fast fan-out so cross-process assertions do not wait on the defaults.
+    // Both at their floors (eventsTailIntervalMs / transcriptScanIntervalMs):
+    // the mock provider drives a whole loop run in a few hundred milliseconds,
+    // so web2 must notice `iteration.started` and attach its transcript
+    // watcher well before `run.finished` lands or it sees no live pushes.
+    const fanOut = {
+      RADULF_EVENTS_TAIL_INTERVAL_MS: "50",
+      RADULF_TRANSCRIPT_SCAN_INTERVAL_MS: "100",
+    };
 
     // Spawned back to back so they race on the empty directory.
     //
@@ -123,24 +188,24 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
     // stage, the mock provider would refuse and the card would land in Needs
     // Attention instead of In Review, so a role leak shows up in the outcome.
     // `detached: true` makes it a process-group leader so killing -pid also
-    // reaches the server child that `next dev` forks.
-    web = spawn(
-      path.join(repoRoot, "node_modules/.bin/next"),
-      ["dev", "-H", "127.0.0.1", "-p", String(port)],
-      {
-        cwd: repoRoot,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...base,
-          RADULF_ROLES: "web",
-          RADULF_DATA_DIR: dataDir,
-          RADULF_AUTH_PASSWORD_HASH: "",
-          NEXT_TELEMETRY_DISABLED: "1",
-          PI_OFFLINE: "1",
-        },
-      },
-    );
+    // reaches any server child that `next start` forks.
+    const webEnv = {
+      ...base,
+      ...fanOut,
+      RADULF_ROLES: "web",
+      RADULF_DATA_DIR: dataDir,
+      RADULF_AUTH_PASSWORD_HASH: "",
+      NEXT_TELEMETRY_DISABLED: "1",
+      PI_OFFLINE: "1",
+    };
+    const spawnWeb = (p: number) =>
+      spawn(
+        path.join(repoRoot, "node_modules/.bin/next"),
+        ["start", "-H", "127.0.0.1", "-p", String(p)],
+        { cwd: repoRoot, detached: true, stdio: ["ignore", "pipe", "pipe"], env: webEnv },
+      );
+    web = spawnWeb(port);
+    web2 = spawnWeb(port2);
     // Worker: NODE_ENV=test skips the 2 GiB disk-watchdog ballast; PI_OFFLINE=1
     // skips pi's model-catalog fetch.
     worker = spawn(process.execPath, ["dist/worker.mjs"], {
@@ -148,6 +213,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...base,
+        ...fanOut,
         RADULF_ROLES: "worker",
         RADULF_DATA_DIR: dataDir,
         RADULF_MOCK_LLM: "1",
@@ -157,33 +223,42 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       },
     });
     pipe(web, "web");
+    pipe(web2, "web2");
     pipe(worker, "worker");
 
     await waitFor(async () => (await fetch(`${baseUrl}/api/health`)).ok, 120_000, "web /api/health");
+    await waitFor(
+      async () => (await fetch(`${baseUrl2}/api/health`)).ok,
+      120_000,
+      "web2 /api/health",
+    );
   }, 150_000);
+
+  async function killWeb(child: ChildProcess | undefined) {
+    if (!child) return;
+    try {
+      process.kill(-child.pid!, "SIGTERM");
+    } catch {
+      // already gone
+    }
+    await new Promise<void>((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      const timer = setTimeout(resolve, 5_000);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    try {
+      process.kill(-child.pid!, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
 
   afterAll(async () => {
     if (worker && worker.exitCode === null) worker.kill("SIGKILL");
-    if (web) {
-      try {
-        process.kill(-web.pid!, "SIGTERM");
-      } catch {
-        // already gone
-      }
-      await new Promise<void>((resolve) => {
-        if (web.exitCode !== null) return resolve();
-        const timer = setTimeout(resolve, 5_000);
-        web.once("exit", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
-      try {
-        process.kill(-web.pid!, "SIGKILL");
-      } catch {
-        // already gone
-      }
-    }
+    await Promise.all([killWeb(web), killWeb(web2)]);
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -216,11 +291,11 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       db.close();
     }
 
-    expect(out.web + out.worker).not.toMatch(/SQLITE_BUSY|database is locked|EEXIST|already exists/);
+    expect(out.web + out.web2 + out.worker).not.toMatch(/SQLITE_BUSY|database is locked|EEXIST|already exists/);
   });
 
   it(
-    "drives a card from Todo to In Review through the web-only process",
+    "fans a card created on one web process out to the other web process's event stream",
     async () => {
       const repoPath = path.join(root, "repos", "fixture");
       fs.mkdirSync(repoPath, { recursive: true });
@@ -251,18 +326,41 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
         defaultBranch: "main",
       });
       expect(repo.status).toBe(201);
-      const repoId = (repo.json as { id: string }).id;
+      repoId = (repo.json as { id: string }).id;
 
-      const card = await api("POST", "/api/cards", {
-        repoId,
-        title: "Split check",
-        description: "Driven by the mock provider.",
-        plannerModel: "happy-path",
-        loopModel: "happy-path",
-        evaluatorModel: "happy-path",
-      });
-      expect(card.status).toBe(201);
-      const cardId = (card.json as { id: string }).id;
+      // Subscribe on web2 BEFORE creating the card on web1: the only way the
+      // frame can reach web2 is through the events tailer.
+      const stream = openEventStream(baseUrl2 + "/api/events/stream");
+      await stream.ready;
+      try {
+        const card = await api("POST", "/api/cards", {
+          repoId,
+          title: "Split check",
+          description: "Driven by the mock provider.",
+          plannerModel: "happy-path",
+          loopModel: "happy-path",
+          evaluatorModel: "happy-path",
+        });
+        expect(card.status).toBe(201);
+        cardId = (card.json as { id: string }).id;
+
+        await waitFor(
+          () => stream.frames.some((f) => f.type === "card.created" && f.cardId === cardId),
+          5_000,
+          "card.created on the second web process",
+        );
+      } finally {
+        stream.close();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "drives a card from Todo to In Review through the web-only process",
+    async () => {
+      expect(repoId).toBeTruthy();
+      expect(cardId).toBeTruthy();
 
       expect((await api("POST", `/api/cards/${cardId}/move`, { to: "todo" })).status).toBe(200);
       // Three worker pump intervals: a web-only process queues but never
@@ -273,6 +371,11 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       expect(listed.status).toBe(200);
       const queued = (listed.json as Array<{ id: string }>).find((c) => c.id === cardId);
       expect(queued).toMatchObject({ status: "todo", latestRun: null });
+
+      // Subscribe on web2 (which never executes anything) before the run
+      // starts so every live transcript push for the loop run is captured.
+      const stream = openEventStream(baseUrl2 + "/api/events/stream");
+      await stream.ready;
 
       // The passive web orchestrator only stamps startedAt; the worker's
       // timer pump picks the card up from there.
@@ -286,6 +389,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       type CardDetail = {
         card?: { status?: string };
         runs: Array<{
+          id: string;
           kind: string;
           status: string;
           iterationsDone: number | null;
@@ -321,9 +425,65 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       });
       expect(ofKind("evaluate")[0]).toMatchObject({ status: "completed", exitReason: "approve" });
 
-      // The web process ran without RADULF_MOCK_LLM, so reaching review
+      // Live transcript pushes reached web2 even though the worker wrote the
+      // files: web2's watcher registry tails every running run it sees.
+      const loopRunId = ofKind("loop")[0].id;
+      const pushes = stream.frames.filter(
+        (f) => f.kind === "transcript" && f.runId === loopRunId,
+      ) as unknown as Array<{
+        iteration: number;
+        fromCursor: number;
+        cursor: number;
+        lines: unknown[];
+      }>;
+      expect(pushes.length).toBeGreaterThan(0);
+
+      // Gapless and duplicate-free per iteration.
+      const byIteration = new Map<number, typeof pushes>();
+      for (const p of pushes) {
+        const group = byIteration.get(p.iteration) ?? [];
+        group.push(p);
+        byIteration.set(p.iteration, group);
+      }
+      for (const group of byIteration.values()) {
+        expect(group[0].fromCursor).toBe(0);
+        for (let i = 1; i < group.length; i++) {
+          expect(group[i].fromCursor).toBe(group[i - 1].cursor);
+        }
+      }
+
+      // Pushes concatenate to a prefix of the full transcript as served by
+      // web2, and a reconnecting client resuming from its last cursor gets
+      // exactly the remainder.
+      const busiest = [...byIteration.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+      const [iteration, group] = busiest;
+      type Chunk = { lines: unknown[]; cursor: number; hasMore: boolean };
+      const drain = async (start: number): Promise<unknown[]> => {
+        const lines: unknown[] = [];
+        let cursor = start;
+        for (;;) {
+          const res = await fetch(
+            `${baseUrl2}/api/runs/${loopRunId}?iteration=${iteration}&cursor=${cursor}`,
+          );
+          expect(res.status).toBe(200);
+          const chunk = (await res.json()) as Chunk;
+          lines.push(...chunk.lines);
+          if (!chunk.hasMore) break;
+          cursor = chunk.cursor;
+        }
+        return lines;
+      };
+      const full = await drain(0);
+      const pushed = group.flatMap((p) => p.lines);
+      expect(full.slice(0, pushed.length)).toEqual(pushed);
+      const rest = await drain(group.at(-1)!.cursor);
+      expect([...pushed, ...rest]).toEqual(full);
+      stream.close();
+
+      // The web processes ran without RADULF_MOCK_LLM, so reaching review
       // proves every pi session ran in the worker.
       expect(out.web).not.toMatch(/mock provider is disabled/);
+      expect(out.web2).not.toMatch(/mock provider is disabled/);
     },
     150_000,
   );
