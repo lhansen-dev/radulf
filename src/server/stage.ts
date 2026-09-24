@@ -94,11 +94,13 @@ export async function sandboxUnavailableReason(settings: Pick<Settings, "sandbox
 }
 
 /** Run one harness invocation writing its transcript under the run's
- * transcript directory. The stage does not push the transcript itself: the
- * web process's watcher registry (`src/server/transcriptWatchers.ts`) owns one
+ * transcript directory. The stage deliberately does NOT call
+ * `startTranscriptPush` itself: the web process's watcher registry
+ * (`src/server/transcriptWatchers.ts`) owns exactly one `startTranscriptPush`
  * watcher per running run and pushes the transcript live over SSE, so a split
- * web/worker deployment sees it too (spec 25, decision 5). Single-file
- * transcripts (plan/evaluate) use iteration 0. */
+ * web/worker deployment sees it too and a single process never pushes the same
+ * chunk twice (spec 25, decision 5). Single-file transcripts (plan/evaluate)
+ * use iteration 0. */
 export async function runWithTranscript(
   opts: Omit<Parameters<typeof runHarness>[0], "transcriptPath"> & {
     runId: string;
