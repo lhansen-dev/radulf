@@ -28,7 +28,7 @@ HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 
 PORT := 3000
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start lint typecheck test check check-split login \
+.PHONY: help install dev build start web lint typecheck test check check-split check-compose login \
         worker build-worker db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
@@ -66,13 +66,16 @@ build: build-worker ## Production build: the Next.js bundle plus dist/worker.mjs
 build-worker: ## Bundle the worker-only entry point (src/worker.ts) into dist/worker.mjs
 	$(BIN)/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
 
-worker: build-worker ## Run a worker-only process (orchestrator, no HTTP) against this checkout
+worker: build-worker ## Run a worker-only process (agent work, no HTTP) against this checkout
 	@$(LOADENV) RADULF_ROLES=worker node dist/worker.mjs
 
 # NEXT_MANUAL_SIG_HANDLE: Next's own SIGTERM/SIGINT handler exits as soon as
 # open connections close and would pre-empt Radulf's drain (src/server/shutdown.ts).
 start: ## Serve the production build (loopback-only unless auth is configured)
 	NEXT_MANUAL_SIG_HANDLE=1 $(BIN)/next start -H $(HOST)
+
+web: ## Serve the production build as a web-only process (no agent work; pair with make worker)
+	NEXT_MANUAL_SIG_HANDLE=1 RADULF_ROLES=web $(BIN)/next start -H $(HOST)
 
 lint: ## Lint
 	$(BIN)/eslint
@@ -90,6 +93,17 @@ check-split: build ## Boot two web-only and a worker-only process against a temp
 	RADULF_SPLIT_CHECK=1 $(BIN)/vitest run src/server/splitProcesses.test.ts
 
 check: test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)
+
+# Runs under its own compose project name with a scratch env file so it never
+# touches the operator's `radulf` project: separate volume, separate port
+# (RADULF_CHECK_PORT, default 3999). `down -v` removes only this project's volumes.
+check-compose: ## Throwaway compose run: one web + two workers under project name radulf-check with a scratch env file; never touches the operator's volume or port
+	env_file=$$(mktemp); \
+	printf 'RADULF_PORT=%s\n' "$${RADULF_CHECK_PORT:-3999}" > "$$env_file"; \
+	docker compose -p radulf-check --env-file "$$env_file" up -d --build --scale worker=2 \
+		&& docker compose -p radulf-check ps \
+		&& docker compose -p radulf-check --env-file "$$env_file" down -v; \
+	rm -f "$$env_file"
 
 db-generate: ## Generate a migration from schema changes
 	$(BIN)/drizzle-kit generate

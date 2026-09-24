@@ -147,8 +147,8 @@ The SQLite database and every runtime directory (`./data`, plus the agent-writab
 run and are all gitignored — **no manual migration step needed**.
 
 Running it on a server? [`docs/DOCKER.md`](docs/DOCKER.md) builds the same thing
-into a container: `docker compose up -d --build`, one volume for state, and restarts
-handled by Docker instead of a service unit.
+into one image run as two containers, `web` and `worker`: `docker compose up -d --build`,
+one volume for state, and restarts handled by Docker instead of a service unit.
 
 > [!TIP]
 > **First time here?** Once the dev server is up, open the in-app **Docs** tab

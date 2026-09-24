@@ -11,9 +11,15 @@ pipeline for someone using Radulf rather than changing it.
 
 ## The shape of it
 
-One Next.js app. The server half runs in-process: by default one process does
-both roles (web and worker — see Boot below), there is no queue, and no
-subprocesses for agent work — the pi SDK is a library call.
+One codebase and one image, run as two roles. `web` serves the UI and API,
+authenticates, writes operator intent (card moves, approvals, cancel/pause),
+tails the events table and watches running transcripts; it never runs an
+agent, never touches a worktree, and has no sandbox. `worker` claims runs and
+review deliveries, runs pi sessions and the sandbox, drives improvement runs,
+and heartbeats. `RADULF_ROLES` selects one or both; `make dev` and the tests
+run both in one process. There is no queue service: coordination is rows in
+SQLite, and there are no subprocesses for agent work — the pi SDK is a
+library call.
 
 ```
   Next.js route handlers          Orchestrator             pi SDK session
@@ -30,21 +36,48 @@ subprocesses for agent work — the pi SDK is a library call.
 
 Boot is `src/server/boot.ts`, called from `src/instrumentation.ts` under Next
 and from `src/worker.ts` (`make worker`) as a plain Node process. `RADULF_ROLES`
-(`web`, `worker`, default both) decides what runs. A web-only process serves
-the UI and API, only moves cards, tails events, and watches running runs'
-transcripts; it never writes to a repository. Approving a card in a web-only
-process moves it to `reviewing` and enqueues a `review_deliveries` row, which a
-worker claims under the repo's `repo_leases` row before running the merge or
-pull-request delivery (spec 25 decision 6). It holds no `AbortController` for a run another process owns, so
-cancel, reset and pause also write the nullable `runs.control` column
-(`cancel` | `pause`); the owning worker polls that column every
-`RADULF_CONTROL_POLL_INTERVAL_MS` ms (default 1000) for the runs whose
-controller it holds, fires its local abort on `cancel`, and observes `pause` at
-the loop's iteration boundary (spec 25 decision 4). A worker-only process ensures the auth
-secret, runs the sandbox preflight (once, cached), then recovery — `recover()`
-flips any run orphaned by a restart into Needs Attention — the queue pump
-(event-driven plus a short timer), the stages, improvement-run drivers,
-schedules, retention and the shutdown drain, and listens on no port.
+(`web`, `worker`, default both) decides what runs. A worker-only process
+ensures the auth secret, runs the sandbox preflight (once, cached), then
+recovery, the queue pump (event-driven plus a short timer), the stages,
+improvement-run drivers, schedules, retention and the shutdown drain, and
+listens on no port. Several workers can run at once against the same database;
+the pieces that make that safe are:
+
+- **The claim.** A card is claimed in one `BEGIN IMMEDIATE` transaction in
+  `src/server/orchestrator.ts` (`claimLoopRun`, `claimPendingEvaluation` and
+  their siblings): it re-reads the card's status and the repo's pipeline load
+  inside the transaction, transitions the card, and inserts the `runs` row
+  stamped with `runs.worker_id` in the same step. Two workers pumping the same
+  repo cannot both start the card, because only one `UPDATE ... WHERE status =
+  'ready'` lands, and the per-repo cap is checked from the database rather than
+  from any process's memory.
+- **The heartbeat.** Each process registers a row in the `workers` table
+  (`src/server/workers.ts`) and refreshes it every
+  `RADULF_HEARTBEAT_INTERVAL_MS`. A worker whose row is older than the
+  `workerStaleSeconds` setting is dead as far as everyone else is concerned.
+  The stale reaper `reapStaleRuns` runs continuously on every worker's
+  heartbeat tick (and once at boot with `orphans: true`, covering runs with no
+  `worker_id` left by a restart): it finishes a dead worker's `running` run as
+  `interrupted` with a compare-and-set on `status = 'running'`, so two reapers
+  never both finalize it, then hands the card to `parkOrResume` — a
+  checkpointed loop goes back to Ready and the pump opens a fresh run on the
+  first unchecked task, while every other kind of run parks the card in Needs
+  Attention. It also parks cards whose claimed review delivery died mid-merge
+  and deletes the stale `workers` rows.
+- **The control column.** A web process holds no `AbortController` for a run
+  another process owns, so cancel, reset and pause also write the nullable
+  `runs.control` column (`cancel` | `pause`); the owning worker polls that
+  column every `RADULF_CONTROL_POLL_INTERVAL_MS` ms (default 1000) for the runs
+  whose controller it holds, fires its local abort on `cancel`, and observes
+  `pause` at the loop's iteration boundary (spec 25 decision 4).
+- **The events tail.** `src/server/eventsTail.ts` re-emits other processes'
+  rows from the `events` table onto the local bus, which is how a web process
+  learns what a worker did — see [Events and the UI](#events-and-the-ui).
+- **Claimed delivery.** Approving a card in a web process moves it to
+  `reviewing` and enqueues a `review_deliveries` row; a worker claims that row,
+  takes the repo's `repo_leases` row before running the merge or pull-request
+  delivery, and records the base branch's new oid in `ref_writes` (spec 25
+  decision 6). See [Git](#git).
 
 ## The orchestrator
 
@@ -228,8 +261,9 @@ file over a branch name that only meant something where it came from.
 ## Scheduling
 
 `src/server/schedules.ts` is the whole scheduler (spec 22), ticked once a
-minute from `src/server/boot.ts` in a process with the `worker` role. A schedule
-starts only what a button starts, by the path a button takes: `queue-drain` calls `startCard` on every
+minute from `src/server/boot.ts` in every process with the `worker` role — no
+worker is elected to own it. A schedule starts only what a button starts, by
+the path a button takes: `queue-drain` calls `startCard` on every
 card waiting in the Queue, and `improvement-run` calls `createImprovementRun`
 with the arguments stored on the schedule. Every cap those paths enforce still
 applies, and no schedule merges anything.
@@ -239,7 +273,11 @@ Expressions are five-field cron, server-local, parsed by
 place the day-of-month/day-of-week OR rule lives. `fireDueSchedules` compares
 `lastFiredAt` at minute resolution, so a tick that runs twice in a minute
 cannot start the same work twice, and a tick the server was down for is missed
-rather than replayed. A firing that throws is recorded on the schedule and
+rather than replayed. Because the tick runs in every worker,
+`claimScheduleFire` is a compare-and-set on `lastFiredAt`: the `UPDATE` is
+conditioned on the value the tick read, so of any number of workers holding
+the same snapshot exactly one sees a changed row and fires; the rest run,
+record and emit nothing. Two workers never fire a schedule twice. A firing that throws is recorded on the schedule and
 emitted as `schedule.fired`; the schedule stays enabled, because a provider
 outage must not silently cancel the cadence that would have picked the work
 back up.
@@ -278,9 +316,16 @@ Transcripts are **not** in the database — they are JSONL files on disk, read i
 chunks by `src/server/transcript.ts` (`TRANSCRIPT_CHUNK_BYTES`, 512 KB). A long
 run's transcript is far too big for a row.
 
-Settings is a single-row table, read synchronously via `getSettings()`. Provider
+Settings is a key/value table, read synchronously via `getSettings()`. Provider
 credentials live there and flow into the session at runtime; the agent's shell
 runs with a scrubbed env (`agentEnv`) so it cannot read them.
+
+The retention sweep (`pruneRuntimeHistory` in `src/server/retention.ts`) runs
+hourly in every worker, but prunes only when `claimDailySweep` wins the day's
+marker: an upsert of the `settings` row `retentionSweepDay` that writes only
+when the stored day differs from today's, so the first worker to call on a
+given UTC day sees one changed row and every later caller sees zero. Exactly
+one worker prunes per day, however many are running.
 
 Token/cost telemetry lands on both `runs` and `iterations`, at two different
 grains. `iterations` is per loop iteration only — it never existed for plan or
@@ -335,6 +380,14 @@ it: `driveRun(runId)` is a loop that proposes one card
 (`improvementProposer.ts`), creates it, and waits for it to reach a terminal
 status (`awaitCardTerminal`) before proposing the next. It uses the same single
 pipeline slot as everything else.
+
+`driveRun` first claims the run through `src/server/improvementRunLeases.ts`,
+which stamps `improvement_runs.worker_id` and `heartbeat_at`; it heartbeats
+the lease while driving and releases it on exit. A run whose driver's worker
+goes stale (`workerStaleSeconds`, judged against `heartbeat_at`) is adopted by
+whichever other worker's pump tick next sees the still-`running` row, and a
+driver that finds its lease taken over stops rather than proposing into a run
+another worker now owns.
 
 It re-reads the run row after each proposer pass rather than trusting its
 snapshot — the proposer takes minutes, and a Stop landing in that window only

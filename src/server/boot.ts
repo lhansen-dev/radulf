@@ -8,7 +8,7 @@ import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
 import { getOrchestrator } from "./orchestrator";
 import { resumeImprovementRuns } from "./improvementRuns";
 import { registerShutdownHandlers } from "./shutdown";
-import { pruneRuntimeHistory } from "./retention";
+import { claimDailySweep, pruneRuntimeHistory } from "./retention";
 import { fireDueSchedules } from "./schedules";
 import { startEventsTail } from "./eventsTail";
 import { startTranscriptWatchers } from "./transcriptWatchers";
@@ -87,15 +87,23 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   // PLAN.md Phase 7: pruneRuntimeHistory previously only ran when a human
   // hit the manual /api/maintenance/cleanup endpoint, so transcripts and
   // events accumulated unbounded on every deploy that nobody visited that
-  // endpoint on. Sweep automatically on a daily cadence, plus once shortly
+  // endpoint on. Sweep automatically once per UTC day, plus once shortly
   // after boot so a long-running dev/staging instance doesn't wait a full
   // day for its first cleanup. No Settings field for the window yet — 30
   // days is a hardcoded default; revisit if anyone asks for control over it.
+  //
+  // Spec 25 decision 7: the sweep runs in every worker, and the daily marker
+  // compare-and-set in claimDailySweep ensures exactly one worker prunes per
+  // UTC day — the others see the marker already stamped and return without
+  // pruning or logging. The timer fires hourly rather than daily so a worker
+  // booted later than its peer still gets its turn on a following day
+  // instead of always arriving after the peer has already claimed it.
   const RETENTION_DAYS = 30;
-  const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
   const RETENTION_INITIAL_DELAY_MS = 60_000;
   const runRetentionSweep = async () => {
     try {
+      if (!claimDailySweep()) return;
       const result = await pruneRuntimeHistory(RETENTION_DAYS);
       console.log(`[radulf] retention sweep: ${JSON.stringify(result)}`);
     } catch (e) {

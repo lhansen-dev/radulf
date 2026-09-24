@@ -389,6 +389,10 @@ export const improvementRuns = sqliteTable(
     deadlineAt: text("deadline_at").notNull(),
     // In-flight card, persisted so a server restart can re-attach (N2/N3).
     currentCardId: text("current_card_id"),
+    // Driver lease (spec 25 decision 7): the worker driving this run and when
+    // it last heartbeated. Null when nobody drives it.
+    workerId: text("worker_id"),
+    heartbeatAt: text("heartbeat_at"),
     tasksCreated: integer("tasks_created").notNull().default(0),
     tasksSucceeded: integer("tasks_succeeded").notNull().default(0),
     consecutiveFailures: integer("consecutive_failures").notNull().default(0),
