@@ -1,0 +1,13 @@
+- grep criteria (AC1 a/b, AC2, AC3, AC4, AC5, AC9, AC10, AC12, AC13): all pass EXCEPT `grep -c '28' specs/30-plan-critic.md` prints 2 (expected 0) — task 11 commit 5853d65 added a numbering note citing spec 28.
+- drizzle/0022_greedy_the_professor.sql adds plan_critic + critic_model: ok
+- harness diff excluding mock.ts: 0 files: ok
+- vitest settings.test.ts: exit 0 (7 pass)
+- vitest planCriticService.test.ts: exit 0 (13 pass)
+- vitest planningService.test.ts: exit 0 (20 pass)
+- vitest cardValidation.test.ts transcriptWatchers.test.ts: exit 0 (13 pass)
+- vitest mockPipeline.test.ts -t critic: exit 0 (2 pass, 11 skipped)
+- vitest src/app/settings/page.test.tsx: exit 0 (12 pass) alone; timed out (2 tests, 5000ms) only under full-suite load — flaky/load, not deterministic
+- tsc --noEmit: exit 0; eslint: exit 0
+- full `vitest run` (once): 7 files failed. Environmental per card note: bookkeeping, harness/index (watchdog/stall), streamLiveness, srt. Pre-existing (fails identically at merge-base 620e94e): evaluationService.test.ts (3 spec26/27 timeout tests). REAL REGRESSION: src/server/requestValidation.test.ts "normalizes a valid create request" — expected object lacks criticModel: null (passes at merge-base, fails deterministically on HEAD).
+- code review: src/app/api/runs/[id]/route.ts singleFile map lacks critique → UI transcript fetch ?iteration=0 rejected (important); stageDiagnosis.ts:92 labels critique streak as evaluator (important); cardTransfer.ts drops planCritic/criticModel (suggestion)
+- VERDICT written: revise (AC1 grep '28' = 2; make check regression in requestValidation.test.ts; critique transcript unviewable). EVALUATION.md + SUMMARY.md written.
