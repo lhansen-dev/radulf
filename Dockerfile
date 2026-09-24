@@ -77,6 +77,7 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app/package.json /app/next.config.ts ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/.next ./.next
+COPY --from=build --chown=node:node /app/dist ./dist
 # Read from disk at request time, relative to the working directory:
 # migrations at boot (src/db/index.ts), the agent prompt templates
 # (src/server/settings.ts), the Docs tab (src/server/docs.ts), and the
@@ -98,6 +99,18 @@ COPY <<'SH' /usr/local/bin/radulf-login
 exec env PI_CODING_AGENT_DIR="$RADULF_DATA_DIR/pi-agent" /app/node_modules/.bin/pi "$@"
 SH
 RUN chmod 755 /usr/local/bin/radulf-login
+
+# Healthcheck for the `worker` service in compose.yaml, which serves no HTTP.
+# A worker registers its row in `workers` with `host = os.hostname()` (the
+# container hostname) and refreshes `heartbeat_at` every 5s
+# (src/server/workers.ts), so a row for this hostname with a heartbeat newer
+# than RADULF_WORKER_HEALTH_STALE_SECONDS (default 60) means the worker is
+# alive. Read-only: the check must never take a write lock on the shared db.
+COPY <<'SH' /usr/local/bin/radulf-worker-health
+#!/bin/sh
+exec sqlite3 -readonly "$RADULF_DATA_DIR/radulf.db" "SELECT count(*) FROM workers WHERE host = '$(hostname)' AND heartbeat_at > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-${RADULF_WORKER_HEALTH_STALE_SECONDS:-60} seconds')" | grep -q '^[1-9]'
+SH
+RUN chmod 755 /usr/local/bin/radulf-worker-health
 
 USER node
 EXPOSE 3000

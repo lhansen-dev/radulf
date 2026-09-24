@@ -1,23 +1,31 @@
 # Radulf in Docker. `docker compose up -d --build` builds the image from this
-# checkout and runs it; docs/DOCKER.md walks through first-run setup.
+# checkout and runs one `web` and one `worker`; docs/DOCKER.md walks through
+# first-run setup. Add workers with `docker compose up -d --build --scale
+# worker=2`: they share the SQLite file in the state volume and hand out
+# background work (improvement runs, the schedule tick, the retention sweep)
+# through database leases, so any number of them can run side by side.
 #
 # Two env files, two jobs:
 #   .env        read by compose for the ${...} references below
 #               (RADULF_BIND, RADULF_PORT, RADULF_REPOS_DIR), all optional
 #   .env.local  handed to the app unchanged: the same file a host install
 #               uses, with the keys .env.example lists
+#
+# No depends_on between the two services: both boot independently against
+# the shared SQLite file (migrations run under an exclusive lock), and the
+# web UI stays up while workers restart or scale.
 services:
-  radulf:
+  # The HTTP server: UI, API, pi login. Runs no agent, so it carries no
+  # sandbox and none of the security_opt relaxation the worker needs.
+  web:
     build: .
     image: radulf:local
-    # docker-init as PID 1 reaps what the orchestrator's children leave
-    # behind (git, gh, sandboxed bash); node on its own does not.
+    # docker-init as PID 1 reaps what the server's children leave behind
+    # (git, gh); node on its own does not.
     init: true
     # POST /api/restart exits the process (code 77, src/app/api/restart);
     # under this policy that becomes a real restart instead of a stop.
     restart: unless-stopped
-    # Shutdown drains in-flight runs for up to 30s (src/server/shutdown.ts).
-    stop_grace_period: 45s
     ports:
       # Loopback unless RADULF_BIND says otherwise. Set RADULF_BIND=0.0.0.0
       # only with RADULF_AUTH_PASSWORD_HASH set in .env.local, the same rule
@@ -45,6 +53,8 @@ services:
       # env_file.
       RADULF_DATA_DIR: /var/lib/radulf/data
       HOME: /var/lib/radulf/home
+      # This process serves HTTP only; background work belongs to `worker`.
+      RADULF_ROLES: web
       # pi binds its OAuth callback to 127.0.0.1, which Docker cannot forward
       # to; the published ports above need an interface the host can reach.
       # Exposed to this compose network only while a login is running, and the
@@ -59,12 +69,46 @@ services:
       # Bind-mounted files must be writable by the container user (uid 1000,
       # the image's `node` user); set `user: "<uid>:<gid>"` in an override if not.
       - "${RADULF_REPOS_DIR:-radulf-repos}:/repos"
+    cap_drop:
+      - ALL
+  # The background worker: improvement-run drivers, the schedule tick, the
+  # retention sweep. This is the only process that runs an agent.
+  worker:
+    build: .
+    image: radulf:local
+    # docker-init as PID 1 reaps what the orchestrator's children leave
+    # behind (git, gh, sandboxed bash); node on its own does not.
+    init: true
+    restart: unless-stopped
+    command: ["node", "dist/worker.mjs"]
+    # Shutdown drains in-flight runs for up to 30s (src/server/shutdown.ts).
+    stop_grace_period: 45s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      RADULF_DATA_DIR: /var/lib/radulf/data
+      HOME: /var/lib/radulf/home
+      RADULF_ROLES: worker
+    volumes:
+      - radulf-state:/var/lib/radulf
+      - "${RADULF_REPOS_DIR:-radulf-repos}:/repos"
+    # No HTTP here; the image's radulf-worker-health script (Dockerfile) reads
+    # this worker's heartbeat row out of the shared database instead.
+    healthcheck:
+      test: ["CMD", "radulf-worker-health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
     # Radulf's own sandbox (bubblewrap + seccomp, docs/SANDBOXING.md) needs
     # user namespaces, mount, and a fresh procfs, which Docker's default
     # seccomp profile, AppArmor profile, and masked /proc paths each block.
-    # Relaxed so the agent sandbox can exist: the server is then confined no
+    # Relaxed so the agent sandbox can exist: the worker is then confined no
     # less than the same process under systemd on the host, and drops every
-    # capability besides.
+    # capability besides. Only the worker needs this; `web` runs no agent.
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
