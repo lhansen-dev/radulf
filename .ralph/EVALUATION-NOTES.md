@@ -1,16 +1,20 @@
-# Evaluation notes (attempt started 2026-09-24T15:17Z)
-- git diff --name-only beta...HEAD -- src/server/harness/ → exactly src/server/harness/mock.ts: PASS
-- git diff --quiet beta...HEAD -- src/server/reviewService.ts → exit 0: PASS
-- Lease greps 1-8 (acquireRepoLease=0, releaseRepoLease(=0, no acquireRepoLeaseWithin, waitForRepoLeaseRelease present incl. exact call, releaseStaleLeases-only import, no "held by a delivery for over", recordTaskCompleted doc comment adjacent): all PASS
-- Previous-attempt greps (syncWithBase, MAX_SYNC_GATE_ROUNDS = 2, runGateCommand, gateRepairTaskText): PASS
-- Spec text greps S1-S7 (title, waits-not-takes, no old killed-gate sentence, "without a loop's DONE", no '28', DESIGN_HISTORY row line 66 after spec 27 line 65): all PASS
-- npx vitest run src/server/orchestrator.lifecycle.test.ts -t "spec 29" → exit 0, 7 passed: PASS
-- npx vitest run src/server/orchestrator.lifecycle.test.ts → exit 0, 109 passed: PASS
-- npx vitest run baseSync/gate/acceptanceProbe/checklist/git/integrity tests → exit 0, 83 passed: PASS
-- npx vitest run src/server/mockPipeline.test.ts → exit 0, 12 passed incl. base-conflict: PASS
-- npx vitest run src/server/evaluationService.test.ts -t "spec 29" → exit 0, 1 passed: PASS
-- npx vitest run src/server/evaluationService.test.ts (full) → 3 failures = exactly the 3 pre-existing ones named in the criteria; spec 29 reuse test passes
-- beta moved since merge-base 620e94e (spec 28 graph epics + sandbox test-suite card); 3 evaluationService failures reproduce with merge-base test file (Phase 18.1 pollution), fixed on beta tip by skipIf → pre-existing, not this card
-- isolated clone merge of cardhead into beta tip: conflicts only in docs/DESIGN_HISTORY.md (two appended rows) and src/server/mockPipeline.test.ts (two appended tests); orchestrator.ts auto-merges
-- Doc reconciliation on approve: docs/HOW_IT_WORKS.md (gate paragraph + DONE section), docs/ARCHITECTURE.md (evaluator row + run-end ordering)
-- VERDICT: approve written to .ralph/EVALUATION.md; SUMMARY.md written 15:29:12Z
+# Evaluation notes (attempt started 2026-09-24T15:32Z)
+- read .ralph/DONE and git log; 15 files changed vs beta
+- all lease greps on orchestrator.ts: PASS (acquireRepoLease=0, releaseRepoLease(=0, no acquireRepoLeaseWithin, waitForRepoLeaseRelease(repo.path, LEASE_SETTLE_MS) present, releaseStaleLeases import present, no "repo lease held by a delivery for over", recordTaskCompleted doc comment intact)
+- preserved greps (syncWithBase/MAX_SYNC_GATE_ROUNDS = 2/runGateCommand/gateRepairTaskText): PASS
+- harness diff = only src/server/harness/mock.ts: PASS; reviewService.ts untouched: PASS
+- spec text greps (head "# 29: ", waits-for-lease, no takes-lease, no old killed sentence, "without a loop's DONE", zero "28"): PASS
+- DESIGN_HISTORY row 29 at line 67 after 27 at line 65: PASS
+- npx tsc --noEmit -p tsconfig.json: exit 0 PASS
+- vitest orchestrator.lifecycle.test.ts -t 'spec 29': 7 passed, exit 0 PASS
+- vitest orchestrator.lifecycle.test.ts (full): 111 passed, exit 0 PASS
+- eslint on the 5 named files: exit 0 PASS
+- vitest baseSync/gate/acceptanceProbe/checklist/git/integrity: 83 passed, exit 0 PASS
+- vitest mockPipeline.test.ts: 13 passed incl base-conflict, exit 0 PASS
+- vitest evaluationService.test.ts -t 'spec 29': 1 passed exit 0 PASS; full file 23 passed/1 skipped exit 0 (pre-existing pollution not observed)
+- gate (orchestrator-run): exit 2, only splitProcesses 'drives a card...' failed on transcript pushes==0; same gate exit 0 at 386048e and d6994c1 on this branch (same src). Re-running split test file once.
+- RADULF_SPLIT_CHECK=1 vitest splitProcesses.test.ts rerun: 9 passed exit 0 -> gate failure was a flake
+- full vitest suite started in background at Thu Sep 24 15:38:07 UTC 2026 (log $TMPDIR/full-suite.log)
+- background suite run was killed with the shell (empty log); rerunning in foreground at Thu Sep 24 15:43:34 UTC 2026
+- full vitest suite (foreground): 138 files passed/1 skipped, 1328 tests passed/31 skipped, exit 0 -> make check effectively green (lint/typecheck/build from gate, split rerun 9/9)
+- VERDICT approve written to .ralph/EVALUATION.md at Thu Sep 24 15:44:40 UTC 2026; SUMMARY.md written; docs/HOW_IT_WORKS.md line 98 'evaluator's sandbox' -> 'run's sandbox'

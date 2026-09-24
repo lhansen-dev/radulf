@@ -95,7 +95,7 @@ so the judge provably cannot edit the implementation it just judged.
 
 A repository can declare a **gate command** under Settings → Connected
 repositories, `make check` for instance. Radulf runs it in the worktree, under
-the evaluator's sandbox, once the loop has signalled DONE and its branch has
+the run's sandbox, once the loop has signalled DONE and its branch has
 been synced with the base (see *When the loop says it is done*), and hands the
 evaluator the exit code and the end of the output in `.ralph/GATE.md`. A
 failing gate goes back to the loop as a repair task before any evaluation

@@ -1,39 +1,14 @@
 # Repository gate
 
 Command: `make lint typecheck build check-split`
-Result: exit 0
-Duration: 42s
-Ran at: 2026-09-24T15:16:45.534Z
+Result: exit 2
+Duration: 56s
+Ran at: 2026-09-24T15:31:36.567Z
 
 ## Output, last 8000 characters
 
 ```
-…..
-  Collecting page data using 15 workers ...
-  Generating static pages using 15 workers (0/39) ...
-  Generating static pages using 15 workers (9/39) 
-  Generating static pages using 15 workers (19/39) 
-  Generating static pages using 15 workers (29/39) 
-✓ Generating static pages using 15 workers (39/39) in 208ms
-  Finalizing page optimization ...
-
-Route (app)
-┌ ƒ /
-├ ƒ /_not-found
-├ ƒ /analytics
-├ ƒ /api/analytics
-├ ƒ /api/auth/login
-├ ƒ /api/auth/logout
-├ ƒ /api/benchmarks
-├ ƒ /api/cards
-├ ƒ /api/cards/[id]
-├ ƒ /api/cards/[id]/[action]
-├ ƒ /api/cards/[id]/diff
-├ ƒ /api/cards/[id]/move
-├ ƒ /api/cards/[id]/scoping
-├ ƒ /api/cards/[id]/scoping/plan
-├ ƒ /api/cards/[id]/scoping/proposal
-├ ƒ /api/cards/[id]/scoping/split
+…├ ƒ /api/cards/[id]/scoping/split
 ├ ƒ /api/cards/export
 ├ ƒ /api/cards/import
 ├ ƒ /api/events/stream
@@ -80,19 +55,21 @@ RADULF_SPLIT_CHECK=1 node_modules/.bin/vitest run src/server/splitProcesses.test
 make[1]: Entering directory '/var/lib/radulf/worktrees/sync-a-finished-loop-with-its-base-branc-9ptxkwj-EHX5XccJnG38t'
 node_modules/.bin/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
 make[1]: Leaving directory '/var/lib/radulf/worktrees/sync-a-finished-loop-with-its-base-branc-9ptxkwj-EHX5XccJnG38t'
- ✓ src/server/splitProcesses.test.ts (9 tests) 22020ms
-     ✓ fans a card created on one web process out to the other web process's event stream  329ms
-     ✓ drives a card from Todo to In Review through the web-only process  2336ms
-     ✓ cancelling a looping card from the web-only process ends the run in the worker  756ms
-     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1258ms
-     ✓ two workers never run two runs of one repo at once with a cap of one  835ms
-     ✓ two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering  672ms
-     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  14893ms
+ ❯ src/server/splitProcesses.test.ts (9 tests | 1 failed) 31041ms
+     ✓ both roles boot one fresh data directory at once 18ms
+     ✓ fans a card created on one web process out to the other web process's event stream  332ms
+     × drives a card from Todo to In Review through the web-only process 3032ms
+     ✓ cancelling a looping card from the web-only process ends the run in the worker  1106ms
+     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1381ms
+     ✓ two workers never run two runs of one repo at once with a cap of one  2511ms
+     ✓ two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering  1447ms
+     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  15289ms
+     ✓ SIGTERM drains the worker-only process 14ms
 
- Test Files  1 passed (1)
-      Tests  9 passed (9)
-   Start at  15:17:05
-   Duration  22.15s (transform 39ms, setup 0ms, import 59ms, tests 22.02s, environment 0ms)
+ Test Files  1 failed (1)
+      Tests  1 failed | 8 passed (9)
+   Start at  15:32:01
+   Duration  31.17s (transform 40ms, setup 0ms, import 60ms, tests 31.04s, environment 0ms)
 
 Turbopack build encountered 3 warnings:
 ./src/server/docs.ts:173:15
@@ -201,4 +178,20 @@ Import traces:
 (!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
   - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
 Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/server/splitProcesses.test.ts > split web/worker processes > drives a card from Todo to In Review through the web-only process
+AssertionError: expected 0 to be greater than 0
+ ❯ src/server/splitProcesses.test.ts:498:29
+    496|         lines: unknown[];
+    497|       }>;
+    498|       expect(pushes.length).toBeGreaterThan(0);
+       |                             ^
+    499|
+    500|       // Gapless and duplicate-free per iteration.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+make: *** [Makefile:93: check-split] Error 1
 ```
