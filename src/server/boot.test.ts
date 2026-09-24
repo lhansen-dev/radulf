@@ -79,6 +79,9 @@ describe("boot", () => {
     expect(mocks.pump).not.toHaveBeenCalled();
     vi.advanceTimersByTime(2_500);
     expect(mocks.pump.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // One boot call plus at least two pump ticks at the 1000 ms interval:
+    // the worker adopts improvement runs a web-only process created.
+    expect(mocks.resumeImprovementRuns.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 
   it("both roles with sandboxEnabled: runs the sandbox preflight once", async () => {

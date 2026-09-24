@@ -57,10 +57,17 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   // transitions. pump() is idempotent and returns at once while draining.
   // Deliberately not unref()'d — this timer is what keeps a plain Node worker
   // alive.
+  //
+  // The same tick also adopts improvement runs: a web-only process inserts an
+  // improvement-run row without driving it (spec 25 — no pi session in web),
+  // so the worker re-scans `running` improvement runs on every pump tick.
+  // driveRun is idempotent per process (driverGuard()), so runs already being
+  // driven here are skipped.
   const PUMP_INTERVAL_MS = Math.max(100, Number(process.env.RADULF_PUMP_INTERVAL_MS) || 5_000);
   setInterval(() => {
     try {
       orchestrator.pump();
+      resumeImprovementRuns();
     } catch (e) {
       console.error("[radulf] queue pump failed:", e);
     }

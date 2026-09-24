@@ -239,10 +239,13 @@ export function stopImprovementRun(runId: string): ImprovementRun {
     .get();
 }
 
-/** Restart drivers for every run still `running` after a boot (N3). Call
- * after `getOrchestrator()` so `recover()` has already flipped any orphaned
- * card to `needs_attention`. Fire-and-forget — a run's driver can legitimately
- * outlive the whole time budget, so this must never block startup. */
+/** Restart drivers for every run still `running` (N3). Called at boot — after
+ * `getOrchestrator()` so `recover()` has already flipped any orphaned card to
+ * `needs_attention` — and again on every worker pump tick, adopting runs a
+ * web-only process created (spec 25: web only inserts the row). Safe to call
+ * repeatedly because `driveRun` returns at once for a run this process already
+ * drives. Fire-and-forget — a run's driver can legitimately outlive the whole
+ * time budget, so this must never block startup or the pump. */
 export function resumeImprovementRuns(): void {
   const running = db.select().from(improvementRuns).where(eq(improvementRuns.status, "running")).all();
   for (const run of running) void driveRun(run.id);
