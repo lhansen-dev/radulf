@@ -93,20 +93,10 @@ function priorCardTitles(run: ImprovementRun): string[] {
 // hot-reload without losing track of which runs are already being driven.
 const g = globalThis as unknown as {
   __radulfImprovementDrivers?: Set<string>;
-  __radulfImprovementStopRequests?: Set<string>;
 };
 
 function driverGuard(): Set<string> {
   return (g.__radulfImprovementDrivers ??= new Set());
-}
-
-// In-process only: distinguishes an operator-requested stop from the
-// deadline simply elapsing, both of which the loop observes the same way
-// (deadlineAt <= now). Lost across a restart mid-stop — the run then just
-// reports "completed" instead of "stopped", which is a labeling nicety, not
-// a correctness issue (decision 5: the timer is a soft gate either way).
-function stopRequests(): Set<string> {
-  return (g.__radulfImprovementStopRequests ??= new Set());
 }
 
 /**
@@ -231,15 +221,16 @@ export async function createImprovementRun(
 
 /** Soft-stop (decision/ruling 5): the deadline moves to now, so the driver
  * stops proposing new work the next time it checks between tasks — a task
- * already in flight finishes untouched. */
+ * already in flight finishes untouched. `stopRequestedAt` is what tells the
+ * driver — in this process or in the worker that holds the run's lease — that
+ * the deadline was an operator's Stop and not the budget elapsing. */
 export function stopImprovementRun(runId: string): ImprovementRun {
   const run = getRun(runId);
   if (!run) throw new ClientError("improvement run not found", 404);
   if (run.status !== "running") throw new ClientError(`cannot stop a ${run.status} run`);
-  stopRequests().add(runId);
   return db
     .update(improvementRuns)
-    .set({ deadlineAt: now(), updatedAt: now() })
+    .set({ deadlineAt: now(), stopRequestedAt: now(), updatedAt: now() })
     .where(eq(improvementRuns.id, runId))
     .returning()
     .get();
@@ -270,7 +261,6 @@ function finishRun(
     .set({ status, endedAt: now(), updatedAt: now(), currentCardId: null })
     .where(eq(improvementRuns.id, runId))
     .run();
-  stopRequests().delete(runId);
   emitEvent("improvement.completed", {
     payload: {
       runId,
@@ -296,7 +286,7 @@ function finishRun(
 /** The run ran out of time or work: "stopped" when an operator asked for
  * it, "completed" when the deadline simply arrived. */
 function endRun(runId: string, reason: string): void {
-  finishRun(runId, stopRequests().has(runId) ? "stopped" : "completed", reason);
+  finishRun(runId, getRun(runId)?.stopRequestedAt ? "stopped" : "completed", reason);
 }
 
 /** Record a just-finished task's outcome (decision 3): success resets the

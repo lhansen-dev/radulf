@@ -169,6 +169,13 @@
       "when": 1790261268029,
       "tag": "0023_greedy_the_professor",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1790267391534,
+      "tag": "0024_gorgeous_lady_vermin",
+      "breakpoints": true
     }
   ]
 }

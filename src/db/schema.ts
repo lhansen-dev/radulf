@@ -396,6 +396,11 @@ export const improvementRuns = sqliteTable(
     // Run-level budget end (ISO). Checked only between tasks — a soft gate,
     // never used to kill a task mid-flight.
     deadlineAt: text("deadline_at").notNull(),
+    // Set by an operator's Stop (which also moves deadlineAt to now). The
+    // driver reads it when the deadline arrives to label the run "stopped"
+    // rather than "completed", so a Stop issued from a web-only process is
+    // seen by whichever worker drives the run.
+    stopRequestedAt: text("stop_requested_at"),
     // In-flight card, persisted so a server restart can re-attach (N2/N3).
     currentCardId: text("current_card_id"),
     // Driver lease (spec 25 decision 7): the worker driving this run and when

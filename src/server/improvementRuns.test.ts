@@ -163,6 +163,21 @@ describe("driveRun", () => {
     expect(db.select().from(cards).all()).toHaveLength(0);
   });
 
+  // Spec 25: the Stop button is served by the web process while a worker
+  // drives the run, so the driver has to read the request off the row — an
+  // in-process set would label every such stop "completed".
+  it("reads a Stop off the row, so one issued in another process is labelled stopped", async () => {
+    const stopped = insertRun({ id: "run-stopped-elsewhere", deadlineAt: minutesAgo(1), stopRequestedAt: minutesAgo(1) });
+    const elapsed = insertRun({ id: "run-deadline-elapsed", deadlineAt: minutesAgo(1) });
+
+    await driveRun(stopped);
+    await driveRun(elapsed);
+
+    expect(mocks.proposeOneImprovement).not.toHaveBeenCalled();
+    expect(getRunRow(stopped).status).toBe("stopped");
+    expect(getRunRow(elapsed).status).toBe("completed");
+  });
+
   it("stops after 3 consecutive failures, and a success in between resets the streak", async () => {
     const runId = insertRun({ id: "run-failures" });
     const outcomes: Array<"done" | "needs_attention"> = [
@@ -463,5 +478,6 @@ describe("stopImprovementRun", () => {
 
     expect(updated.status).toBe("running");
     expect(Date.parse(updated.deadlineAt)).toBeLessThanOrEqual(Date.parse(before));
+    expect(updated.stopRequestedAt).not.toBeNull();
   });
 });
