@@ -110,6 +110,8 @@ export async function POST(req: Request) {
         plannerModel: body.plannerModel,
         loopModel: body.loopModel,
         evaluatorModel: body.evaluatorModel,
+        planCritic: body.planCritic == null ? null : body.planCritic ? 1 : 0,
+        criticModel: body.criticModel ?? null,
         reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation ? 1 : 0,
         grillMe: body.grillMe ? 1 : 0,
         scopingAuthorsPlan: body.scopingAuthorsPlan ? 1 : 0,

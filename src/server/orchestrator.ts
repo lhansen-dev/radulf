@@ -1112,6 +1112,8 @@ export class Orchestrator {
             plannerModel: card.plannerModel,
             loopModel: card.loopModel,
             evaluatorModel: card.evaluatorModel,
+            planCritic: card.planCritic,
+            criticModel: card.criticModel,
             createdAt: now(),
             updatedAt: now(),
           })
