@@ -219,6 +219,67 @@ describe("mock provider — full pipeline", () => {
     expect(gitIn(repo.repoPath, "rev-parse", "escaped")).toBe(gitIn(repo.repoPath, "rev-parse", loop.branch));
     expect(gitIn(repo.repoPath, "log", "--format=%s", "-1", loop.branch)).toBe("ralph: sync plan v1");
   }, 30_000);
+
+  it("graph epic: independent pieces run together, a dependent piece waits, an abandoned dependency does not block", async () => {
+    patchSettings({ maxConcurrentCards: 2 });
+    try {
+      const repo = seedRepo("graph-epic");
+      db.insert(cards)
+        .values({
+          id: "card-graph-epic",
+          repoId: repo.id,
+          title: "Mock graph epic",
+          description: "Three pieces: A and B independent, C depends on both.",
+          status: "backlog",
+          position: 1,
+          plannerModel: "happy-path",
+          loopModel: "happy-path",
+          evaluatorModel: "happy-path",
+          createdAt: now(),
+          updatedAt: now(),
+        })
+        .run();
+      const [a, b, c] = orch.applyBreakdown(
+        "card-graph-epic",
+        [
+          { title: "A", description: "first" },
+          { title: "B", description: "second" },
+          { title: "C", description: "third", dependsOn: [0, 1] },
+        ],
+        "graph",
+      );
+      expect(c.dependsOn).toEqual([a.id, b.id]);
+
+      orch.startEpic("card-graph-epic");
+      // A and B share the two slots; C waits on both of them.
+      await waitFor(() => cardStatus(a.id) === "review" && cardStatus(b.id) === "review", 60_000);
+      expect(cardStatus(c.id)).toBe("todo");
+
+      await orch.approve(cardRuns(a.id, "loop")[0].id);
+      expect(cardStatus(a.id)).toBe("done");
+      expect(cardStatus(c.id)).toBe("todo");
+
+      // Abandoning B releases C: Abandoned counts as finished for a dependency.
+      await orch.abandon(b.id);
+      orch.pump();
+      await waitFor(() => cardStatus(c.id) !== "todo");
+      await waitFor(() => cardStatus(c.id) === "review" && !orch.hasInFlightWork(), 60_000);
+
+      await orch.approve(cardRuns(c.id, "loop")[0].id);
+      expect(cardStatus(c.id)).toBe("done");
+      expect(cardStatus("card-graph-epic")).toBe("done");
+      expect(
+        db
+          .select()
+          .from(events)
+          .where(eq(events.cardId, "card-graph-epic"))
+          .all()
+          .some((e) => e.type === "epic.dependency_abandoned" && JSON.parse(e.payload).pieceId === c.id),
+      ).toBe(true);
+    } finally {
+      patchSettings({ maxConcurrentCards: 1 });
+    }
+  }, 90_000);
 });
 
 describe("mock provider — outside the pipeline", () => {

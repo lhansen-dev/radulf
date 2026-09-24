@@ -1,0 +1,5 @@
+Epic pieces can declare `dependsOn` siblings; new `graph` run mode starts a piece once every dependency is Done or Abandoned (spec 28).
+- `dependsOn` on breakdown pieces (indices at request time, resolved to sibling card ids on apply) is validated in `parseBreakdown` and stored on cards via a new drizzle migration.
+- `graph` joins `ordered`/`parallel` in `EPIC_RUN_MODES` (`src/shared/epics.ts`); `ordered` and `parallel` behaviour is unchanged.
+- Scheduler (`pump()` in `src/server/orchestrator.ts`) and helpers in `src/server/epics.ts` gate graph pieces on their dependencies, treat Abandoned as finished, and emit `epic.dependency_abandoned` when a piece starts past an abandoned dependency.
+- End-to-end coverage: `src/server/mockPipeline.test.ts` "graph epic" drives a three-piece graph epic through the mock provider — independent pieces run together, the dependent piece waits, an abandoned dependency does not block, and the epic closes Done.
