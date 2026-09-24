@@ -1,4 +1,4 @@
-You are working on: moving review delivery (approve / retry-merge) out of the web process into workers that claim a durable `review_deliveries` row under a per-repo `repo_leases` row, record moved refs in a `ref_writes` table that the run-end integrity check consults, and are reaped when their worker dies (spec 25 decision 6 in `specs/25-web-and-worker-processes.md`).
+You are working on: making the split-process review-delivery gate pass — fix the split test's ENOENT, close the ref-write race in `checkRepoIntegrity` by waiting on the per-repo lease, and terminate deliveries whose repo vanished (spec 25 decision 6).
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,8 +36,14 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Hints for this codebase:
-- Tests open SQLite against a throwaway data dir via `setupTestDataDir(...)` from `@/testUtils/testDataDir` and then `await import("@/db")`; the DB migrates itself from `drizzle/` on open, so a new table is usable in tests once its migration exists. Never set TMPDIR yourself and never point temp dirs inside the worktree (`/tmp` is read-only here; the environment's TMPDIR is already correct).
-- Drizzle idioms used here: `db.transaction((tx) => {...}, { behavior: "immediate" })`, `.onConflictDoUpdate({ target, set })`, `.run().changes`, `.get()`, `.all()`; `now()` from `@/db` returns an ISO timestamp; `getSettings().workerStaleSeconds` is the stale window; `liveWorkerIds(staleSeconds)` lives in `src/server/workers.ts`.
-- The merge and pull-request code paths in `reviewService.ts` / `git.ts` must not change in behaviour — only who runs them and how they are serialized.
-- Run only the vitest files named in your task (e.g. `npx vitest run src/server/foo.test.ts`); `npx tsc --noEmit` is fine when the task asks for it.
+Hints for this repository:
+- TypeScript + Next.js + drizzle/better-sqlite3 + vitest. Run single test files
+  with `npx vitest run <file>`; type-check with `npx tsc --noEmit`.
+- Do NOT override `TMPDIR` and never point a temp dir inside the worktree.
+- `make build` panics here (Turbopack symlink). When a task needs the
+  production build use `NODE_ENV=production node_modules/.bin/next build --webpack`.
+- `src/server/splitProcesses.test.ts` only runs with `RADULF_SPLIT_CHECK=1`
+  and spawns real processes; run it only when your task says so.
+- Read `src/server/integrity.ts`, `src/server/repoLeases.ts`, and the
+  relevant `describe` block of a test file before editing; match the
+  surrounding code style (prettier-formatted, 2-space indent).
