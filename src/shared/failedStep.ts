@@ -1,4 +1,4 @@
-export type PipelineStep = "plan" | "loop" | "evaluate";
+export type PipelineStep = "plan" | "loop" | "evaluate" | "critique";
 
 export type PipelineRun = {
   kind: PipelineStep;

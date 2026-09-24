@@ -15,6 +15,7 @@ const {
   stopAllTranscriptWatchers,
   syncRunWatcher,
   syncTranscriptWatchers,
+  transcriptTargetFor,
   watchedTranscripts,
 } = await import("./transcriptWatchers");
 
@@ -100,6 +101,10 @@ describe("transcriptWatchers", () => {
     } finally {
       bus.off("transcript", onPush);
     }
+  });
+
+  it("targets critique.jsonl for a critique run", () => {
+    expect(transcriptTargetFor({ id: "r", kind: "critique" })).toEqual({ file: "critique.jsonl", iteration: 0 });
   });
 
   it("does not watch a completed run", () => {

@@ -37,7 +37,7 @@ export type Run = {
   id: string;
   /** The plan a `plan` run wrote, when it got far enough to write one. */
   planId?: string | null;
-  kind: "plan" | "loop" | "evaluate";
+  kind: "plan" | "loop" | "evaluate" | "critique";
   status: string;
   iterationsDone: number;
   exitReason: string | null;

@@ -35,10 +35,11 @@ const watchers = (g.__radulfTranscriptWatchers ??= new Map<string, Watcher>());
  * run has no iteration row yet (nothing to tail). */
 export function transcriptTargetFor(run: {
   id: string;
-  kind: "plan" | "loop" | "evaluate";
+  kind: "plan" | "loop" | "evaluate" | "critique";
 }): { file: string; iteration: number } | null {
   if (run.kind === "plan") return { file: "plan.jsonl", iteration: 0 };
   if (run.kind === "evaluate") return { file: "evaluate.jsonl", iteration: 0 };
+  if (run.kind === "critique") return { file: "critique.jsonl", iteration: 0 };
   const latest = db
     .select({ n: iterations.n })
     .from(iterations)

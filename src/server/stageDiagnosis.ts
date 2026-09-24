@@ -19,7 +19,7 @@ import { REPLAN_LOOP_EXITS } from "@/shared/failedStep";
 
 /** The run columns the diagnosis reads. */
 export type DiagnosisRun = {
-  kind: "plan" | "loop" | "evaluate";
+  kind: "plan" | "loop" | "evaluate" | "critique";
   status: string;
   provider: string | null;
   model: string | null;
