@@ -13,4 +13,7 @@ export type CreateCardRequest = {
   autoApprove: boolean;
   openPr: boolean;
   baseBranch: string | null;
+  /** Spec 30: per-card plan critic override; null/undefined defers to settings. */
+  planCritic?: boolean | null;
+  criticModel?: string | null;
 };

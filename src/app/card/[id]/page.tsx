@@ -435,6 +435,7 @@ export default function CardDetail() {
             />
             <WorkflowFlag on={Boolean(card.grillMe)} label="Grill me while scoping" />
             <WorkflowFlag on={Boolean(card.scopingAuthorsPlan)} label="Scoping writes the plan" />
+            <WorkflowFlag on={card.planCritic == null ? undefined : Boolean(card.planCritic)} label="Plan critic" />
             <WorkflowFlag
               on={Boolean(card.autoApprove)}
               label="Auto-approve on evaluator pass"
@@ -509,17 +510,52 @@ export default function CardDetail() {
           )}
           <div>
             <h3 className="text-sm font-medium mb-1">Events</h3>
-            {detail.events.map((e) => (
-              <div key={e.id} className="text-xs text-foreground/50 font-mono">
-                {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
-              </div>
-            ))}
+            {detail.events.map((e) => {
+              const critique = e.type === "critique.decided" ? parseCritiqueDecided(e.payload) : null;
+              if (critique) {
+                const approved = critique.verdict === "approve";
+                return (
+                  <div
+                    key={e.id}
+                    data-testid="critique-decided"
+                    className={`my-1 rounded border p-2 text-xs ${approved ? "border-green-800/50 bg-green-950/30" : "border-amber-800/50 bg-amber-950/40"}`}
+                  >
+                    <span className="font-mono text-foreground/50">{e.createdAt.slice(11, 19)} </span>
+                    <span className={`font-medium ${approved ? "text-green-300" : "text-amber-300"}`}>
+                      ⚖ Plan critic: {critique.verdict}
+                    </span>
+                    {critique.feedback && (
+                      <p className="mt-1 whitespace-pre-wrap text-foreground/70">{critique.feedback}</p>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <div key={e.id} className="text-xs text-foreground/50 font-mono">
+                  {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
+                </div>
+              );
+            })}
           </div>
         </section>
       ))}
     </div>
     </AppShell>
   );
+}
+
+/** The `critique.decided` event payload (planCriticService): the verdict and
+ * the first 500 characters of the critic's feedback. Null when the payload
+ * is not shaped that way, so the row falls back to the raw event line. */
+function parseCritiqueDecided(payload: string): { verdict: string; feedback: string } | null {
+  try {
+    const parsed = JSON.parse(payload) as { verdict?: unknown; feedback?: unknown };
+    if (typeof parsed.verdict !== "string") return null;
+    const feedback = typeof parsed.feedback === "string" ? parsed.feedback.slice(0, 500) : "";
+    return { verdict: parsed.verdict, feedback };
+  } catch {
+    return null;
+  }
 }
 
 type GatePackage = {
@@ -610,8 +646,10 @@ function InstallGateBanner({
 }
 
 /** Compact chip for a per-card workflow toggle. An "on" auto-approve flag is
- * amber to flag that this card can merge without human review. */
-function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; warnWhenOn?: boolean }) {
+ * amber to flag that this card can merge without human review. `on` of
+ * `undefined` means the card inherits the global default (tri-state flags
+ * such as the plan critic). */
+function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean | undefined; label: string; warnWhenOn?: boolean }) {
   const tone = on
     ? warnWhenOn
       ? "border-amber-600/50 bg-amber-950/30 text-amber-300"
@@ -619,8 +657,8 @@ function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean; label: string; w
     : "border-foreground/10 text-foreground/40";
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${tone}`}>
-      <span aria-hidden>{on ? "●" : "○"}</span>
-      {label}: {on ? "On" : "Off"}
+      <span aria-hidden>{on ? "●" : on === undefined ? "◌" : "○"}</span>
+      {label}: {on === undefined ? "Default" : on ? "On" : "Off"}
     </span>
   );
 }
@@ -1043,6 +1081,9 @@ function EditCardModal({
   });
   const [grillMe, setGrillMe] = useState(Boolean(detail.card.grillMe));
   const [scopingAuthorsPlan, setScopingAuthorsPlan] = useState(Boolean(detail.card.scopingAuthorsPlan));
+  const [planCritic, setPlanCritic] = useState<boolean | null>(
+    detail.card.planCritic == null ? null : Boolean(detail.card.planCritic),
+  );
   const { providers, models } = useRoleModelOptions();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1062,6 +1103,7 @@ function EditCardModal({
           evaluatorModel: roleModels.evaluator || null,
           grillMe,
           scopingAuthorsPlan,
+          planCritic,
         },
       });
       onSaved();
@@ -1109,6 +1151,18 @@ function EditCardModal({
             className="size-4 accent-amber-600"
           />
           Let scoping write the plan
+        </label>
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          Plan critic
+          <select
+            value={planCritic === null ? "default" : planCritic ? "on" : "off"}
+            onChange={(e) => setPlanCritic(e.target.value === "default" ? null : e.target.value === "on")}
+            className={fieldCls}
+          >
+            <option value="default">Default (on for breakdown pieces)</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
         </label>
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>

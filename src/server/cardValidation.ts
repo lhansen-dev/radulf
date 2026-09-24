@@ -19,6 +19,9 @@ type CreateCardInput = Omit<
   plannerModel: string | null;
   loopModel: string | null;
   evaluatorModel: string | null;
+  /** Spec 30: per-card plan critic override; null/undefined defers to settings. */
+  planCritic?: boolean | null;
+  criticModel?: string | null;
 };
 
 export type UpdateCardInput = {
@@ -30,6 +33,9 @@ export type UpdateCardInput = {
   plannerModel?: string | null;
   loopModel?: string | null;
   evaluatorModel?: string | null;
+  /** Spec 30: null clears the override; otherwise stored as SQLite's 0/1. */
+  planCritic?: number | null;
+  criticModel?: string | null;
   /** Stored as SQLite's 0/1, so the PATCH route can spread these straight in. */
   grillMe?: number;
   scopingAuthorsPlan?: number;
@@ -40,7 +46,7 @@ export type UpdateCardInput = {
 const CREATE_FIELDS = new Set([
   "repoId", "title", "description", "maxIterations", "timeoutMinutes", "plannerModel",
   "loopModel", "evaluatorModel", "reviewPlanBeforeImplementation", "autoApprove", "openPr",
-  "grillMe", "scopingAuthorsPlan", "baseBranch",
+  "grillMe", "scopingAuthorsPlan", "baseBranch", "planCritic", "criticModel",
 ]);
 
 /** The create body's boolean flags, all optional and all defaulting to false. */
@@ -57,6 +63,9 @@ export function parseCreateCard(value: unknown): CreateCardInput {
   for (const field of CREATE_BOOLEANS) {
     if (body[field] !== undefined && typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
   }
+  if (body.planCritic != null && typeof body.planCritic !== "boolean") {
+    invalid("planCritic must be a boolean or null");
+  }
   return {
     repoId: requiredString(body.repoId, "repoId"),
     title: requiredString(body.title, "title"),
@@ -72,12 +81,14 @@ export function parseCreateCard(value: unknown): CreateCardInput {
     grillMe: body.grillMe ?? false,
     scopingAuthorsPlan: body.scopingAuthorsPlan ?? false,
     baseBranch: optionalString(body.baseBranch, "baseBranch"),
+    planCritic: body.planCritic === undefined ? undefined : (body.planCritic as boolean | null),
+    criticModel: optionalString(body.criticModel, "criticModel"),
   } as CreateCardInput;
 }
 
 const UPDATE_FIELDS = new Set([
   "title", "description", "maxIterations", "timeoutMinutes", "position", "plannerModel", "loopModel",
-  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "runMode",
+  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "runMode", "planCritic", "criticModel",
 ]);
 
 function runMode(value: unknown): EpicRunMode {
@@ -106,8 +117,13 @@ export function parseUpdateCard(value: unknown): UpdateCardInput {
     }
     patch.position = body.position;
   }
-  for (const field of ["plannerModel", "loopModel", "evaluatorModel"] as const) {
+  for (const field of ["plannerModel", "loopModel", "evaluatorModel", "criticModel"] as const) {
     if (field in body) patch[field] = optionalString(body[field], field);
+  }
+  if ("planCritic" in body) {
+    if (body.planCritic === null) patch.planCritic = null;
+    else if (typeof body.planCritic === "boolean") patch.planCritic = body.planCritic ? 1 : 0;
+    else invalid("planCritic must be a boolean or null");
   }
   for (const field of ["grillMe", "scopingAuthorsPlan"] as const) {
     if (!(field in body)) continue;

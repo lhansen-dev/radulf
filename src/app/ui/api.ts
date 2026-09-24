@@ -26,7 +26,7 @@ export type BoardCard = {
   dependsOn: string[] | null;
   latestRun: {
     id: string;
-    kind: "plan" | "loop" | "evaluate";
+    kind: "plan" | "loop" | "evaluate" | "critique";
     status: string;
     iterationsDone: number;
     exitReason: string | null;

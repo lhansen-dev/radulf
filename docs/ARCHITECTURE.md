@@ -106,15 +106,18 @@ the mapping to the five board columns is in the comment above the list.
 `reviewing` renders as nothing at all, because it is a short-lived atomic claim
 on a review decision rather than a state a card rests in.
 
-## The four roles
+## The five roles
 
 Each role is a service with one entry point, and each constructs its own pi
 session. The role is what decides the tool set — see the capability split below.
+The plan critic runs under the planner's tool set (writes confined to `.ralph/`,
+no bash) and the post-run check rejects any change other than `.ralph/CRITIQUE.md`.
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
 | Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)`, `proposeSplit(cardId)`, `proposeScopedPlan(cardId)` | 5 min per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
+| Plan critic | `src/server/planCriticService.ts` | `runCritic(cardId)` | `criticTimeoutMinutes` setting, 10 min default; read-only review of a finished plan (spec 30), run when `planCriticMode` or the card's `planCritic` override says so |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |
 | Evaluator | `src/server/evaluationService.ts` | `runEvaluator(cardId)` | `evaluatorTimeoutMinutes` setting, 10 min default; reads the repository gate result the loop's DONE path left in `.ralph/GATE.md` (spec 29), and runs the gate itself through `gate.ts` only when that file is missing, under `gateTimeoutMinutes` |
 

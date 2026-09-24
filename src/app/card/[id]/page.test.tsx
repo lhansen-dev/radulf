@@ -137,6 +137,8 @@ beforeEach(() => {
               loopModel: null,
               evaluatorModel: null,
               reviewPlanBeforeImplementation: 0,
+              planCritic: null,
+              criticModel: null,
               autoApprove: 0,
               summary: null,
               startedAt: null,
@@ -176,6 +178,12 @@ beforeEach(() => {
 });
 
 describe("CardDetail", () => {
+  it("shows the plan critic flag, inherited by default", async () => {
+    render(<CardDetail />);
+    expect(await screen.findByText(/Plan critic/)).toBeTruthy();
+    expect(screen.getByText(/Plan critic/).textContent).toContain("Default");
+  });
+
   it("reviews current config before posting approval for the exact run and hash", async () => {
     cardStatus = "needs_attention";
     cardRuns = [{ ...cardRuns[0], kind: "loop" }];

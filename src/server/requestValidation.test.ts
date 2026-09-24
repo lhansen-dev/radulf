@@ -167,6 +167,8 @@ describe("card request validation", () => {
       openPr: false,
       grillMe: false,
       scopingAuthorsPlan: false,
+      planCritic: undefined,
+      criticModel: null,
       baseBranch: "feature/base",
     });
   });

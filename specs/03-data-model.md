@@ -31,6 +31,8 @@ IDs are `nanoid` strings unless noted. All FKs `ON DELETE CASCADE` unless noted.
 | plannerModel | text nullable | per-card planner model override |
 | loopModel | text nullable | per-card loop model override |
 | evaluatorModel | text nullable | per-card evaluator model override |
+| planCritic | integer nullable | spec 30: per-card plan critic override — null follows the `planCriticMode` setting, 1 on, 0 off |
+| criticModel | text nullable | spec 30: per-card plan critic model override |
 | startedAt | text nullable | set on Todo→In Progress; work-queue order (FIFO) |
 | createdAt / updatedAt | text | |
 
@@ -65,7 +67,7 @@ One row per planning attempt; the latest `approved`/`active` plan drives loops.
 | id | text PK | |
 | cardId | text FK → cards | |
 | planId | text FK → plans, nullable | null for planning runs |
-| kind | text | `plan` \| `loop` \| `evaluate` — no separate `summarize` kind; the evaluator writes the summary (spec 14) |
+| kind | text | `plan` \| `critique` \| `loop` \| `evaluate` — no separate `summarize` kind; the evaluator writes the summary (spec 14); `critique` is the spec 30 plan critic |
 | status | text | `running · completed · failed · timeout · cancelled · interrupted · paused` — `paused` is used transiently by the orchestrator to mark a loop run that ended because the user paused the task |
 | worktreePath | text | |
 | branch | text | `ralph/<cardSlug>-<runId>` |
@@ -140,6 +142,9 @@ dropped, spec 14),
 `plannerReasoningLevel` / `loopReasoningLevel` / `evaluatorReasoningLevel`
 (per-agent pi thinking level, default `medium`;
 universal across providers since spec 13),
+`criticProvider` / `criticModel` / `criticReasoningLevel` /
+`criticTimeoutMinutes` / `criticPromptTemplate` and `planCriticMode`
+(`breakdown` default, `always`, `off`) for the spec 30 plan critic,
 `sandboxEnabled` (bool, default `true` — spec 14's one sandbox escape
 hatch; not model-reachable), `sandboxNetworkAllowlist` (text, one domain per
 line, default `""` — extra L1 egress allowlist entries beyond package

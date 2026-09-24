@@ -121,10 +121,11 @@ export async function runWithTranscript(
 export function harnessFailure(
   result: RunnerResult,
   provider: ProviderId,
-  label: "planner" | "evaluator",
+  label: "planner" | "evaluator" | "critic",
 ): { status: FinishStatus; exitReason: string; moveReason: string } | null {
   if (result.timedOut) {
-    const reason = label === "planner" ? "planning timed out" : "evaluation timed out";
+    const reason =
+      label === "planner" ? "planning timed out" : label === "critic" ? "plan critique timed out" : "evaluation timed out";
     return { status: "timeout", exitReason: reason, moveReason: reason };
   }
   // A dead stream, not the model's answer — worth its own reason.

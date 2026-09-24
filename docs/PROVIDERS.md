@@ -55,8 +55,8 @@ are available for the provider.
 
 ## Configuring a role
 
-Open **Settings → Agents & models** in the app. Each of the four roles —
-scoping, planner, loop, and evaluator — gets its own three pickers:
+Open **Settings → Agents & models** in the app. Each of the five roles —
+scoping, planner, plan critic, loop, and evaluator — gets its own three pickers:
 
 - **Provider** — one of the five above.
 - **Model** — a model id. Leaving it blank means "the subscription's default
@@ -241,8 +241,8 @@ unless a role already uses it, so select it through the API:
 
 ```bash
 curl -X PATCH http://localhost:3000/api/settings -H 'content-type: application/json' \
-  -d '{"plannerProvider":"mock","loopProvider":"mock","evaluatorProvider":"mock",
-       "plannerModel":"","loopModel":"","evaluatorModel":""}'
+  -d '{"plannerProvider":"mock","loopProvider":"mock","evaluatorProvider":"mock","criticProvider":"mock",
+       "plannerModel":"","loopModel":"","evaluatorModel":"","criticModel":""}'
 ```
 
 The model id picks a **scenario**, so a card's per-role models can steer one
@@ -252,6 +252,7 @@ card down a failure path while the rest run the happy path:
 |----------|--------------|
 | `happy-path` (blank) | Two-task plan, both tasks done, evaluator approves |
 | `revise-once` | Evaluator asks for a revision once, then approves the re-planned work |
+| `critic-revise-once` | Plan critic sends the first plan back once, then approves the re-plan (needs the critic on for the card) |
 | `planner-questions` | Planner raises follow-up questions; the card needs attention |
 | `provider-error` | Every request fails with a provider error |
 | `stuck` | Loop repeats one tool call until the stuck detector kills it |

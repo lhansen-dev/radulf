@@ -126,6 +126,11 @@ export const cards = sqliteTable(
     plannerModel: text("planner_model"),
     loopModel: text("loop_model"),
     evaluatorModel: text("evaluator_model"),
+    // Spec 30: per-card plan critic override. null = follow the global
+    // `planCriticMode` setting, 1 = critic on, 0 = off.
+    planCritic: integer("plan_critic"),
+    // Spec 30: per-card model override for the critic stage (nullable).
+    criticModel: text("critic_model"),
     summary: text("summary"),
     startedAt: text("started_at"),
     createdAt: text("created_at").notNull(),
@@ -213,8 +218,9 @@ export const runs = sqliteTable("runs", {
     .references(() => cards.id, { onDelete: "cascade" }),
   planId: text("plan_id").references(() => plans.id),
   // Historical rows may carry the retired "summarize" kind (spec 14 dropped
-  // the role); new rows are only ever plan/loop/evaluate.
-  kind: text("kind").$type<"plan" | "loop" | "evaluate">().notNull(),
+  // the role); new rows are only ever plan/loop/evaluate/critique (spec 30
+  // adds `critique`).
+  kind: text("kind").$type<"plan" | "loop" | "evaluate" | "critique">().notNull(),
   status: text("status").$type<RunStatus>().notNull().default("running"),
   worktreePath: text("worktree_path").notNull(),
   branch: text("branch").notNull(),

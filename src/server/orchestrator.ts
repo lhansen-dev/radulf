@@ -52,6 +52,7 @@ import { getRepo, requireRepo, type Repo } from "./repos";
 import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
+import { PlanCriticService } from "./planCriticService";
 import { ReviewService, type ConfigApproval } from "./reviewService";
 import { releaseStaleLeases } from "./repoLeases";
 import { ClientError } from "./clientError";
@@ -296,7 +297,18 @@ export class Orchestrator {
     registerController: (runId, controller) => this.controllers.set(runId, controller),
     releaseController: (runId) => this.controllers.delete(runId),
   };
-  private planningService = new PlanningService({ ...this.stageDeps, pump: () => this.pump() });
+  // Spec 30: the read-only plan critic sits between planning and the loop.
+  // A revise verdict re-plans the card, which never left `planning`.
+  private planCriticService = new PlanCriticService({
+    ...this.stageDeps,
+    pump: () => this.pump(),
+    replan: (cardId) => this.startStage("planning", cardId),
+  });
+  private planningService = new PlanningService({
+    ...this.stageDeps,
+    pump: () => this.pump(),
+    critique: (cardId) => this.startCritic(cardId),
+  });
   private evaluationService = new EvaluationService({
     ...this.stageDeps,
     // Spec 20: the evaluator was the one stage that never pumped, so the slot
@@ -822,6 +834,16 @@ export class Orchestrator {
     });
   }
 
+  /** Spec 30: run the plan critic in the background on a card still in
+   * `planning`; a crash lands the card in needs_attention. */
+  private startCritic(cardId: string) {
+    void this.planCriticService.runCritic(cardId).catch((err) => {
+      if (getCard(cardId)?.status === "planning") {
+        this.moveCard(cardId, "planning", "needs_attention", String(err));
+      }
+    });
+  }
+
   /** Mark a run finished — only if it is still `running` (guards cancel races).
    * The status flip is a compare-and-set on `status = 'running'`: when a peer
    * process already ended the run, its cause wins and this call returns false
@@ -1155,6 +1177,8 @@ export class Orchestrator {
             plannerModel: card.plannerModel,
             loopModel: card.loopModel,
             evaluatorModel: card.evaluatorModel,
+            planCritic: card.planCritic,
+            criticModel: card.criticModel,
             createdAt: now(),
             updatedAt: now(),
           })
@@ -1319,6 +1343,15 @@ export class Orchestrator {
       throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
     }
     if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
+    if (step === "critique") {
+      // The critic runs on the card's existing plan, so it is retried in
+      // place rather than by re-planning.
+      if (!this.claimStage(cardId, "needs_attention", "planning", "retrying failed plan critic")) {
+        throw new ClientError("card status changed before the plan critic could retry");
+      }
+      this.startCritic(cardId);
+      return { ok: true, step };
+    }
     const [stage, agent] = step === "plan"
       ? (["planning", "planner"] as const)
       : (["evaluating", "evaluator"] as const);

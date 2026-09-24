@@ -120,13 +120,16 @@ vi.mock("./settings", async (importOriginal) => ({
       plannerTimeoutMinutes: 42,
       plannerPromptTemplate: "Plan {{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
       sandboxEnabled: false,
+      // Spec 30: the routing tests below expect a plan to go straight to
+      // ready; a card opts into the critic explicitly where it is tested.
+      planCriticMode: "off",
     }),
 }));
 
 const testDataDir = setupTestDataDir("radulf-planningService-");
 const { testSettings } = await import("@/testUtils/testSettings");
 
-const { db, cards, plans, runs, repos, scopingMessages, worktrees, now } = await import("@/db");
+const { db, cards, plans, runs, repos, scopingMessages, worktrees, events, now } = await import("@/db");
 // Imported after setupTestDataDir, like everything else that reaches @/db: a
 // static import of this module fixes DATA_DIR at load and puts the file on
 // the checkout's own database, where it raced other test files.
@@ -146,7 +149,7 @@ function seedRepo() {
     .run();
 }
 
-function seedCard(id: string, reviewPlanBeforeImplementation: 0 | 1 = 0) {
+function seedCard(id: string, reviewPlanBeforeImplementation: 0 | 1 = 0, planCritic: 0 | 1 | null = null) {
   db.insert(cards)
     .values({
       id,
@@ -156,6 +159,7 @@ function seedCard(id: string, reviewPlanBeforeImplementation: 0 | 1 = 0) {
       status: "planning",
       baseBranch: "main",
       reviewPlanBeforeImplementation,
+      planCritic,
       position: 1,
       createdAt: now(),
       updatedAt: now(),
@@ -185,6 +189,7 @@ function makeDeps() {
     registerController: vi.fn(),
     releaseController: vi.fn(),
     pump: vi.fn(),
+    critique: vi.fn(),
   };
 }
 
@@ -196,6 +201,7 @@ const completeArtifacts = {
 
 describe("PlanningService.runPlanning", () => {
   beforeEach(() => {
+    db.delete(events).run();
     db.delete(worktrees).run();
     db.delete(runs).run();
     db.delete(plans).run();
@@ -243,6 +249,51 @@ describe("PlanningService.runPlanning", () => {
     await new PlanningService(deps).runPlanning("card-plan-review");
 
     expect(deps.moveCard).toHaveBeenCalledWith("card-plan-review", "planning", "plan_review");
+  });
+
+  it("hands a completed plan to the critic instead of moving the card when the card opts in (spec 30)", async () => {
+    seedCard("card-x", 0, 1);
+    mockPlannerHarness(completeArtifacts);
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-x");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "plan artifacts written",
+      expect.any(Object),
+    );
+    expect(deps.critique).toHaveBeenCalledWith("card-x");
+    expect(deps.moveCard).not.toHaveBeenCalledWith("card-x", "planning", "ready");
+    expect(deps.moveCard).not.toHaveBeenCalled();
+    expect(db.select().from(events).where(eq(events.type, "plan.critique_requested")).all()).toHaveLength(1);
+  });
+
+  it("re-plans from a plan critic revise verdict, saying who the feedback came from (spec 30)", () => {
+    seedCard("card-critiqued");
+    db.insert(plans)
+      .values({ id: "plan-critiqued", cardId: "card-critiqued", version: 1, planMd: "## Tasks\n- [ ] a\n", promptMd: "p", acceptanceCriteria: "c", createdAt: now() })
+      .run();
+    db.insert(runs)
+      .values({
+        id: "run-critique",
+        cardId: "card-critiqued",
+        planId: "plan-critiqued",
+        kind: "critique",
+        status: "completed",
+        worktreePath: "/tmp/wt",
+        branch: "ralph/x",
+        exitReason: "revise",
+        feedback: "Task 2 names a spec file that does not exist.",
+        startedAt: "2026-09-21T16:14:00.000Z",
+        endedAt: "2026-09-21T16:15:00.000Z",
+      })
+      .run();
+
+    const feedback = pendingReplanFeedback("card-critiqued")!;
+    expect(feedback.startsWith("The plan critic reviewed")).toBe(true);
+    expect(feedback).toContain("Task 2 names a spec file that does not exist.");
   });
 
   it("finishes the run and parks the card when the planner harness throws", async () => {
@@ -376,7 +427,6 @@ describe("PlanningService.runPlanning", () => {
 
 // Spec 26: a retry inherits the attempt it retries.
 const { runTranscriptDir } = await import("./retention");
-const { events } = await import("@/db");
 
 describe("PlanningService.runPlanning — retries inherit the failed attempt (spec 26)", () => {
   beforeEach(() => {

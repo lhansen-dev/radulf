@@ -18,7 +18,7 @@ import type { TranscriptEvent } from "./harness";
  * and is bounded so prompt growth stays under control (spec 18 item 9).
  */
 
-export type AttemptStage = "planner" | "evaluator";
+export type AttemptStage = "planner" | "evaluator" | "critic";
 
 export type PreviousAttempt = {
   runId: string;
@@ -265,7 +265,9 @@ export function renderDeadlineSection(stage: AttemptStage, startedAt: Date, budg
   const deliverable =
     stage === "evaluator"
       ? "your verdict in `.ralph/EVALUATION.md`"
-      : "the three plan artifacts in `.ralph/`";
+      : stage === "critic"
+        ? "your verdict in `.ralph/CRITIQUE.md`"
+        : "the three plan artifacts in `.ralph/`";
   return (
     "\nATTEMPT BUDGET\n==============\n" +
     `This attempt started at ${startedAt.toISOString()}. Its hard budget is ${minutes} minute${minutes === 1 ? "" : "s"}: ` +

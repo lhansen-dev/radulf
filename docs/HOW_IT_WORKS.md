@@ -66,6 +66,14 @@ finds too vague to plan gets questions instead of a guess: they land in the
 scoping thread and the card goes to Needs Attention. Answer them there and
 **Plan again**.
 
+When the **plan critic** is on — by default for the tasks of a breakdown, and
+for any card via its **Plan critic** setting — a read-only second model reads
+the plan against the card, its thread and the specs it names before anything
+runs. An approve sends the card on as usual; a revise sends the plan back to
+the planner with the critic's feedback, at most twice, after which the card
+goes to plan review for a person to decide. Its verdicts show in the card's
+events.
+
 **2 · Loop.** The loop agent implements one task at a time inside a per-card
 `git worktree`, running its targeted check each iteration. Every iteration is a
 fresh context — the agent remembers nothing from the previous pass. The repo is
@@ -142,12 +150,13 @@ If auto-approve and pull-request delivery are both on, the pull request is opene
 as a **draft** — nobody looked at the diff, and the draft says so. A pull request
 Radulf opens as ready-for-review is one a human approved.
 
-## The four agent roles
+## The five agent roles
 
 | Role | Job |
 |------|-----|
 | **Scoping** | Talks a rough card through with you, reading the repo read-only, and drafts the scoped task. Interactive; runs only when you ask. |
 | **Planner** | Turns a card and its scoping thread into a plan, a loop prompt, and acceptance criteria. |
+| **Plan critic** | Reads the finished plan against the card, its thread and the specs it names, read-only, and returns `approve` or `revise` with feedback before the loop starts (spec 30). On by default for breakdown pieces. |
 | **Loop** | Implements one task at a time against the worktree, running its targeted check each iteration. |
 | **Evaluator** | The sole whole-card verifier. Runs every criterion, inspects the diff, returns `approve` or `revise`, and on approve writes the summary and refreshes stale docs. |
 
