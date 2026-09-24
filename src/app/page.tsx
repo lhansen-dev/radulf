@@ -17,7 +17,7 @@ import {
   type ImprovementRun,
   type Repo,
 } from "./ui/api";
-import { groupEpics, type EpicGroup } from "./ui/epics";
+import { groupEpics, waitingOn, type EpicGroup } from "./ui/epics";
 import { ActivityDot } from "./ui/liveActivity";
 import { NewTaskDialog } from "./ui/newTaskDialog";
 import { ImprovementRunDialog } from "./ui/improvementRunDialog";
@@ -621,11 +621,20 @@ function EpicRow({ group }: { group: EpicGroup }) {
         <Link href={`/card/${epic.id}`} className="text-[0.95rem] font-medium leading-5 text-foreground/90 hover:underline">{epic.title}</Link>
         <p className="mt-1 text-xs leading-5 text-foreground/48">
           <span className="text-foreground/65">{epic.repoName}</span> · <span className="text-cyan-300">Epic</span> · {done} of {tasks.length} done
-          {running > 0 && ` · ${running} running`}{waiting > 0 && ` · ${waiting} need you`} · runs {epic.runMode === "parallel" ? "in parallel" : "in order"}
+          {running > 0 && ` · ${running} running`}{waiting > 0 && ` · ${waiting} need you`} · runs {{ ordered: "in order", parallel: "in parallel", graph: "as a graph" }[epic.runMode ?? "ordered"]}
         </p>
         <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/10" aria-hidden="true">
           <div className="h-full bg-green-400" style={{ width: `${Math.round((done / tasks.length) * 100)}%` }} />
         </div>
+        {tasks.map((task) => {
+          const blockers = waitingOn(task, tasks, epic.runMode);
+          if (blockers.length === 0) return null;
+          return (
+            <p key={task.id} className="mt-1 truncate text-xs text-foreground/40">
+              {task.title} · waiting on {blockers.map((blocker) => blocker.title).join(", ")}
+            </p>
+          );
+        })}
       </div>
     </article>
   );
