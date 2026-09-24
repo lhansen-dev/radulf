@@ -18,7 +18,7 @@ vi.mock("./settings", async (importOriginal) => {
 setupTestDataDir("radulf-orchestrator-roles-");
 
 const { db, cards, events, plans, repos, runs, workers, now } = await import("@/db");
-const { Orchestrator, getOrchestrator } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators, getOrchestrator } = await import("./orchestrator");
 
 type Global = { __radulfOrchestrator?: unknown };
 
@@ -72,6 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  disposeAllOrchestrators();
   (globalThis as Global).__radulfOrchestrator = undefined;
   if (originalRoles === undefined) delete process.env.RADULF_ROLES;
   else process.env.RADULF_ROLES = originalRoles;

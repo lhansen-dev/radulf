@@ -253,6 +253,19 @@ export function planningCandidates(
  * Cross-process liveness comes from the `workers` table (heartbeats) and
  * `reapStaleRuns()`, which interrupts runs owned by dead workers.
  */
+
+/** Every Orchestrator whose timers are still live; see disposeAllOrchestrators(). */
+const liveOrchestrators = new Set<Orchestrator>();
+
+/**
+ * Stop the heartbeat/reaper and attention-sweep timers of every live
+ * Orchestrator. For test suites (so a finished file leaves no 5-second
+ * interval running against the shared DB) and final process exit.
+ */
+export function disposeAllOrchestrators(): void {
+  for (const orchestrator of liveOrchestrators) orchestrator.dispose();
+}
+
 export class Orchestrator {
   /** Set on graceful shutdown: pump() starts no new runs, and a running loop
    * stops at its next iteration boundary. */
@@ -346,6 +359,21 @@ export class Orchestrator {
       // watchdog): this is a reminder, not work.
       this.attentionTimer.unref?.();
     }
+    liveOrchestrators.add(this);
+  }
+
+  /**
+   * Stop this orchestrator's timers for good. Intended for tests and for
+   * final process exit only. Note that `startDraining()` deliberately does
+   * NOT stop the heartbeat: a draining worker is still finishing its last
+   * iteration and must keep its claim alive so no peer reaps that run.
+   */
+  dispose(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+    if (this.attentionTimer) clearInterval(this.attentionTimer);
+    this.attentionTimer = null;
+    liveOrchestrators.delete(this);
   }
 
   /**

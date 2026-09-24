@@ -109,7 +109,8 @@ const {
   settings,
   worktrees,
 } = await import("@/db");
-const { Orchestrator, iterationBudgetMs, promptBloatRatio, slowIterationMs } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators, iterationBudgetMs, promptBloatRatio, slowIterationMs } =
+  await import("./orchestrator");
 const { planStatePath } = await import("./bookkeeping");
 const { recordProviderOutcome, providerBreakerStatus } = await import("./circuitBreaker");
 const { POST: postReview } = await import("@/app/api/reviews/route");
@@ -320,6 +321,10 @@ describe("Orchestrator cancellation lifecycle", () => {
       __radulfOrchestrator?: InstanceType<typeof Orchestrator>;
     })
       .__radulfOrchestrator;
+  });
+
+  afterEach(() => {
+    disposeAllOrchestrators();
   });
 
   it.each(["DONE", "DONE.md"])("ignores premature %s and assigns the next task before evaluation", async (doneName) => {

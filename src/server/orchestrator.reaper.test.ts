@@ -25,7 +25,7 @@ vi.mock("./settings", async (importOriginal) => {
 const testDataDir = setupTestDataDir("radulf-orchestrator-reaper-");
 
 const { db, cards, events, iterations, plans, repos, runs, workers, now } = await import("@/db");
-const { Orchestrator } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runScratchRoot } = await import("./sandbox/context");
 const { planStatePath } = await import("./bookkeeping");
 
@@ -90,6 +90,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  disposeAllOrchestrators();
   (globalThis as Global).__radulfOrchestrator = undefined;
 });
 

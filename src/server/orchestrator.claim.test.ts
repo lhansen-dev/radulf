@@ -21,7 +21,7 @@ vi.mock("./settings", async (importOriginal) => {
 setupTestDataDir("radulf-orchestrator-claim-");
 
 const { db, cards, events, plans, repos, runs, workers, now } = await import("@/db");
-const { Orchestrator } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 
 type Global = { __radulfOrchestrator?: unknown };
 
@@ -69,6 +69,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  disposeAllOrchestrators();
   (globalThis as Global).__radulfOrchestrator = undefined;
 });
 

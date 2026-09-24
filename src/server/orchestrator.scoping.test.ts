@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 const mocks = vi.hoisted(() => ({
@@ -30,7 +30,11 @@ vi.mock("./settings", async (importOriginal) => {
 setupTestDataDir("radulf-orchestrator-scoping-");
 
 const { db, cards, events, plans, repos, iterations, runs, workers, now } = await import("@/db");
-const { Orchestrator } = await import("./orchestrator");
+const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
+
+afterAll(() => {
+  disposeAllOrchestrators();
+});
 const { readPlanState } = await import("./bookkeeping");
 
 const orchestrator = new Orchestrator({ autoStart: false });
