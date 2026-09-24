@@ -457,3 +457,51 @@ export const worktrees = sqliteTable(
   },
   (table) => [index("worktrees_removed_at_idx").on(table.removedAt)],
 );
+
+// Spec 25 decision 6: durable review-delivery queue. The web process enqueues
+// a row on approve / retry-merge; a worker claims it (status pending -> running)
+// under the repo's lease and records the outcome. Cascades with its run.
+export const reviewDeliveries = sqliteTable(
+  "review_deliveries",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    cardId: text("card_id").notNull(),
+    repoId: text("repo_id").notNull(),
+    fromStatus: text("from_status").notNull().$type<"review" | "needs_attention">(),
+    approvedBy: text("approved_by").notNull().$type<"human" | "auto">(),
+    status: text("status").notNull().default("pending").$type<"pending" | "running" | "finished">(),
+    workerId: text("worker_id"),
+    ok: integer("ok"),
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+    claimedAt: text("claimed_at"),
+    endedAt: text("ended_at"),
+  },
+  (table) => [index("review_deliveries_status_idx").on(table.status)],
+);
+
+// Spec 25 decision 6: one lease per repo path serializes git ref writes across
+// workers; a lease whose worker is no longer live is reaped and re-acquired.
+export const repoLeases = sqliteTable("repo_leases", {
+  repoPath: text("repo_path").primaryKey(),
+  workerId: text("worker_id").notNull(),
+  acquiredAt: text("acquired_at").notNull(),
+});
+
+// Spec 25 decision 6: audit log of refs moved by delivery workers, consulted by
+// the run-end integrity check to tell our own ref moves from foreign ones.
+export const refWrites = sqliteTable(
+  "ref_writes",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    repoPath: text("repo_path").notNull(),
+    ref: text("ref").notNull(),
+    sha: text("sha").notNull(),
+    workerId: text("worker_id"),
+    writtenAt: text("written_at").notNull(),
+  },
+  (table) => [index("ref_writes_repo_written_idx").on(table.repoPath, table.writtenAt)],
+);
