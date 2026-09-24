@@ -1,0 +1,21 @@
+# Evaluator notes (attempt started 2026-09-24T14:48Z)
+- AC1 spec file exists + amendment in 24-epics.md: OK
+- AC2 spec commit 26075f7 is docs-only (specs/24-epics.md, specs/28-epic-dependency-graph.md): OK
+- AC3 "graph" in src/shared/epics.ts, depends_on in schema.ts: OK
+- AC4 drizzle/0022_epic_dependencies.sql (only 0022 file), journal idx 22, 0022_snapshot.json: OK
+- AC8 'dependency cycle' in orchestrator.ts: OK
+- AC12 'DEPENDS ON' in scoping.ts: OK
+- AC14b 'waitingOn' in page.tsx: OK
+- AC15 value="graph" in epicTasks.tsx: OK
+- node_modules is a symlink -> /repos/radulf/node_modules (gate build failure environmental)
+- AC5/6/11 vitest cardValidation.test.ts epics.test.ts scoping.test.ts: 36 passed, exit 0
+- AC7 vitest orchestrator.scoping.test.ts: 15 passed, exit 0
+- AC9 vitest lifecycle -t 'spec 28': 2 passed, exit 0; AC10 -t 'spec 20': 1 passed, exit 0
+- AC13/14a/17 vitest breakdownEditor, scopingPanel, ui/epics, scopingRoutes, newTaskDialog: 42 passed, exit 0
+- AC18 tsc --noEmit exit 0; AC19 eslint exit 0 (1 warning: unused '_drop' in breakdownEditor.tsx:43)
+- AC16 vitest mockPipeline.test.ts: 12 passed incl. 'graph epic', exit 0
+- AC20 NODE_ENV=production next build --webpack: exit 0 (node_modules symlink → Turbopack path environmental, per card)
+- Split check RADULF_SPLIT_CHECK=1 vitest splitProcesses.test.ts: first run 1 failed (transcript push assertion ~line 497, timing-based, unrelated to epics; not touched by diff), rerun 9/9 passed exit 0
+- Verdict written: approve (EVALUATION.md, SUMMARY.md). Now reconciling docs: specs/28, specs/24 non-goal, docs/HOW_IT_WORKS.md, docs/DESIGN_HISTORY.md, PRODUCT.md
+- Docs reconciled: specs/28 (null storage, cycle detection location/message, event shape), specs/24 non-goal note, docs/HOW_IT_WORKS.md, docs/DESIGN_HISTORY.md (row 28), PRODUCT.md; AC1 still OK
+- docs.test.ts after doc edits: 15 passed. Evaluation complete at 14:59:37Z.

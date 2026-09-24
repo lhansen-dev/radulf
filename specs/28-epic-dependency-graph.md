@@ -37,9 +37,9 @@ editor and `POST /api/cards/:id/breakdown` accept, per piece, an optional
 `dependsOn` list of 0-based piece indexes within that breakdown. On apply the
 indexes are resolved to the ids of the sibling cards that were created and
 persisted on the piece as `cards.depends_on`, a JSON array of sibling card
-ids. An empty list is stored as `[]`. Pieces of epics created before this
-spec have `null`, which every reader treats as no dependencies; under
-`ordered` those epics behave exactly as they did.
+ids. An empty or missing list is stored as `null`, as are the pieces of
+epics created before this spec; every reader treats `null` as no
+dependencies, and under `ordered` those epics behave exactly as they did.
 
 **2. A third run mode, `graph`.** `EPIC_RUN_MODES` gains `graph`. Under it,
 `pump()` starts a Todo piece once every piece in its `depends_on` is Done or
@@ -50,12 +50,13 @@ queue position and ignores `depends_on`; `parallel` still starts everything
 the cap allows. The proposal recommends a mode; the operator decides, and may
 switch the epic between the three at any time, as before.
 
-**3. A dependency cycle is rejected at breakdown time.** `parseBreakdown`
-walks the `dependsOn` lists before anything is written. An index outside the
-breakdown, a piece that depends on itself, or any cycle is a validation
-error, and the error names the pieces involved, by their 1-based position and
-title, so the operator can fix the editor rather than guess. Nothing is
-persisted from a rejected breakdown.
+**3. A dependency cycle is rejected at breakdown time.** The `dependsOn`
+lists are checked before anything is written: `parseBreakdown` rejects an
+index outside the breakdown or a piece that depends on itself, naming the
+piece by its 1-based position, and `applyBreakdown` checks the indexes again
+and walks the graph for a cycle, reporting one as the chain of piece titles
+(`"A" → "B" → "A"`) so the operator can fix the editor rather than guess.
+Nothing is persisted from a rejected breakdown.
 
 **4. An abandoned dependency does not hold a piece.** A piece whose dependency
 is Abandoned starts anyway, once its other dependencies are satisfied, the
@@ -63,8 +64,8 @@ same way spec 24 decision 4 lets an abandoned predecessor release the order.
 When that happens the epic's activity records `epic.dependency_abandoned`,
 naming the piece that started and the abandoned dependency, so the operator
 can see that a piece ran on top of work that was never done. It is one event
-per piece per abandoned dependency, emitted when the piece is started, not
-when the dependency is abandoned.
+per piece, listing every abandoned dependency it had, emitted when the piece
+is started, not when the dependency is abandoned.
 
 **5. Start now still starts a waiting piece.** As in spec 24 decision 4, a
 manual start is the operator overriding the rule on purpose. The queue does
@@ -93,8 +94,8 @@ dependency from one held by the cap or by Auto Mode being off.
 - `cards.run_mode` accepts a third value, `graph`, alongside `ordered` and
   `parallel`.
 - Events: `epic.dependency_abandoned`, on the epic, when decision 4 fires,
-  with the id of the piece that started and the id of the abandoned
-  dependency.
+  with `pieceId` (the piece that started) and `abandoned` (the ids of its
+  abandoned dependencies).
 
 ## What this does not do
 

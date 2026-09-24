@@ -141,7 +141,9 @@ epic actions.
 ## What this does not do
 
 - **No dependency graph.** Order is the whole of it. A piece that depends on a
-  piece two places back still waits for the one in between.
+  piece two places back still waits for the one in between. *Amended by
+  [28-epic-dependency-graph.md](28-epic-dependency-graph.md): a third run
+  mode, `graph`, schedules pieces by declared dependencies.*
 - **No coordination between agents.** Two pieces that touch the same file in
   parallel conflict exactly as two unrelated cards do.
 - **No nested epics.** A card with a parent cannot be broken down.
