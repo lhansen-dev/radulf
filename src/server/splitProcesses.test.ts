@@ -903,13 +903,28 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       expect(
         (await api("POST", `/api/cards/${overlappingId}/move`, { to: "in_progress" })).status,
       ).toBe(200);
-      await waitFor(
-        () =>
-          dbQuery<{ status: string }>("SELECT status FROM cards WHERE id = ?", overlappingId)[0]
-            ?.status === "looping",
-        90_000,
-        "the overlapping card to reach looping",
-      );
+      // The happy-path loop lasts on the order of a hundred milliseconds on a
+      // fast machine, so poll tightly (as the pause test does) and accept any
+      // status the card can only hold once its loop has started: waiting for
+      // exactly `looping` misses the window and then times out on a card that
+      // is already in review.
+      {
+        const started = new Set(["looping", "evaluating", "review"]);
+        const deadline = Date.now() + 90_000;
+        for (;;) {
+          const [row] = dbQuery<{ status: string }>(
+            "SELECT status FROM cards WHERE id = ?",
+            overlappingId,
+          );
+          if (row && started.has(row.status)) break;
+          if (row?.status === "needs_attention" || Date.now() > deadline) {
+            throw new Error(
+              `overlapping card never reached looping (last: ${row?.status})\n--- worker ---\n${tail(out.worker)}\n--- worker2 ---\n${tail(out.worker2)}`,
+            );
+          }
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }
 
       // Both web processes accept at once; neither runs the merge itself.
       const approve = (url: string, runId: string) =>
