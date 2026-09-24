@@ -1,14 +1,118 @@
 # Repository gate
 
 Command: `make lint typecheck build check-split`
-Result: exit 2
-Duration: 2m 25s
-Ran at: 2026-09-24T15:20:20.953Z
+Result: exit 0
+Duration: 47s
+Ran at: 2026-09-24T15:38:23.089Z
 
 ## Output, last 8000 characters
 
 ```
-…rbopackIgnore: true*/ ...), or
+…unning TypeScript ...
+  Finished TypeScript in 6.1s ...
+  Collecting page data using 15 workers ...
+  Generating static pages using 15 workers (0/39) ...
+  Generating static pages using 15 workers (9/39) 
+  Generating static pages using 15 workers (19/39) 
+  Generating static pages using 15 workers (29/39) 
+✓ Generating static pages using 15 workers (39/39) in 183ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ƒ /_not-found
+├ ƒ /analytics
+├ ƒ /api/analytics
+├ ƒ /api/auth/login
+├ ƒ /api/auth/logout
+├ ƒ /api/benchmarks
+├ ƒ /api/cards
+├ ƒ /api/cards/[id]
+├ ƒ /api/cards/[id]/[action]
+├ ƒ /api/cards/[id]/diff
+├ ƒ /api/cards/[id]/move
+├ ƒ /api/cards/[id]/scoping
+├ ƒ /api/cards/[id]/scoping/plan
+├ ƒ /api/cards/[id]/scoping/proposal
+├ ƒ /api/cards/[id]/scoping/split
+├ ƒ /api/cards/export
+├ ƒ /api/cards/import
+├ ƒ /api/events/stream
+├ ƒ /api/folder-browser
+├ ƒ /api/github/status
+├ ƒ /api/health
+├ ƒ /api/improvement-runs
+├ ƒ /api/improvement-runs/[id]/stop
+├ ƒ /api/jira/issue
+├ ƒ /api/maintenance/cleanup
+├ ƒ /api/provider-login
+├ ƒ /api/provider-login/[id]
+├ ƒ /api/providers/[provider]/models
+├ ƒ /api/providers/usage
+├ ƒ /api/repos
+├ ƒ /api/repos/[id]
+├ ƒ /api/repos/[id]/branches
+├ ƒ /api/repos/clone
+├ ƒ /api/repos/init
+├ ƒ /api/restart
+├ ƒ /api/reviews
+├ ƒ /api/runs/[id]
+├ ƒ /api/schedules
+├ ƒ /api/schedules/[id]
+├ ƒ /api/settings
+├ ƒ /api/settings/prompt-template-defaults
+├ ƒ /benchmarks
+├ ƒ /card/[id]
+├ ƒ /docs
+├ ƒ /docs/[slug]
+├ ƒ /login
+├ ƒ /review/[id]
+└ ƒ /settings
+
+
+ƒ Proxy (Middleware)
+
+ƒ  (Dynamic)  server-rendered on demand
+
+RADULF_SPLIT_CHECK=1 node_modules/.bin/vitest run src/server/splitProcesses.test.ts
+
+ RUN  v4.1.11 /var/lib/radulf/worktrees/add-a-plan-critic-that-reviews-each-plan-oGOz-S-hAB8M5N-meJs8R
+
+make[1]: Entering directory '/var/lib/radulf/worktrees/add-a-plan-critic-that-reviews-each-plan-oGOz-S-hAB8M5N-meJs8R'
+node_modules/.bin/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
+make[1]: Leaving directory '/var/lib/radulf/worktrees/add-a-plan-critic-that-reviews-each-plan-oGOz-S-hAB8M5N-meJs8R'
+ ✓ src/server/splitProcesses.test.ts (9 tests) 21968ms
+     ✓ fans a card created on one web process out to the other web process's event stream  327ms
+     ✓ drives a card from Todo to In Review through the web-only process  2093ms
+     ✓ cancelling a looping card from the web-only process ends the run in the worker  1020ms
+     ✓ pausing a looping card from the web-only process pauses it at the iteration boundary and resume starts a new claimed run  1229ms
+     ✓ two workers never run two runs of one repo at once with a cap of one  842ms
+     ✓ two approvals from two web processes deliver serially and a loop overlapping a sibling merge reports no tampering  645ms
+     ✓ SIGKILL on a worker mid-loop hands the card to the other worker within the stale window  14898ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  15:38:47
+   Duration  22.09s (transform 39ms, setup 0ms, import 53ms, tests 21.97s, environment 0ms)
+
+Turbopack build encountered 3 warnings:
+./src/server/docs.ts:173:15
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m171 |[0m   [36mconst[0m meta = [33mBY_SLUG[0m.get(slug);
+  [90m172 |[0m   [36mif[0m (!meta) [36mreturn[0m [36mnull[0m;
+[33m[1m>[0m [90m173 |[0m   [36mconst[0m abs = path.join(process.cwd(), meta.sourcePath);
+  [90m    |[0m               [33m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m174 |[0m   [36mconst[0m content = stripLayoutHtml([36mawait[0m readFile(abs, [32m"utf8"[0m));
+  [90m175 |[0m   [36mreturn[0m { meta, content };
+  [90m176 |[0m }
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: path.join(/*turbopackIgnore: true*/ ...), or
 - remove them.
 
 Import traces:
@@ -98,102 +202,4 @@ Import traces:
 (!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
   - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
 Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
-
-⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
-
- FAIL  src/server/splitProcesses.test.ts > split web/worker processes
-Error: timed out after 120000ms waiting for web2 /api/health
---- web ---
-▲ Next.js 16.3.4
-- Local:         http://127.0.0.1:43567
-- Network:       http://127.0.0.1:43567
-✓ Ready in 111ms
-✓ Running next.config.ts took 27ms
-[radulf] roles: web
-
---- web2 ---
-vd._.js:8:29358)
-    at Object.get (.next/server/chunks/_123yavd._.js:8:30341)
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:36725)
-    at f (.next/server/chunks/_123yavd._.js:103:56260)
-    at Module.s [as register] (.next/server/chunks/src_1ja8qay._.js:1:127) {
-  code: 'SQLITE_BUSY'
-}
-SqliteError: An error occurred while loading instrumentation hook: database is locked
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:29358)
-    at Object.get (.next/server/chunks/_123yavd._.js:8:30341)
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:36725)
-    at f (.next/server/chunks/_123yavd._.js:103:56260)
-    at Module.s [as register] (.next/server/chunks/src_1ja8qay._.js:1:127) {
-  code: 'SQLITE_BUSY'
-}
-SqliteError: An error occurred while loading instrumentation hook: database is locked
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:29358)
-    at Object.get (.next/server/chunks/_123yavd._.js:8:30341)
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:36725)
-    at f (.next/server/chunks/_123yavd._.js:103:56260)
-    at Module.s [as register] (.next/server/chunks/src_1ja8qay._.js:1:127) {
-  code: 'SQLITE_BUSY'
-}
-SqliteError: An error occurred while loading instrumentation hook: database is locked
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:29358)
-    at Object.get (.next/server/chunks/_123yavd._.js:8:30341)
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:36725)
-    at f (.next/server/chunks/_123yavd._.js:103:56260)
-    at Module.s [as register] (.next/server/chunks/src_1ja8qay._.js:1:127) {
-  code: 'SQLITE_BUSY'
-}
-SqliteError: An error occurred while loading instrumentation hook: database is locked
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:29358)
-    at Object.get (.next/server/chunks/_123yavd._.js:8:30341)
-    at <unknown> (.next/server/chunks/_123yavd._.js:8:36725)
-    at f (.next/server/chunks/_123yavd._.js:103:56260)
-    at Module.s [as register] (.next/server/chunks/src_1ja8qay._.js:1:127) {
-  code: 'SQLITE_BUSY'
-}
-
---- worker ---
-[radulf] roles: worker
-sysctl: cannot stat /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
-[radulf] sandbox preflight failed — every sandboxEnabled run will fail into Needs Attention until this is fixed (or sandboxEnabled is turned off in Settings):
-  - sandbox startup failed: listen EPERM: operation not permitted /tmp/claude/srt-mux-569-0.sock
-[radulf] retention sweep: {"runsDeleted":0,"eventsDeleted":0,"transcriptEntriesDeleted":0,"worktreesRemoved":0}
-
---- worker2 ---
-[radulf] roles: worker
-sysctl: cannot stat /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
-[radulf] sandbox preflight failed — every sandboxEnabled run will fail into Needs Attention until this is fixed (or sandboxEnabled is turned off in Settings):
-  - sandbox startup failed: listen EPERM: operation not permitted /tmp/claude/srt-mux-570-0.sock
-
- ❯ Object.get src/db/index.ts:65:0
- ❯ <unknown> src/server/settings.ts:375:18
- ❯ f src/server/boot.ts:24:30
- ❯ <unknown> src/db/index.ts:55:9
- ❯ Object.get src/db/index.ts:65:0
- ❯ <unknown> src/server/settings.ts:375:18
- ❯ f src/server/boot.ts:24:30
- ❯ <unknown> src/db/index.ts:55:9
- ❯ Object.get src/db/index.ts:65:0
- ❯ <unknown> src/server/settings.ts:375:18
- ❯ f src/server/boot.ts:24:30
- ❯ <unknown> src/db/index.ts:55:9
- ❯ Object.get src/db/index.ts:65:0
- ❯ <unknown> src/server/settings.ts:375:18
- ❯ f src/server/boot.ts:24:30
- ❯ <unknown> src/db/index.ts:55:9
- ❯ Object.get src/db/index.ts:65:0
- ❯ <unknown> src/server/settings.ts:375:18
- ❯ f src/server/boot.ts:24:30
- ❯ waitFor src/server/splitProcesses.test.ts:78:9
-     76|     await new Promise((r) => setTimeout(r, 250));
-     77|   }
-     78|   throw new Error(
-       |         ^
-     79|     `timed out after ${timeoutMs}ms waiting for ${what}\n--- web ---\n…
-     80|   );
- ❯ src/server/splitProcesses.test.ts:269:5
-
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
-
-make: *** [Makefile:93: check-split] Error 1
 ```

@@ -1,23 +1,23 @@
-# Evaluation notes (attempt started 2026-09-24T15:22Z)
+# Evaluation notes — attempt started 2026-09-24T15:39:25Z
 - grep -c '28' specs/30-plan-critic.md → 0 (exit 1) PASS
 - grep -c '^# 30: ' specs/30-plan-critic.md → 1 PASS
 - grep -q 'Decided 2026-09-24' / 'amends nothing else' → both exit 0 PASS
 - grep -q '30-plan-critic.md' docs/DESIGN_HISTORY.md → exit 0 PASS
-- grep -q 'criticModel: null' src/server/requestValidation.test.ts → exit 0 PASS
-- grep -q 'critique: "critique.jsonl"' src/app/api/runs/[id]/route.ts → exit 0 PASS
-- grep -q '"plan critic"' src/server/stageDiagnosis.ts → exit 0 PASS
-- harness diff vs origin/main → 18 (branch is off beta, 240 commits ahead of main; those are beta's history). vs beta (actual base 620e94e) only mock.ts changed → PASS in intent
-- npx vitest run src/server/requestValidation.test.ts → 33/33 PASS exit 0
-- npx vitest run src/server/stageDiagnosis.test.ts → 9/9 PASS exit 0
-- npx vitest run 'src/app/api/runs/[id]/runRoute.test.ts' → 2/2 PASS exit 0 (criterion's escaped `\[id\]` form finds no files — vitest filter quirk, not a defect)
-- vitest planCriticService(13)+planningService(20)+settings(7)+cardValidation(8) → 48/48 PASS exit 0
-- npx vitest run src/server/mockPipeline.test.ts -t critic → 2 pass (approve, revise-once), 11 skipped, exit 0
-- npx tsc --noEmit → exit 0; eslint on the four named files → exit 0
-- Code review of planCriticService/planningService/orchestrator/mock.ts/UI diffs: coherent; follow-up commits match prior revise feedback exactly (spec para removed, requestValidation expected obj, route singleFile critique, stageDiagnosis "plan critic").
-- Gate (pre-run by orchestrator): lint/typecheck/build OK; check-split failed with SQLITE_BUSY on web2 boot in db/index.ts createDb (untouched by card; 5 errors over 120s ≈ two 60s migration-lock timeouts). Prior gate on same branch passed. Judged environmental flake; confirming with a lone split run after the suite.
-- Full vitest suite started 15:25 in background → $TMPDIR/vitest-full.log
-- Stale doc found: docs/ARCHITECTURE.md role table lacks a Plan critic row (fix on approve).
-- Full vitest suite (foreground, 15:32): 5 files / 19 tests fail: bookkeeping (EROFS /tmp), harness/index watchdogs (10), streamLiveness (2), sandbox/srt (4) — all on the card's environmental list — plus evaluationService.test.ts (3 spec 26/27 timeout tests). Everything else passes (1303).
-- evaluationService.test.ts at merge base 620e94e (git archive export): same 3 tests fail identically → pre-existing, not this card's.
-- RADULF_SPLIT_CHECK=1 vitest splitProcesses.test.ts (same .next build as the gate) → 9/9 PASS exit 0; gate's SQLITE_BUSY confirmed a flake
-- VERDICT: approve written 15:36; SUMMARY.md written; docs reconciled: ARCHITECTURE.md role table row + HOW_IT_WORKS.md paragraph
+- grep -q 'criticModel: null' requestValidation.test.ts → exit 0 PASS
+- grep -q 'critique: "critique.jsonl"' runs/[id]/route.ts → exit 0 PASS
+- grep -q '"plan critic"' stageDiagnosis.ts → exit 0 PASS
+- harness diff: vs beta (real base) only mock.ts changed PASS; vs main merge-base 18 files but all identical to beta (beta is ahead of main) — criterion's literal cmd picks wrong base
+- vitest requestValidation/stageDiagnosis/settings/cardValidation → 65/65 pass PASS
+- vitest 'src/app/api/runs/\[id\]/runRoute.test.ts' (literal escaped) → "No test files found" exit 1 (vitest 4.1.11 filter quirk); unescaped 'src/app/api/runs/[id]/runRoute.test.ts' → 2/2 pass exit 0 PASS
+- vitest planCriticService + planningService → 33/33 pass PASS
+- vitest mockPipeline -t critic → 2 pass (approve + revise) PASS
+- npx tsc --noEmit → exit 0 PASS
+- npx eslint (4 named files) → exit 0 PASS
+- gate (make lint typecheck build check-split) exit 0 per GATE.md; starting `make test` in background → $TMPDIR/make-test.log
+- drizzle migration 0023 chains on 0022 (prevId ok), drizzle-kit check → "Everything's fine" PASS
+- reviewed planCriticService.ts, planningService.ts diff, orchestrator diff, mock.ts, mockPipeline tests: approve/revise/limit/illegal-change paths all present
+- background make test got killed by the sandbox between tool calls (18 files done, all passing); re-running in foreground
+- make test run 1: 138/139 files pass; 1 fail = orchestrator.reaper.test.ts "never reaps its own run" ENOTEMPTY rmdir /tmp/claude/runtmp (shared-TMPDIR race between parallel workers, passes alone; not touched by the card)
+- make test run 2: 139 passed | 1 skipped, exit 0 → PASS. Combined with gate (lint typecheck build check-split exit 0) = make check passes
+- doc reconciliation (approve): HOW_IT_WORKS roles table (+Plan critic, "five"), spec 03 cards cols/runs.kind/settings keys, PROVIDERS mock scenario table + curl example (criticProvider)
+- verdict written: approve 2026-09-24T15:52:19Z

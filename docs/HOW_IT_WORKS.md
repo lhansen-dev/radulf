@@ -147,12 +147,13 @@ If auto-approve and pull-request delivery are both on, the pull request is opene
 as a **draft** — nobody looked at the diff, and the draft says so. A pull request
 Radulf opens as ready-for-review is one a human approved.
 
-## The four agent roles
+## The five agent roles
 
 | Role | Job |
 |------|-----|
 | **Scoping** | Talks a rough card through with you, reading the repo read-only, and drafts the scoped task. Interactive; runs only when you ask. |
 | **Planner** | Turns a card and its scoping thread into a plan, a loop prompt, and acceptance criteria. |
+| **Plan critic** | Reads the finished plan against the card, its thread and the specs it names, read-only, and returns `approve` or `revise` with feedback before the loop starts (spec 30). On by default for breakdown pieces. |
 | **Loop** | Implements one task at a time against the worktree, running its targeted check each iteration. |
 | **Evaluator** | The sole whole-card verifier. Runs every criterion, inspects the diff, returns `approve` or `revise`, and on approve writes the summary and refreshes stale docs. |
 
