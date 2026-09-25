@@ -1,4 +1,4 @@
-You are working on: persisting a Jira issue key on cards (`cards.jira_key`), linking it on the card page, and — behind the opt-in `jiraCommentOnDone` setting — posting exactly one bounded, never-blocking plain-text comment on that issue when the card reaches Done (review merge, PR delivery, epic parent closing), recorded as `jira.commented` / `jira.comment_failed` events.
+You are working on: persisting a card's Jira issue key (`cards.jira_key`), linking it on the card page, and — behind the opt-in `jiraCommentOnDone` setting — posting exactly one plain-text comment on the Jira issue when the card reaches Done, without ever blocking the card.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,21 +36,21 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Task-specific hints:
-- There is NO network. Never run `npm ci`, `npm install`, or anything that
-  downloads. If `node_modules` is missing, copy it once from the registered
-  checkout (a real copy, NEVER a symlink — a symlinked `node_modules` breaks
-  the production build):
-  `[ -d node_modules ] || cp -al /repos/radulf/node_modules node_modules 2>/dev/null || cp -a /repos/radulf/node_modules node_modules`
-  `node_modules` is gitignored, so it never shows in `git status`.
-- Run tools from the local binaries: `npx vitest run <file>` resolves
-  `node_modules/.bin/vitest` without network; `node_modules/.bin/drizzle-kit generate`
-  is offline. Test files whose path contains `[id]` must be quoted.
-- Code style: TypeScript, 2-space indent, double quotes, trailing commas; tests
-  use vitest (`describe/it/expect/vi`). Server tests call
-  `setupTestDataDir("...")` BEFORE any `await import("@/db")`.
-- Never log or echo `jiraApiToken` or an `Authorization` header. Keep
-  `jiraApiToken` in `SECRET_SETTINGS` and leave the `jiraBaseUrl` validation
-  branch in `src/server/settings.ts` untouched.
-- `announceCardDone` must never throw and must never block a card transition;
-  Jira failures become `jira.comment_failed` events only.
+Environment hints:
+- This sandbox has NO network. Never run `npm ci`, `npm install`, or `npx`.
+  Dependencies come from the registered checkout by a real copy (never a
+  symlink — a symlinked `node_modules` breaks the production build). Before
+  running any check, if `test -x node_modules/.bin/vitest && test -x node_modules/.bin/drizzle-kit`
+  fails, run exactly: `rm -rf node_modules && mkdir -p node_modules && cp -a /repos/radulf/node_modules/. node_modules/`
+  and re-run that test. If it still fails, stop, describe the failure in
+  `.ralph/ITERATION_DONE`, and do not claim the task.
+- Run tools as `node_modules/.bin/vitest run <file>`, `node_modules/.bin/tsc --noEmit`,
+  `node_modules/.bin/drizzle-kit generate --name <name>` (offline).
+- Tests that emit card-scoped events must seed a repo and a card first:
+  `events.card_id` has a foreign key. Put new tests inside the existing
+  `describe` whose `beforeEach` seeds and cleans, or extract shared setup.
+- Restore anything you stub: `vi.unstubAllGlobals()` for `fetch`, and put
+  `process.env.*` back to its previous value in `afterEach`.
+- Never log or assert-print the Jira API token or the Authorization header
+  value outside a test's own expectation.
+- In TypeScript, `a ?? b || c` is a syntax error; write `a ?? (b || c)`.
