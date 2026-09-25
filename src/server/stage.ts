@@ -10,7 +10,7 @@ import { createWorktree, currentBranch, recordWorktree } from "./git";
 import { runTranscriptDir } from "./retention";
 import type { RunSandboxContext } from "./sandbox/context";
 import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
-import { checkRepoIntegrity, type RepoIntegrityBaseline } from "./integrity";
+import { inspectRepoIntegrity, type RepoIntegrityBaseline } from "./integrity";
 
 /** Shared scaffolding for the three pipeline stages (plan, loop, evaluate). */
 
@@ -149,19 +149,36 @@ export function harnessFailure(
 }
 
 /** Spec 14 run-end ordering: reap surviving processes and verify the group is
- * empty before drawing any integrity conclusion, then verify the parent repo. */
+ * empty before drawing any integrity conclusion, then verify the parent repo.
+ *
+ * Spec 19 (card 2026-09-25): a remote-tracking ref that moved, appeared or was
+ * deleted is reported on the run as `repo.integrity_warning` and does NOT fail
+ * it — `git fetch` in the user's checkout moves those refs constantly and that
+ * is not tampering. The event is emitted whether or not the run also has real
+ * violations, so a warning is never swallowed by a sibling violation. */
 export async function integrityViolationReason(
   ctx: RunSandboxContext,
   repoPath: string,
   baseline: RepoIntegrityBaseline | null,
   runBranch: string,
+  ids: { cardId: string; runId: string },
 ): Promise<string | null> {
   const leftover = await ctx.reap();
   if (leftover.length > 0) {
     return `surviving process group(s) after reap: ${leftover.join(", ")}`;
   }
   if (!baseline) return null;
-  const violations = await checkRepoIntegrity(repoPath, baseline, { runBranch, checkRefs: true });
+  const { violations, warnings } = await inspectRepoIntegrity(repoPath, baseline, {
+    runBranch,
+    checkRefs: true,
+  });
+  if (warnings.length > 0) {
+    emitEvent("repo.integrity_warning", {
+      cardId: ids.cardId,
+      runId: ids.runId,
+      payload: { refs: warnings },
+    });
+  }
   return violations.length > 0 ? `repo integrity violation: ${violations.join("; ")}` : null;
 }
 

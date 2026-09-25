@@ -82,10 +82,14 @@ async function runScenario(
     planCritic?: 0 | 1;
     cardId?: string;
     afterLoopStarts?: (repo: ReturnType<typeof seedRepo>) => void;
+    /** Runs after the loop run's row exists AND its integrity baseline is
+     * snapshotted (both precede the run's `run.started` event) — for fault
+     * injection that must land inside the baseline→check window. */
+    afterLoopBaseline?: (repo: ReturnType<typeof seedRepo>) => void;
   } = {},
 ) {
   const cardId = opts.cardId ?? `card-${scenario}`;
-  const { afterLoopStarts } = opts;
+  const { afterLoopStarts, afterLoopBaseline } = opts;
   db.insert(cards)
     .values({
       id: cardId,
@@ -107,6 +111,23 @@ async function runScenario(
   if (afterLoopStarts) {
     await waitFor(() => Boolean(cardRuns(cardId, "loop")[0]?.worktreePath));
     afterLoopStarts(repo);
+  }
+  if (afterLoopBaseline) {
+    // The loop's baseline is taken just before its `run.started` event fires
+    // (orchestrator runLoop), so that event is the observable signal that the
+    // baseline exists and a ref change now counts as "during the run".
+    await waitFor(() => {
+      const loop = cardRuns(cardId, "loop")[0];
+      if (!loop) return false;
+      return (
+        db
+          .select()
+          .from(events)
+          .where(and(eq(events.runId, loop.id), eq(events.type, "run.started")))
+          .all().length > 0
+      );
+    });
+    afterLoopBaseline(repo);
   }
   await waitFor(() => TERMINAL.has(cardStatus(cardId)) && !orch.hasInFlightWork());
   return { cardId, repo };
@@ -298,6 +319,27 @@ describe("mock provider — full pipeline", () => {
     expect(cardStatus(cardId)).toBe("done");
     expect(gitIn(repo.repoPath, "show", "main:mock-output/task-1.md")).toContain("resolved by mock");
   }, 40_000);
+
+  it("remote-tracking ref noise: a fetch in the parent checkout mid-run warns instead of failing the run", async () => {
+    const { cardId } = await runScenario("happy-path", seedRepo("remote-ref-noise"), {
+      cardId: "card-remote-ref-noise",
+      afterLoopBaseline: (r) => gitIn(r.repoPath, "update-ref", "refs/remotes/origin/beta", "HEAD"),
+    });
+    expect(cardStatus(cardId)).toBe("review");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "completed", exitReason: "done-signal" });
+
+    const warnings = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, cardId), eq(events.type, "repo.integrity_warning")))
+      .all();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].runId).toBe(loop.id);
+    expect((JSON.parse(warnings[0].payload as string) as { refs: string[] }).refs).toEqual([
+      "ref appeared: refs/remotes/origin/beta",
+    ]);
+  }, 30_000);
 
   it("graph epic: independent pieces run together, a dependent piece waits, an abandoned dependency does not block", async () => {
     patchSettings({ maxConcurrentCards: 2 });
