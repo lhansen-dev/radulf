@@ -132,7 +132,13 @@ delivery itself, a web-only process returns once the row exists. Because
 afterwards, the run-end check waits (bounded) for the repo lease to be released
 before judging a moved ref it cannot explain, then re-reads `ref_writes`. The
 stale reaper finishes a `running` delivery whose worker stopped heartbeating,
-releases its lease and parks the card in Needs Attention.*
+releases its lease and parks the card in Needs Attention — unless the card is
+already `done` (or the run has an approved `reviews` row), in which case the
+merge landed before the worker died and the delivery is finished as landed
+(`recoveredAfterWorkerLoss: true`) with the card left alone; the worktree,
+branch and integrity baseline that worker never removed are reclaimed by the
+workers' finished-card worktree sweep (`removeFinishedWorktrees`), which covers
+every `done`/`abandoned` card with an unreclaimed `worktrees` row.*
 
 **7. Exactly-once background work uses the rows it acts on.** Improvement-run
 drivers hold a lease per run with a heartbeat. The schedule tick and the

@@ -13,6 +13,7 @@ import {
   repos,
   improvementRuns,
   reviewDeliveries,
+  reviews,
   refWrites,
   type ApprovedInstallScript,
   type CardStatus,
@@ -567,7 +568,10 @@ export class Orchestrator {
    * gives a review delivery a `review_deliveries` row, so the continuous
    * pass does reason about those: a `running` delivery whose worker has
    * stopped heartbeating is finished as failed, its card parked, and its
-   * repo lease released; a `reviewing` card with a pending or running
+   * repo lease released — unless its card is already `done` or its run has an
+   * approved review row, which means the merge landed and only the delivery
+   * row was left open, so it is finished as landed (ok) with the card left
+   * where it is; a `reviewing` card with a pending or running
    * delivery is left alone by the orphan sweep because a worker owns it (or
    * will claim it). */
   reapStaleRuns(options: { orphans?: boolean } = {}): void {
@@ -599,7 +603,18 @@ export class Orchestrator {
       .all();
     for (const delivery of runningDeliveries) {
       if (delivery.workerId !== null && live.has(delivery.workerId)) continue;
-      this.failDelivery(delivery);
+      // The merge may have landed before the worker died: `completeApproval`
+      // moves the card to `done` and writes its approved review row before the
+      // delivery row is closed, so either one means there is nothing left to
+      // deliver and no retry for a human to press.
+      const card = db.select().from(cards).where(eq(cards.id, delivery.cardId)).get();
+      const review = db
+        .select()
+        .from(reviews)
+        .where(and(eq(reviews.runId, delivery.runId), eq(reviews.decision, "approved")))
+        .get();
+      if (card?.status === "done" || review) this.finishLandedDelivery(delivery, review?.mergeCommit ?? null);
+      else this.failDelivery(delivery);
     }
     releaseStaleLeases(live);
     // The ref audit log only has to outlive the integrity checks that consult
@@ -680,6 +695,35 @@ export class Orchestrator {
     this.controllers.get(run.id)?.abort();
     const card = getCard(run.cardId);
     if (card) this.parkOrResume(card);
+    return true;
+  }
+
+  /** Finish one owned review delivery whose merge actually landed. The worker
+   * died after `completeApproval` had already moved the card to `done` (and
+   * written the approved review row) but before the delivery row was closed:
+   * the merge commit is in the base branch, so the delivery is recorded as
+   * landed rather than as a failed merge — no "press Retry merge" error on a
+   * finished card, and no card move (it is already where it belongs). Returns
+   * false when the CAS lost and nothing else was written. */
+  private finishLandedDelivery(
+    delivery: typeof reviewDeliveries.$inferSelect,
+    mergeCommit: string | null,
+  ): boolean {
+    const result = db
+      .update(reviewDeliveries)
+      .set({ status: "finished", ok: 1, error: null, endedAt: now() })
+      .where(and(eq(reviewDeliveries.id, delivery.id), eq(reviewDeliveries.status, "running")))
+      .run();
+    if (result.changes !== 1) return false;
+    emitEvent("review.decided", {
+      cardId: delivery.cardId,
+      runId: delivery.runId,
+      payload: {
+        decision: "approved",
+        ...(mergeCommit ? { mergeCommit } : {}),
+        recoveredAfterWorkerLoss: true,
+      },
+    });
     return true;
   }
 

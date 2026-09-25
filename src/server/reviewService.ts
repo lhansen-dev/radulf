@@ -261,7 +261,7 @@ export class ReviewService {
       throw new ClientError("card status changed while it was being abandoned");
     }
     // Spec 25: a web-only process never writes to a repository. It leaves the
-    // worktree and branch behind for a worker's removeAbandonedWorktrees sweep.
+    // worktree and branch behind for a worker's removeFinishedWorktrees sweep.
     const run = this.deps.latestWorktreeRun(cardId);
     if (run && !this.deps.passive?.()) await removeWorktree(repo.path, run.worktreePath, run.branch);
     fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });

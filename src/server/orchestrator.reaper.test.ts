@@ -24,8 +24,20 @@ vi.mock("./settings", async (importOriginal) => {
 
 const testDataDir = setupTestDataDir("radulf-orchestrator-reaper-");
 
-const { db, cards, events, iterations, plans, repoLeases, repos, reviewDeliveries, runs, workers, now } =
-  await import("@/db");
+const {
+  db,
+  cards,
+  events,
+  iterations,
+  plans,
+  repoLeases,
+  repos,
+  reviewDeliveries,
+  reviews,
+  runs,
+  workers,
+  now,
+} = await import("@/db");
 const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runScratchRoot } = await import("./sandbox/context");
 const { planStatePath } = await import("./bookkeeping");
@@ -101,6 +113,7 @@ const worker = (id: string) => db.select().from(workers).where(eq(workers.id, id
 beforeEach(() => {
   mocks.staleSeconds = 120;
   db.delete(reviewDeliveries).run();
+  db.delete(reviews).run();
   db.delete(repoLeases).run();
   db.delete(workers).run();
   db.delete(iterations).run();
@@ -270,6 +283,51 @@ describe("delivery reaper (spec 25 decision 6)", () => {
     expect(decided.length).toBeGreaterThan(0);
     const newest = JSON.parse(decided[0].payload) as { deliveryFailed?: string };
     expect(newest.deliveryFailed).toContain("press Retry merge");
+  });
+
+  it("finishes a dead worker's delivery as landed when its card is already done", () => {
+    seedWorker("dead", secondsAgo(600));
+    seedCard("c1", { status: "done" });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    db.insert(reviews)
+      .values({ id: "rev1", runId: "r1", decision: "approved", mergeCommit: "abc123", createdAt: now() })
+      .run();
+    seedDelivery("d1", "c1", "r1", { status: "running", workerId: "dead", claimedAt: secondsAgo(600) });
+    db.insert(repoLeases).values({ repoPath: "/tmp/repo-1", workerId: "dead", acquiredAt: secondsAgo(600) }).run();
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns();
+
+    expect(delivery("d1").status).toBe("finished");
+    expect(delivery("d1").ok).toBe(1);
+    expect(delivery("d1").error).toBeNull();
+    expect(card("c1").status).toBe("done");
+    expect(lease("/tmp/repo-1")).toBeUndefined();
+
+    const decided = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, "c1"), eq(events.type, "review.decided")))
+      .all()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id);
+    expect(decided.length).toBeGreaterThan(0);
+    const newest = JSON.parse(decided[0].payload) as {
+      decision?: string;
+      mergeCommit?: string;
+      recoveredAfterWorkerLoss?: boolean;
+      deliveryFailed?: string;
+    };
+    expect(newest.decision).toBe("approved");
+    expect(newest.mergeCommit).toBe("abc123");
+    expect(newest.recoveredAfterWorkerLoss).toBe(true);
+    expect(newest.deliveryFailed).toBeUndefined();
+
+    const moved = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, "c1"), eq(events.type, "card.moved")))
+      .all()
+      .map((e) => JSON.parse(e.payload) as { to: string });
+    expect(moved.find((m) => m.to === "needs_attention")).toBeUndefined();
   });
 
   it("leaves a running delivery owned by a live worker alone", () => {

@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db, settings, upsertSettingJson } from "@/db";
 import { invalid, record } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
-import { parseHeaderLines } from "./localEndpoint";
+import { parseContextWindowLines, parseHeaderLines } from "./localEndpoint";
 import { REASONING_LEVELS } from "@/shared/providers";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -57,6 +57,11 @@ export const SETTING_DEFAULTS = {
   // gateway that authenticates on a header of its own (Kong's `kong-api-key`)
   // rather than the bearer token above. Sent with every request to it.
   omlxHeaders: "",
+  // Context windows for the local endpoint's models, one `model-id: tokens`
+  // per line, for a server that reports none at /v1/models (or reports the
+  // wrong one). An entry wins over the served number; a model with neither
+  // runs on the harness's conservative default.
+  omlxContextWindows: "",
   openrouterApiKey: "",
   // Brave Search API key. When set, the planner gains a `web_search` tool —
   // planner only, since the loop and evaluator hold bash and must not also hold
@@ -357,6 +362,13 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         } catch (e) {
           invalid(`omlxHeaders: ${errorMessage(e)}`);
         }
+      }
+    } else if (key === "omlxContextWindows") {
+      if (typeof settingValue !== "string") invalid("omlxContextWindows must be a string");
+      try {
+        parseContextWindowLines(settingValue);
+      } catch (e) {
+        invalid(`omlxContextWindows: ${errorMessage(e)}`);
       }
     } else if (PROMPT_TEMPLATE_SETTINGS.has(key)) {
       if (typeof settingValue !== "string") invalid(`${key} must be a string`);

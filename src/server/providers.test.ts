@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { listProviderModels, resetProviderModelsCacheForTests } from "./providers";
 import type { Settings } from "./settings";
 
-const omlxSettings = { omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "key", omlxHeaders: "" } as Settings;
+const omlxSettings = { omlxBaseUrl: "http://127.0.0.1:8000", omlxApiKey: "key", omlxHeaders: "", omlxContextWindows: "" } as Settings;
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status });
@@ -113,5 +113,23 @@ describe("listProviderModels caching", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(first).toEqual([{ value: "m1", displayName: "m1", description: "" }]);
     expect(second).toEqual([{ value: "m2", displayName: "m2", description: "" }]);
+  });
+
+  it("shows the operator's context window for a local model over the served one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(200, { data: [{ id: "big", max_model_len: 32_768 }, { id: "quiet" }] }))),
+    );
+
+    const models = await listProviderModels("omlx", { ...omlxSettings, omlxContextWindows: "big: 131072" } as Settings);
+
+    expect(models).toEqual([
+      { value: "big", displayName: "big", description: "131,072 ctx", contextWindow: 131_072 },
+      { value: "quiet", displayName: "quiet", description: "" },
+    ]);
+
+    // Clearing the entry is a change to what is listed, so it must not hit the cache.
+    const cleared = await listProviderModels("omlx", omlxSettings);
+    expect(cleared[0]).toEqual({ value: "big", displayName: "big", description: "32,768 ctx", contextWindow: 32_768 });
   });
 });

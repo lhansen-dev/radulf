@@ -63,7 +63,15 @@ the pieces that make that safe are:
   checkpointed loop goes back to Ready and the pump opens a fresh run on the
   first unchecked task, while every other kind of run parks the card in Needs
   Attention. It also parks cards whose claimed review delivery died mid-merge
-  and deletes the stale `workers` rows. A worker that is stopped deliberately
+  — unless the card is already `done` (or the run has an approved `reviews`
+  row), which means the merge landed before the worker died: then the
+  delivery is finished as landed (`ok = 1`, `review.decided` payload carries
+  `recoveredAfterWorkerLoss: true`) and the card is left alone, while the
+  worktree, branch and integrity baseline the worker never got to remove are
+  reclaimed by the workers' finished-card worktree sweep
+  (`removeFinishedWorktrees` in `src/server/retention.ts`, run on every pump
+  tick for `done` and `abandoned` cards) — and deletes the stale `workers`
+  rows. A worker that is stopped deliberately
   does not wait for a peer to notice: `releaseOwnedWork()` (called from the
   shutdown drain in `src/server/shutdown.ts` on both the clean and the
   timed-out path) stops its own timers, runs the reaper's per-run and

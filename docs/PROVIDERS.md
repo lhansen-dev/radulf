@@ -130,7 +130,11 @@ reachable at that base URL, and the model has to be tool-capable. On vLLM that
 means starting it with `--enable-auto-tool-choice` and the `--tool-call-parser`
 its model family needs. Radulf reads the served context window from
 `max_model_len` when the server reports one, so pi compacts against the real
-budget rather than an assumed one.
+budget rather than an assumed one. A server that reports none (oMLX, LM Studio,
+or a gateway that strips the field) falls back to a conservative 32,768 tokens,
+which compacts far too early for a large model; state the real number under
+**Context windows**, one `model-id: tokens` per line. An entry there wins over
+the served value, and the model picker shows whichever applies.
 
 ## What a card costs
 

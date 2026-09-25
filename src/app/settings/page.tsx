@@ -445,6 +445,12 @@ export default function SettingsPage() {
                     Sent with every request alongside the API key; a header named Authorization
                     replaces the key&apos;s bearer token.
                   </p>
+                  {textArea("omlxContextWindows", { label: "Context windows (one model per line)", rows: 2, placeholder: "Qwen/Qwen3-8B: 131072" })}
+                  <p className="text-xs text-foreground/40">
+                    For a server that does not report a context length at /v1/models. An entry here
+                    wins over what the server reports; a model with neither runs on a 32,768-token
+                    window, so compaction fires early and the loop loses work to it.
+                  </p>
                 </section>
                 <section className={sectionCls}>
                   <SectionHeading title="API keys">Optional services for hosted models and planner web search.</SectionHeading>

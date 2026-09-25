@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR } from "@/db";
-import { listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
+import { contextWindowFor, listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
 import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
 import { createSandboxedBashOperations } from "../sandbox/srt";
@@ -302,7 +302,9 @@ export async function resolveModel(
     }
     // Ask the server what it is actually serving. The context window is a
     // per-deployment number (vLLM's --max-model-len), so it cannot be a
-    // constant here, and a wrong one surfaces as a 400 deep into a loop.
+    // constant here, and a wrong one surfaces as a 400 deep into a loop. A
+    // server that reports none gets the operator's per-model entry from
+    // Settings, when there is one.
     const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey, parseHeaderLines(s.omlxHeaders));
     const meta = served.find((x) => x.id === model);
     if (!meta) {
@@ -310,7 +312,7 @@ export async function resolveModel(
         `the local endpoint does not serve model "${model}" (serving: ${served.map((x) => x.id).join(", ") || "nothing"})`,
       );
     }
-    runtime.registerProvider("omlx", omlxProviderConfig(model, s, meta.contextWindow));
+    runtime.registerProvider("omlx", omlxProviderConfig(model, s, contextWindowFor(model, s, meta.contextWindow)));
     const m = runtime.getModel(pid, model);
     if (!m) throw new Error(`the local endpoint does not serve model "${model}"`);
     return m;

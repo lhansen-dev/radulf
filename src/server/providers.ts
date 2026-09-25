@@ -1,7 +1,7 @@
 import { getSettings, type Settings } from "./settings";
 import { listAuthedModels } from "./harness";
 import { fetchJson } from "./fetchJson";
-import { listLocalModels, parseHeaderLines } from "./localEndpoint";
+import { contextWindowFor, listLocalModels, parseHeaderLines } from "./localEndpoint";
 import { mockProviderModels } from "./harness/mock";
 import { PROVIDERS, type ProviderId, type ProviderModel } from "@/shared/providers";
 
@@ -32,9 +32,10 @@ const modelListCache = new Map<string, ModelListCacheEntry>();
 // *listed*. omlx is the exception — s.omlxBaseUrl is a user-editable Settings
 // field, not a process-wide constant, so two calls can legitimately target
 // different oMLX servers; the key must include it or a cached entry from one
-// endpoint would leak into a call against another.
+// endpoint would leak into a call against another. The per-model context
+// windows are part of what is listed, so an edit to them re-lists too.
 function modelListCacheKey(provider: ProviderId, s: Settings): string {
-  return provider === "omlx" ? `omlx:${s.omlxBaseUrl}` : provider;
+  return provider === "omlx" ? `omlx:${s.omlxBaseUrl}:${s.omlxContextWindows}` : provider;
 }
 
 /** Test-only: forget cached model lists so the next call re-fetches. */
@@ -82,12 +83,15 @@ async function fetchProviderModels(
       return mockProviderModels();
     case "omlx": {
       const models = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey, parseHeaderLines(s.omlxHeaders));
-      return models.map((m) => ({
-        value: m.id,
-        displayName: m.id,
-        description: m.contextWindow ? `${m.contextWindow.toLocaleString()} ctx` : "",
-        ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-      }));
+      return models.map((m) => {
+        const contextWindow = contextWindowFor(m.id, s, m.contextWindow);
+        return {
+          value: m.id,
+          displayName: m.id,
+          description: contextWindow ? `${contextWindow.toLocaleString()} ctx` : "",
+          ...(contextWindow ? { contextWindow } : {}),
+        };
+      });
     }
     case "openrouter": {
       if (!s.openrouterApiKey) throw new Error("set your OpenRouter API key in Settings first");

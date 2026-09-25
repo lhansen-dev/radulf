@@ -27,7 +27,7 @@ vi.mock("./shutdown", () => ({ registerShutdownHandlers: mocks.registerShutdownH
 vi.mock("./retention", () => ({
   pruneRuntimeHistory: mocks.pruneRuntimeHistory,
   claimDailySweep: mocks.claimDailySweep,
-  removeAbandonedWorktrees: async () => 0,
+  removeFinishedWorktrees: async () => 0,
 }));
 vi.mock("./schedules", () => ({ fireDueSchedules: mocks.fireDueSchedules }));
 vi.mock("./eventsTail", () => ({ startEventsTail: mocks.startEventsTail }));
