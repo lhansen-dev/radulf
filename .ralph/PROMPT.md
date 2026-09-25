@@ -1,4 +1,4 @@
-You are working on: persisting a Jira issue key on cards (`cards.jira_key` / `jiraKey`), linking it from the card page, and — behind the opt-in `jiraCommentOnDone` setting — posting one plain-text comment on the issue when the card reaches Done, without ever blocking the card.
+You are working on: persisting a Jira issue key on cards (`cards.jira_key`), linking it on the card page, and — behind the opt-in `jiraCommentOnDone` setting — posting exactly one bounded, never-blocking plain-text comment on that issue when the card reaches Done (review merge, PR delivery, epic parent closing), recorded as `jira.commented` / `jira.comment_failed` events.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -37,22 +37,20 @@ Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
 Task-specific hints:
-- This sandbox is offline. NEVER run `npm ci`, `npm install`, or anything that
-  reaches the network. Dependencies come from the registered checkout: if
-  `./node_modules` is missing, run once
-  `cp -al /repos/radulf/node_modules ./node_modules || cp -a /repos/radulf/node_modules ./node_modules`
-  (a hard-link or plain copy — NEVER a symlink, which breaks the production
-  build). `node_modules` is gitignored, so it will not show in `git status`.
-- Run tests with `npx vitest run <file>` (resolves the local binary offline);
-  `drizzle-kit` is at `node_modules/.bin/drizzle-kit` and runs offline.
-- This is a Next.js + Drizzle (SQLite) + Vitest TypeScript repo. Server code is
-  in `src/server/`, API routes in `src/app/api/`, the schema in `src/db/schema.ts`,
-  migrations in `drizzle/`. Path alias `@/` maps to `src/`.
-- Never log the Jira API token or an `Authorization` header anywhere.
-- Test files that mock `./settings` (e.g. `reviewService.pr.test.ts`,
-  `orchestrator.scoping.test.ts`) return objects without `jiraCommentOnDone`;
-  that must read as "off" — keep the setting check strictly `=== true`-style
-  truthy so those suites keep passing.
-- Use the repo's existing helpers: `setupTestDataDir` from `@/testUtils/testDataDir`
-  for DB-backed tests, `emitEvent` from `src/server/events.ts`, `invalid` from
-  `src/server/requestValidation.ts`, `parseJiraIssueRef` from `src/server/jira.ts`.
+- There is NO network. Never run `npm ci`, `npm install`, or anything that
+  downloads. If `node_modules` is missing, copy it once from the registered
+  checkout (a real copy, NEVER a symlink — a symlinked `node_modules` breaks
+  the production build):
+  `[ -d node_modules ] || cp -al /repos/radulf/node_modules node_modules 2>/dev/null || cp -a /repos/radulf/node_modules node_modules`
+  `node_modules` is gitignored, so it never shows in `git status`.
+- Run tools from the local binaries: `npx vitest run <file>` resolves
+  `node_modules/.bin/vitest` without network; `node_modules/.bin/drizzle-kit generate`
+  is offline. Test files whose path contains `[id]` must be quoted.
+- Code style: TypeScript, 2-space indent, double quotes, trailing commas; tests
+  use vitest (`describe/it/expect/vi`). Server tests call
+  `setupTestDataDir("...")` BEFORE any `await import("@/db")`.
+- Never log or echo `jiraApiToken` or an `Authorization` header. Keep
+  `jiraApiToken` in `SECRET_SETTINGS` and leave the `jiraBaseUrl` validation
+  branch in `src/server/settings.ts` untouched.
+- `announceCardDone` must never throw and must never block a card transition;
+  Jira failures become `jira.comment_failed` events only.
