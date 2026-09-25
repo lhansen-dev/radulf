@@ -1195,6 +1195,83 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(loopCalls()).toHaveLength(2);
     });
 
+    it("reports but does not repair a check the pre-check found already passing", async () => {
+      // Spec 31: the pre-check ran these commands against the untouched
+      // worktree and recorded that `test -f never-written.md` already exited
+      // the way its criterion wants. Such a check cannot show the work was
+      // done, so its failure buys no iteration — only the check that could
+      // still be made to pass does.
+      card("probe-precheck");
+      plan("probe-precheck");
+      db.update(plans)
+        .set({
+          acceptanceCriteria: "- [ ] `test -f never-written.md` fails and `test -f docs/USAGE.md` succeeds",
+          precheckPassing: JSON.stringify(["test -f never-written.md"]),
+        })
+        .where(eq(plans.cardId, "probe-precheck"))
+        .run();
+      // Nothing ever writes never-written.md, which is the point: the tolerated
+      // check still exits non-zero, exactly as its criterion wants, so it never
+      // shows up as a failure at all.
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("probe-precheck");
+      await vi.waitFor(() => expect(loopRun("probe-precheck")?.exitReason).toBe("done-signal"));
+
+      // The repair is for the one check that can be satisfied, then handover.
+      expect(loopCalls()).toHaveLength(2);
+      const repairPrompt = loopCalls()[1][0].prompt;
+      expect(repairPrompt).toContain("test -f docs/USAGE.md");
+      expect(repairPrompt).not.toContain("never-written.md");
+      const probes = db
+        .select()
+        .from(events)
+        .all()
+        .filter((e) => e.type === "acceptance.probe" && e.cardId === "probe-precheck");
+      // One probe event: the repair pass used the run's single repair, so the
+      // second DONE is taken at its word and handed straight to evaluation.
+      expect(probes).toHaveLength(1);
+      for (const probe of probes) {
+        expect(JSON.parse(probe.payload).alreadyPassing).toEqual([]);
+      }
+    });
+
+    it("hands straight over when the only failing check was pre-check tolerated", async () => {
+      // The other half of spec 31: repairing this check means making the card's
+      // own work break a criterion, so the loop gets no iteration for it — the
+      // failure goes to the evaluator as reported.
+      card("probe-precheck-only");
+      plan("probe-precheck-only");
+      db.update(plans)
+        .set({
+          acceptanceCriteria: "- [ ] `test -f never-written.md` fails",
+          precheckPassing: JSON.stringify(["test -f never-written.md"]),
+        })
+        .where(eq(plans.cardId, "probe-precheck-only"))
+        .run();
+      // The loop writes the file, so the inverted check now exits 0 — a failure
+      // the probe reports and refuses to spend an iteration on.
+      doneEveryIteration((cwd) => {
+        fs.writeFileSync(path.join(cwd, "never-written.md"), "written anyway");
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("probe-precheck-only");
+      await vi.waitFor(() => expect(loopRun("probe-precheck-only")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      const probes = db
+        .select()
+        .from(events)
+        .all()
+        .filter((e) => e.type === "acceptance.probe" && e.cardId === "probe-precheck-only");
+      expect(probes).toHaveLength(1);
+      const payload = JSON.parse(probes[0].payload);
+      expect(payload.alreadyPassing).toEqual(["test -f never-written.md"]);
+      expect(payload.failed.map((f: { command: string }) => f.command)).toEqual(["test -f never-written.md"]);
+    });
+
     it("leaves a plan whose criteria carry no commands exactly as it was", async () => {
       card("probe-none");
       plan("probe-none"); // acceptanceCriteria: "The task is complete."
