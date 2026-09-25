@@ -133,8 +133,14 @@ const { db, cards, plans, runs, repos, scopingMessages, worktrees, events, now }
 // Imported after setupTestDataDir, like everything else that reaches @/db: a
 // static import of this module fixes DATA_DIR at load and puts the file on
 // the checkout's own database, where it raced other test files.
-const { PlanningService, pendingReplanFeedback, planningDestination, clearPlannerArtifacts, renderPlanPrompt } =
-  await import("./planningService");
+const {
+  PlanningService,
+  pendingReplanFeedback,
+  planningDestination,
+  clearPlannerArtifacts,
+  renderPlanPrompt,
+  writePlanRow,
+} = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
 function seedRepo() {
@@ -536,5 +542,42 @@ describe("PlanningService.runPlanning — retries inherit the failed attempt (sp
 
     expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "timeout", "planning timed out", expect.any(Object));
     expect(deps.moveCard).toHaveBeenCalledWith("card-dead", "planning", "needs_attention", "planning timed out");
+  });
+});
+
+describe("writePlanRow — precheck_passing (spec 31)", () => {
+  const artifacts = {
+    planMd: "## Tasks\n- [ ] implement the thing\n",
+    promptMd: "Implement the thing.",
+    acceptanceCriteria: "The thing is implemented.",
+  };
+
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    seedRepo();
+  });
+
+  it("remembers the checks that already passed on the untouched worktree", () => {
+    seedCard("card-precheck-passing");
+
+    const { planId } = writePlanRow("card-precheck-passing", artifacts, {
+      origin: "planner",
+      precheckPassing: ["test -f a"],
+    });
+
+    const row = db.select().from(plans).where(eq(plans.id, planId)).get();
+    expect(row?.precheckPassing).toBe(JSON.stringify(["test -f a"]));
+  });
+
+  it("leaves the column null for a plan written without a pre-check", () => {
+    seedCard("card-precheck-absent");
+
+    const { planId } = writePlanRow("card-precheck-absent", artifacts, { origin: "planner" });
+
+    const row = db.select().from(plans).where(eq(plans.id, planId)).get();
+    expect(row?.precheckPassing).toBeNull();
   });
 });

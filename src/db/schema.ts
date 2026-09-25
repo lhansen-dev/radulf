@@ -160,6 +160,10 @@ export const plans = sqliteTable("plans", {
   // Spec 17: "A card that carries its own plan is stamped as such on the plan
   // row, so the origin of any plan is always recoverable."
   origin: text("origin").$type<PlanOrigin>().notNull().default("planner"),
+  // Spec 31: JSON array of check commands that already exited the way their
+  // criterion wanted on the untouched worktree; NULL for plans that predate the
+  // pre-check. The post-DONE probe reports but does not repair these.
+  precheckPassing: text("precheck_passing"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("plans_card_version_idx").on(table.cardId, table.version)]);
 

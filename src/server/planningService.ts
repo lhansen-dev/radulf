@@ -189,7 +189,14 @@ export function pendingReplanFeedback(cardId: string): string | null {
 export function writePlanRow(
   cardId: string,
   artifacts: { planMd: string; promptMd: string; acceptanceCriteria: string },
-  opts: { origin: PlanOrigin; feedback?: string | null; runId?: string },
+  opts: {
+    origin: PlanOrigin;
+    feedback?: string | null;
+    runId?: string;
+    /** Spec 31: the pre-check's already-passing commands, recorded so the
+     * post-DONE probe can report them without repairing them. */
+    precheckPassing?: string[];
+  },
 ): { planId: string; version: number } {
   const previous = db
     .select({ version: plans.version })
@@ -209,6 +216,10 @@ export function writePlanRow(
       acceptanceCriteria: artifacts.acceptanceCriteria,
       feedback: opts.feedback ?? null,
       origin: opts.origin,
+      // Given-but-empty is its own answer (nothing already passed), so this is
+      // an `undefined` test rather than a truthiness one.
+      precheckPassing:
+        opts.precheckPassing === undefined ? null : JSON.stringify(opts.precheckPassing),
       createdAt: now(),
     })
     .run();
