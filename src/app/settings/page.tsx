@@ -284,7 +284,7 @@ export default function SettingsPage() {
   if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
 
   const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
-  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished") =>
+  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished" | "jiraCommentOnDone") =>
     ({ checked: settings[key], onChange: (value: boolean) => set({ [key]: value }) });
   const textInput = (key: StringKey, props: { label: string; type?: string; placeholder?: string }) => (
     <label className="text-sm text-foreground/70">
@@ -409,7 +409,8 @@ export default function SettingsPage() {
                 <section className={sectionCls}>
                   <SectionHeading title="Jira">
                     Paste an issue link or key into the New task dialog to prefill a card from
-                    Jira. Read-only: Radulf fetches the issue and never writes to Jira. The token
+                    Jira. Radulf reads the issue to prefill a card and — only with the toggle
+                    below on — writes a single Done comment. The token
                     is an Atlassian API token for the account whose email is given, created at{" "}
                     <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noreferrer" className="text-accent underline">
                       id.atlassian.com
@@ -422,6 +423,11 @@ export default function SettingsPage() {
                     {textInput("jiraEmail", { label: "Atlassian account email", placeholder: "you@example.com" })}
                     {textInput("jiraApiToken", { label: "Jira API token", type: "password", placeholder: "Atlassian API token" })}
                   </div>
+                  <ToggleRow
+                    title="Comment on Jira when a card is done"
+                    description="Post one comment on the imported issue when its card is merged or its pull request opens: the card title, the outcome, and a link back. Off by default; nothing is written to Jira while off."
+                    {...toggle("jiraCommentOnDone")}
+                  />
                 </section>
               </div>
             </SettingsPanel>
