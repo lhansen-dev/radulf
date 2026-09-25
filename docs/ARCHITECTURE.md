@@ -180,8 +180,9 @@ process group first (a surviving process could plant hooks after a check that
 already passed), then verify parent-repo integrity, then force the install-script
 gate, then run the acceptance-criteria probe, then merge the base branch into
 the worktree (`baseSync.ts`, after waiting for the repo's delivery lease to be
-free; a conflict becomes a resolve task for the loop and the next bookkeeping
-commit completes the merge), then run the repository gate (`gate.ts`; a failure
+free; a base whose history was rewritten under the branch first gets the
+branch's own commits replayed onto its new tip; a conflict becomes a resolve
+task for the loop and the next bookkeeping commit completes the merge), then run the repository gate (`gate.ts`; a failure
 becomes a repair task), and only then hand to the evaluator. Sync conflicts and
 gate failures together get at most two rounds per run (spec 29).
 

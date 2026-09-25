@@ -2197,6 +2197,16 @@ export class Orchestrator {
           if (sync.status === "merged") {
             emitEvent("base.synced", { cardId, runId, payload: { baseBranch: base, mergeCommit: sync.mergeCommit } });
           }
+          if (sync.status === "rebased") {
+            // The base's history was rewritten under this branch; the
+            // branch's own commits now sit on the new tip and the commits the
+            // old base left behind are gone from it.
+            emitEvent("base.rebased", {
+              cardId,
+              runId,
+              payload: { baseBranch: base, onto: sync.onto, replayed: sync.replayed, dropped: sync.dropped },
+            });
+          }
           if (sync.status === "conflicted") {
             emitEvent("base.conflict", {
               cardId,
