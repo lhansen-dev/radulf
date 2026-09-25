@@ -1,4 +1,4 @@
-You are working on: making the run-end repo integrity check treat moved, new or deleted remote-tracking refs (`refs/remotes/**` outside the `ralph/` namespace) as a `repo.integrity_warning` event on the run instead of a run failure, while local branches, tags, hooks and `.git/config` still fail exactly as today.
+You are working on: making the run-end repo integrity check treat moved/appeared/deleted remote-tracking refs (`refs/remotes/**` outside `ralph/`) as a `repo.integrity_warning` event on the run instead of a run failure, while hooks, `.git/config`, local branches and tags still fail as today.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,9 +36,11 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Hints for this card:
-- TypeScript project; tests run with vitest (`npx vitest run <file>`), types with `npx tsc --noEmit`. Read the exact code you are changing (grep first) before editing; the task text names files and symbols.
-- The integrity check lives in `src/server/integrity.ts`; the run-end call site is `integrityViolationReason` in `src/server/stage.ts`; events are written with `emitEvent(type, { cardId, runId, payload })` from `src/server/events.ts`.
-- Test git repos: `src/testUtils/gitRepo.ts` exports `initScratchRepo(prefix)` and `git(dir, ...args)`. `git update-ref <ref> <oid>` creates or moves a ref; `git update-ref -d <ref>` deletes it; `git commit-tree <tree> -p HEAD -m msg` mints a new commit oid without moving any branch.
-- Keep the spec 25 `refWritesSince` / `waitForRepoLeaseRelease` logic in `checkRepoIntegrity` exactly as it is; only the classification of `refs/remotes/**` changes. Do not touch `src/server/reviewService.ts` or the database schema.
-- When editing spec/doc files, add text; never rewrite or delete the original wording.
+Task-specific hints:
+- Keep `checkRepoIntegrity`'s public signature and return type (`Promise<string[]>`) unchanged; `src/server/reviewService.ts` calls it with `checkRefs: false` and must not need edits.
+- Do not change the `refWritesSince` / `waitForRepoLeaseRelease` logic in `src/server/integrity.ts`; only the classification of `refs/remotes/**` refs changes.
+- `isManagedRef` (`refs/heads/ralph/` and `refs/remotes/<remote>/ralph/`) must keep skipping those refs entirely — they are neither violations nor warnings.
+- No database schema change: do not touch `src/db/` or `drizzle/`.
+- Documentation rule: in `specs/19-shared-git-ref-noise.md` never edit or delete existing text — only APPEND a dated amendment section. Files under `docs/` (`docs/SANDBOXING.md`, `docs/TROUBLESHOOTING.md`, `docs/DESIGN_HISTORY.md`) describe current behaviour and MAY be edited in place, including replacing stale sentences and changing the spec 19 status cell in the DESIGN_HISTORY table.
+- Git test fixtures: `src/testUtils/gitRepo.ts` exports `git(repo, ...args)` and `initScratchRepo(prefix)`; `git(repo, "update-ref", "<ref>", "<sha-or-HEAD>")` creates or moves a ref and `git(repo, "update-ref", "-d", "<ref>")` deletes it.
+- In `git update-ref` and `for-each-ref` output, ref names are full (`refs/remotes/origin/beta`), never abbreviated.
