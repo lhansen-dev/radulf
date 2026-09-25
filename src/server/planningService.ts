@@ -554,12 +554,17 @@ export class PlanningService {
         deps.moveCard(cardId, "planning", planningDestination(card));
       }
     } catch (error) {
-      if (!controller.signal.aborted) {
-        const reason = `planner failed: ${errorMessage(error)}`;
-        deps.finishRun(runId, "failed", reason.slice(0, 500), telemetry);
-        if (deps.getCard(cardId)?.status === "planning") {
-          deps.moveCard(cardId, "planning", "needs_attention", reason);
-        }
+      // Cancellation first, before anything else: `cancelCard` has already
+      // finished this row and routed the card, and re-finishing it here would
+      // overwrite the status the user cancelled into.
+      if (controller.signal.aborted) return;
+      const reason = `planner failed: ${errorMessage(error)}`;
+      // A false return means somebody else closed the row while this run was
+      // throwing — a peer, the reaper. Its routing stands; moving the card now
+      // would pull it back out of wherever that left it.
+      if (!deps.finishRun(runId, "failed", reason.slice(0, 500), telemetry)) return;
+      if (deps.getCard(cardId)?.status === "planning") {
+        deps.moveCard(cardId, "planning", "needs_attention", reason);
       }
     } finally {
       deps.releaseController(runId);
