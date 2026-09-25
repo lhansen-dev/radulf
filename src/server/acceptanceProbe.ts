@@ -74,6 +74,58 @@ const SHELL_METACHARACTER = /[;&|$<>()]/;
 const EXPECT_FAILURE =
   /^\s*(?:fails|(?:exits|returns) (?:with )?(?:a )?non-?zero|does not succeed|must fail|should fail|finds nothing|matches nothing)\b/i;
 
+/**
+ * The heading that separates criteria describing work already done from
+ * criteria describing what THIS card has to change.
+ *
+ * The pre-check runs the plan's checks against the untouched worktree, before
+ * any iteration exists, to catch a check that passes on its own — such a check
+ * cannot show new work no matter what the loop does. A `## Regression` section
+ * is exempt by definition: those criteria are checks on behaviour an earlier
+ * card already established, so of course they pass now, and that is the point
+ * of them. Splitting the document is how both halves stay in one field while
+ * only the new-behaviour half gets pre-checked.
+ */
+export const REGRESSION_HEADING = "## Regression";
+
+/**
+ * Split an acceptance-criteria document at its `## Regression` heading.
+ *
+ * Everything from that heading until the next `## ` heading is regression
+ * material; the heading line itself belongs to neither half, and everything
+ * else — including any later `## ` sections — is new behaviour. A document
+ * without the heading is entirely new behaviour, which is the shape every plan
+ * written before this marking had.
+ */
+export function splitRegressionCriteria(acceptanceCriteria: string): {
+  newBehavior: string;
+  regression: string;
+} {
+  // Same shape as REGRESSION_HEADING, matched case-insensitively and
+  // whitespace-tolerantly because it is typed by a model.
+  const regressionStart = /^##\s+regression\s*$/i;
+  const anyHeading = /^##\s+/;
+  const newBehavior: string[] = [];
+  const regression: string[] = [];
+  let inRegression = false;
+  for (const line of acceptanceCriteria.split("\n")) {
+    const trimmed = line.trim();
+    if (regressionStart.test(trimmed)) {
+      inRegression = true;
+      continue;
+    }
+    if (inRegression && anyHeading.test(trimmed)) {
+      // The section ends here, and this heading and everything after it is
+      // new behaviour again.
+      inRegression = false;
+      newBehavior.push(line);
+      continue;
+    }
+    (inRegression ? regression : newBehavior).push(line);
+  }
+  return { newBehavior: newBehavior.join("\n"), regression: regression.join("\n") };
+}
+
 export type ProbeCommand = {
   command: string;
   /** The criterion says this command must exit non-zero. */
@@ -166,18 +218,47 @@ async function runOne(
   cwd: string,
   env: NodeJS.ProcessEnv | undefined,
 ): Promise<ProbeResult> {
+  const { ran, exitZero, output } = await execCheck(toRun, cwd, env);
+  // Unprobed: the criterion is neither proven nor disproven, so it stands.
+  if (!ran) return { command, expectFailure, ok: true, output: "" };
+  // A zero exit disproves only a check the criterion says must fail.
+  const ok = exitZero ? !expectFailure : expectFailure;
+  // Output is the evidence for the one claim this probe may make, so it comes
+  // along exactly when the check ran the wrong way.
+  return { command, expectFailure, ok, output: ok ? "" : output };
+}
+
+/**
+ * Run one shell command and say whether it actually ran.
+ *
+ * `ran` is the part `ok` alone cannot express: a command that never started
+ * (killed by the timeout, a wrap that failed to build, a binary that is not
+ * installed) tells you nothing about the criterion, and conflating it with "the
+ * check failed" sends a card into a repair task it cannot satisfy. The pre-check
+ * needs the same distinction for the opposite reason — a check that did not run
+ * cannot be called one that already passes.
+ */
+async function execCheck(
+  toRun: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<{ ran: boolean; exitZero: boolean; output: string }> {
   const trimmed = (stdout: string | undefined, stderr: string | undefined) =>
     `${stdout ?? ""}${stderr ?? ""}`.trim().slice(0, PROBE_OUTPUT_CHARS);
   try {
-    const { stdout, stderr } = await execAsync(toRun, { cwd, env, timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER });
-    // A zero exit disproves only a check the criterion says must fail.
-    return { command, expectFailure, ok: !expectFailure, output: expectFailure ? trimmed(stdout, stderr) : "" };
+    const { stdout, stderr } = await execAsync(toRun, { cwd, env, timeout: timeoutMs, maxBuffer: PROBE_MAX_BUFFER });
+    return { ran: true, exitZero: true, output: trimmed(stdout, stderr) };
   } catch (e) {
     const err = e as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
-    // A timeout or a missing binary says nothing about the criterion — only
-    // a command that ran to an exit status does.
-    if (err.killed || typeof err.code !== "number") return { command, expectFailure, ok: true, output: "" };
-    return { command, expectFailure, ok: expectFailure, output: expectFailure ? "" : trimmed(err.stdout, err.stderr) };
+    // A timeout or a missing binary says nothing about the criterion — only a
+    // command that ran to an exit status does. 127 belongs in that list even
+    // though it is a number: the command goes through `exec`, so a missing one
+    // exits 127 with a NUMERIC code and the non-numeric test alone misses it.
+    if (err.killed || typeof err.code !== "number" || err.code === 127) {
+      return { ran: false, exitZero: false, output: "" };
+    }
+    return { ran: true, exitZero: false, output: trimmed(err.stdout, err.stderr) };
   }
 }
 

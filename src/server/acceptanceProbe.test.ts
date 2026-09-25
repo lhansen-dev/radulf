@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { probeCommands, repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
+import { probeCommands, REGRESSION_HEADING, repairTaskText, runAcceptanceProbe, splitRegressionCriteria } from "./acceptanceProbe";
 import type { RunSandboxContext } from "./sandbox/context";
 
 /** The acceptance criteria of the card this spec was written against, verbatim
@@ -78,6 +78,50 @@ describe("probeCommands", () => {
 
   it("returns nothing for criteria with no commands at all", () => {
     expect(probeCommands("- [ ] The feature works and the tests pass")).toEqual([]);
+  });
+});
+
+describe("splitRegressionCriteria", () => {
+  it("keeps only the lines between the regression heading and the next heading", () => {
+    const doc = [
+      "# Acceptance criteria",
+      "",
+      "- [ ] `test -f docs/USAGE.md` succeeds",
+      "",
+      REGRESSION_HEADING,
+      "",
+      "- [ ] `grep -q old_name src/` fails",
+      "- [ ] `test -f src/legacy.ts` succeeds",
+      "",
+      "## Notes",
+      "",
+      "- [ ] The wrapper is documented.",
+    ].join("\n");
+    const { newBehavior, regression } = splitRegressionCriteria(doc);
+    expect(regression.split("\n").filter((l) => l.trim()).map((l) => l.trim())).toEqual([
+      "- [ ] `grep -q old_name src/` fails",
+      "- [ ] `test -f src/legacy.ts` succeeds",
+    ]);
+    // The heading line itself belongs to neither half, and the section after it
+    // is new behaviour again.
+    expect(regression).not.toMatch(/regression/i);
+    expect(newBehavior).toContain("- [ ] `test -f docs/USAGE.md` succeeds");
+    expect(newBehavior).toContain("## Notes");
+    expect(newBehavior).toContain("- [ ] The wrapper is documented.");
+    expect(newBehavior).not.toContain("old_name");
+  });
+
+  it("matches the heading case-insensitively", () => {
+    const { newBehavior, regression } = splitRegressionCriteria(
+      "- [ ] new thing\n## REGRESSION\n- [ ] old thing\n",
+    );
+    expect(regression.trim()).toBe("- [ ] old thing");
+    expect(newBehavior.trim()).toBe("- [ ] new thing");
+  });
+
+  it("returns the whole document as new behaviour when the heading is absent", () => {
+    const doc = REAL_CRITERIA;
+    expect(splitRegressionCriteria(doc)).toEqual({ newBehavior: doc, regression: "" });
   });
 });
 
@@ -172,6 +216,19 @@ describe("runAcceptanceProbe", () => {
     // file (a real non-zero). Both are acceptable; a crash is not.
     expect(results).toHaveLength(1);
     expect(results[0].command).toBe("jq .version package.json");
+  });
+
+  it("does not disprove a criterion when the command is not installed (exit 127)", async () => {
+    // The shell reports command-not-found as exit 127 with a NUMERIC code, so
+    // the non-numeric-code test alone reads it as a real failing check. An
+    // empty PATH makes that the only possible outcome here.
+    const emptyBin = fs.mkdtempSync(path.join(dir, "empty-path-"));
+    const results = await runAcceptanceProbe({
+      acceptanceCriteria: "`jq .version package.json`",
+      worktreePath: dir,
+      ctx: { ...ctx, env: { PATH: emptyBin } } as unknown as RunSandboxContext,
+    });
+    expect(results).toEqual([{ command: "jq .version package.json", expectFailure: false, ok: true, output: "" }]);
   });
 });
 
