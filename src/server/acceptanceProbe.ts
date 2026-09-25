@@ -89,6 +89,15 @@ const EXPECT_FAILURE =
 export const REGRESSION_HEADING = "## Regression";
 
 /**
+ * The exit reason of the planning run a pre-check sends the plan back through.
+ *
+ * Lives next to the pre-check rather than at its one call site so the string
+ * the pre-check reports and the string the replan is keyed on cannot drift
+ * apart into two spellings of the same verdict.
+ */
+export const PRECHECK_REVISE_EXIT = "precheck revise";
+
+/**
  * Split an acceptance-criteria document at its `## Regression` heading.
  *
  * Everything from that heading until the next `## ` heading is regression
@@ -260,6 +269,155 @@ async function execCheck(
     }
     return { ran: true, exitZero: false, output: trimmed(err.stdout, err.stderr) };
   }
+}
+
+export type PrecheckReport = {
+  /** New-behaviour commands the pre-check took a position on: each one that
+   * ran, plus the single one a cancellation caught before it started. Not
+   * `alreadyPassing.length + failing.length + unprobed.length`, which misses
+   * that last one and counts none of the skipped regression checks. */
+  checked: number;
+  /** Commands that already exit the way their criterion wants — the finding
+   * this whole pre-check exists for, since such a check cannot show that this
+   * card's work got done. */
+  alreadyPassing: string[];
+  /** Commands that exit the wrong way. Expected: this is the untouched
+   * worktree, so a check for new behaviour had better fail here. */
+  failing: string[];
+  /** Commands that never ran (missing binary, killed by the timeout, a wrap
+   * that could not be built) — no position on those, either way. */
+  unprobed: string[];
+  /** The `## Regression` commands, deliberately not run. */
+  skipped: string[];
+  /** True when the caller's signal stopped the pre-check partway. A partial
+   * report must never be read as a clean one. */
+  cancelled: boolean;
+};
+
+/**
+ * Run the plan's checks against the untouched worktree, before the loop starts.
+ *
+ * The post-DONE probe asks "did the work make these checks pass?". This asks
+ * the opposite question, and the only one that can be answered before any
+ * iteration exists: "do any of them pass already?" A check that exits the way
+ * its criterion wants on a worktree nobody has touched will still exit that way
+ * if the card does nothing at all, so it cannot evidence the work — and a plan
+ * whose acceptance list is full of such checks will sail through DONE while
+ * changing nothing. Finding them here costs one bounded replan instead of a
+ * whole loop plus an evaluation.
+ *
+ * What it is NOT: a judgment of the plan's correctness. The probe is one-sided
+ * (see this file's header) — a zero exit proves nothing about a criterion — and
+ * a `failing` entry here is the expected, healthy outcome for new behaviour.
+ * Only `alreadyPassing` gets acted on, and only as "this check cannot show the
+ * work was done".
+ *
+ * `## Regression` commands are collected and not run: a check on behaviour an
+ * earlier card established passing now is the point of it, so the pre-check
+ * would flag every one of them as a tautology it isn't one. Sequential, and
+ * wrapped in the run's sandbox policy exactly as `runAcceptanceProbe` wraps its
+ * checks, for the same reasons stated there.
+ */
+export async function precheckAcceptance(opts: {
+  acceptanceCriteria: string;
+  worktreePath: string;
+  ctx: RunSandboxContext;
+  /** The planning run's cancellation. Checked before each command, never during
+   * one: the running command is left to its own timeout rather than killed out
+   * from under the sandbox's process-group bookkeeping. */
+  signal?: AbortSignal;
+  /** Exists only so tests can shorten the wait; production uses the probe's own
+   * bound and must not acquire a second one. */
+  timeoutMs?: number;
+}): Promise<PrecheckReport> {
+  const { ctx } = opts;
+  const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const { newBehavior, regression } = splitRegressionCriteria(opts.acceptanceCriteria);
+  const report: PrecheckReport = {
+    checked: 0,
+    alreadyPassing: [],
+    failing: [],
+    unprobed: [],
+    skipped: probeCommands(regression).map((c) => c.command),
+    cancelled: false,
+  };
+  for (const { command, expectFailure } of probeCommands(newBehavior)) {
+    // Considered before the cancellation check: `checked` is how many checks
+    // the pre-check got around to, and the one cancellation caught is the last
+    // thing it got around to. At most one command can be in that state, since
+    // the loop stops right after it.
+    report.checked++;
+    if (opts.signal?.aborted) {
+      report.cancelled = true;
+      break;
+    }
+    // Join explicitly rather than concatenating: the prefix's last line ends in
+    // `|| true`, and a command appended to it becomes that `||`'s right-hand
+    // side and never runs — which here would read every check as already
+    // passing and send the plan off for a revision it does not need.
+    const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
+    try {
+      const { ran, exitZero } = ctx.srtConfig
+        ? await runSandboxedCommand(
+            prefixed,
+            ctx.srtConfig,
+            (wrapped) => execCheck(wrapped, opts.worktreePath, ctx.env, timeoutMs),
+            { tmpdir: ctx.tmpdir },
+          )
+        : await execCheck(prefixed, opts.worktreePath, ctx.env, timeoutMs);
+      if (!ran) {
+        // Never started: no position. Under this pre-check that matters more
+        // than in the post-DONE probe — reading it as anything else either
+        // invents a tautology or buries a real one.
+        report.unprobed.push(command);
+      } else if (exitZero !== expectFailure) {
+        // Exited the way its criterion wants, ordinary or inverted — already.
+        report.alreadyPassing.push(command);
+      } else {
+        report.failing.push(command);
+      }
+    } catch (e) {
+      // A wrap that could not be built is our plumbing failing, not the
+      // criterion's: unprobed, never already-passing, and the pre-check carries
+      // on with the rest.
+      console.warn(`acceptance pre-check skipped "${command}": ${errorMessage(e)}`);
+      report.unprobed.push(command);
+    }
+  }
+  return report;
+}
+
+/**
+ * The feedback a pre-check sends back to the planner.
+ *
+ * Two exits for each flagged command, because half of them are legitimately
+ * pass-now checks the planner simply filed in the wrong place: rewrite it into
+ * a check that fails today, or mark it `## Regression` and it is exempt.
+ * Explicitly disclaims the one thing the pre-check cannot say — that a zero
+ * exit means a criterion is met — or the planner reads "these pass" as
+ * permission to leave the whole list alone.
+ */
+export function precheckReviseFeedback(alreadyPassing: string[]): string {
+  return [
+    "These acceptance checks were run against the worktree as it stands, before",
+    "any of this plan's tasks ran, and each already exits the way its criterion",
+    "wants:",
+    "",
+    ...alreadyPassing.map((c) => `  - \`${c}\``),
+    "",
+    "So none of them can show that the work in this plan was done: they would",
+    "report the same thing if the loop changed nothing at all. For each one,",
+    "either rewrite it into a check that FAILS now and exits the way the",
+    "criterion wants once the work is done, or — if it is meant to keep passing,",
+    "because it guards behaviour an earlier card already established — move it",
+    `under a \`${REGRESSION_HEADING}\` heading in CRITERIA.md. Regression checks`,
+    "are exempt from this pre-check by design.",
+    "",
+    "This is not a judgment on the correctness of the plan. A zero exit proves",
+    "nothing about a criterion, so nothing here says a criterion is satisfied",
+    "or that the plan is sound; it says only that these commands cannot tell",
+    "you anything about this card's work.",
+  ].join("\n");
 }
 
 /** The repair task appended to the private plan when checks failed. Names the
