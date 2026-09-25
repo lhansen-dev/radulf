@@ -66,6 +66,8 @@ let cardEvents: Array<Record<string, unknown>> = [];
 let cardScoping: Array<Record<string, unknown>> = [];
 let cardChildren: Array<Record<string, unknown>> = [];
 let cardParent: Record<string, unknown> | null = null;
+let cardJiraKey: string | null = null;
+let cardJiraUrl: string | null = null;
 
 beforeEach(() => {
   cleanup();
@@ -74,6 +76,8 @@ beforeEach(() => {
   cardScoping = [];
   cardChildren = [];
   cardParent = null;
+  cardJiraKey = null;
+  cardJiraUrl = null;
   cardRuns = [
     {
       id: "r1",
@@ -144,6 +148,7 @@ beforeEach(() => {
               startedAt: null,
               createdAt: "",
               baseBranch: null,
+              jiraKey: cardJiraKey,
             },
             repo: null,
             plans: cardPlans,
@@ -152,6 +157,7 @@ beforeEach(() => {
             scoping: cardScoping,
             children: cardChildren,
             parent: cardParent,
+            jiraUrl: cardJiraUrl,
             models: {
               planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
               loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
@@ -420,6 +426,26 @@ describe("CardDetail", () => {
 
     expect((await screen.findByRole("link", { name: "Harden login" })).getAttribute("href")).toBe("/card/e1");
     expect(screen.getByText(/its tasks run in order/)).toBeTruthy();
+  });
+
+  it("links a card's Jira key to its issue", async () => {
+    cardJiraKey = "DEV-7";
+    cardJiraUrl = "https://jira.example/browse/DEV-7";
+
+    render(<CardDetail />);
+
+    const link = await screen.findByRole("link", { name: "DEV-7" });
+    expect(link.getAttribute("href")).toBe("https://jira.example/browse/DEV-7");
+  });
+
+  it("shows a card's Jira key as plain text when Jira isn't configured", async () => {
+    cardJiraKey = "DEV-7";
+    cardJiraUrl = null;
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("DEV-7")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "DEV-7" })).toBeNull();
   });
 
   // The plan lives on the Task tab, which is the default — no click needed.
