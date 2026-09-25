@@ -1,0 +1,15 @@
+# Evaluation notes (attempt started 2026-09-25T23:39Z)
+- All 23 grep/test -f acceptance criteria: PASS (splitRegressionCriteria, precheckAcceptance, PRECHECK_REVISE_EXIT, 127, schema/drizzle precheck_passing, planningService events, planCriticService exports, replan dep, orchestrator precheckPassing, mock scenarios, plan.md Regression, HOW_IT_WORKS, spec 31, DESIGN_HISTORY)
+- Gate `make check` exit 0 per .ralph/GATE.md (not re-run)
+- npx vitest run src/server/acceptanceProbe.test.ts: exit 0 (26 passed)
+- npx vitest run src/server/planningService.test.ts: exit 0 (32 passed)
+- npx vitest run src/server/planCriticService.test.ts: exit 0 (15 passed)
+- npx vitest run src/server/orchestrator.lifecycle.test.ts -t 'acceptance probe': exit 0 (5 passed)
+- npx vitest run src/server/mockPipeline.test.ts -t precheck: exit 0 (2 passed)
+- npx drizzle-kit check: exit 0 (migration 0025 consistent)
+- Full `vitest run mockPipeline.test.ts orchestrator.lifecycle.test.ts`: exit 0 (134 passed)
+- Ad-hoc precheckAcceptance run against a `git archive beta` tree with the card's own checks: all new-behaviour checks land in `failing`, `jq` (not installed) -> `unprobed`, `## Regression` entry -> `skipped`, non-allowlisted head not run. Demo file removed, tree clean.
+- Code review: PROBE_ALLOWED / SHELL_METACHARACTER / PROBE_TIMEOUT_MS untouched; pre-check before writePlanRow and before planningDestination (plan_review sees the event); active() gates after pre-check and after commit; finishRun must return true before replan/critique/moveCard; catch path returns on abort and on finishRun=false.
+- Unrelated change noted: next.config.ts turbopack.root for symlinked node_modules (gate repair; no-op in normal layout).
+- Verdict: approve
+- Doc reconciliation on approve: specs/30-plan-critic.md decision 2 + docs/DESIGN_HISTORY.md row 30 note the shared revision cap

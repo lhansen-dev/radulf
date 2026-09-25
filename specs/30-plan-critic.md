@@ -34,7 +34,9 @@ card where planning sends it today: Ready, or plan review when the card asks
 for a human gate. A revise re-plans with the critic's feedback the way an
 evaluator revise does. A plan may be sent back at most twice; the third
 consecutive revise sends the card to plan review with the critic's notes
-attached, so a person decides rather than the two models circling.
+attached, so a person decides rather than the two models circling. Since
+[31](31-acceptance-precheck.md) the acceptance pre-check's revisions count
+toward the same two: critic and pre-check together share one cap.
 
 **3. On by default for breakdown cards, off for others.** A global setting
 `planCriticMode` takes `breakdown` (the default: only cards created from a
