@@ -1,4 +1,4 @@
-You are working on: running a plan's acceptance check commands against the untouched worktree before the loop starts (spec 31), so a new-behavior check that already passes is sent back to the planner once and never buys a post-DONE repair iteration.
+You are working on: running a plan's acceptance check commands against the untouched worktree before the loop starts (an `acceptance.precheck` event, one bounded planner revise, a `## Regression` marking, and no post-DONE repair for checks that already passed), in the Radulf orchestrator (TypeScript, vitest).
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,9 +36,18 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Hints for this card:
-- The probe is one-sided by design (`src/server/acceptanceProbe.ts` header comment): a zero exit proves nothing about a criterion. The pre-check uses the same fact the other way round — a check that already exits the way its criterion expects on the untouched tree cannot prove new work. Never describe or implement it as a correctness check of the plan.
-- Do not widen `PROBE_ALLOWED` or relax `SHELL_METACHARACTER` in `src/server/acceptanceProbe.ts`.
-- Under `sh -c`, a missing command exits 127 (a numeric code); treat it, timeouts (`killed`), and non-numeric codes as unprobed — never as a criterion result.
-- Tests in `src/server/planningService.test.ts`, `src/server/planCriticService.test.ts`, and `src/server/orchestrator.lifecycle.test.ts` use `vi.mock` for `./harness` and `./git` and a per-file test data dir; follow the neighbouring tests' patterns for seeding `cards`, `plans`, and `runs`. Mock pipeline scenarios live in `src/server/harness/mock.ts`.
-- When a task asks for a migration, run `npx drizzle-kit generate` from the repo root; do not hand-edit `drizzle/meta/*`.
+Hints for this codebase:
+- Before editing, read the relevant parts of `src/server/acceptanceProbe.ts`,
+  `src/server/planningService.ts`, `src/server/planCriticService.ts` and the
+  matching `*.test.ts` file so new code matches the existing style (comments
+  explain WHY; drizzle queries via `db`, `runs`, `plans` from `@/db`).
+- Never widen `PROBE_ALLOWED` or relax `SHELL_METACHARACTER` in
+  `src/server/acceptanceProbe.ts`; the pre-check runs only what
+  `probeCommands` returns, through the same prefix/sandbox path as the probe.
+- The pre-check is one-sided like the probe: a check that already exits 0 on
+  the untouched tree proves nothing; do not describe it as a plan correctness check.
+- Tests that reach `@/db` import it after `setupTestDataDir(...)` with
+  `await import(...)`, as the existing test files do. Use `vi.fn()` and
+  deferred promises for deterministic cancellation/timeout tests; never rely
+  on wall-clock timing.
+- Run only the single vitest file or `-t` pattern named in your task.
