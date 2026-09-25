@@ -1,4 +1,4 @@
-You are working on: running a plan's acceptance check commands against the untouched worktree before the loop starts (an `acceptance.precheck` event, one bounded planner revise, a `## Regression` marking, and no post-DONE repair for checks that already passed), in the Radulf orchestrator (TypeScript, vitest).
+You are working on: running a plan's acceptance check commands against the untouched worktree before the loop starts (an `acceptance.precheck` event, one bounded replan for checks that already pass, no repair iteration for such checks after DONE, and a `## Regression` marking that skips the pre-check), with cancellation-safe planning.
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,18 +36,8 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Hints for this codebase:
-- Before editing, read the relevant parts of `src/server/acceptanceProbe.ts`,
-  `src/server/planningService.ts`, `src/server/planCriticService.ts` and the
-  matching `*.test.ts` file so new code matches the existing style (comments
-  explain WHY; drizzle queries via `db`, `runs`, `plans` from `@/db`).
-- Never widen `PROBE_ALLOWED` or relax `SHELL_METACHARACTER` in
-  `src/server/acceptanceProbe.ts`; the pre-check runs only what
-  `probeCommands` returns, through the same prefix/sandbox path as the probe.
-- The pre-check is one-sided like the probe: a check that already exits 0 on
-  the untouched tree proves nothing; do not describe it as a plan correctness check.
-- Tests that reach `@/db` import it after `setupTestDataDir(...)` with
-  `await import(...)`, as the existing test files do. Use `vi.fn()` and
-  deferred promises for deterministic cancellation/timeout tests; never rely
-  on wall-clock timing.
-- Run only the single vitest file or `-t` pattern named in your task.
+Hints for this repository:
+- TypeScript + Next.js + vitest + drizzle/sqlite. Tests that touch `@/db` import it after `setupTestDataDir` (see the top of `src/server/planningService.test.ts`) — follow the existing pattern in whichever test file you edit.
+- Read the code you are changing first (grep, then read the exact ranges); the existing acceptance probe is in `src/server/acceptanceProbe.ts`, the planning run in `src/server/planningService.ts`, the critic's revision cap in `src/server/planCriticService.ts`, and the post-DONE probe call in `src/server/orchestrator.ts` near `runAcceptanceProbe`.
+- The probe is one-sided by design: a zero exit proves nothing about a criterion. The pre-check uses that fact the other way round (a check that already passes cannot show new work) and must never be described as a correctness check of the plan. Do not widen `PROBE_ALLOWED` or relax `SHELL_METACHARACTER`.
+- Run only the single check named in your task. Do not run `make check` or the whole vitest suite.
