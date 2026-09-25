@@ -22,8 +22,16 @@ import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
-import { PRECHECK_REVISE_EXIT } from "./acceptanceProbe";
-import { criticEnabled } from "./planCriticService";
+import {
+  precheckAcceptance,
+  precheckReviseFeedback,
+  PRECHECK_REVISE_EXIT,
+} from "./acceptanceProbe";
+import {
+  criticEnabled,
+  consecutivePlanRevisions,
+  MAX_CRITIC_REVISIONS,
+} from "./planCriticService";
 import {
   circuitOpenReason,
   harnessFailure,
@@ -279,6 +287,9 @@ export class PlanningService {
       pump(): void;
       /** Spec 30: hand a finished plan to the critic; the card stays in `planning`. */
       critique(cardId: string): void;
+      /** Spec 31: run the planner again on a card still in `planning` — what
+       * the acceptance pre-check does with a plan whose checks already pass. */
+      replan(cardId: string): void;
     },
   ) {}
 
@@ -322,6 +333,15 @@ export class PlanningService {
       deps.finishRun(runId, status, exitReason, telemetry);
       deps.moveCard(cardId, "planning", "needs_attention", moveReason);
     };
+    /** Still ours to finish: not cancelled, and the run row is still `running`
+     * rather than something `cancelCard` (or the reaper) already wrote.
+     * Spec 31's pre-check runs shell commands, which takes real time, so this
+     * is read after each of the awaits that follow — writing a plan row or
+     * moving a card for a dead run would resurrect it. */
+    const active = () =>
+      !controller.signal.aborted &&
+      db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).get()?.status ===
+      "running";
     // The awaited git calls above open a window where the user can cancel
     // before this run row existed — never start a harness for such a card.
     if (deps.getCard(cardId)?.status !== "planning") {
@@ -421,6 +441,30 @@ export class PlanningService {
         return fail("plan checklist unparseable or has no unchecked tasks");
       }
 
+      // Spec 31: run the plan's own check commands against the worktree as it
+      // stands, before any iteration exists. A check that already exits the way
+      // its criterion wants will still exit that way if this card changes
+      // nothing, so it cannot evidence the work — one bounded replan now costs
+      // far less than a whole loop plus an evaluation. What this is NOT: a
+      // judgment on the plan. The probe is one-sided (see acceptanceProbe.ts),
+      // so `failing` here is the healthy expected outcome for new behaviour and
+      // nothing here says a criterion is met.
+      const report = await precheckAcceptance({
+        acceptanceCriteria: contents["CRITERIA.md"],
+        worktreePath,
+        ctx,
+        signal: controller.signal,
+      });
+      // The checks took wall-clock time; a cancel landing inside them has
+      // already finalized this run and moved the card.
+      if (!active()) return;
+
+      // A criteria document with no runnable command at all has nothing to
+      // report — no event, and no `precheckPassing` column either, so the row
+      // stays distinguishable from "checked, and nothing passed". Regression
+      // commands count as seen even though none of them ran.
+      const probed = report.checked + report.skipped.length > 0;
+
       // PLAN.md and CRITERIA.md are orchestrator-private: remove them before
       // the plan commit so the loop agent can never read them — not in the
       // working tree and not in branch history. PLAN.md lives on in the
@@ -432,15 +476,75 @@ export class PlanningService {
           promptMd: contents["PROMPT.md"],
           acceptanceCriteria: contents["CRITERIA.md"],
         },
-        { origin: "planner", feedback: replanFeedback, runId },
+        {
+          origin: "planner",
+          feedback: replanFeedback,
+          runId,
+          // Recorded on the plan row so the post-DONE probe can report these
+          // without spending a repair iteration on them.
+          precheckPassing: probed ? report.alreadyPassing : undefined,
+        },
       );
       db.update(runs).set({ planId }).where(eq(runs.id, runId)).run();
+
+      // Exactly one replan per plan: `precheck === 0` bounds it to the first
+      // pre-check finding, and the cap the critic shares (spec 30) bounds the
+      // ping-pong. Past either, the plan ships as written and the finding stays
+      // in the event — the loop and the evaluator still get their say.
+      let revise = false;
+      if (probed) {
+        const { critic, precheck } = consecutivePlanRevisions(cardId);
+        revise =
+          report.alreadyPassing.length > 0 &&
+          precheck === 0 &&
+          critic + precheck < MAX_CRITIC_REVISIONS;
+        emitEvent("acceptance.precheck", {
+          cardId,
+          runId,
+          payload: {
+            version,
+            checked: report.checked,
+            alreadyPassingCount: report.alreadyPassing.length,
+            skippedCount: report.skipped.length,
+            alreadyPassing: report.alreadyPassing,
+            failing: report.failing,
+            unprobed: report.unprobed,
+            skipped: report.skipped,
+            revise,
+          },
+        });
+      }
+
       removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md"]);
 
       await tryGit(worktreePath, "add", ".ralph");
       await tryGit(worktreePath, "commit", "-m", `ralph: plan v${version} for "${card.title}"`);
+      // Two git awaits: the same cancellation window, after the commit this
+      // time. The artifacts are written either way; only the routing below is
+      // the dead run's to skip.
+      if (!active()) return;
 
-      deps.finishRun(runId, "completed", "plan artifacts written", telemetry);
+      if (revise) {
+        // The feedback rides on THIS run and is read back by the next planning
+        // run through `pendingReplanFeedback`, which finds it by this exit
+        // reason. Set it before finishing, or the row is finished unread.
+        db.update(runs)
+          .set({ feedback: precheckReviseFeedback(report.alreadyPassing) })
+          .where(eq(runs.id, runId))
+          .run();
+        if (!deps.finishRun(runId, "completed", PRECHECK_REVISE_EXIT, telemetry)) return;
+        emitEvent("plan.precheck_revise_requested", {
+          cardId,
+          runId,
+          payload: { version, alreadyPassing: report.alreadyPassing },
+        });
+        // Like a critic revise verdict: the card never left `planning`, so it
+        // keeps its pipeline slot straight into the re-plan.
+        deps.replan(cardId);
+        return;
+      }
+
+      if (!deps.finishRun(runId, "completed", "plan artifacts written", telemetry)) return;
       if (criticEnabled(card, settings)) {
         // Spec 30: the critic reads the plan while the card keeps its slot in
         // `planning`; it moves the card on (or re-plans) itself.

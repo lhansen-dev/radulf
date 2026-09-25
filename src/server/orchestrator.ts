@@ -309,6 +309,10 @@ export class Orchestrator {
     ...this.stageDeps,
     pump: () => this.pump(),
     critique: (cardId) => this.startCritic(cardId),
+    // Spec 31: the acceptance pre-check sends the plan back for a rewrite.
+    // Same route the critic's revise verdict uses — the card never left
+    // `planning`, so it keeps its slot.
+    replan: (cardId) => this.startStage("planning", cardId),
   });
   private evaluationService = new EvaluationService({
     ...this.stageDeps,
