@@ -143,19 +143,25 @@ function isManagedRef(ref: string): boolean {
  * not just `runBranch`. Every worktree shares one `.git`, so a sibling card's
  * commit, a worktree cleanup and an improvement run's new branch all land in
  * this run's ref snapshot, where they read as tampering even though Radulf
- * wrote them itself. Refs outside that namespace (base branches, `main`,
- * tags, remotes) are still compared, and hooks and `.git/config` are
- * untouched by this.
+ * wrote them itself. Base branches, `main` and tags outside that namespace are
+ * still compared; remote-tracking refs (`refs/remotes/**`) outside `ralph/` are
+ * returned as warnings instead of violations, because a `git fetch` or `git
+ * push` in the registered checkout moves them and that is not tampering (card
+ * 2026-09-25). Hooks and `.git/config` are untouched by this.
  */
-export async function checkRepoIntegrity(
+export async function inspectRepoIntegrity(
   repoPath: string,
   baseline: RepoIntegrityBaseline,
   opts: { runBranch: string; checkRefs: boolean },
-): Promise<string[]> {
+): Promise<{ violations: string[]; warnings: string[] }> {
   const violations: string[] = [];
+  const warnings: string[] = [];
   const commonDir = await gitCommonDir(repoPath);
   if (commonDir === null) {
-    return [`repo at ${repoPath} is no longer a usable git repository`];
+    return {
+      violations: [`repo at ${repoPath} is no longer a usable git repository`],
+      warnings: [],
+    };
   }
 
   const { hooks: hooksNow, configHash } = snapshotHooksAndConfig(commonDir);
@@ -177,24 +183,43 @@ export async function checkRepoIntegrity(
     // taken (a delivery worker's approved merge on the base branch) are not
     // tampering, provided the ref now sits exactly where we left it.
     const since = baseline.capturedAt ?? "";
-    const compareRefs = (written: Map<string, string>): string[] => {
+    const compareRefs = (
+      written: Map<string, string>,
+    ): { violations: string[]; warnings: string[] } => {
       const found: string[] = [];
+      const noticed: string[] = [];
+      // A remote-tracking ref is the local shadow of whatever is on the
+      // remote: a `git fetch` or `git push` in the registered checkout moves
+      // it, and neither is tampering (card 2026-09-25). Report it, never fail
+      // the run on it.
+      const remote = (ref: string) => ref.startsWith("refs/remotes/");
       for (const [ref, oid] of Object.entries(refsNow)) {
         if (managed(ref)) continue;
         if (written.get(ref) === oid) continue;
-        if (!(ref in baseline.refs)) found.push(`ref appeared: ${ref}`);
-        else if (baseline.refs[ref] !== oid) {
-          found.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
-        }
+        const message = !(ref in baseline.refs)
+          ? `ref appeared: ${ref}`
+          : baseline.refs[ref] !== oid
+            ? `ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`
+            : null;
+        if (message === null) continue;
+        if (remote(ref)) noticed.push(message);
+        else found.push(message);
       }
       for (const ref of Object.keys(baseline.refs)) {
-        if (!managed(ref) && !(ref in refsNow)) found.push(`ref deleted: ${ref}`);
+        if (managed(ref) || ref in refsNow) continue;
+        const message = `ref deleted: ${ref}`;
+        if (remote(ref)) noticed.push(message);
+        else found.push(message);
       }
-      return found;
+      return { violations: found, warnings: noticed };
     };
 
-    let refViolations = compareRefs(refWritesSince(repoPath, since));
-    if (refViolations.some((v) => v.startsWith("ref moved:") || v.startsWith("ref appeared:"))) {
+    let refDiff = compareRefs(refWritesSince(repoPath, since));
+    if (
+      refDiff.violations.some(
+        (v) => v.startsWith("ref moved:") || v.startsWith("ref appeared:"),
+      )
+    ) {
       // A delivery worker's `mergeBranch` moves the base branch at `git
       // commit` and only afterwards records the write (`recordRefWrite`), but
       // it holds the per-repo lease from before any git work until after that
@@ -204,12 +229,22 @@ export async function checkRepoIntegrity(
       // ref write Radulf made is recorded, so a moved ref still unexplained
       // after that is real tampering. With no lease held this returns at once.
       await waitForRepoLeaseRelease(repoPath, LEASE_SETTLE_MS);
-      refViolations = compareRefs(refWritesSince(repoPath, since));
+      refDiff = compareRefs(refWritesSince(repoPath, since));
     }
-    violations.push(...refViolations);
+    violations.push(...refDiff.violations);
+    warnings.push(...refDiff.warnings);
   }
 
-  return violations;
+  return { violations, warnings };
+}
+
+/** The violations half of `inspectRepoIntegrity` — empty means intact. */
+export async function checkRepoIntegrity(
+  repoPath: string,
+  baseline: RepoIntegrityBaseline,
+  opts: { runBranch: string; checkRefs: boolean },
+): Promise<string[]> {
+  return (await inspectRepoIntegrity(repoPath, baseline, opts)).violations;
 }
 
 /** Upper bound on how long the run-end check waits for a delivery worker to
