@@ -28,7 +28,7 @@ HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 
 PORT := 3000
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start web lint typecheck test check check-split check-compose login \
+.PHONY: help install dev build start web lint typecheck test check check-deps check-split check-compose login \
         worker build-worker db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
@@ -57,7 +57,25 @@ dev: ## Run the dev server (loopback-only unless auth is configured); restarts i
 	fi
 	$(BIN)/next dev -H $(HOST) -p $(PORT)
 
-build: build-worker ## Production build: the Next.js bundle plus dist/worker.mjs
+# Turbopack roots the project at this checkout and refuses any symlink that
+# escapes it. A `node_modules` linked to another checkout's copy — the shortcut
+# that looks free in a `git worktree add` checkout, where the directory does not
+# exist until something installs it — therefore dies minutes into the build
+# with `Symlink [project]/node_modules is invalid, it points out of the
+# filesystem root`, while test, lint and typecheck follow the link happily and
+# only the build breaks. Check the directory instead, and name the fix
+# (`make install` gives the checkout its own dependencies).
+#
+# It has to be a prerequisite, not a recipe line at the top of `build`: recipe
+# lines run only after every prerequisite, so the first thing to touch the bad
+# link — `build-worker`'s esbuild — would still run, and `make check` would
+# still burn the whole vitest pass before finding out. Listing it first in
+# `build` and in `check` makes both say why in one line, before any of that.
+check-deps:
+	@test -d "$(BIN)" || { echo "no dependencies installed in $(CURDIR) — run 'make install'"; exit 1; }; \
+	test ! -L node_modules || { echo "node_modules is a symlink out of this checkout and Turbopack rejects it — run 'make install'"; exit 1; }
+
+build: check-deps build-worker ## Production build: the Next.js bundle plus dist/worker.mjs
 	NODE_ENV=production $(BIN)/next build
 
 # esbuild resolves the `@/` alias from tsconfig.json and leaves every
@@ -92,7 +110,7 @@ test: ## Run the test suite once
 check-split: build ## Boot two web-only and a worker-only process against a temp data dir and drive a card through the web API (needs the production build)
 	RADULF_SPLIT_CHECK=1 $(BIN)/vitest run src/server/splitProcesses.test.ts
 
-check: test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)
+check: check-deps test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)
 
 # Runs under its own compose project name with a scratch env file so it never
 # touches the operator's `radulf` project: separate volume, separate port
