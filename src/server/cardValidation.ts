@@ -1,5 +1,6 @@
 import { EPIC_RUN_MODES, type EpicRunMode } from "@/db";
 import type { BreakdownPiece } from "./epics";
+import { isJiraIssueKey } from "./jira";
 import type { CreateCardRequest } from "@/shared/cardRequests";
 import {
   invalid,
@@ -22,6 +23,8 @@ type CreateCardInput = Omit<
   /** Spec 30: per-card plan critic override; null/undefined defers to settings. */
   planCritic?: boolean | null;
   criticModel?: string | null;
+  /** The Jira issue this card mirrors; null clears it. */
+  jiraKey?: string | null;
 };
 
 export type UpdateCardInput = {
@@ -41,18 +44,29 @@ export type UpdateCardInput = {
   scopingAuthorsPlan?: number;
   /** Spec 24: how an epic's pieces are scheduled. */
   runMode?: EpicRunMode | null;
+  /** The Jira issue this card mirrors; null clears it. */
+  jiraKey?: string | null;
 };
 
 const CREATE_FIELDS = new Set([
   "repoId", "title", "description", "maxIterations", "timeoutMinutes", "plannerModel",
   "loopModel", "evaluatorModel", "reviewPlanBeforeImplementation", "autoApprove", "openPr",
-  "grillMe", "scopingAuthorsPlan", "baseBranch", "planCritic", "criticModel",
+  "grillMe", "scopingAuthorsPlan", "baseBranch", "planCritic", "criticModel", "jiraKey",
 ]);
 
 /** The create body's boolean flags, all optional and all defaulting to false. */
 const CREATE_BOOLEANS = [
   "reviewPlanBeforeImplementation", "autoApprove", "openPr", "grillMe", "scopingAuthorsPlan",
 ] as const;
+
+/** A card's Jira issue key, upper-cased so it matches what Jira itself shows.
+ * Null means "no issue linked", which is also the default. A pasted link is
+ * rejected: the stored value is always the bare key the comment API needs. */
+function jiraKey(value: unknown, field = "jiraKey"): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && isJiraIssueKey(value)) return value.trim().toUpperCase();
+  return invalid("jiraKey must be a Jira issue key like DEV-123, or null");
+}
 
 export function parseCreateCard(value: unknown): CreateCardInput {
   const body = record(value, "card body");
@@ -83,12 +97,13 @@ export function parseCreateCard(value: unknown): CreateCardInput {
     baseBranch: optionalString(body.baseBranch, "baseBranch"),
     planCritic: body.planCritic === undefined ? undefined : (body.planCritic as boolean | null),
     criticModel: optionalString(body.criticModel, "criticModel"),
+    jiraKey: jiraKey(body.jiraKey),
   } as CreateCardInput;
 }
 
 const UPDATE_FIELDS = new Set([
   "title", "description", "maxIterations", "timeoutMinutes", "position", "plannerModel", "loopModel",
-  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "runMode", "planCritic", "criticModel",
+  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "runMode", "planCritic", "criticModel", "jiraKey",
 ]);
 
 function runMode(value: unknown): EpicRunMode {
@@ -131,12 +146,13 @@ export function parseUpdateCard(value: unknown): UpdateCardInput {
     patch[field] = body[field] ? 1 : 0;
   }
   if ("runMode" in body) patch.runMode = body.runMode === null ? null : runMode(body.runMode);
+  if ("jiraKey" in body) patch.jiraKey = jiraKey(body.jiraKey);
   if (Object.keys(patch).length === 0) invalid("nothing to update");
   return patch;
 }
 
 const BREAKDOWN_FIELDS = new Set(["pieces", "runMode"]);
-const PIECE_FIELDS = new Set(["title", "description", "repoId", "dependsOn"]);
+const PIECE_FIELDS = new Set(["title", "description", "repoId", "dependsOn", "jiraKey"]);
 
 /** Spec 28: a piece's `dependsOn` as 0-based sibling indexes, deduplicated
  * and sorted. Messages count pieces from 1, the way people read the list. */
@@ -169,6 +185,7 @@ export function parseBreakdown(value: unknown): { pieces: BreakdownPiece[]; runM
       repoId: optionalString(piece.repoId, "repoId"),
     };
     if (piece.dependsOn !== undefined) parsed.dependsOn = pieceDependsOn(piece.dependsOn, index, count);
+    if (piece.jiraKey !== undefined) parsed.jiraKey = jiraKey(piece.jiraKey);
     return parsed;
   });
   return { pieces, runMode: body.runMode === undefined ? "ordered" : runMode(body.runMode) };

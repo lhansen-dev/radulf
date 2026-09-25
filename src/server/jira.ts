@@ -14,6 +14,12 @@ type JiraSettings = Pick<Settings, "jiraBaseUrl" | "jiraEmail" | "jiraApiToken">
 
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]*-\d+$/i;
 
+/** Whether the value is a bare Jira issue key (`DEV-123`, any case, surrounding
+ * space allowed). A pasted link is not a key — use parseJiraIssueRef for that. */
+export function isJiraIssueKey(value: string): boolean {
+  return ISSUE_KEY.test(value.trim());
+}
+
 /** The issue key in a bare key or a pasted link, upper-cased, or null. Covers
  * `/browse/KEY`, a board's `?selectedIssue=KEY`, and any path segment that is
  * a key (`/jira/software/c/projects/DEV/issues/DEV-12`). */

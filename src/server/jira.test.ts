@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchJiraChildren, fetchJiraIssue, jiraCardDraft, parseJiraIssueRef, wikiToMarkdown } from "./jira";
+import {
+  fetchJiraChildren,
+  fetchJiraIssue,
+  isJiraIssueKey,
+  jiraCardDraft,
+  parseJiraIssueRef,
+  wikiToMarkdown,
+} from "./jira";
 
 const configured = { jiraBaseUrl: "https://example.atlassian.net/", jiraEmail: "me@example.com", jiraApiToken: "tok" };
 
@@ -22,6 +29,16 @@ describe("parseJiraIssueRef", () => {
       expect(parseJiraIssueRef(input)).toBeNull();
     },
   );
+});
+
+describe("isJiraIssueKey", () => {
+  it.each(["DEV-1", " dev-1 "])("accepts %s", (input) => {
+    expect(isJiraIssueKey(input)).toBe(true);
+  });
+
+  it.each(["", "DEV123", "https://x/browse/DEV-1"])("rejects %s", (input) => {
+    expect(isJiraIssueKey(input)).toBe(false);
+  });
 });
 
 describe("wikiToMarkdown", () => {

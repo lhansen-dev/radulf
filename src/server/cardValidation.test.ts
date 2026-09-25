@@ -80,3 +80,31 @@ describe("parseBreakdown", () => {
     expect(() => parseBreakdown(value)).toThrow(expected);
   });
 });
+
+describe("jiraKey", () => {
+  it("upper-cases a key on create", () => {
+    expect(parseCreateCard({ repoId: "r", title: "t", jiraKey: "dev-12" }).jiraKey).toBe("DEV-12");
+  });
+
+  it("defaults to null when omitted", () => {
+    expect(parseCreateCard({ repoId: "r", title: "t" }).jiraKey).toBeNull();
+  });
+
+  it.each([["not a key"], [12]])("rejects the create key %p", (jiraKey) => {
+    expect(() => parseCreateCard({ repoId: "r", title: "t", jiraKey })).toThrow(/jiraKey must be/);
+  });
+
+  it("keeps null on update, so the key can be cleared", () => {
+    expect(parseUpdateCard({ jiraKey: null })).toEqual({ jiraKey: null });
+  });
+
+  it("rejects a pasted link on update: a URL is not the key shape", () => {
+    expect(() => parseUpdateCard({ jiraKey: "https://x/browse/DEV-1" })).toThrow(/jiraKey must be/);
+  });
+
+  it("carries a piece's key through a breakdown", () => {
+    expect(parseBreakdown({ pieces: [{ title: "a", description: "", jiraKey: "DEV-5" }] }).pieces[0].jiraKey).toBe(
+      "DEV-5",
+    );
+  });
+});

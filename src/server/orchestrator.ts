@@ -1196,6 +1196,8 @@ export class Orchestrator {
             evaluatorModel: card.evaluatorModel,
             planCritic: card.planCritic,
             criticModel: card.criticModel,
+            // A piece mirrors its own Jira issue when the proposal named one.
+            jiraKey: piece.jiraKey ?? null,
             createdAt: now(),
             updatedAt: now(),
           })
