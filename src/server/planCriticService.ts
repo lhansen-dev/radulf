@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, runs, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
@@ -17,6 +17,7 @@ import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { listScopingMessages, type ScopingMessage } from "./scoping";
 import { planningDestination } from "./planningService";
+import { PRECHECK_REVISE_EXIT } from "./acceptanceProbe";
 import {
   circuitOpenReason,
   harnessFailure,
@@ -26,10 +27,13 @@ import {
   type StageDependencies,
 } from "./stage";
 
-/** After this many consecutive revise verdicts the critic stops sending the
- * plan back and escalates to human plan review — a critic and a planner must
- * not ping-pong forever. */
-const MAX_CRITIC_REVISIONS = 2;
+/** After this many revise verdicts the critic stops sending the plan back and
+ * escalates to human plan review — a critic and a planner must not ping-pong
+ * forever. The cap covers the critic's own revisions *and* the acceptance
+ * pre-check's revisions combined since the last loop run: both send the card
+ * back through planning, so letting each keep its own budget would double the
+ * ping-pong the cap exists to prevent. */
+export const MAX_CRITIC_REVISIONS = 2;
 
 /** Where the critic writes its verdict, relative to the worktree's .ralph/. */
 export const CRITIQUE_FILE = "CRITIQUE.md";
@@ -109,11 +113,14 @@ export function renderCriticPrompt(
 }
 
 /**
- * How many times in a row the critic has sent the card's plan back since the
- * loop last ran — the count the revision cap is measured against. A loop run
- * resets it: revisions before the latest loop belong to an earlier cycle.
+ * How many times the plan has been sent back since the loop last ran, counted
+ * separately for the two roles that send it back: `critic` for the plan critic's
+ * `revise` verdicts, `precheck` for the planning runs the acceptance pre-check
+ * sent back through (`PRECHECK_REVISE_EXIT`). Together they are what the
+ * revision cap is measured against. A loop run resets the count: revisions
+ * before the latest loop belong to an earlier cycle.
  */
-export function consecutiveCriticRevisions(cardId: string): number {
+export function consecutivePlanRevisions(cardId: string): { critic: number; precheck: number } {
   const latestLoop = db
     .select({ startedAt: runs.startedAt })
     .from(runs)
@@ -122,12 +129,33 @@ export function consecutiveCriticRevisions(cardId: string): number {
     .limit(1)
     .get();
   const revisions = db
-    .select({ startedAt: runs.startedAt })
+    .select({ kind: runs.kind, startedAt: runs.startedAt })
     .from(runs)
-    .where(and(eq(runs.cardId, cardId), eq(runs.kind, "critique"), eq(runs.exitReason, "revise")))
+    .where(
+      and(
+        eq(runs.cardId, cardId),
+        or(
+          and(eq(runs.kind, "critique"), eq(runs.exitReason, "revise")),
+          and(eq(runs.kind, "plan"), eq(runs.exitReason, PRECHECK_REVISE_EXIT)),
+        ),
+      ),
+    )
     .all();
-  if (!latestLoop) return revisions.length;
-  return revisions.filter((r) => r.startedAt > latestLoop.startedAt).length;
+  const since = latestLoop ? revisions.filter((r) => r.startedAt > latestLoop.startedAt) : revisions;
+  return {
+    critic: since.filter((r) => r.kind === "critique").length,
+    precheck: since.filter((r) => r.kind === "plan").length,
+  };
+}
+
+/**
+ * How many times in a row the critic has sent the card's plan back since the
+ * loop last ran. Kept as its own name for callers that mean the critic alone;
+ * the revision cap itself uses `consecutivePlanRevisions`, which adds the
+ * pre-check's revisions in.
+ */
+export function consecutiveCriticRevisions(cardId: string): number {
+  return consecutivePlanRevisions(cardId).critic;
 }
 
 export type PlanCriticDependencies = StageDependencies & {
@@ -299,8 +327,8 @@ export class PlanCriticService {
 
       db.update(runs).set({ feedback: critique.feedback }).where(eq(runs.id, runId)).run();
       // Counted before this run's exit reason is set, so it excludes this run.
-      const prior = consecutiveCriticRevisions(cardId);
-      if (prior >= MAX_CRITIC_REVISIONS) {
+      const { critic, precheck } = consecutivePlanRevisions(cardId);
+      if (critic + precheck >= MAX_CRITIC_REVISIONS) {
         deps.finishRun(runId, "completed", "revise — revision limit reached", telemetry);
         deps.moveCard(cardId, "planning", "plan_review", "plan critic revision limit — escalated to plan review");
         return;

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, plans, runs, reviews, type PlanOrigin, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
@@ -22,6 +22,7 @@ import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
+import { PRECHECK_REVISE_EXIT } from "./acceptanceProbe";
 import { criticEnabled } from "./planCriticService";
 import {
   circuitOpenReason,
@@ -84,6 +85,13 @@ function loopStopFeedback(exitReason: string, feedback: string | null): string {
 const CRITIC_REVISE_PREFIX =
   "The plan critic reviewed the previous plan before any code was written and asked for changes:\n\n";
 
+/** What the planner re-plans from when the acceptance pre-check found a check
+ * that already passes on the untouched worktree. Such a check cannot show the
+ * work this card is for, so the instruction is to rewrite the check — never a
+ * claim that the plan itself was found wrong. */
+const PRECHECK_REVISE_PREFIX =
+  "The acceptance pre-check ran the plan's check commands against the untouched worktree before any work was done and asked for changes:\n\n";
+
 export function renderPlanPrompt(
   template: string,
   title: string,
@@ -114,10 +122,11 @@ export function renderPlanPrompt(
 
 /**
  * Feedback the planner has not re-planned from yet: a human rejection of the
- * diff, an evaluator `revise` verdict, or a plan critic `revise` verdict
- * (spec 30).
+ * diff, an evaluator `revise` verdict, a plan critic `revise` verdict
+ * (spec 30), or the acceptance pre-check sending the plan back for a check
+ * that already passed on the untouched worktree (spec 31).
  *
- * Both send the card back through planning rather than straight to the loop,
+ * Each of these sends the card back through planning rather than straight to the loop,
  * so pending feedback is also what tells `startCard` to re-plan a card that
  * already has a plan. "Pending" means the feedback was given on the card's
  * latest plan — once the planner writes a new version, it is spent.
@@ -153,6 +162,26 @@ export function pendingReplanFeedback(cardId: string): string | null {
     reviseRow?.kind === "critique" && reviseRow.feedback
       ? { ...reviseRow, feedback: CRITIC_REVISE_PREFIX + reviseRow.feedback }
       : reviseRow;
+  // The pre-check's verdict belongs to the plan rather than to any code: the
+  // commands it ran passed before the card had changed anything, so a check
+  // like that cannot show the work this card is for.
+  const precheckRow = db
+    .select({ feedback: runs.feedback, at: runs.startedAt })
+    .from(runs)
+    .where(
+      and(
+        onLatestPlan,
+        eq(runs.kind, "plan"),
+        eq(runs.exitReason, PRECHECK_REVISE_EXIT),
+        isNotNull(runs.feedback),
+      ),
+    )
+    .orderBy(desc(runs.startedAt))
+    .limit(1)
+    .get();
+  const precheck = precheckRow?.feedback
+    ? { feedback: PRECHECK_REVISE_PREFIX + precheckRow.feedback, at: precheckRow.at }
+    : null;
   // A loop that stopped for the planner: blocked, or exhausted without DONE.
   // Older exhausted rows carry no feedback of their own, so the wording is
   // supplied here rather than read from the row.
@@ -166,6 +195,7 @@ export function pendingReplanFeedback(cardId: string): string | null {
   const newest = [
     rejection,
     revise,
+    precheck,
     loopStop && { feedback: loopStopFeedback(loopStop.exitReason!, loopStop.feedback), at: loopStop.at },
   ]
     .filter((row) => row?.feedback)

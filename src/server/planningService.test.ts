@@ -302,6 +302,36 @@ describe("PlanningService.runPlanning", () => {
     expect(feedback).toContain("Task 2 names a spec file that does not exist.");
   });
 
+  it("re-plans from a pre-check revise, saying the checks ran against the untouched worktree (spec 31)", () => {
+    seedCard("card-prechecked");
+    db.insert(plans)
+      .values({ id: "plan-prechecked", cardId: "card-prechecked", version: 1, planMd: "## Tasks\n- [ ] a\n", promptMd: "p", acceptanceCriteria: "c", createdAt: now() })
+      .run();
+    db.insert(runs)
+      .values({
+        id: "run-precheck",
+        cardId: "card-prechecked",
+        planId: "plan-prechecked",
+        kind: "plan",
+        status: "completed",
+        worktreePath: "/tmp/wt",
+        branch: "ralph/x",
+        exitReason: "precheck revise",
+        feedback: "Rewrite `test -f README.md`",
+        startedAt: "2026-09-21T16:14:00.000Z",
+        endedAt: "2026-09-21T16:15:00.000Z",
+      })
+      .run();
+
+    const feedback = pendingReplanFeedback("card-prechecked")!;
+    expect(feedback.startsWith("The acceptance pre-check")).toBe(true);
+    expect(feedback).toContain("Rewrite `test -f README.md`");
+
+    // The pre-check ran against the worktree as it stands, so it is never a
+    // verdict on the plan's correctness — the wording says what it did.
+    expect(feedback).toContain("against the untouched worktree before any work was done");
+  });
+
   it("finishes the run and parks the card when the planner harness throws", async () => {
     // Without a catch, a throw after startRunRow left the run row `running`
     // and the card landed in needs_attention with no finished run behind it.
