@@ -309,6 +309,10 @@ export class Orchestrator {
     ...this.stageDeps,
     pump: () => this.pump(),
     critique: (cardId) => this.startCritic(cardId),
+    // Spec 31: the acceptance pre-check sends the plan back for a rewrite.
+    // Same route the critic's revise verdict uses — the card never left
+    // `planning`, so it keeps its slot.
+    replan: (cardId) => this.startStage("planning", cardId),
   });
   private evaluationService = new EvaluationService({
     ...this.stageDeps,
@@ -2228,6 +2232,17 @@ export class Orchestrator {
               ctx,
             });
             const failures = probe.filter((p) => !p.ok);
+            // Spec 31: the pre-check ran these same commands against the
+            // untouched worktree and found that these already exited the way
+            // their criterion wanted. A check that passed before the loop
+            // touched anything cannot show the work was done, so its failure
+            // here is reported but buys no iteration — the loop would spend a
+            // repair pass making a tautology pass. NULL for plans written
+            // before the pre-check existed, which is the same as "nothing was
+            // found to excuse".
+            const alreadyPassing = new Set<string>(plan.precheckPassing ? JSON.parse(plan.precheckPassing) : []);
+            const repairable = failures.filter((f) => !alreadyPassing.has(f.command));
+            const tolerated = failures.filter((f) => alreadyPassing.has(f.command));
             if (probe.length > 0) {
               emitEvent("acceptance.probe", {
                 cardId,
@@ -2236,10 +2251,11 @@ export class Orchestrator {
                   n,
                   checked: probe.length,
                   failed: failures.map((f) => ({ command: f.command, output: f.output })),
+                  alreadyPassing: tolerated.map((f) => f.command),
                 },
               });
             }
-            if (failures.length > 0) {
+            if (repairable.length > 0) {
               acceptanceRepairUsed = true;
               // Clear the signal, or the next iteration re-enters this branch
               // before doing the repair.
@@ -2248,7 +2264,10 @@ export class Orchestrator {
               // repair has to be one — a prompt preamble alone never runs.
               fs.writeFileSync(
                 /* turbopackIgnore: true */ planPath,
-                appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), repairTaskText(failures)),
+                appendTask(
+                  fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
+                  repairTaskText(repairable),
+                ),
               );
               continue;
             }

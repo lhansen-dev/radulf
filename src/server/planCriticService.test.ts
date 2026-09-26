@@ -44,6 +44,7 @@ const {
   namedSpecFiles,
   renderCriticPrompt,
   consecutiveCriticRevisions,
+  consecutivePlanRevisions,
 } = await import("./planCriticService");
 
 describe("criticEnabled", () => {
@@ -137,7 +138,13 @@ describe("renderCriticPrompt", () => {
 });
 
 describe("consecutiveCriticRevisions", () => {
-  function seedRun(id: string, cardId: string, kind: "loop" | "critique", startedAt: string, exitReason: string | null) {
+  function seedRun(
+    id: string,
+    cardId: string,
+    kind: "loop" | "critique" | "plan",
+    startedAt: string,
+    exitReason: string | null,
+  ) {
     db.insert(runs)
       .values({
         id,
@@ -188,6 +195,25 @@ describe("consecutiveCriticRevisions", () => {
     seedRun("r6", "card-b", "critique", "2024-01-01T00:00:00.000Z", "revise");
     expect(consecutiveCriticRevisions("card-b")).toBe(1);
     expect(consecutiveCriticRevisions("card-none")).toBe(0);
+  });
+
+  it("counts the critic's revisions and the pre-check's separately, since the latest loop", () => {
+    db.insert(repos)
+      .values({ id: "repo-1", name: "Repo", path: path.join(testDataDir, "repo"), defaultBranch: "main", createdAt: now() })
+      .onConflictDoNothing()
+      .run();
+    seedCard("card-c");
+
+    // One of each since the loop, plus a pre-check revise before it that must
+    // not count against the shared budget.
+    seedRun("r7", "card-c", "plan", "2024-01-01T00:00:00.000Z", "precheck revise");
+    seedRun("r8", "card-c", "loop", "2024-01-02T00:00:00.000Z", "done");
+    seedRun("r9", "card-c", "critique", "2024-01-03T00:00:00.000Z", "revise");
+    seedRun("r10", "card-c", "plan", "2024-01-04T00:00:00.000Z", "precheck revise");
+    expect(consecutivePlanRevisions("card-c")).toEqual({ critic: 1, precheck: 1 });
+    // The critic-only reader keeps its old meaning: the pre-check's rows stay out of it.
+    expect(consecutiveCriticRevisions("card-c")).toBe(1);
+    expect(consecutivePlanRevisions("card-none")).toEqual({ critic: 0, precheck: 0 });
   });
 });
 
@@ -394,6 +420,47 @@ describe("PlanCriticService.runCritic", () => {
     );
     expect(deps.moveCard).toHaveBeenCalledWith(
       "card-limit",
+      "planning",
+      "plan_review",
+      expect.stringContaining("revision limit"),
+    );
+    expect(deps.replan).not.toHaveBeenCalled();
+  });
+
+  it("escalates to plan_review when a pre-check revise fills the shared budget", async () => {
+    seedPlannedCard("card-shared-budget");
+    seedPriorRevise("card-shared-budget", 1);
+    // The pre-check already sent this plan back once; one more revise from the
+    // critic exhausts the same two-revision budget, not a separate one.
+    db.insert(runs)
+      .values({
+        id: `precheck-card-shared-budget`,
+        cardId: "card-shared-budget",
+        planId: "plan-card-shared-budget",
+        kind: "plan",
+        status: "completed",
+        exitReason: "precheck revise",
+        feedback: "`test -f README.md` already passes.",
+        worktreePath: "/tmp/wt",
+        branch: "ralph/card-shared-budget",
+        baseBranch: "main",
+        startedAt: "2024-01-02T00:00:30.000Z",
+        endedAt: "2024-01-02T00:00:45.000Z",
+      })
+      .run();
+    mockCriticHarness({ [`.ralph/${CRITIQUE_FILE}`]: "VERDICT: revise\nStill wrong.\n" });
+    const deps = makeDeps();
+
+    await new PlanCriticService(deps).runCritic("card-shared-budget");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "revise — revision limit reached",
+      expect.any(Object),
+    );
+    expect(deps.moveCard).toHaveBeenCalledWith(
+      "card-shared-budget",
       "planning",
       "plan_review",
       expect.stringContaining("revision limit"),
