@@ -127,9 +127,34 @@ describe("passive orchestrator (web role only)", () => {
     expect(runsFor("c1")).toHaveLength(0);
   });
 
-  it("retryFailedStep refuses a planner retry with 409", () => {
-    seedCard("c1", { status: "needs_attention" });
+  it("retryFailedStep on a failed planner lands the card in todo for the worker", () => {
+    seedCard("c1", { status: "needs_attention", startedAt: now() });
     seedRun("r1", "c1", { kind: "plan", status: "failed", startedAt: now(), endedAt: now() });
+
+    expect(new Orchestrator({ passive: true }).retryFailedStep("c1")).toEqual({ ok: true, step: "plan" });
+
+    expect(card("c1").status).toBe("todo");
+    expect(runsFor("c1")).toHaveLength(1);
+  });
+
+  it("retryFailedStep on a failed evaluator flags the card for a worker's pump", () => {
+    seedCard("c1", { status: "needs_attention" });
+    seedRun("r1", "c1", { kind: "evaluate", status: "failed", startedAt: now(), endedAt: now() });
+
+    expect(new Orchestrator({ passive: true }).retryFailedStep("c1")).toEqual({ ok: true, step: "evaluate" });
+
+    const after = card("c1");
+    expect(after.status).toBe("needs_attention");
+    expect(after.evaluationPending).toBe(1);
+    expect(runsFor("c1")).toHaveLength(1);
+    const queued = db.select().from(events).where(eq(events.type, "card.evaluation_queued")).all();
+    expect(queued).toHaveLength(1);
+    expect(JSON.parse(queued[0].payload ?? "{}")).toEqual({ reason: "retrying failed evaluator" });
+  });
+
+  it("retryFailedStep still refuses a plan-critic retry with 409", () => {
+    seedCard("c1", { status: "needs_attention" });
+    seedRun("r1", "c1", { kind: "critique", status: "failed", startedAt: now(), endedAt: now() });
 
     let caught: unknown;
     try {

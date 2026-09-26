@@ -2320,6 +2320,39 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
     });
 
+    it("a web-only process queues a finished loop's evaluation and a worker's pump runs it", async () => {
+      card("web-retry-done", "needs_attention");
+      plan("web-retry-done");
+      completedRun("web-retry-done", "web-done-loop", {
+        status: "failed",
+        exitReason: "repo integrity violation: ref moved: refs/heads/beta",
+      });
+      const worktreePath = db.select().from(runs).where(eq(runs.id, "web-done-loop")).get()!.worktreePath;
+      fs.writeFileSync(path.join(worktreePath, ".ralph", "DONE"), "Every task done.\n");
+      fs.mkdirSync(path.dirname(planStatePath("web-retry-done")), { recursive: true });
+      fs.writeFileSync(planStatePath("web-retry-done"), "## Tasks\n- [x] implement the task\n");
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writeEvaluation(worktreePath, "VERDICT: approve\n\nFinished work, evaluated.");
+        return successfulHarnessResult;
+      });
+
+      // The web process only flags the card; nothing runs in it.
+      const web = new Orchestrator({ passive: true });
+      expect(web.retryFailedStep("web-retry-done")).toEqual({ ok: true, step: "evaluate" });
+      expect(getCard("web-retry-done").status).toBe("needs_attention");
+      expect(getCard("web-retry-done").evaluationPending).toBe(1);
+      expect(mocks.runHarness).not.toHaveBeenCalled();
+
+      // A worker's pump claims the queued evaluation and runs it, skipping the loop.
+      const worker = new Orchestrator({ autoStart: false });
+      worker.pump();
+      await vi.waitFor(() => expect(getCard("web-retry-done").status).toBe("review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "web-retry-done");
+      expect(cardRuns.map((run) => run.kind)).toEqual(["loop", "evaluate"]);
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
+    });
+
     it("retries a failed evaluator without rerunning the loop", async () => {
       card("retry-evaluator", "needs_attention");
       plan("retry-evaluator");

@@ -826,6 +826,14 @@ export class Orchestrator {
     return true;
   }
 
+  /** Spec 25 decision 2: park an evaluation for a worker's pump. The flag
+   * lives on the card row, so it survives a restart and every process on the
+   * database sees it; `claimPendingEvaluation` clears it when a slot frees. */
+  private queueEvaluation(cardId: string, reason: string) {
+    db.update(cards).set({ evaluationPending: 1, updatedAt: now() }).where(eq(cards.id, cardId)).run();
+    emitEvent("card.evaluation_queued", { cardId, payload: { reason } });
+  }
+
   /** Spec 24 decision 6: the last piece finishing finishes its epic. */
   private completeEpicIfFinished(childId: string) {
     const parentId = getCard(childId)?.parentCardId;
@@ -1384,7 +1392,11 @@ export class Orchestrator {
       const worktree = this.latestWorktreeRun(cardId);
       if (planMd && !firstUnchecked(planMd) && worktree && doneFilePath(ralphDirPath(worktree.worktreePath))) {
         if (this.passive) {
-          throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
+          // Spec 25: a web-only process never runs a stage. Park the
+          // evaluation where the worker's pump looks, on the same flag the
+          // install gate uses when the repo is at its cap.
+          this.queueEvaluation(cardId, "retrying: loop finished, evaluating");
+          return { ok: true, step: "evaluate" };
         }
         if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
         if (!this.moveCard(cardId, "needs_attention", "evaluating", "retrying: loop finished, evaluating")) {
@@ -1401,6 +1413,23 @@ export class Orchestrator {
     }
 
     if (this.passive) {
+      // A failed evaluator queues the same way. A failed planner goes back to
+      // Todo, where the worker's pump plans it afresh: startCard re-plans a
+      // card whose latest plan attempt failed, because that attempt left
+      // either no plan at all or its replan feedback still pending. The
+      // critic runs in place on a card already in `planning`, a status only
+      // a worker enters, so that one retry still needs a worker-role
+      // process; Restart re-plans and reaches a fresh critic pass from here.
+      if (step === "evaluate") {
+        this.queueEvaluation(cardId, "retrying failed evaluator");
+        return { ok: true, step };
+      }
+      if (step === "plan") {
+        if (!this.moveCard(cardId, "needs_attention", "todo", "retrying failed planner")) {
+          throw new ClientError("card status changed before the planner could retry");
+        }
+        return { ok: true, step };
+      }
       throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
     }
     if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
@@ -1710,6 +1739,8 @@ export class Orchestrator {
     // repo was at its cap (spec 20): evaluation is owed to them, not another
     // loop pass. The flag lives on the card row (spec 25) so any worker
     // sharing the database — or this one after a restart — can pick it up.
+    // A web-only process retrying a finished loop or a failed evaluator
+    // queues through the same flag, since it cannot start the stage itself.
     const pendingEvaluationCards = db
       .select()
       .from(cards)
@@ -1726,8 +1757,9 @@ export class Orchestrator {
 
     for (const repoId of repoIds) {
       const repoReady = readyCards.filter((c) => c.repoId === repoId);
-      // Cards approveInstallScripts queued for evaluating while this repo
-      // was at its cap — oldest queued first, same tie-break as the others.
+      // Evaluations queued for this repo, by an install gate that cleared at
+      // the cap or by a retry from a web-only process: oldest queued first,
+      // same tie-break as the others.
       const repoPendingEvaluations = pendingEvaluationCards.filter((c) => c.repoId === repoId).map((c) => c.id);
       /** Todo cards already handed to startCard in this pass. A planned card
        * that has a plan goes back to Ready rather than consuming a slot, and
@@ -1745,7 +1777,7 @@ export class Orchestrator {
           if (this.claimPendingEvaluation(pendingEvaluationId, repoId, limit)) {
             emitEvent("card.moved", {
               cardId: pendingEvaluationId,
-              payload: { from: "needs_attention", to: "evaluating", reason: "install scripts approved" },
+              payload: { from: "needs_attention", to: "evaluating", reason: "queued evaluation claimed" },
             });
             this.startStage("evaluating", pendingEvaluationId);
           }
@@ -2640,11 +2672,7 @@ export class Orchestrator {
       if (this.claimStage(cardId, "needs_attention", "evaluating", "install scripts approved")) {
         this.startStage("evaluating", cardId);
       } else if (getCard(cardId)?.status === "needs_attention") {
-        db.update(cards).set({ evaluationPending: 1, updatedAt: now() }).where(eq(cards.id, cardId)).run();
-        emitEvent("card.evaluation_queued", {
-          cardId,
-          payload: { reason: "install scripts approved while the repo was at its cap" },
-        });
+        this.queueEvaluation(cardId, "install scripts approved while the repo was at its cap");
       }
     } else {
       this.moveCard(cardId, "needs_attention", "ready", "install scripts approved");

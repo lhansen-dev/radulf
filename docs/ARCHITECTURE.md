@@ -308,7 +308,12 @@ back up.
 ## Git
 
 `src/server/git.ts` wraps every git call. Each run gets a worktree on its own
-branch (`createWorktree`), so your checkout is untouched until a merge. Every
+branch (`createWorktree`), so your checkout is untouched until a merge. A fresh
+worktree also receives the checkout's `node_modules` when both sides carry the
+same `package-lock.json`: hard links on one filesystem, a copy across mounts,
+and nothing otherwise, leaving the agent to install (`worktreeDeps.ts`). The
+alternative agents reached for, a symlink to the checkout's install, is the one
+layout Turbopack's `next build` refuses. Every
 host-side call pins `core.hooksPath=/dev/null` and `core.fsmonitor=false`:
 these run unsandboxed in a worktree the agent has just written to, and a
 relative `core.hooksPath` (husky's) resolves against that worktree. Your own
