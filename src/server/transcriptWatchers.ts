@@ -58,20 +58,41 @@ export function stopRunWatcher(runId: string): void {
   existing.stop();
 }
 
-/** Bring the watcher for one run in line with the database: running runs get
- * a watcher on their current transcript file, anything else loses theirs. */
+/** Bring the watcher for one run in line with the database: a run that is
+ * running — or that already settled before this process heard about it, see
+ * below — gets a watcher on its current transcript file; anything else loses
+ * theirs.
+ *
+ * A settled run is still watched when reached from the bus, because the events
+ * tailer reads the `events` table in batches and the `runs` row by then holds
+ * today's status, not the status the event was written with. A fast run
+ * therefore reaches a passive web process as one batch of
+ * `run.started` … `run.finished` delivered after the run is over: refusing to
+ * attach there meant such a run had no live transcript AT ALL for a client that
+ * was connected the whole time — what made `make check-split` fail
+ * intermittently (card 2026-09-26). Attaching is safe regardless: the attach
+ * catches up from cursor 0 (src/server/transcript.ts), the `run.finished` that
+ * follows in the same batch stops the watcher again, and the periodic scan
+ * catches a `run.finished` that never arrives. `syncTranscriptWatchers` only
+ * ever calls this for rows that are running, so a run this process has no news
+ * about is never tailed. */
 export function syncRunWatcher(runId: string): void {
   const run = db
     .select({ id: runs.id, kind: runs.kind, status: runs.status })
     .from(runs)
     .where(eq(runs.id, runId))
     .get();
-  if (!run || run.status !== "running") {
+  if (!run) {
     stopRunWatcher(runId);
     return;
   }
   const target = transcriptTargetFor(run);
-  if (!target) return;
+  if (!target) {
+    // A running loop run with no iteration row yet has nothing to tail and no
+    // watcher to lose; a settled one is finished with whatever it had.
+    if (run.status !== "running") stopRunWatcher(runId);
+    return;
+  }
   const existing = watchers.get(runId);
   if (existing && existing.iteration === target.iteration) return;
   stopRunWatcher(runId);

@@ -116,6 +116,34 @@ the run start or a periodic scan finds it and stopped when it finishes — rathe
 than the runs its SSE clients are viewing; there is no client-interest protocol
 and the browser is unchanged.*
 
+*Amended (2026-09-26), after `make check-split` failed intermittently: a
+watcher is armed before the transcript exists, and that is the normal case
+rather than a race to lose. The writer creates the run's transcript directory
+only when its first stage run reaches the harness and the JSONL file only on
+that session's first write, while the web process attaches on `run.started` /
+`iteration.started`. Waiting for the file is therefore event-driven all the way
+down: the watcher watches the deepest directory that exists and moves that watch
+down as each level appears, with a 50 ms stat poll only as the backstop for a
+watch that cannot be armed at all (permissions). While that backstop was a 300 ms
+poll and the only mechanism, a run or iteration shorter than one tick attached
+nothing and delivered no live transcript at all. A batch already being read when
+`stop()` lands is still delivered — the tailer can hand the registry
+`iteration.started` and `run.finished` in one batch, and those lines are already
+on disk.*
+
+*Amended again (2026-09-26), same check, same symptom: a watcher is armed on the
+start event rather than on the status the row happens to hold now. The tailer
+reads the `events` table in batches, so a run that began and ended between two
+polls arrives at a web process that never executed it as one batch of
+`run.started` … `run.finished`, by which time the row reads `completed` — and a
+registry that only ever watched rows in status `running` attached nothing at all,
+leaving a client that was connected throughout with an empty live transcript.
+Attaching from the event is safe: the attach catches up from cursor 0, the
+`run.finished` in the same batch retires the watcher, and the periodic scan reaps
+a watcher whose finish never comes. The scan keeps the narrower rule — only a row
+that is actually running gets a watcher from a scan, so settled runs are never
+tailed by one.*
+
 **6. Review delivery is claimed like a run.** Approve already moves the card to
 reviewing before any git work; the frontend stops there. A worker claims the
 delivery, takes a per-repo lease row in place of the in-process merge lock,

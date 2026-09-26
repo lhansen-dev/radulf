@@ -393,7 +393,18 @@ process — never one per SSE client. A watcher starts when the bus delivers
 `run.started`/`iteration.started` for that run, or when a periodic scan every
 `RADULF_TRANSCRIPT_SCAN_INTERVAL_MS` ms (default 5000) of the `runs` table finds
 it; for a loop run it follows the latest iteration file. It stops on
-`run.finished` or when the row is no longer running. The stage runner
+`run.finished` or when the row is no longer running. A watcher is normally
+armed before the writer has created anything: the harness mkdirs the run's
+transcript directory and creates the JSONL file later, so
+`watchTranscript` in `src/server/transcript.ts` watches the deepest directory
+that exists yet, moves that watch down as each level appears, and catches up
+from cursor 0 the moment the file is there — the first live line arrives on an
+fs event, not on a timer. A start event arms the watcher even when the row has
+already settled: the tailer reads the `events` table in batches, so a short run
+reaches a passive web process as `run.started` … `run.finished` delivered after
+the fact, and attaching anyway is what still gets its lines out — the attach
+catches up from cursor 0 and the `run.finished` in that same batch retires the
+watcher. The stage runner
 (`src/server/stage.ts`) no longer starts a push; scoping turns
 (`src/server/scoping.ts`) still start their own because they stay in the web
 process. The SSE route `src/app/api/events/stream/route.ts` still broadcasts
