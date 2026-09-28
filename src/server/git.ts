@@ -33,6 +33,26 @@ type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
 // on Radulf's merge commits either. The reviewed diff is the gate for those.
 const HOST_GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
 
+/** Remove Git's reusable message path before every trusted host commit. */
+function clearCommitMessagePath(cwd: string): void {
+  const marker = path.join(cwd, ".git");
+  const stat = fs.lstatSync(marker);
+  let gitDir: string;
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    gitDir = fs.realpathSync.native(marker);
+  } else if (stat.isFile() && !stat.isSymbolicLink()) {
+    const pointer = fs.readFileSync(marker, "utf8");
+    const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
+    if (!match) throw new Error(`invalid gitdir pointer: ${marker}`);
+    gitDir = realpathBestEffort(path.resolve(cwd, match[1]));
+  } else {
+    throw new Error(`unsafe git metadata path: ${marker}`);
+  }
+  // Unlinking removes symlinks and hardlink directory entries without
+  // touching their targets. Git then creates a fresh regular file.
+  fs.rmSync(path.join(gitDir, "COMMIT_EDITMSG"), { force: true });
+}
+
 /** Run `git -C cwd ...args` under `execBounded`'s two-signal timeout,
  * rejecting on any failure with the child's output attached to the error. */
 async function execGit(
@@ -40,6 +60,7 @@ async function execGit(
   args: string[],
   options: ExecGitOptions = {}
 ): Promise<{ stdout: string; stderr: string }> {
+  if (args[0] === "commit") clearCommitMessagePath(cwd);
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...HOST_GIT_CONFIG, ...args], {
     timeoutMs,

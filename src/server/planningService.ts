@@ -8,7 +8,12 @@ import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./s
 import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
 import { errorMessage } from "@/shared/errorMessage";
 import { getSettings } from "./settings";
-import { planStatePath, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
+import {
+  ensureRalphDir,
+  planStatePath,
+  readRalphArtifact,
+  removeRalphFiles,
+} from "./bookkeeping";
 import {
   attemptTranscriptPath,
   digestTranscript,
@@ -46,7 +51,7 @@ const RALPH_FILES = ["PLAN.md", "CRITERIA.md", "PROMPT.md"] as const;
 const PLANNER_FILES = ["QUESTIONS.md", ...RALPH_FILES] as const;
 
 function readRalphFile(worktreePath: string, name: string): string {
-  return readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDirPath(worktreePath), name)).trim();
+  return readRalphArtifact(worktreePath, name).trim();
 }
 
 /** Planner retries intentionally reuse a worktree, but never another
@@ -319,7 +324,7 @@ export class PlanningService {
     clearPlannerArtifacts(worktreePath);
     // Spec 14 Phase 3: the planner's ONLY L2 write root is the worktree's
     // `.ralph/` — ensure it exists so the write root resolves.
-    fs.mkdirSync(/* turbopackIgnore: true */ ralphDirPath(worktreePath), { recursive: true });
+    ensureRalphDir(worktreePath);
     const ctx = await createRunSandbox(runId);
     startRunRow(
       { id: runId, cardId, kind: "plan", worktreePath, branch, baseBranch, provider, model, workerId: deps.workerId() },

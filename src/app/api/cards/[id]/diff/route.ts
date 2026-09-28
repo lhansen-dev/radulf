@@ -1,8 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import { requireCard } from "@/server/cards";
 import { getOrchestrator } from "@/server/orchestrator";
-import { doneFilePath } from "@/server/bookkeeping";
+import { doneFilePath, readFileIfExists, readRalphArtifact } from "@/server/bookkeeping";
 import { worktreeDiff, worktreeDiffStat } from "@/server/git";
 import { requireRepo } from "@/server/repos";
 import { json, err, handle } from "../../../_lib";
@@ -28,7 +27,6 @@ export async function GET(_req: Request, { params }: Ctx) {
     const run = getOrchestrator().latestWorktreeRun(id);
     if (!run) return err("no worktree found for this card", 404);
     const donePath = doneFilePath(path.join(run.worktreePath, ".ralph"));
-    const evaluationPath = path.join(run.worktreePath, ".ralph", "EVALUATION.md");
     const baseBranch = run.baseBranch ?? repo.defaultBranch;
     const [diff, stat] = await Promise.all([
       worktreeDiff(run.worktreePath, baseBranch),
@@ -39,8 +37,8 @@ export async function GET(_req: Request, { params }: Ctx) {
       branch: run.branch,
       diff,
       stat,
-      done: donePath ? fs.readFileSync(donePath, "utf8") : null,
-      evaluation: fs.existsSync(evaluationPath) ? fs.readFileSync(evaluationPath, "utf8") : null,
+      done: donePath ? readFileIfExists(donePath) : null,
+      evaluation: readRalphArtifact(run.worktreePath, "EVALUATION.md") || null,
     };
     return json(body);
   });

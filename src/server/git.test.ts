@@ -132,6 +132,29 @@ describe("repository inspection", () => {
     }
   });
 
+  it("host commits replace a planted COMMIT_EDITMSG link without touching its target", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-message-wt-${process.pid}`);
+    const target = path.join(os.tmpdir(), `ralph-message-target-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-message");
+    fs.writeFileSync(target, "preserve me");
+    try {
+      const gitDir = git(wt, "rev-parse", "--absolute-git-dir");
+      const messagePath = path.join(gitDir, "COMMIT_EDITMSG");
+      fs.rmSync(messagePath, { force: true });
+      fs.symlinkSync(target, messagePath);
+      fs.writeFileSync(path.join(wt, "change.txt"), "x");
+      await hostGit(wt, "add", "-A");
+      await hostGit(wt, "commit", "-m", "safe host commit");
+
+      expect(fs.readFileSync(target, "utf8")).toBe("preserve me");
+      expect(fs.lstatSync(messagePath).isSymbolicLink()).toBe(false);
+    } finally {
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-message");
+      fs.rmSync(target, { force: true });
+    }
+  });
+
   it("worktreeIsDirty sees untracked and modified files, and is false for a missing path", async () => {
     expect(await worktreeIsDirty(repo)).toBe(false);
     expect(await worktreeIsDirty(missingPath)).toBe(false);

@@ -1,11 +1,10 @@
-import fs from "node:fs";
 import path from "node:path";
 import { and, desc, eq, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, runs, type ScopingRole } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
-import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
+import { ensureRalphDir, ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
 import { renderDeadlineSection } from "./previousAttempt";
 import { parseEvaluation } from "@/shared/evaluation";
 import { changedPaths } from "@/shared/docPaths";
@@ -202,7 +201,7 @@ export class PlanCriticService {
     const ctx = await createRunSandbox(runId);
     // A verdict left over from an earlier cycle must never be read as this run's.
     removeRalphFiles(worktreePath, [CRITIQUE_FILE]);
-    fs.mkdirSync(/* turbopackIgnore: true */ ralphDir, { recursive: true });
+    ensureRalphDir(worktreePath);
     startRunRow(
       {
         id: runId,

@@ -27,13 +27,16 @@ import {
   buildProgressState,
   captureIterationState,
   doneFilePath,
+  ensureRalphDir,
   performIterationBookkeeping,
   performDoneBookkeeping,
   planStatePath,
   ralphDirPath,
   readFileIfExists,
+  readRalphArtifact,
   readPlanState,
   removeRalphFiles,
+  writeRalphArtifact,
 } from "./bookkeeping";
 import { appendTask, firstUnchecked, parseChecklist } from "./checklist";
 import { SLOW_ITERATION_MS } from "./analytics";
@@ -44,7 +47,7 @@ import { diagnosisMessage, misconfiguredStage } from "./stageDiagnosis";
 import { alertWebhookConfigured, postAlert } from "./alerts";
 import { repairTaskText, runAcceptanceProbe } from "./acceptanceProbe";
 import { abortMerge, mergeInProgress, resolveConflictsTaskText, syncWithBase } from "./baseSync";
-import { GATE_FILE, gateFilePath, gateRepairTaskText, renderGateFile, runGateCommand, type GateResult } from "./gate";
+import { GATE_FILE, gateRepairTaskText, renderGateFile, runGateCommand, type GateResult } from "./gate";
 import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
@@ -1889,7 +1892,7 @@ export class Orchestrator {
     // Ensure the worktree carries the current plan's artifacts.
     const ralphDir = ralphDirPath(worktreePath);
     const ralphFile = (name: string) => path.join(/* turbopackIgnore: true */ ralphDir, name);
-    fs.mkdirSync(/* turbopackIgnore: true */ ralphDir, { recursive: true });
+    ensureRalphDir(worktreePath);
     // The private PLAN.md holds the task checklist the orchestrator ticks off —
     // its checked state is the loop's memory, so never clobber an existing
     // copy on restart. Adopt a legacy in-worktree copy (pre-private-plan
@@ -1911,7 +1914,7 @@ export class Orchestrator {
     // whole worktree and a file it can edit must not become its next
     // instructions.
     removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md", GATE_FILE, ...DONE_FILE_NAMES]);
-    fs.writeFileSync(/* turbopackIgnore: true */ ralphFile("PROMPT.md"), plan.promptMd);
+    writeRalphArtifact(worktreePath, "PROMPT.md", plan.promptMd);
     clearEvaluationArtifact(worktreePath);
     // A reused worktree (retry, restart) may have been left on another branch
     // by an earlier run's agent. Commit nothing to it; the run fails below,
@@ -2115,6 +2118,11 @@ export class Orchestrator {
         // may touch a run that is no longer the live loop.
         if (!active()) return;
 
+        const leftoverProcesses = await ctx.reap();
+        if (leftoverProcesses.length > 0) {
+          return fail(`surviving process group(s) after reap: ${leftoverProcesses.join(", ")}`);
+        }
+
         const failed = Boolean(result.error) || result.code !== 0;
         db.update(iterations)
           .set({
@@ -2197,10 +2205,10 @@ export class Orchestrator {
         // blocker becomes this run's feedback — what the planner re-plans
         // around — and joins the card's scoping thread, where the operator
         // answers it (spec 17, backward direction).
-        const blockedPath = ralphFile("BLOCKED");
-        if (fs.existsSync(/* turbopackIgnore: true */ blockedPath)) {
+        const blockerText = readRalphArtifact(worktreePath, "BLOCKED");
+        if (blockerText) {
           const blocker =
-            fs.readFileSync(/* turbopackIgnore: true */ blockedPath, "utf8").trim() ||
+            blockerText.trim() ||
             "(the loop reported a blocker without saying what it was)";
           removeRalphFiles(worktreePath, ["BLOCKED", "ITERATION_DONE", ...DONE_FILE_NAMES]);
           db.update(runs).set({ feedback: blocker }).where(eq(runs.id, runId)).run();
@@ -2359,7 +2367,7 @@ export class Orchestrator {
               throw e;
             }
             if (!active()) return;
-            fs.writeFileSync(/* turbopackIgnore: true */ gateFilePath(worktreePath), renderGateFile(gate));
+            writeRalphArtifact(worktreePath, GATE_FILE, renderGateFile(gate));
             emitEvent("gate.finished", {
               cardId,
               runId,
