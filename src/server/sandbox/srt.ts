@@ -160,40 +160,9 @@ export async function resolveGitCommonDir(worktree: string): Promise<string> {
  * denied wholesale, then this run's own worktree is individually re-opened
  * — verified live (PLAN_SPEC_14.md Phase 5) that a narrow `allowRead`
  * re-opens a path inside a broader `denyRead`. Write is allow-only: the
- * worktree, run-private TMPDIR/cache, and the parent repo's shared `.git`
- * except the hook/config vectors.
+ * worktree and run-private TMPDIR/cache. The parent repo's shared `.git` is
+ * readable but entirely write-denied because host-side Git owns every update.
  */
-/** The per-worktree files agent git must not write: `config` is the
- * `core.hooksPath` code-execution vector, `HEAD` is the checkout pointer. */
-const WORKTREE_DENY_FILES = ["config", "HEAD"];
-
-/**
- * Concrete `<gitCommonDir>/worktrees/<name>/{config,HEAD}` paths for every
- * linked worktree registered right now.
- *
- * srt glob-expands only its OWN mandatory deny list (via ripgrep `--iglob`).
- * A caller-supplied `denyWrite` entry is taken as a literal path: Seatbelt
- * still matches `*` as a pattern, but bwrap has no pattern support and would
- * mount over a path whose component is literally `*`, protecting nothing. So
- * the pattern form alone left these write vectors open on Linux:
- * `core.hooksPath` in a per-worktree config is arbitrary code execution on
- * the next git command, and a rewritten per-worktree `HEAD` is
- * `git checkout` onto another branch. Enumerating gives both platforms a
- * real deny.
- */
-export function gitWorktreeDenies(gitCommonDir: string): string[] {
-  const worktreesDir = path.join(gitCommonDir, "worktrees");
-  let entries;
-  try {
-    entries = fs.readdirSync(worktreesDir, { withFileTypes: true });
-  } catch {
-    return []; // no linked worktrees registered — nothing to carve out
-  }
-  return entries
-    .filter((e) => e.isDirectory())
-    .flatMap((e) => WORKTREE_DENY_FILES.map((name) => path.join(worktreesDir, e.name, name)));
-}
-
 export function buildFilesystemConfig(opts: {
   worktree: string;
   gitCommonDir: string;
@@ -201,7 +170,7 @@ export function buildFilesystemConfig(opts: {
   cacheRoot: string;
 }): FilesystemConfig {
   // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
-  // run's own shared .git is re-allowed through opts.gitCommonDir below.
+  // run's own shared .git is re-allowed for reads through opts.gitCommonDir.
   const protectedRoots = [HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR];
   const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
@@ -223,7 +192,7 @@ export function buildFilesystemConfig(opts: {
     // doesn't need to name a deny target exactly to reopen it — containing
     // it is enough, per srt's recursive subpath matching.
     allowRead: dropRootsThatWouldReopen(rawAllowRead, protectedRoots),
-    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, opts.gitCommonDir],
+    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot],
     denyWrite: [
       // A linked worktree's `.git` is a FILE naming its gitdir, and it sits
       // inside the worktree write-allow above. Rewriting it to point at a
@@ -231,26 +200,10 @@ export function buildFilesystemConfig(opts: {
       // makes every host-side git call in the worktree trust that gitdir.
       // srt's own `.git` protection skips the file case, so it goes here.
       path.join(opts.worktree, ".git"),
-      path.join(opts.gitCommonDir, "hooks"),
-      path.join(opts.gitCommonDir, "config"),
-      // Every ref and checkout pointer. The orchestrator makes each commit
-      // from the host, so agent git has no legitimate ref write: this stops
-      // `git checkout <base>` inside the worktree, `git commit`,
-      // `git branch -f`, `git reset` and `git update-ref` at the kernel, with
-      // the orchestrator's run-branch guard as the backstop for unsandboxed
-      // runs. `packed-refs` need not exist yet; srt then binds a read-only
-      // stub in its place for the command's duration.
-      path.join(opts.gitCommonDir, "refs"),
-      path.join(opts.gitCommonDir, "packed-refs"),
-      path.join(opts.gitCommonDir, "HEAD"),
-      ...gitWorktreeDenies(opts.gitCommonDir),
-      // Kept on macOS only: Seatbelt honours the pattern, which also covers a
-      // worktree registered after this config was built — something the
-      // snapshot above cannot. On Linux the same entry is inert at best, so
-      // there it would only add a bogus literal-`*` mount.
-      ...(process.platform === "darwin"
-        ? WORKTREE_DENY_FILES.map((name) => path.join(opts.gitCommonDir, "worktrees", "*", name))
-        : []),
+      // Agent Git only needs reads. Denying the whole common directory also
+      // covers indexes, logs, messages, locks, refs, configs, and worktree
+      // administration files that a filename denylist would inevitably miss.
+      opts.gitCommonDir,
     ],
   };
 }

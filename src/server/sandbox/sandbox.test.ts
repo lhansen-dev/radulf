@@ -69,6 +69,7 @@ describe("agentEnv — spec 14 L3 allowlist", () => {
     expect(env.GIT_TERMINAL_PROMPT).toBe("0");
     expect(env.GIT_ASKPASS).toBe("/bin/false");
     expect(env.GIT_SSH_COMMAND).toBe("/bin/false");
+    expect(env.GIT_OPTIONAL_LOCKS).toBe("0");
     // Identity must exist because /dev/null wiped the user's gitconfig.
     expect(env.GIT_AUTHOR_NAME).toBe(AGENT_GIT_IDENTITY.GIT_AUTHOR_NAME);
     expect(env.GIT_COMMITTER_EMAIL).toBe(AGENT_GIT_IDENTITY.GIT_COMMITTER_EMAIL);
