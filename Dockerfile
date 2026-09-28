@@ -2,7 +2,7 @@
 # with the full dev toolchain; `runtime` carries only what `next start` and
 # the orchestrator's subprocesses need. docs/DOCKER.md covers running it.
 
-ARG NODE_IMAGE=node:22-bookworm-slim
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
