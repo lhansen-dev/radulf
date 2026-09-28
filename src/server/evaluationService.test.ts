@@ -229,6 +229,17 @@ describe("renderEvaluatorPrompt", () => {
   });
 });
 
+describe("renderEvaluatorPrompt replacement patterns", () => {
+  it("keeps `$` sequences in the criteria verbatim", () => {
+    // `$'` after a regex anchor, `$&` and `` $` `` are special in a string
+    // replacement; the evaluator must see the criteria exactly as written.
+    const criteria = "grep -Eq '^\\s*hostUsers: false\\s*$' deployment.yaml && echo \"$&$`$$\"";
+    expect(renderEvaluatorPrompt("{{TITLE}}|{{CRITERIA}}", "Evaluate me", "d", "main", criteria)).toBe(
+      `Evaluate me|${criteria}`,
+    );
+  });
+});
+
 describe("EvaluationService.runEvaluator", () => {
   beforeEach(() => {
     db.delete(events).run();

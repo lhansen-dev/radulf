@@ -55,11 +55,14 @@ export function renderEvaluatorPrompt(
   baseBranch: string,
   criteria: string,
 ) {
+  // Replacer functions, not strings: a string replacement expands `$&`, `` $` ``
+  // and `$'` in the value into the surrounding prompt, and plans do contain
+  // those sequences: a bcrypt hash, a regex anchor before a closing quote.
   return template
-    .replaceAll("{{TITLE}}", title)
-    .replaceAll("{{DESCRIPTION}}", description || "(no description)")
-    .replaceAll("{{BASE_BRANCH}}", baseBranch)
-    .replaceAll("{{CRITERIA}}", criteria.trim() || "(no acceptance criteria were recorded)");
+    .replaceAll("{{TITLE}}", () => title)
+    .replaceAll("{{DESCRIPTION}}", () => description || "(no description)")
+    .replaceAll("{{BASE_BRANCH}}", () => baseBranch)
+    .replaceAll("{{CRITERIA}}", () => criteria.trim() || "(no acceptance criteria were recorded)");
 }
 
 export type EvaluationServiceDependencies = StageDependencies & {

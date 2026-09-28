@@ -30,6 +30,19 @@ describe("renderPlanPrompt", () => {
     expect(rendered).not.toContain("SCOPING THREAD");
   });
 
+  it("keeps `$` sequences in the description and feedback verbatim", () => {
+    const rendered = renderPlanPrompt(
+      "{{TITLE}}\n{{DESCRIPTION}}\n{{FEEDBACK_SECTION}}",
+      "Add manifests",
+      "hash it as '$2b$12$...' and match `\\s*$'`",
+      "the loop saw `$&` and `$`` where the plan meant a literal dollar",
+    );
+
+    expect(rendered).toContain("Add manifests\nhash it as '$2b$12$...' and match `\\s*$'`\n");
+    expect(rendered).toContain("the loop saw `$&` and `$`` where the plan meant a literal dollar");
+    expect(rendered.split("Add manifests")).toHaveLength(2);
+  });
+
   it("renders the scoping thread with every speaker named, after the description", () => {
     const rendered = renderPlanPrompt(
       "{{TITLE}}\n{{DESCRIPTION}}\n{{SCOPING_SECTION}}\n{{FEEDBACK_SECTION}}",

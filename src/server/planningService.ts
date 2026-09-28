@@ -121,11 +121,14 @@ export function renderPlanPrompt(
   const withScoping = template.includes("{{SCOPING_SECTION}}")
     ? template
     : template.replace("{{DESCRIPTION}}", "{{DESCRIPTION}}\n{{SCOPING_SECTION}}");
+  // Replacer functions, not strings: a string replacement expands `$&`, `` $` ``
+  // and `$'` in the value into the surrounding prompt, and plans do contain
+  // those sequences: a bcrypt hash, a regex anchor before a closing quote.
   return withScoping
-    .replaceAll("{{TITLE}}", title)
-    .replaceAll("{{DESCRIPTION}}", description || "(no description)")
-    .replaceAll("{{SCOPING_SECTION}}", scopingSection)
-    .replaceAll("{{FEEDBACK_SECTION}}", feedbackSection);
+    .replaceAll("{{TITLE}}", () => title)
+    .replaceAll("{{DESCRIPTION}}", () => description || "(no description)")
+    .replaceAll("{{SCOPING_SECTION}}", () => scopingSection)
+    .replaceAll("{{FEEDBACK_SECTION}}", () => feedbackSection);
 }
 
 /**

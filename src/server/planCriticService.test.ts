@@ -104,6 +104,28 @@ describe("renderCriticPrompt", () => {
     expect(CRITIQUE_FILE).toBe("CRITIQUE.md");
   });
 
+  it("keeps `$` sequences in the plan verbatim rather than expanding replacement patterns", () => {
+    // In a string replacement `$&`, `` $` `` and `$'` splice in the match or the
+    // text around it. A plan that quotes a bcrypt hash or ends a regex with
+    // `$'` used to come back with a copy of the critic prompt spliced into it.
+    const planMd = "single quotes keep the literal `$` of '$2b$12$hash'; grep -Eq '^\\s*a: b\\s*$' f; $& $$";
+    const rendered = renderCriticPrompt(template, {
+      title: "Add manifests",
+      description: "d",
+      scoping: [],
+      specFiles: [],
+      planVersion: 6,
+      planMd,
+      criteriaMd: "C-$'-C",
+      promptMd: "R-$`-R",
+    });
+
+    expect(rendered).toContain(`P=${planMd}\n`);
+    expect(rendered).toContain("C=C-$'-C\n");
+    expect(rendered).toContain("R=R-$`-R\n");
+    expect(rendered.split("T=Add manifests")).toHaveLength(2);
+  });
+
   it("uses fallbacks for an empty description, thread and spec list", () => {
     const rendered = renderCriticPrompt(template, {
       title: "Add critic",

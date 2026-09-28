@@ -96,15 +96,18 @@ export function renderCriticPrompt(
   const specFiles = input.specFiles.length
     ? input.specFiles.join("\n")
     : "(the card names no spec files)";
+  // Replacer functions, not strings: a string replacement expands `$&`, `` $` ``
+  // and `$'` in the value into the surrounding prompt, and plans do contain
+  // those sequences: a bcrypt hash, a regex anchor before a closing quote.
   const rendered = template
-    .replaceAll("{{TITLE}}", input.title)
-    .replaceAll("{{DESCRIPTION}}", input.description || "(no description)")
-    .replaceAll("{{SCOPING_SECTION}}", scopingSection)
-    .replaceAll("{{SPEC_FILES}}", specFiles)
-    .replaceAll("{{PLAN_VERSION}}", String(input.planVersion))
-    .replaceAll("{{PLAN_MD}}", input.planMd)
-    .replaceAll("{{CRITERIA_MD}}", input.criteriaMd)
-    .replaceAll("{{PROMPT_MD}}", input.promptMd);
+    .replaceAll("{{TITLE}}", () => input.title)
+    .replaceAll("{{DESCRIPTION}}", () => input.description || "(no description)")
+    .replaceAll("{{SCOPING_SECTION}}", () => scopingSection)
+    .replaceAll("{{SPEC_FILES}}", () => specFiles)
+    .replaceAll("{{PLAN_VERSION}}", () => String(input.planVersion))
+    .replaceAll("{{PLAN_MD}}", () => input.planMd)
+    .replaceAll("{{CRITERIA_MD}}", () => input.criteriaMd)
+    .replaceAll("{{PROMPT_MD}}", () => input.promptMd);
   // A customized template that forgot the verdict file would leave the stage
   // with nothing to parse, so the instruction is guaranteed rather than trusted.
   return rendered.includes(CRITIQUE_PATH)

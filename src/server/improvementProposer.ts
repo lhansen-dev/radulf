@@ -23,7 +23,10 @@ export function renderImprovePrompt(
   const focus = focusPrompt?.trim()
     ? focusPrompt.trim()
     : "(none — use your own judgment about what is most valuable to improve next.)";
-  return template.replaceAll("{{EXISTING_CARDS}}", cards).replaceAll("{{FOCUS}}", focus);
+  // Replacer functions, not strings: a string replacement expands `$&`, `` $` ``
+  // and `$'` in the value into the surrounding prompt, and plans do contain
+  // those sequences: a bcrypt hash, a regex anchor before a closing quote.
+  return template.replaceAll("{{EXISTING_CARDS}}", () => cards).replaceAll("{{FOCUS}}", () => focus);
 }
 
 export type ProposeOneImprovementInput = {
