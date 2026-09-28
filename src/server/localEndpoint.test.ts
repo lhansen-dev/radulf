@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { listLocalModels, parseHeaderLines, v1Root } from "./localEndpoint";
+import { contextWindowFor, listLocalModels, parseContextWindowLines, parseHeaderLines, v1Root } from "./localEndpoint";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status });
@@ -44,6 +44,36 @@ describe("parseHeaderLines", () => {
       expect(() => parseHeaderLines(`ok: yes\n${line}`)).toThrow('line 2 must look like "Name: value"');
     },
   );
+});
+
+describe("parseContextWindowLines", () => {
+  it("reads one model-id: tokens per line, trimming and skipping blank lines", () => {
+    expect(parseContextWindowLines("Qwen/Qwen3-8B: 131072\n\n  gemma-3 :  32768  \n")).toEqual({
+      "Qwen/Qwen3-8B": 131_072,
+      "gemma-3": 32_768,
+    });
+    expect(parseContextWindowLines("")).toEqual({});
+  });
+
+  it("splits at the last colon, since a model id can carry one", () => {
+    expect(parseContextWindowLines("qwen3:8b: 65536")).toEqual({ "qwen3:8b": 65_536 });
+  });
+
+  it.each(["no-colon", "model: 128k", "model: -1", "model: 0", ": 4096", "model:"])(
+    "rejects %j and names the line",
+    (line) => {
+      expect(() => parseContextWindowLines(`ok: 4096\n${line}`)).toThrow('line 2 must look like "model-id: tokens"');
+    },
+  );
+});
+
+describe("contextWindowFor", () => {
+  it("prefers the operator's entry, then the served number, then nothing", () => {
+    const s = { omlxContextWindows: "big: 131072" };
+    expect(contextWindowFor("big", s, 32_768)).toBe(131_072);
+    expect(contextWindowFor("other", s, 32_768)).toBe(32_768);
+    expect(contextWindowFor("other", s)).toBeUndefined();
+  });
 });
 
 describe("listLocalModels", () => {

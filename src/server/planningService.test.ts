@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PrecheckReport } from "./acceptanceProbe";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 describe("planningDestination", () => {
@@ -97,6 +98,7 @@ const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   createWorktree: vi.fn(),
   tryGit: vi.fn(),
+  precheckAcceptance: vi.fn(),
   // The fixture worktree is not a real checkout; the guard would otherwise
   // report it as no longer sharing the repository's git dir.
   offRunBranchReason: vi.fn().mockResolvedValue(null),
@@ -111,6 +113,14 @@ vi.mock("./git", async (importOriginal) => ({
   createWorktree: mocks.createWorktree,
   tryGit: mocks.tryGit,
   offRunBranchReason: mocks.offRunBranchReason,
+}));
+// Only the pre-check is replaced, and by default it is a spy over the real
+// function (see the beforeEach below): the cancellation tests need to hold it
+// open across an await, and every other test here must still watch the check
+// commands actually run.
+vi.mock("./acceptanceProbe", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./acceptanceProbe")>()),
+  precheckAcceptance: mocks.precheckAcceptance,
 }));
 vi.mock("./settings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./settings")>()),
@@ -133,9 +143,22 @@ const { db, cards, plans, runs, repos, scopingMessages, worktrees, events, now }
 // Imported after setupTestDataDir, like everything else that reaches @/db: a
 // static import of this module fixes DATA_DIR at load and puts the file on
 // the checkout's own database, where it raced other test files.
-const { PlanningService, pendingReplanFeedback, planningDestination, clearPlannerArtifacts, renderPlanPrompt } =
-  await import("./planningService");
+const {
+  PlanningService,
+  pendingReplanFeedback,
+  planningDestination,
+  clearPlannerArtifacts,
+  renderPlanPrompt,
+  writePlanRow,
+} = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
+
+// Default the pre-check spy back to the real implementation for every test in
+// this file; the cancellation tests replace it with a promise they control.
+beforeEach(async () => {
+  const real = await vi.importActual<typeof import("./acceptanceProbe")>("./acceptanceProbe");
+  mocks.precheckAcceptance.mockImplementation((opts) => real.precheckAcceptance(opts));
+});
 
 function seedRepo() {
   db.insert(repos)
@@ -190,6 +213,7 @@ function makeDeps() {
     releaseController: vi.fn(),
     pump: vi.fn(),
     critique: vi.fn(),
+    replan: vi.fn(),
   };
 }
 
@@ -294,6 +318,36 @@ describe("PlanningService.runPlanning", () => {
     const feedback = pendingReplanFeedback("card-critiqued")!;
     expect(feedback.startsWith("The plan critic reviewed")).toBe(true);
     expect(feedback).toContain("Task 2 names a spec file that does not exist.");
+  });
+
+  it("re-plans from a pre-check revise, saying the checks ran against the untouched worktree (spec 31)", () => {
+    seedCard("card-prechecked");
+    db.insert(plans)
+      .values({ id: "plan-prechecked", cardId: "card-prechecked", version: 1, planMd: "## Tasks\n- [ ] a\n", promptMd: "p", acceptanceCriteria: "c", createdAt: now() })
+      .run();
+    db.insert(runs)
+      .values({
+        id: "run-precheck",
+        cardId: "card-prechecked",
+        planId: "plan-prechecked",
+        kind: "plan",
+        status: "completed",
+        worktreePath: "/tmp/wt",
+        branch: "ralph/x",
+        exitReason: "precheck revise",
+        feedback: "Rewrite `test -f README.md`",
+        startedAt: "2026-09-21T16:14:00.000Z",
+        endedAt: "2026-09-21T16:15:00.000Z",
+      })
+      .run();
+
+    const feedback = pendingReplanFeedback("card-prechecked")!;
+    expect(feedback.startsWith("The acceptance pre-check")).toBe(true);
+    expect(feedback).toContain("Rewrite `test -f README.md`");
+
+    // The pre-check ran against the worktree as it stands, so it is never a
+    // verdict on the plan's correctness — the wording says what it did.
+    expect(feedback).toContain("against the untouched worktree before any work was done");
   });
 
   it("finishes the run and parks the card when the planner harness throws", async () => {
@@ -425,6 +479,454 @@ describe("PlanningService.runPlanning", () => {
   });
 });
 
+/**
+ * Spec 31: the acceptance pre-check.
+ *
+ * The commands come out of CRITERIA.md and run in the worktree the planning run
+ * is sitting in, so the fixtures have to be written there — and the only handle
+ * a test has on that path is the `cwd` the mocked harness is called with (the
+ * real one is minted by `mocks.createWorktree`). Hence a harness mock that
+ * writes both the artifacts and the files the criteria's checks look for.
+ */
+function mockPlannerWrites(artifacts: Record<string, string>, files: Record<string, string> = {}) {
+  mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+    for (const [name, content] of Object.entries(files)) {
+      const target = path.join(cwd, name);
+      fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(target), { recursive: true });
+      fs.writeFileSync(/* turbopackIgnore: true */ target, content);
+    }
+    for (const [name, content] of Object.entries(artifacts)) {
+      fs.writeFileSync(/* turbopackIgnore: true */ path.join(cwd, ".ralph", name), content);
+    }
+    return { timedOut: false, error: "", code: 0, lastText: "done" };
+  });
+}
+
+/** CRITERIA.md is the only artifact any pre-check test varies. */
+const criteriaArtifacts = (criteria: string) => ({ ...completeArtifacts, "CRITERIA.md": criteria });
+
+function payloadOf(type: string) {
+  const rows = db.select().from(events).where(eq(events.type, type)).all();
+  return rows.length ? JSON.parse(rows[0].payload) : undefined;
+}
+
+const countOf = (type: string) =>
+  db.select().from(events).where(eq(events.type, type)).all().length;
+
+const planRowOf = (cardId: string) => db.select().from(plans).where(eq(plans.cardId, cardId)).get();
+const planRunOf = (cardId: string) =>
+  db.select().from(runs).where(eq(runs.cardId, cardId)).all().find((r) => r.kind === "plan")!;
+
+describe("PlanningService.runPlanning — the acceptance pre-check (spec 31)", () => {
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(worktrees).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.createWorktree.mockImplementation((_repoPath: string, _base: string, _title: string, runId: string) => {
+      const worktreePath = path.join(testDataDir, "worktrees", String(runId));
+      fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+      return { worktreePath, branch: `ralph/${runId}` };
+    });
+    seedRepo();
+  });
+
+  it("sends a plan whose checks already pass on the untouched worktree back for one rewrite", async () => {
+    seedCard("card-pre-pass");
+    // README.md is already there: the check cannot show this card's work.
+    mockPlannerWrites(criteriaArtifacts("- [ ] `test -f README.md` succeeds"), {
+      "README.md": "# already here\n",
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-pre-pass");
+
+    expect(payloadOf("acceptance.precheck")).toMatchObject({
+      version: 1,
+      checked: 1,
+      alreadyPassingCount: 1,
+      skippedCount: 0,
+      alreadyPassing: ["test -f README.md"],
+      failing: [],
+      unprobed: [],
+      skipped: [],
+      revise: true,
+    });
+    expect(payloadOf("plan.precheck_revise_requested")).toMatchObject({
+      version: 1,
+      alreadyPassing: ["test -f README.md"],
+    });
+    // The pre-check's own verdict is what the next planning run re-plans from,
+    // so it has to be on the row: finishRun is a mock and writes nothing, the
+    // exit reason above travels with it and the feedback below is the real
+    // update this service makes itself.
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "precheck revise",
+      expect.any(Object),
+    );
+    expect(planRunOf("card-pre-pass").feedback).toContain("`test -f README.md`");
+    expect(deps.replan).toHaveBeenCalledWith("card-pre-pass");
+    // The card never reaches the critic or the loop on a pre-check revise.
+    expect(deps.critique).not.toHaveBeenCalled();
+    expect(deps.moveCard).not.toHaveBeenCalled();
+    // Recorded on the plan row, so the post-DONE probe can report these without
+    // spending its one repair iteration on them.
+    expect(JSON.parse(planRowOf("card-pre-pass")!.precheckPassing!)).toEqual(["test -f README.md"]);
+  });
+
+  it("routes a plan whose checks fail — the healthy case for new behaviour — on to ready", async () => {
+    seedCard("card-pre-fail");
+    mockPlannerWrites(criteriaArtifacts("- [ ] `test -f new-file.md` succeeds"));
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-pre-fail");
+
+    // A failing check here is what a check for new behaviour is supposed to do;
+    // it is never a finding.
+    expect(payloadOf("acceptance.precheck")).toMatchObject({
+      checked: 1,
+      alreadyPassing: [],
+      failing: ["test -f new-file.md"],
+      revise: false,
+    });
+    expect(countOf("plan.precheck_revise_requested")).toBe(0);
+    expect(deps.replan).not.toHaveBeenCalled();
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "plan artifacts written",
+      expect.any(Object),
+    );
+    expect(deps.moveCard).toHaveBeenCalledWith("card-pre-fail", "planning", "ready");
+  });
+
+  it("says nothing at all for a criteria document with no runnable command", async () => {
+    seedCard("card-pre-prose");
+    mockPlannerWrites(criteriaArtifacts("The thing is implemented."));
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-pre-prose");
+
+    expect(countOf("acceptance.precheck")).toBe(0);
+    expect(countOf("plan.precheck_revise_requested")).toBe(0);
+    expect(deps.replan).not.toHaveBeenCalled();
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "plan artifacts written",
+      expect.any(Object),
+    );
+    expect(deps.moveCard).toHaveBeenCalledWith("card-pre-prose", "planning", "ready");
+    // Distinguishable from "checked, and nothing passed": never pre-checked.
+    expect(planRowOf("card-pre-prose")!.precheckPassing).toBeNull();
+  });
+
+  it("collects `## Regression` checks as skipped and never runs them", async () => {
+    seedCard("card-pre-regression");
+    // Passing now is the whole point of a regression check, so it is exempt.
+    mockPlannerWrites(
+      criteriaArtifacts("## Regression\n- [ ] `test -f README.md` succeeds"),
+      { "README.md": "# already here\n" },
+    );
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-pre-regression");
+
+    expect(payloadOf("acceptance.precheck")).toMatchObject({
+      checked: 0,
+      alreadyPassing: [],
+      failing: [],
+      skipped: ["test -f README.md"],
+      skippedCount: 1,
+      revise: false,
+    });
+    expect(deps.replan).not.toHaveBeenCalled();
+    expect(deps.moveCard).toHaveBeenCalledWith("card-pre-regression", "planning", "ready");
+  });
+
+  it("reports an already-passing check but never re-plans twice on the same plan", async () => {
+    seedCard("card-pre-cap");
+    // The card has already been through one pre-check revise: the finding is
+    // recorded, and the plan ships as written rather than looping.
+    const priorId = "plan-run-pre-cap";
+    const priorPath = path.join(testDataDir, "worktrees", priorId);
+    fs.mkdirSync(path.join(priorPath, ".ralph"), { recursive: true });
+    db.insert(runs)
+      .values({
+        id: priorId,
+        cardId: "card-pre-cap",
+        kind: "plan",
+        status: "completed",
+        exitReason: "precheck revise",
+        worktreePath: priorPath,
+        branch: `ralph/${priorId}`,
+        baseBranch: "main",
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+        endedAt: new Date(Date.now() - 590_000).toISOString(),
+      })
+      .run();
+    mockPlannerWrites(criteriaArtifacts("`test -f README.md` succeeds"), {
+      "README.md": "# already here\n",
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-pre-cap");
+
+    expect(payloadOf("acceptance.precheck")).toMatchObject({
+      alreadyPassing: ["test -f README.md"],
+      revise: false,
+    });
+    expect(countOf("plan.precheck_revise_requested")).toBe(0);
+    expect(deps.replan).not.toHaveBeenCalled();
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "plan artifacts written",
+      expect.any(Object),
+    );
+    expect(deps.moveCard).toHaveBeenCalledWith("card-pre-cap", "planning", "ready");
+  });
+});
+
+/**
+ * Spec 31's cancellation windows.
+ *
+ * Both are awaits that take wall-clock time in the middle of a run which is
+ * being cancelled: the pre-check running shell commands, and the plan commit.
+ * `cancelCard` has finalized the row and moved the card by the time either
+ * resolves, and a peer (the reaper, another worker) can have done the same
+ * without touching this process's AbortController at all — hence `active()`
+ * reading the row as well as the signal. What these tests pin is what the dead
+ * run must NOT do afterwards: write a plan, report a pre-check finding, finish
+ * the row a second time, or move the card out of wherever it was left.
+ *
+ * Every one of them is deterministic: the awaited call is a promise the test
+ * holds, so the cancellation lands exactly inside the window and nothing here
+ * races a timer.
+ */
+
+/** A promise the test resolves (or rejects) by hand, plus the signal that the
+ * awaited call was actually reached. */
+function gate<T>() {
+  let settle!: (value: T) => void;
+  let breakIt!: (error: Error) => void;
+  let mark!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    mark = resolve;
+  });
+  const promise = new Promise<T>((resolve, reject) => {
+    settle = resolve;
+    breakIt = reject;
+  });
+  return {
+    entered,
+    promise,
+    /** Called from inside the mocked call: the test may now land its cancel. */
+    enter: () => mark(),
+    resolve: (v: T) => settle(v),
+    reject: (e: Error) => breakIt(e),
+  };
+}
+
+/** The pre-check's report a cancellation leaves behind: it stopped partway, so
+ * nothing may read it as a clean one. */
+const cancelledPrecheckReport: PrecheckReport = {
+  checked: 1,
+  alreadyPassing: ["test -f README.md"],
+  failing: [],
+  unprobed: [],
+  skipped: [],
+  cancelled: true,
+};
+
+/** Hold `precheckAcceptance` open until the test lets it go. */
+function holdPrecheckOpen(report: PrecheckReport) {
+  const held = gate<PrecheckReport>();
+  mocks.precheckAcceptance.mockImplementation(() => {
+    held.enter();
+    return held.promise;
+  });
+  return { entered: held.entered, release: () => held.resolve(report) };
+}
+
+/** Hold the plan commit open until the test lets it go, resolving or rejecting
+ * however the test asks. */
+function holdCommitOpen() {
+  const held = gate<{ ok: boolean; out: string }>();
+  mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => {
+    if (args[0] === "commit") {
+      held.enter();
+      return held.promise;
+    }
+    return { ok: true, out: "" };
+  });
+  return {
+    entered: held.entered,
+    release: () => held.resolve({ ok: true, out: "" }),
+    breakWith: (e: Error) => held.reject(e),
+  };
+}
+
+/** The controller this run registered — the only handle a test has on the
+ * cancellation that `cancelCard` would fire. */
+function capturedController(deps: ReturnType<typeof makeDeps>): AbortController {
+  const call = deps.registerController.mock.calls.at(-1);
+  if (!call) throw new Error("runPlanning never registered a controller");
+  return call[1] as AbortController;
+}
+
+/** Peer finalization: what `cancelCard` / the reaper leave in the row. */
+function finalizeRunRowAs(cardId: string, status: "cancelled") {
+  const row = planRunOf(cardId);
+  db.update(runs).set({ status }).where(eq(runs.id, row.id)).run();
+  return row.id;
+}
+
+const nothingWasRouted = (deps: ReturnType<typeof makeDeps>) => {
+  expect(deps.replan).not.toHaveBeenCalled();
+  expect(deps.critique).not.toHaveBeenCalled();
+  expect(deps.moveCard).not.toHaveBeenCalled();
+  expect(countOf("plan.precheck_revise_requested")).toBe(0);
+};
+
+describe("PlanningService.runPlanning — cancellation inside the pre-check and the plan commit (spec 31)", () => {
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(worktrees).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.createWorktree.mockImplementation((_repoPath: string, _base: string, _title: string, runId: string) => {
+      const worktreePath = path.join(testDataDir, "worktrees", String(runId));
+      fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+      return { worktreePath, branch: `ralph/${runId}` };
+    });
+    seedRepo();
+  });
+
+  it("writes nothing at all when the run is cancelled inside the pre-check", async () => {
+    seedCard("card-cancel-precheck");
+    // Already-passing criteria: this is the finding a live run would act on.
+    mockPlannerWrites(criteriaArtifacts("- [ ] `test -f README.md` succeeds"), {
+      "README.md": "# already here\n",
+    });
+    const deps = makeDeps();
+    const precheck = holdPrecheckOpen(cancelledPrecheckReport);
+
+    const run = new PlanningService(deps).runPlanning("card-cancel-precheck");
+    await precheck.entered;
+    capturedController(deps).abort();
+    precheck.release();
+    await run;
+
+    // Not a plan row, not a git call, not an event: the cancelled run never got
+    // as far as deciding anything.
+    expect(db.select().from(plans).where(eq(plans.cardId, "card-cancel-precheck")).all()).toHaveLength(0);
+    expect(mocks.tryGit).not.toHaveBeenCalled();
+    expect(mocks.tryGit.mock.calls.filter((c) => c[1] === "commit")).toHaveLength(0);
+    expect(countOf("acceptance.precheck")).toBe(0);
+    nothingWasRouted(deps);
+    // The row and the card belong to cancelCard: this run touched neither.
+    expect(deps.finishRun).not.toHaveBeenCalled();
+    // The finally still runs, so the pipeline slot is freed either way.
+    expect(deps.releaseController).toHaveBeenCalled();
+    expect(deps.pump).toHaveBeenCalled();
+  });
+
+  it("writes nothing at all when a peer finalizes the run while the pre-check is in flight", async () => {
+    seedCard("card-peer-precheck");
+    mockPlannerWrites(criteriaArtifacts("- [ ] `test -f README.md` succeeds"), {
+      "README.md": "# already here\n",
+    });
+    const deps = makeDeps();
+    // A peer closed the row, so this run's own finish would be refused anyway.
+    deps.finishRun.mockReturnValue(false);
+    const precheck = holdPrecheckOpen(cancelledPrecheckReport);
+
+    const run = new PlanningService(deps).runPlanning("card-peer-precheck");
+    await precheck.entered;
+    // No abort in this process: the row says it, which is the other half of
+    // `active()` and the only thing a reaper-driven cancellation leaves behind.
+    const runId = finalizeRunRowAs("card-peer-precheck", "cancelled");
+    precheck.release();
+    await run;
+
+    expect(db.select().from(plans).where(eq(plans.cardId, "card-peer-precheck")).all()).toHaveLength(0);
+    expect(mocks.tryGit).not.toHaveBeenCalled();
+    expect(mocks.tryGit.mock.calls.filter((c) => c[1] === "commit")).toHaveLength(0);
+    expect(countOf("acceptance.precheck")).toBe(0);
+    nothingWasRouted(deps);
+    expect(deps.finishRun).not.toHaveBeenCalled();
+    expect(db.select().from(runs).where(eq(runs.id, runId)).get()!.status).toBe("cancelled");
+  });
+
+  it("stops before the revise routing when the run is cancelled during the plan commit", async () => {
+    seedCard("card-cancel-commit");
+    mockPlannerWrites(criteriaArtifacts("- [ ] `test -f README.md` succeeds"), {
+      "README.md": "# already here\n",
+    });
+    const deps = makeDeps();
+    const commit = holdCommitOpen();
+
+    const run = new PlanningService(deps).runPlanning("card-cancel-commit");
+    await commit.entered;
+    capturedController(deps).abort();
+    commit.release();
+    await run;
+
+    // Everything written before the commit is the dead run's to keep: the plan
+    // row exists and the pre-check's finding is on the log.
+    expect(planRowOf("card-cancel-commit")).toBeDefined();
+    expect(payloadOf("acceptance.precheck")).toMatchObject({
+      alreadyPassing: ["test -f README.md"],
+      revise: true,
+    });
+    // What it does not get to do: put the revise feedback on the row it no
+    // longer owns, and route the card off the finding.
+    expect(planRunOf("card-cancel-commit").feedback).toBeNull();
+    nothingWasRouted(deps);
+  });
+
+  it("leaves a peer-finalized run's card where the peer left it when the commit throws", async () => {
+    seedCard("card-peer-commit");
+    mockPlannerWrites(criteriaArtifacts("- [ ] `test -f README.md` succeeds"), {
+      "README.md": "# already here\n",
+    });
+    const deps = makeDeps();
+    deps.finishRun.mockReturnValue(false);
+    const commit = holdCommitOpen();
+
+    const run = new PlanningService(deps).runPlanning("card-peer-commit");
+    await commit.entered;
+    // The card is still `planning`, which is exactly why the catch block may not
+    // read that on its own: the row was closed by somebody else, and it stayed
+    // where that left it.
+    finalizeRunRowAs("card-peer-commit", "cancelled");
+    commit.breakWith(new Error("git died"));
+    await run;
+
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "failed",
+      "planner failed: git died",
+      expect.any(Object),
+    );
+    expect(deps.moveCard).not.toHaveBeenCalledWith("card-peer-commit", "planning", "needs_attention");
+    expect(deps.moveCard).not.toHaveBeenCalled();
+    expect(countOf("plan.precheck_revise_requested")).toBe(0);
+    expect(deps.replan).not.toHaveBeenCalled();
+  });
+});
+
 // Spec 26: a retry inherits the attempt it retries.
 const { runTranscriptDir } = await import("./retention");
 
@@ -536,5 +1038,42 @@ describe("PlanningService.runPlanning — retries inherit the failed attempt (sp
 
     expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "timeout", "planning timed out", expect.any(Object));
     expect(deps.moveCard).toHaveBeenCalledWith("card-dead", "planning", "needs_attention", "planning timed out");
+  });
+});
+
+describe("writePlanRow — precheck_passing (spec 31)", () => {
+  const artifacts = {
+    planMd: "## Tasks\n- [ ] implement the thing\n",
+    promptMd: "Implement the thing.",
+    acceptanceCriteria: "The thing is implemented.",
+  };
+
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    seedRepo();
+  });
+
+  it("remembers the checks that already passed on the untouched worktree", () => {
+    seedCard("card-precheck-passing");
+
+    const { planId } = writePlanRow("card-precheck-passing", artifacts, {
+      origin: "planner",
+      precheckPassing: ["test -f a"],
+    });
+
+    const row = db.select().from(plans).where(eq(plans.id, planId)).get();
+    expect(row?.precheckPassing).toBe(JSON.stringify(["test -f a"]));
+  });
+
+  it("leaves the column null for a plan written without a pre-check", () => {
+    seedCard("card-precheck-absent");
+
+    const { planId } = writePlanRow("card-precheck-absent", artifacts, { origin: "planner" });
+
+    const row = db.select().from(plans).where(eq(plans.id, planId)).get();
+    expect(row?.precheckPassing).toBeNull();
   });
 });

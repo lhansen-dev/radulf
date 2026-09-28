@@ -62,6 +62,18 @@ directory (create it if needed). Do not modify any other file.
    "`grep -q 'GET /health' src/app.ts` succeeds"). Test commands must name
    only the test files relevant to this card — never a bare `npm test` or
    anything that runs the full suite.
+   Every check for NEW behaviour must exit non-zero on the repository exactly as
+   it stands now, and exit the way its criterion wants once the work is done —
+   and the exact reverse for a check you write as failing ("`grep -rq old_name
+   src` fails (no references remain)" must exit 0 now and non-zero afterwards).
+   Before the loop starts, the orchestrator runs these very commands against the
+   untouched worktree: a new-behaviour check that already exits the way its
+   criterion wants cannot show the work was done — it would report the same
+   thing if the loop changed nothing — and such a plan is sent back to you once.
+   A check meant to pass BOTH before and after — one guarding behaviour an
+   earlier card already established — belongs under a `## Regression` heading at
+   the END of CRITERIA.md; the pre-check skips that section, and it is still
+   probed after DONE.
 
 3. `.ralph/PROMPT.md` — the loop prompt, following this skeleton exactly:
 

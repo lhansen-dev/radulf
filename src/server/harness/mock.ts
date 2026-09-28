@@ -79,7 +79,17 @@ const bash = (command: string) => call("bash", { command });
 const PLAN_PROMPT_MD =
   "Do exactly the assigned task: write the file it names with the task text as its content, then write the signal file.\n";
 
-const planner: Script = ({ prompt, step }) => {
+/**
+ * The planner, with only its CRITERIA.md swapped.
+ *
+ * The acceptance pre-check scenarios (spec 31) need plans whose check commands
+ * are known to pass, or to fail, on the untouched worktree. Everything else the
+ * planner writes — the PLAN.md task lists, PROMPT.md, the closing reply — stays
+ * exactly the happy path's, so such a scenario tests the pre-check and nothing
+ * else. `criteria` sees the rendered prompt, which is how a scenario tells a
+ * first plan from a re-plan.
+ */
+const plannerWithCriteria = (criteria: (prompt: string) => string): Script => ({ prompt, step }) => {
   if (step > 0) return [say("Plan written to .ralph/.")];
   // A re-plan (evaluator revise or human reject) carries the feedback section.
   const tasks = prompt.includes("PREVIOUS ATTEMPT")
@@ -88,10 +98,12 @@ const planner: Script = ({ prompt, step }) => {
   return [
     think("Scripted plan: one file per task, no real analysis."),
     write(".ralph/PLAN.md", `# Plan\n\n## Tasks\n${tasks.map((t) => `- [ ] ${t}`).join("\n")}\n`),
-    write(".ralph/CRITERIA.md", "- Every task's file exists under mock-output/.\n"),
+    write(".ralph/CRITERIA.md", criteria(prompt)),
     write(".ralph/PROMPT.md", PLAN_PROMPT_MD),
   ];
 };
+
+const planner: Script = plannerWithCriteria(() => "- Every task's file exists under mock-output/.\n");
 
 /** The task the orchestrator injected (bookkeeping.ts taskInjectionBlock). */
 function assignedTask(prompt: string) {
@@ -201,6 +213,31 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
           write(".ralph/CRITIQUE.md", "VERDICT: revise\n\nMock critique: the plan must add mock-output/feedback.md.\n"),
         ];
       },
+    },
+  },
+  "precheck-revise-once": {
+    description:
+      "The first plan's check already passes on the untouched worktree; the pre-check sends it back once and the re-plan's check fails first, passes after.",
+    scripts: {
+      // `README.md` is in the fixture repo, so that check cannot show any work.
+      // The re-plan's check names the one file the default re-plan task writes:
+      // missing when the pre-check runs, present by the time DONE does.
+      planner: plannerWithCriteria((prompt) =>
+        prompt.includes("PREVIOUS ATTEMPT")
+          ? "- [ ] `test -f mock-output/task-1.md` succeeds\n"
+          : "- [ ] `test -f README.md` succeeds\n",
+      ),
+    },
+  },
+  "precheck-still-inverted": {
+    description:
+      "Every plan's check already passes on the untouched worktree; after one revise the card proceeds and the post-DONE failure of that check buys no repair iteration.",
+    scripts: {
+      // Missing before the loop, so the inverted criterion already holds; the
+      // loop then creates the file, so the post-DONE probe reports it. The
+      // re-plan writes the same CRITERIA.md — that is the point: the pre-check
+      // has already spent its one revision on it.
+      planner: plannerWithCriteria(() => "- [ ] `test -f mock-output/task-1.md` fails\n"),
     },
   },
   "planner-questions": {

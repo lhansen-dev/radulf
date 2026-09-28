@@ -177,7 +177,7 @@ describe("pending evaluations", () => {
     expect(movedEvents("e1")).toContainEqual({
       from: "needs_attention",
       to: "evaluating",
-      reason: "install scripts approved",
+      reason: "queued evaluation claimed",
     });
     orchestrator.startDraining();
   });

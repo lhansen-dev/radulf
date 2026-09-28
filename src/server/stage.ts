@@ -7,6 +7,7 @@ import type { ProviderId } from "./providers";
 import { providerBreakerStatus, recordProviderOutcome } from "./circuitBreaker";
 import { recordProviderFailure } from "./providerRateLimit";
 import { createWorktree, currentBranch, recordWorktree } from "./git";
+import { provisionNodeModules } from "./worktreeDeps";
 import { runTranscriptDir } from "./retention";
 import type { RunSandboxContext } from "./sandbox/context";
 import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
@@ -41,7 +42,23 @@ export async function resolveWorktree(repo: Repo, card: Card, runId: string, pre
     prev?.baseBranch ?? card.baseBranch ?? (await currentBranch(repo.path, repo.defaultBranch));
   const { worktreePath, branch } =
     prev ?? (await createWorktree(repo.path, baseBranch, card.title, runId));
+  if (!prev) await provisionDeps(repo.path, worktreePath, card.id);
   return { worktreePath, branch, baseBranch, created: !prev };
+}
+
+/** Best effort: a worktree without the checkout's install is what every run
+ * had until now, so a provisioning failure is an event, not a failed run. No
+ * runId on either event: the run row does not exist yet (events.run_id is a
+ * real FK), which is also why this runs here and not in startRunRow. */
+async function provisionDeps(repoPath: string, worktreePath: string, cardId: string) {
+  const startedAt = Date.now();
+  try {
+    const mode = await provisionNodeModules(repoPath, worktreePath);
+    if (mode === "skipped") return;
+    emitEvent("worktree.deps_provisioned", { cardId, payload: { mode, durationMs: Date.now() - startedAt } });
+  } catch (err) {
+    emitEvent("worktree.deps_failed", { cardId, payload: { error: String(err).slice(0, 300) } });
+  }
 }
 
 /** Insert a stage's run row, then emit the events that reference it

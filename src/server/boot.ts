@@ -8,7 +8,7 @@ import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
 import { getOrchestrator } from "./orchestrator";
 import { resumeImprovementRuns } from "./improvementRuns";
 import { registerShutdownHandlers } from "./shutdown";
-import { claimDailySweep, pruneRuntimeHistory, removeAbandonedWorktrees } from "./retention";
+import { claimDailySweep, pruneRuntimeHistory, removeFinishedWorktrees } from "./retention";
 import { fireDueSchedules } from "./schedules";
 import { startEventsTail } from "./eventsTail";
 import { startTranscriptWatchers } from "./transcriptWatchers";
@@ -75,19 +75,21 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   // driveRun is idempotent per process (driverGuard()), so runs already being
   // driven here are skipped.
   //
-  // And it reclaims what a web-only abandon leaves behind: that process moves
-  // the card but never writes to the repository (spec 25), so the worktree
-  // and branch wait here for a worker. A sweep still running when the next
-  // tick fires is left to finish.
+  // And it reclaims what a finished card leaves behind: a web-only abandon
+  // moves the card but never writes to the repository (spec 25), and a
+  // delivery worker killed after it moved the card to done but before it
+  // removed its worktree leaves the same worktree, branch, row and baseline
+  // sitting there. Either way they wait here for a worker. A sweep still
+  // running when the next tick fires is left to finish.
   let sweepingWorktrees = false;
-  const sweepAbandonedWorktrees = async () => {
+  const sweepFinishedWorktrees = async () => {
     if (sweepingWorktrees) return;
     sweepingWorktrees = true;
     try {
-      const removed = await removeAbandonedWorktrees();
-      if (removed > 0) console.log(`[radulf] removed ${removed} abandoned worktree(s)`);
+      const removed = await removeFinishedWorktrees();
+      if (removed > 0) console.log(`[radulf] removed ${removed} finished-card worktree(s)`);
     } catch (e) {
-      console.error("[radulf] abandoned worktree sweep failed:", e);
+      console.error("[radulf] finished worktree sweep failed:", e);
     } finally {
       sweepingWorktrees = false;
     }
@@ -97,7 +99,7 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
     try {
       orchestrator.pump();
       resumeImprovementRuns();
-      void sweepAbandonedWorktrees();
+      void sweepFinishedWorktrees();
     } catch (e) {
       console.error("[radulf] queue pump failed:", e);
     }

@@ -122,7 +122,7 @@ Everything that must outlive a container is under one named volume,
 |------|----------|
 | `data/` | SQLite database, transcripts, `auth-secret`, and `pi-agent/` with the subscription logins. Denied to agent bash. |
 | `repos/` | Repositories added by URL. Radulf clones them here. Denied to agent bash like `data/`; a run reaches its own repo's `.git` through the same carve-out as on a host. |
-| `worktrees/`, `plans/`, `runtmp/` | Per-run agent output, derived as siblings of `data/` exactly as on a host. |
+| `worktrees/`, `plans/`, `runtmp/` | Per-run agent output, derived as siblings of `data/` exactly as on a host. A worktree of a repository whose checkout carries a `node_modules` gets a full copy of it at creation, because hard links cannot cross from a bind mount into the volume; budget the install's size per card in flight. The retention sweep reclaims it with the worktree. |
 | `home/` | The container user's `$HOME`: `gh`'s login and any `.gitconfig`. Denied to agent bash, and on the sandbox's credential denylist. |
 
 `docker compose down` keeps the volume. `docker compose down -v` deletes it,

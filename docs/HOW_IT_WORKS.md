@@ -257,6 +257,21 @@ evaluator still decides. Only check-shaped commands run — `test`, `grep`,
 repair pass happens at most once per run, because a criterion can be written so
 that it can never pass.
 
+The same commands are also run the other way round, before the loop exists. Once
+the planner finishes, its check commands are run against the worktree nobody has
+touched yet, and one that already exits the way its criterion wants cannot show
+that this card's work got done — it would report the same thing had the loop
+changed nothing. Those commands are listed in an `acceptance.precheck` event on
+the card's timeline, and the plan goes back to the planner once, sharing the plan
+critic's two-revision cap so the two cannot ping-pong a card. A plan that comes
+back with such a check still in it ships as written: the card proceeds, and if
+that check fails after DONE the failure is reported on the timeline but buys no
+repair iteration — the loop would spend its one repair pass making a tautology
+pass. Checks under a `## Regression` heading in `CRITERIA.md` are skipped by the
+pre-check, since of course they pass now, and are probed after DONE like every
+other criterion. None of this moves the asymmetry: a zero exit still proves
+nothing. Spec 31 records the decision.
+
 Once those checks pass, the orchestrator merges the base branch into the
 worktree, so the evaluator judges the code that will actually land. A clean
 merge becomes a merge commit on the run branch; a conflict becomes one more task

@@ -179,6 +179,12 @@ succeeded, Retry merge finds the open PR for the branch and adopts it
 (`alreadyOpen: true` plus its `prUrl` in the payload) instead of running
 `gh pr create` again, which would fail with "a pull request for branch … already
 exists".
+You will not see this message when the worker died *after* the merge had
+already landed and the card had moved to Done: the reaper then finishes the
+delivery as landed (`recoveredAfterWorkerLoss: true` in the `review.decided`
+payload, no error) and leaves the card where it is, and the worktree, branch
+and integrity baseline it left behind are reclaimed by the next worker pump
+tick (`removed N finished-card worktree(s)` in the log).
 
 **`a merge started outside Radulf is in progress in <repo path> (MERGE_HEAD …)`**
 The parent checkout has an in-progress merge whose `MERGE_HEAD` is *not* this

@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "02edf38d-4648-45b4-a539-d837feeae28b",
-  "prevId": "c02cd4ab-9145-4619-912b-85dceb973292",
+  "id": "e81e1b5a-0d71-41f0-95a6-627771a1438e",
+  "prevId": "02edf38d-4648-45b4-a539-d837feeae28b",
   "tables": {
     "cards": {
       "name": "cards",
@@ -134,6 +134,13 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
+        },
+        "jira_key": {
+          "name": "jira_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         },
         "evaluation_pending": {
           "name": "evaluation_pending",

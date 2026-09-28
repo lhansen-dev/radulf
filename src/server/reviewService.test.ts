@@ -453,7 +453,7 @@ describe("ReviewService — abandon", () => {
   });
 
   // Spec 25: web never writes to a repository. The worktree waits for a
-  // worker's removeAbandonedWorktrees sweep (retention.ts).
+  // worker's removeFinishedWorktrees sweep (retention.ts).
   it("a passive (web) abandon moves the card but leaves the repository alone", async () => {
     seedCard("card-abandon-web");
     seedLoopRun("card-abandon-web", seedPlan("card-abandon-web"));

@@ -1,0 +1,1 @@
+ALTER TABLE `plans` ADD `precheck_passing` text;

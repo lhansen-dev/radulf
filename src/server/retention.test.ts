@@ -7,8 +7,9 @@ import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 setupTestDataDir("radulf-retention-");
 
-const { db, settings, cards, repos, runs, worktrees, now } = await import("@/db");
-const { claimDailySweep, removeAbandonedWorktrees, sweepDayKey, RETENTION_SWEEP_MARKER_KEY } = await import("./retention");
+const { db, settings, cards, repos, runs, worktrees, now, DATA_DIR } = await import("@/db");
+const { saveBaseline } = await import("./integrity");
+const { claimDailySweep, removeFinishedWorktrees, sweepDayKey, RETENTION_SWEEP_MARKER_KEY } = await import("./retention");
 const { git, initScratchRepo } = await import("@/testUtils/gitRepo");
 
 function markerValue(): string | undefined {
@@ -48,8 +49,8 @@ describe("sweepDayKey", () => {
   });
 });
 
-describe("removeAbandonedWorktrees", () => {
-  function seed(cardId: string, status: "abandoned" | "review", repoPath: string) {
+describe("removeFinishedWorktrees", () => {
+  function seed(cardId: string, status: "done" | "abandoned" | "review", repoPath: string) {
     const worktreePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ralph-abandoned-wt-")), "wt");
     const branch = `ralph/${cardId}`;
     git(repoPath, "worktree", "add", worktreePath, "-b", branch);
@@ -62,7 +63,13 @@ describe("removeAbandonedWorktrees", () => {
     db.insert(worktrees)
       .values({ id: `wt-${cardId}`, repoId: "repo-1", runId: `run-${cardId}`, path: worktreePath, branch, createdAt: now() })
       .run();
-    return { worktreePath, branch };
+    // The delivery worker's integrity baseline, keyed by run id.
+    saveBaseline(`run-${cardId}`, {} as never);
+    return {
+      worktreePath,
+      branch,
+      baselinePath: path.join(DATA_DIR, "integrity", `run-${cardId}.json`),
+    };
   }
 
   beforeEach(() => {
@@ -78,7 +85,7 @@ describe("removeAbandonedWorktrees", () => {
     const gone = seed("card-gone", "abandoned", repoPath);
     const kept = seed("card-kept", "review", repoPath);
 
-    expect(await removeAbandonedWorktrees()).toBe(1);
+    expect(await removeFinishedWorktrees()).toBe(1);
 
     expect(fs.existsSync(gone.worktreePath)).toBe(false);
     expect(fs.existsSync(kept.worktreePath)).toBe(true);
@@ -89,6 +96,60 @@ describe("removeAbandonedWorktrees", () => {
     expect(rows.find((r) => r.id === "wt-card-kept")?.removedAt).toBeNull();
 
     // Idempotent: nothing left to do, nothing breaks.
-    expect(await removeAbandonedWorktrees()).toBe(0);
+    expect(await removeFinishedWorktrees()).toBe(0);
+  });
+
+  it("reclaims the worktree, branch, row and baseline of a done card and leaves a review card's alone", async () => {
+    const repoPath = initScratchRepo("ralph-done-repo-");
+    db.insert(repos).values({ id: "repo-1", name: "repo", path: repoPath, defaultBranch: "main", createdAt: now() }).run();
+    // A delivery worker died after completeApproval moved the card to done
+    // and before it removed the worktree.
+    const landed = seed("card-done", "done", repoPath);
+    const kept = seed("card-review", "review", repoPath);
+    expect(fs.existsSync(landed.baselinePath)).toBe(true);
+
+    expect(await removeFinishedWorktrees()).toBe(1);
+
+    expect(fs.existsSync(landed.worktreePath)).toBe(false);
+    expect(fs.existsSync(landed.baselinePath)).toBe(false);
+    expect(git(repoPath, "branch", "--list", landed.branch)).toBe("");
+    expect(db.select().from(worktrees).all().find((r) => r.id === "wt-card-done")?.removedAt).not.toBeNull();
+
+    expect(fs.existsSync(kept.worktreePath)).toBe(true);
+    expect(fs.existsSync(kept.baselinePath)).toBe(true);
+    expect(git(repoPath, "branch", "--list", kept.branch)).toContain(kept.branch);
+    expect(db.select().from(worktrees).all().find((r) => r.id === "wt-card-review")?.removedAt).toBeNull();
+
+    // Idempotent: the finished card is already fully reclaimed.
+    expect(await removeFinishedWorktrees()).toBe(0);
+  });
+
+  it("a baseline that cannot be deleted leaves the worktree, branch and row for a retry", async () => {
+    const repoPath = initScratchRepo("ralph-baseline-stuck-repo-");
+    db.insert(repos).values({ id: "repo-1", name: "repo", path: repoPath, defaultBranch: "main", createdAt: now() }).run();
+    const stuck = seed("card-stuck", "done", repoPath);
+
+    // `removeBaseline` is `rmSync(path, { force: true })` without `recursive`,
+    // so a non-empty DIRECTORY at the baseline path makes the deletion throw
+    // (force only swallows ENOENT). Stands in for any failure of that step.
+    fs.rmSync(stuck.baselinePath);
+    fs.mkdirSync(stuck.baselinePath);
+    fs.writeFileSync(path.join(stuck.baselinePath, "child"), "");
+
+    await expect(removeFinishedWorktrees()).rejects.toThrow();
+
+    // The baseline step runs FIRST, before the worktree is removed and before
+    // `removeWorktree` stamps `removedAt` — so the throw left everything intact
+    // and the row still selected (`removedAt IS NULL`) by the next tick.
+    expect(fs.existsSync(stuck.worktreePath)).toBe(true);
+    expect(git(repoPath, "branch", "--list", stuck.branch)).toContain(stuck.branch);
+    expect(db.select().from(worktrees).all().find((r) => r.id === "wt-card-stuck")?.removedAt).toBeNull();
+
+    // Repair the baseline path and the same sweep finishes the job.
+    fs.rmSync(stuck.baselinePath, { recursive: true, force: true });
+    expect(await removeFinishedWorktrees()).toBe(1);
+    expect(fs.existsSync(stuck.worktreePath)).toBe(false);
+    expect(git(repoPath, "branch", "--list", stuck.branch)).toBe("");
+    expect(db.select().from(worktrees).all().find((r) => r.id === "wt-card-stuck")?.removedAt).not.toBeNull();
   });
 });

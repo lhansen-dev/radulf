@@ -1,5 +1,8 @@
-- Docs now describe the opt-in Jira Done comment instead of claiming Radulf never writes to Jira.
-- `docs/HOW_IT_WORKS.md`: new **Jira Done comment.** paragraph after the "a Jira issue with child issues offers those children as the tasks" paragraph — the retained issue key (card-page link, `PATCH /api/cards/{id}` with `jiraKey`), the **Comment on Jira when a card is done** toggle (`jiraCommentOnDone`, off by default) under Settings → Repositories → Jira, exactly one plain-text comment on Done (base branch + short sha or PR URL, plus card link from `RADULF_PUBLIC_BASE_URL` or the id), epic parent commenting once with pieces on their own keys, one attempt with a ~10 s timeout that never blocks the card, and the `jira.commented` / `jira.comment_failed` timeline events.
-- `docs/GETTING_STARTED.md`: the Jira import step now says Radulf reads from Jira and writes back only the optional Done comment, linking [How it works](HOW_IT_WORKS.md).
-- `PRODUCT.md`: the environment bullet now records the opt-in Done comment as the single Jira write, off by default.
-- Verified with `grep -q 'jiraCommentOnDone' docs/HOW_IT_WORKS.md && node_modules/.bin/vitest run src/server/docs.test.ts` — 15 tests passed.
+Resolved the beta-merge conflicts in `drizzle/meta/` so the branch keeps both the base branch's precheck migration and this card's `jira_key` migration.
+
+- `drizzle/meta/_journal.json`: dropped the conflict block in favour of two entries — base's `0025_precheck_passing_plan_row` keeps idx 25 (`when` 1790367152022), this branch's Jira migration moves to idx 26 as `0026_jira_key` (`when` 1790370554585), preserving the apply order and `migrationsPending()`'s max-`when` logic.
+- `drizzle/meta/0025_snapshot.json`: now the base branch's snapshot verbatim (`id` 02edf38d…, `plans.precheck_passing`, no `jira_key`) — i.e. the true post-0025 state.
+- `drizzle/meta/0026_snapshot.json` (new): the merged snapshot — base's state plus `cards.jira_key` (after `open_pr`), `prevId` = 02edf38d…, `id` = e81e1b5a… so future `drizzle-kit generate` chains off it.
+- `drizzle/0025_jira_key.sql` → `drizzle/0026_jira_key.sql`: drizzle-orm resolves `${tag}.sql` from the journal entry, so the filename must follow the retagged migration.
+- Why: both branches added an idx-25 migration, so taking either side would silently drop a column; `src/server/splitProcesses.test.ts` asserts `__drizzle_migrations` count equals the journal length, so both entries must exist.
+- Checks: `git diff --check` clean (exit 0), `drizzle-kit check` OK, fresh-DB `migrate()` applied 27/27 entries with both `cards.jira_key` and `plans.precheck_passing` created, `vitest run src/db/schema.test.ts` 8/8.

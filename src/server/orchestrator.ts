@@ -13,6 +13,7 @@ import {
   repos,
   improvementRuns,
   reviewDeliveries,
+  reviews,
   refWrites,
   type ApprovedInstallScript,
   type CardStatus,
@@ -309,6 +310,10 @@ export class Orchestrator {
     ...this.stageDeps,
     pump: () => this.pump(),
     critique: (cardId) => this.startCritic(cardId),
+    // Spec 31: the acceptance pre-check sends the plan back for a rewrite.
+    // Same route the critic's revise verdict uses — the card never left
+    // `planning`, so it keeps its slot.
+    replan: (cardId) => this.startStage("planning", cardId),
   });
   private evaluationService = new EvaluationService({
     ...this.stageDeps,
@@ -568,7 +573,10 @@ export class Orchestrator {
    * gives a review delivery a `review_deliveries` row, so the continuous
    * pass does reason about those: a `running` delivery whose worker has
    * stopped heartbeating is finished as failed, its card parked, and its
-   * repo lease released; a `reviewing` card with a pending or running
+   * repo lease released — unless its card is already `done` or its run has an
+   * approved review row, which means the merge landed and only the delivery
+   * row was left open, so it is finished as landed (ok) with the card left
+   * where it is; a `reviewing` card with a pending or running
    * delivery is left alone by the orphan sweep because a worker owns it (or
    * will claim it). */
   reapStaleRuns(options: { orphans?: boolean } = {}): void {
@@ -600,7 +608,18 @@ export class Orchestrator {
       .all();
     for (const delivery of runningDeliveries) {
       if (delivery.workerId !== null && live.has(delivery.workerId)) continue;
-      this.failDelivery(delivery);
+      // The merge may have landed before the worker died: `completeApproval`
+      // moves the card to `done` and writes its approved review row before the
+      // delivery row is closed, so either one means there is nothing left to
+      // deliver and no retry for a human to press.
+      const card = db.select().from(cards).where(eq(cards.id, delivery.cardId)).get();
+      const review = db
+        .select()
+        .from(reviews)
+        .where(and(eq(reviews.runId, delivery.runId), eq(reviews.decision, "approved")))
+        .get();
+      if (card?.status === "done" || review) this.finishLandedDelivery(delivery, review?.mergeCommit ?? null);
+      else this.failDelivery(delivery);
     }
     releaseStaleLeases(live);
     // The ref audit log only has to outlive the integrity checks that consult
@@ -681,6 +700,35 @@ export class Orchestrator {
     this.controllers.get(run.id)?.abort();
     const card = getCard(run.cardId);
     if (card) this.parkOrResume(card);
+    return true;
+  }
+
+  /** Finish one owned review delivery whose merge actually landed. The worker
+   * died after `completeApproval` had already moved the card to `done` (and
+   * written the approved review row) but before the delivery row was closed:
+   * the merge commit is in the base branch, so the delivery is recorded as
+   * landed rather than as a failed merge — no "press Retry merge" error on a
+   * finished card, and no card move (it is already where it belongs). Returns
+   * false when the CAS lost and nothing else was written. */
+  private finishLandedDelivery(
+    delivery: typeof reviewDeliveries.$inferSelect,
+    mergeCommit: string | null,
+  ): boolean {
+    const result = db
+      .update(reviewDeliveries)
+      .set({ status: "finished", ok: 1, error: null, endedAt: now() })
+      .where(and(eq(reviewDeliveries.id, delivery.id), eq(reviewDeliveries.status, "running")))
+      .run();
+    if (result.changes !== 1) return false;
+    emitEvent("review.decided", {
+      cardId: delivery.cardId,
+      runId: delivery.runId,
+      payload: {
+        decision: "approved",
+        ...(mergeCommit ? { mergeCommit } : {}),
+        recoveredAfterWorkerLoss: true,
+      },
+    });
     return true;
   }
 
@@ -781,6 +829,14 @@ export class Orchestrator {
     if (!claimed) return false;
     emitEvent("card.moved", { cardId, payload: { from, to, ...(reason ? { reason } : {}) } });
     return true;
+  }
+
+  /** Spec 25 decision 2: park an evaluation for a worker's pump. The flag
+   * lives on the card row, so it survives a restart and every process on the
+   * database sees it; `claimPendingEvaluation` clears it when a slot frees. */
+  private queueEvaluation(cardId: string, reason: string) {
+    db.update(cards).set({ evaluationPending: 1, updatedAt: now() }).where(eq(cards.id, cardId)).run();
+    emitEvent("card.evaluation_queued", { cardId, payload: { reason } });
   }
 
   /** Spec 24 decision 6: the last piece finishing finishes its epic. */
@@ -1348,7 +1404,11 @@ export class Orchestrator {
       const worktree = this.latestWorktreeRun(cardId);
       if (planMd && !firstUnchecked(planMd) && worktree && doneFilePath(ralphDirPath(worktree.worktreePath))) {
         if (this.passive) {
-          throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
+          // Spec 25: a web-only process never runs a stage. Park the
+          // evaluation where the worker's pump looks, on the same flag the
+          // install gate uses when the repo is at its cap.
+          this.queueEvaluation(cardId, "retrying: loop finished, evaluating");
+          return { ok: true, step: "evaluate" };
         }
         if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
         if (!this.moveCard(cardId, "needs_attention", "evaluating", "retrying: loop finished, evaluating")) {
@@ -1365,6 +1425,23 @@ export class Orchestrator {
     }
 
     if (this.passive) {
+      // A failed evaluator queues the same way. A failed planner goes back to
+      // Todo, where the worker's pump plans it afresh: startCard re-plans a
+      // card whose latest plan attempt failed, because that attempt left
+      // either no plan at all or its replan feedback still pending. The
+      // critic runs in place on a card already in `planning`, a status only
+      // a worker enters, so that one retry still needs a worker-role
+      // process; Restart re-plans and reaches a fresh critic pass from here.
+      if (step === "evaluate") {
+        this.queueEvaluation(cardId, "retrying failed evaluator");
+        return { ok: true, step };
+      }
+      if (step === "plan") {
+        if (!this.moveCard(cardId, "needs_attention", "todo", "retrying failed planner")) {
+          throw new ClientError("card status changed before the planner could retry");
+        }
+        return { ok: true, step };
+      }
       throw new ClientError("this process only serves the UI; a process with the worker role has to run this", 409);
     }
     if (this.pipelineBusy(card.repoId)) throw new ClientError("another task is already being worked on");
@@ -1674,6 +1751,8 @@ export class Orchestrator {
     // repo was at its cap (spec 20): evaluation is owed to them, not another
     // loop pass. The flag lives on the card row (spec 25) so any worker
     // sharing the database — or this one after a restart — can pick it up.
+    // A web-only process retrying a finished loop or a failed evaluator
+    // queues through the same flag, since it cannot start the stage itself.
     const pendingEvaluationCards = db
       .select()
       .from(cards)
@@ -1690,8 +1769,9 @@ export class Orchestrator {
 
     for (const repoId of repoIds) {
       const repoReady = readyCards.filter((c) => c.repoId === repoId);
-      // Cards approveInstallScripts queued for evaluating while this repo
-      // was at its cap — oldest queued first, same tie-break as the others.
+      // Evaluations queued for this repo, by an install gate that cleared at
+      // the cap or by a retry from a web-only process: oldest queued first,
+      // same tie-break as the others.
       const repoPendingEvaluations = pendingEvaluationCards.filter((c) => c.repoId === repoId).map((c) => c.id);
       /** Todo cards already handed to startCard in this pass. A planned card
        * that has a plan goes back to Ready rather than consuming a slot, and
@@ -1709,7 +1789,7 @@ export class Orchestrator {
           if (this.claimPendingEvaluation(pendingEvaluationId, repoId, limit)) {
             emitEvent("card.moved", {
               cardId: pendingEvaluationId,
-              payload: { from: "needs_attention", to: "evaluating", reason: "install scripts approved" },
+              payload: { from: "needs_attention", to: "evaluating", reason: "queued evaluation claimed" },
             });
             this.startStage("evaluating", pendingEvaluationId);
           }
@@ -2160,6 +2240,17 @@ export class Orchestrator {
               ctx,
             });
             const failures = probe.filter((p) => !p.ok);
+            // Spec 31: the pre-check ran these same commands against the
+            // untouched worktree and found that these already exited the way
+            // their criterion wanted. A check that passed before the loop
+            // touched anything cannot show the work was done, so its failure
+            // here is reported but buys no iteration — the loop would spend a
+            // repair pass making a tautology pass. NULL for plans written
+            // before the pre-check existed, which is the same as "nothing was
+            // found to excuse".
+            const alreadyPassing = new Set<string>(plan.precheckPassing ? JSON.parse(plan.precheckPassing) : []);
+            const repairable = failures.filter((f) => !alreadyPassing.has(f.command));
+            const tolerated = failures.filter((f) => alreadyPassing.has(f.command));
             if (probe.length > 0) {
               emitEvent("acceptance.probe", {
                 cardId,
@@ -2168,10 +2259,11 @@ export class Orchestrator {
                   n,
                   checked: probe.length,
                   failed: failures.map((f) => ({ command: f.command, output: f.output })),
+                  alreadyPassing: tolerated.map((f) => f.command),
                 },
               });
             }
-            if (failures.length > 0) {
+            if (repairable.length > 0) {
               acceptanceRepairUsed = true;
               // Clear the signal, or the next iteration re-enters this branch
               // before doing the repair.
@@ -2180,7 +2272,10 @@ export class Orchestrator {
               // repair has to be one — a prompt preamble alone never runs.
               fs.writeFileSync(
                 /* turbopackIgnore: true */ planPath,
-                appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), repairTaskText(failures)),
+                appendTask(
+                  fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
+                  repairTaskText(repairable),
+                ),
               );
               continue;
             }
@@ -2601,11 +2696,7 @@ export class Orchestrator {
       if (this.claimStage(cardId, "needs_attention", "evaluating", "install scripts approved")) {
         this.startStage("evaluating", cardId);
       } else if (getCard(cardId)?.status === "needs_attention") {
-        db.update(cards).set({ evaluationPending: 1, updatedAt: now() }).where(eq(cards.id, cardId)).run();
-        emitEvent("card.evaluation_queued", {
-          cardId,
-          payload: { reason: "install scripts approved while the repo was at its cap" },
-        });
+        this.queueEvaluation(cardId, "install scripts approved while the repo was at its cap");
       }
     } else {
       this.moveCard(cardId, "needs_attention", "ready", "install scripts approved");

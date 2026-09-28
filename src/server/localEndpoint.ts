@@ -42,6 +42,40 @@ export function parseHeaderLines(text: string): Record<string, string> {
   return headers;
 }
 
+/**
+ * Parse the "one `model-id: tokens` per line" context-window setting into a
+ * record keyed by model id.
+ *
+ * Servers behind a gateway, and oMLX and LM Studio on their own, often report
+ * no context length at `/v1/models`, and each served model has its own; this is
+ * how an operator states them. The id is everything before the last colon, so
+ * an id that itself carries one (`qwen3:8b`) parses. Blank lines are skipped.
+ */
+export function parseContextWindowLines(text: string): Record<string, number> {
+  const windows: Record<string, number> = {};
+  for (const [i, line] of text.split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    const m = /^\s*(.+?)\s*:\s*(\d+)\s*$/.exec(line);
+    if (!m || Number(m[2]) === 0) throw new Error(`line ${i + 1} must look like "model-id: tokens"`);
+    windows[m[1]] = Number(m[2]);
+  }
+  return windows;
+}
+
+/**
+ * The context window to run `model` with: the Settings entry for it when the
+ * operator wrote one, else what the server reported, else nothing (the caller
+ * falls back). The setting wins because it exists for servers that report no
+ * number or the wrong one.
+ */
+export function contextWindowFor(
+  model: string,
+  s: { omlxContextWindows: string },
+  served?: number,
+): number | undefined {
+  return parseContextWindowLines(s.omlxContextWindows)[model] ?? served;
+}
+
 /** One entry of an OpenAI-compatible `/v1/models` response. */
 export type LocalModel = {
   id: string;

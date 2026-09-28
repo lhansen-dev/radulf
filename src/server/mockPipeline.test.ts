@@ -123,6 +123,17 @@ const cardRuns = (cardId: string, kind?: "plan" | "critique" | "loop" | "evaluat
     .orderBy(asc(runs.startedAt))
     .all();
 
+/** One kind of event this card emitted, oldest first, payload parsed. */
+function cardEvents<T = Record<string, unknown>>(cardId: string, type: string): T[] {
+  return db
+    .select()
+    .from(events)
+    .where(and(eq(events.cardId, cardId), eq(events.type, type)))
+    .orderBy(asc(events.id))
+    .all()
+    .map((e) => JSON.parse(e.payload) as T);
+}
+
 async function waitFor(done: () => boolean, timeoutMs = 25_000) {
   const deadline = Date.now() + timeoutMs;
   while (!done()) {
@@ -200,6 +211,63 @@ describe("mock provider — full pipeline", () => {
     expect(cardRuns(cardId, "plan")).toHaveLength(2);
     const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
     expect(replan?.feedback).toContain("Mock critique");
+  }, 30_000);
+
+  it("precheck-revise-once: a check that already passes on the untouched worktree buys exactly one replan", async () => {
+    const { cardId } = await runScenario("precheck-revise-once", seedRepo("precheck-revise-once"));
+    expect(cardStatus(cardId)).toBe("review");
+    expect(cardRuns(cardId, "plan").map((r) => r.exitReason)).toEqual([
+      "precheck revise",
+      "plan artifacts written",
+    ]);
+    // The pre-check is not the critic and never runs the critic.
+    expect(cardRuns(cardId, "critique")).toHaveLength(0);
+
+    const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+    expect(replan?.feedback).toContain("test -f README.md");
+
+    // Two reports, one per plan: the first plan's check passed before anything
+    // ran, the re-plan's did not — and the second plan is the one that shipped.
+    const prechecks = cardEvents<{ alreadyPassing: string[]; revise: boolean }>(cardId, "acceptance.precheck");
+    expect(prechecks.map((p) => p.alreadyPassing)).toEqual([["test -f README.md"], []]);
+
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "completed", exitReason: "done-signal", iterationsDone: 1 });
+
+    // The re-plan's check failed when it was pre-checked and passes now, so the
+    // post-DONE probe has nothing to report and no repair was owed.
+    const probes = cardEvents<{ failed: unknown[] }>(cardId, "acceptance.probe");
+    expect(probes).toHaveLength(1);
+    for (const probe of probes) expect(probe.failed).toEqual([]);
+  }, 30_000);
+
+  it("precheck-still-inverted: a check that cannot stop passing is reported after DONE, not repaired", async () => {
+    const { cardId } = await runScenario("precheck-still-inverted", seedRepo("precheck-still-inverted"));
+    expect(cardStatus(cardId)).toBe("review");
+    expect(cardRuns(cardId, "plan").map((r) => r.exitReason)).toEqual([
+      "precheck revise",
+      "plan artifacts written",
+    ]);
+
+    const alreadyPassing = ["test -f mock-output/task-1.md"];
+    const prechecks = cardEvents<{ alreadyPassing: string[]; revise: boolean }>(cardId, "acceptance.precheck");
+    expect(prechecks.map((p) => p.alreadyPassing)).toEqual([alreadyPassing, alreadyPassing]);
+    // One bounded replan per plan: the second finding ships with the plan.
+    expect(prechecks.map((p) => p.revise)).toEqual([true, false]);
+
+    // The loop ran once. Its DONE failed the pre-checked check, and that
+    // failure was excused rather than turned into a second iteration.
+    const loops = cardRuns(cardId, "loop");
+    expect(loops).toHaveLength(1);
+    expect(loops[0]).toMatchObject({ status: "completed", exitReason: "done-signal", iterationsDone: 1 });
+
+    const probes = cardEvents<{ failed: { command: string }[]; alreadyPassing: string[] }>(
+      cardId,
+      "acceptance.probe",
+    );
+    expect(probes).toHaveLength(1);
+    expect(probes[0].alreadyPassing).toEqual(alreadyPassing);
+    expect(probes[0].failed.map((f) => f.command)).toEqual(alreadyPassing);
   }, 30_000);
 
   it("planner-questions: parks the card for a human", async () => {
