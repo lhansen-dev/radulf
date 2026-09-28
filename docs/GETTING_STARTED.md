@@ -96,7 +96,9 @@ OpenRouter and a local server need no login at all — set an API key or a base 
    email and an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
    under **Settings → Repositories → Jira**. A token with or without scopes
    works: Radulf reaches the site through Atlassian's api.atlassian.com
-   gateway, which accepts both kinds. Radulf only ever reads from Jira.
+   gateway, which accepts both kinds. Radulf reads from Jira, and writes back
+   only the optional Done comment described under **Jira Done comment** in
+   [How it works](HOW_IT_WORKS.md).
 3. **Move it to Todo.** This is the ordered execution queue. With Auto Mode on
    (the default) the card starts when its turn arrives; **Start now** claims the
    slot immediately.

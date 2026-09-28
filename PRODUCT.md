@@ -43,7 +43,7 @@ The user's job shrinks to three verbs: describe the work, prioritize the queue, 
 
 - The host is Debian Linux. The sandbox is bubblewrap plus a seccomp filter. Upstream treats Linux as best-effort and macOS as primary; here Linux is the real platform and platform copy must not assume a Mac.
 - The day-to-day forge is GitLab at gitlab.mercury.iren.ca. Gitea and Forgejo are also valid delivery targets for IREN. The code only speaks GitHub today, for the provenance link in the rail and for pull-request delivery.
-- Jira is iren.atlassian.net. Radulf reads issues into card drafts and never writes to Jira.
+- Jira is iren.atlassian.net. Radulf reads issues into card drafts, and writes only the opt-in Done comment on the issue a finished card came from (**Comment on Jira when a card is done** under Settings → Repositories → Jira, off by default).
 - The user works the queue from a desktop browser and from a phone.
 - Guides live in the in-app Docs tab. The `specs/` directory is a dated decision log and is never rewritten to match the present.
 
