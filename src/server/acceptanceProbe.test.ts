@@ -61,6 +61,9 @@ describe("probeCommands", () => {
     // the loop, so anything outside the allowlist is simply not probed.
     expect(probeCommands("- [ ] `rm -rf build` then `npm publish .` succeeds")).toEqual([]);
     expect(probeCommands("- [ ] `curl https://example.com` returns 200")).toEqual([]);
+    expect(probeCommands("- [ ] `command touch /tmp/pwned` succeeds")).toEqual([]);
+    expect(probeCommands("- [ ] `sed -i s/a/b/ src/a.ts` succeeds")).toEqual([]);
+    expect(probeCommands("- [ ] `find . -exec touch /tmp/pwned {}` succeeds")).toEqual([]);
   });
 
   it("does not run a span that only starts with an allowed command", () => {
@@ -212,18 +215,33 @@ describe("runAcceptanceProbe", () => {
     expect(results[0].output).toContain("missing-file.txt");
   });
 
+  it("does not expose files outside the worktree", async () => {
+    const secret = path.join(path.dirname(dir), `probe-secret-${path.basename(dir)}`);
+    fs.writeFileSync(secret, "secret");
+    try {
+      const results = await runAcceptanceProbe({
+        acceptanceCriteria: `\`grep -q secret ${secret}\` succeeds`,
+        worktreePath: dir,
+        ctx,
+      });
+      expect(results).toEqual([]);
+    } finally {
+      fs.rmSync(secret, { force: true });
+    }
+  });
+
   it("does not disprove a criterion when the check itself could not run", async () => {
     // A missing binary is our problem, not the criterion's. execAsync reports
     // it with a string code (ENOENT) rather than an exit status.
     const results = await runAcceptanceProbe({
-      acceptanceCriteria: "`jq .version package.json`",
+      acceptanceCriteria: "`rg version package.json`",
       worktreePath: dir,
       ctx,
     });
     // Either jq is absent (unprobed, ok) or it ran and failed on a missing
     // file (a real non-zero). Both are acceptable; a crash is not.
     expect(results).toHaveLength(1);
-    expect(results[0].command).toBe("jq .version package.json");
+    expect(results[0].command).toBe("rg version package.json");
   });
 
   it("does not disprove a criterion when the command is not installed (exit 127)", async () => {
@@ -232,11 +250,11 @@ describe("runAcceptanceProbe", () => {
     // empty PATH makes that the only possible outcome here.
     const emptyBin = fs.mkdtempSync(path.join(dir, "empty-path-"));
     const results = await runAcceptanceProbe({
-      acceptanceCriteria: "`jq .version package.json`",
+      acceptanceCriteria: "`rg version package.json`",
       worktreePath: dir,
       ctx: { ...ctx, env: { PATH: emptyBin } } as unknown as RunSandboxContext,
     });
-    expect(results).toEqual([{ command: "jq .version package.json", expectFailure: false, ok: true, output: "" }]);
+    expect(results).toEqual([{ command: "rg version package.json", expectFailure: false, ok: true, output: "" }]);
   });
 });
 
@@ -314,11 +332,11 @@ describe("precheckAcceptance", () => {
     // result in either direction.
     const emptyBin = fs.mkdtempSync(path.join(dir, "empty-path-"));
     const report = await precheckAcceptance({
-      acceptanceCriteria: "`jq . x.json` and `jq . y.json` fails",
+      acceptanceCriteria: "`rg x x.json` and `rg y y.json` fails",
       worktreePath: dir,
       ctx: { ...ctx, env: { PATH: emptyBin } } as unknown as RunSandboxContext,
     });
-    expect(report.unprobed).toEqual(["jq . x.json", "jq . y.json"]);
+    expect(report.unprobed).toEqual(["rg x x.json", "rg y y.json"]);
     expect(report.alreadyPassing).toEqual([]);
     expect(report.failing).toEqual([]);
     expect(report.checked).toBe(2);

