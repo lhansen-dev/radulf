@@ -1,0 +1,26 @@
+# Evaluation notes (2026-09-28T12:27:55Z)
+- prereq node_modules check: PASS
+- PASS: schema jiraKey column
+- FAIL: migration 0025_jira_key (literal criterion)
+- PASS: migration 0026_jira_key (chained after beta 0025)
+- PASS: cardValidation/route/orchestrator jiraKey greps
+- PASS: jiraUrl in card [id] route
+- PASS: jiraKey in cardTransfer.ts
+- PASS: settings default jiraCommentOnDone: false
+- PASS: settings "jiraCommentOnDone" boolean list
+- PASS: settings page toggle
+- PASS: jiraApiToken secret count>=1
+- PASS: jiraBaseUrl validation untouched
+- PASS: jiraAnnounce rest/api/2 + /comment + AbortSignal.timeout
+- PASS: awk completeApproval announce before removeBaseline
+- PASS: orchestrator announceCardDone
+- PASS: docs HOW_IT_WORKS jiraCommentOnDone
+- NOTE: literal 0025_jira_key criterion fails because beta gained 0025_precheck_passing_plan_row after criteria were written; migration is 0026_jira_key chained after it (journal idx 26, snapshot prevId = 0025 id, diff = jira_key only, drizzle-kit check OK). Card text says 'chain on whatever landed' -> treated as PASS in spirit.
+- PASS: vitest cardValidation.test.ts jira.test.ts (55 passed)
+- PASS: vitest newTaskDialog, card page, cardTransfer, requestValidation, settings (98 passed)
+- PASS: vitest jiraAnnounce, reviewService.pr, reviewService, orchestrator.scoping, docs (80 passed)
+- PASS: tsc --noEmit exit 0; eslint exit 0 (3 warnings)
+- drizzle-kit generate: 'No schema changes' (schema matches 0026 snapshot), worktree clean
+- Reviewed diff: validation/create/update/breakdown flow, dialog, card page link, export/import, settings toggle, announce module, review + epic call sites, docs; no unrelated changes; only 2 Done paths exist and both announce
+- Gate make check: exit 0 (from GATE.md, not re-run)
+- Verdict written: approve (EVALUATION.md, SUMMARY.md). No doc edits needed beyond those already in the change.
