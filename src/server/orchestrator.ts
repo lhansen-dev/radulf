@@ -2224,7 +2224,10 @@ export class Orchestrator {
           // Spec 14 L3 run-end ordering: reap, verify parent-repo integrity,
           // then the install gate (forced — nothing unapproved may reach the
           // evaluator), and only then hand over to evaluation.
-          const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
+          const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch, {
+            cardId,
+            runId,
+          });
           if (violation) return fail(violation);
           if (await this.checkInstallGate({ cardId, runId, repoId: repo.id, worktreePath })) return;
 

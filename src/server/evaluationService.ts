@@ -265,7 +265,10 @@ export class EvaluationService {
         if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
       }
 
-      const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
+      const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch, {
+        cardId,
+        runId,
+      });
       if (violation) return fail(violation);
 
       // The verdict commit below must land on the run branch and nowhere else.

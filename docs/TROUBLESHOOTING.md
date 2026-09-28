@@ -131,6 +131,14 @@ prevent. This is checked after the process group is reaped and before the
 evaluator sees anything. Treat it as a containment failure worth reporting —
 see [SECURITY.md](../SECURITY.md).
 
+**`repo.integrity_warning` event on the timeline**
+Remote-tracking refs (`refs/remotes/…`) moved, appeared or were deleted in the
+registered checkout while the run was live — usually someone ran `git fetch` or
+`git push` there. The run was **not** failed: Radulf never reads a
+remote-tracking ref to decide what lands, so those refs cannot have changed the
+diff, the review or the merge target. The refs listed on the timeline are
+informational.
+
 **`install-script gate: unapproved lifecycle scripts in …`**
 A dependency change introduced lifecycle scripts that have not been approved.
 Nothing unapproved reaches the evaluator. Review the named packages and approve

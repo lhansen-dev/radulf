@@ -104,3 +104,33 @@ Two failure modes surfaced by the same three runs, each its own change:
    from `latestLoopRun.exitReason === "install-script gate"`, which never
    changes once the following runs are evaluations. Three successful approvals
    were indistinguishable from none.
+
+## Amendment (2026-09-25): remote-tracking refs are a warning
+
+A run-end difference confined to `refs/remotes/**` outside the `ralph/`
+namespace no longer fails the run. It is recorded on the run as a
+`repo.integrity_warning` event — payload `refs`, one entry per `ref moved` /
+`ref appeared` / `ref deleted` line — and shown on the card timeline, so the
+observation survives without a finished run being thrown away for it. The
+trigger was a `git fetch origin` in the registered checkout `/repos/radulf` on
+2026-09-24 (a `git push` there does the same thing): it moved
+`refs/remotes/origin/beta` and created `refs/remotes/origin/feat/retry-context`,
+and the run it failed had every one of its own commits intact. This is the same
+shape as the false positives above — a snapshot wider than the run — with one
+addition: the writer here is not even Radulf. A remote-tracking ref is the local
+shadow of whatever is on the remote, so it moves every time anyone syncs or
+pushes from that checkout, which is a normal thing for a human to do in a repo
+Radulf happens to share.
+
+That is safe because nothing in Radulf reads a remote-tracking ref to decide what
+lands. Spec 29's base sync merges the *local* base branch into the worktree;
+delivery pushes `ralph/*` branches; every merge targets a local branch. A
+remote-tracking ref that moved, appeared or was deleted cannot change a diff, a
+review or a merge target, so failing on it buys no protection. Everything else
+here is unchanged: hooks and `.git/config` are still hashed and compared, local
+branches — including the base branch and `main` — are still compared, tags are
+still compared, the pre-merge check still runs with `checkRefs: false`, and spec
+25 decision 6's `ref_writes` lookup and lease-settle retry still explain Radulf's
+own writes before anything is called tampering. `refs/heads/ralph/` and
+`refs/remotes/<remote>/ralph/` stay skipped entirely: Radulf's own bookkeeping is
+neither a violation nor a warning.

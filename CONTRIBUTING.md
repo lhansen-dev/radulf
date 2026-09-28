@@ -130,6 +130,19 @@ Individual pieces, if you want faster feedback:
 | `make typecheck` | `tsc --noEmit` |
 | `make build` | Production build |
 
+`make build` — and so `make check` and `make check-split`, which depend on it
+— needs a real `node_modules` directory in the checkout you run it from. In a
+second checkout (`git worktree add`, how a card's worktree is made) that
+directory does not exist until you run `make install` inside it. Linking it to
+the main checkout's copy instead looks like a cheap shortcut and fails late:
+Turbopack roots the project at the worktree and rejects any symlink that
+escapes it — `Symlink [project]/node_modules is invalid, it points out of the
+filesystem root` — while tests, lint and type-checking never notice, so only
+the build breaks. Both `make build` and `make check` therefore look at the
+directory before doing any work and stop at once, naming `make install`,
+rather than dying after a full test pass. Every worktree installs its own
+dependencies for that reason (spec 20).
+
 To watch a change work end to end without spending tokens, run the app with
 the scripted **mock provider** (`RADULF_MOCK_LLM=1`): the full pipeline runs in
 seconds, with every tool call executed for real and only the model's decisions

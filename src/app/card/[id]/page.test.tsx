@@ -230,6 +230,33 @@ describe("CardDetail", () => {
     expect(screen.queryByRole("button", { name: "Review Git config" })).toBeNull();
   });
 
+  it("renders a remote-tracking ref integrity warning on the timeline", async () => {
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    cardEvents = [
+      {
+        id: 1,
+        runId: "r1",
+        type: "repo.integrity_warning",
+        payload: JSON.stringify({
+          refs: [
+            "ref moved: refs/remotes/origin/beta (abc123 → def456)",
+            "ref appeared: refs/remotes/origin/feat/x",
+          ],
+        }),
+        createdAt: "2026-09-25T01:41:00.000Z",
+      },
+    ];
+    render(<CardDetail />);
+    // The timeline lives on the Activity tab; the tab is read from (and written
+    // to) the URL, so put it back for the tests that follow.
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    const row = await screen.findByTestId("integrity-warning");
+    expect(row.textContent).toContain("refs/remotes/origin/beta");
+    expect(row.textContent).toContain("refs/remotes/origin/feat/x");
+    expect(row.textContent).toContain("Remote-tracking refs");
+    window.history.replaceState({}, "", "/card/c1");
+  });
+
   it("shows the planner badge and each role's resolved provider, model, and reasoning level", async () => {
     render(<CardDetail />);
 

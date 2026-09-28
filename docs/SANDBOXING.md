@@ -328,8 +328,12 @@ The run-end ref comparison skips everything under `refs/heads/ralph/`, which is
 the namespace Radulf writes itself: card run branches and improvement-run
 feature branches. Every worktree shares one `.git`, so without that a sibling
 card's ordinary commit shows up as tampering in this run's snapshot and throws
-away a finished run (spec 19). Base branches, `main`, tags and remotes are
-still compared, as are hooks and `.git/config`.
+away a finished run (spec 19). Base branches, `main` and tags are still
+compared, as are hooks and `.git/config`. A change confined to remote-tracking
+refs (`refs/remotes/**`, outside `ralph/`) is recorded as a
+`repo.integrity_warning` event on the run and shown on the card timeline instead
+of failing the run: a `git fetch` or `git push` in the registered checkout moves
+those refs and is not tampering (spec 19 amendment, 2026-09-25).
 
 If delivery is blocked by `.git/config changed`, the card offers **Review Git
 config**. It shows the current file; the baseline stores only a hash, so the
