@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   mergeBranch: vi.fn(),
   removeWorktree: vi.fn(),
   tryGit: vi.fn(),
+  gitRaw: vi.fn(),
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
   startDiskWatchdog: vi.fn(),
@@ -85,6 +86,7 @@ vi.mock("./git", async (importOriginal) => ({
   mergeBranch: mocks.mergeBranch,
   removeWorktree: mocks.removeWorktree,
   tryGit: mocks.tryGit,
+  gitRaw: mocks.gitRaw,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
 
@@ -313,6 +315,7 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
     mocks.preflightProvider.mockResolvedValue(undefined);
     mocks.tryGit.mockImplementation(async () => ({ ok: true, out: "" }));
+    mocks.gitRaw.mockResolvedValue("");
     mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.startDiskWatchdog.mockImplementation(() => ({ stop: vi.fn() }));
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
@@ -2490,6 +2493,7 @@ describe("Orchestrator cancellation lifecycle", () => {
           ? { ok: true, out: " M specs/05-ui-design.md" }
           : { ok: true, out: "" },
       );
+      mocks.gitRaw.mockResolvedValue(" M specs/05-ui-design.md\0");
       mocks.runHarness.mockImplementationOnce(async () => {
         writeEvaluation(worktreePath, "VERDICT: approve\n\nCriteria pass.");
         fs.writeFileSync(path.join(worktreePath, ".ralph", "SUMMARY.md"), "Doc summary");
@@ -2535,6 +2539,9 @@ describe("Orchestrator cancellation lifecycle", () => {
         args[0] === "status"
           ? { ok: true, out: evaluatorTouchedSource ? " M src/feature.ts" : "" }
           : { ok: true, out: "" },
+      );
+      mocks.gitRaw.mockImplementation(async () =>
+        evaluatorTouchedSource ? " M src/feature.ts\0" : "",
       );
       mocks.runHarness.mockImplementationOnce(async () => {
         writeEvaluation(worktreePath, "VERDICT: approve\n\nLooks good.");

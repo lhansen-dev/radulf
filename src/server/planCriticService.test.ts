@@ -8,6 +8,7 @@ import { setupTestDataDir } from "@/testUtils/testDataDir";
 const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   tryGit: vi.fn(),
+  gitRaw: vi.fn(),
   // The fixture worktree is not a real checkout; the guard would otherwise
   // report it as no longer sharing the repository's git dir.
   offRunBranchReason: vi.fn().mockResolvedValue(null),
@@ -20,6 +21,7 @@ vi.mock("./harness", async (importOriginal) => ({
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
   tryGit: mocks.tryGit,
+  gitRaw: mocks.gitRaw,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
 vi.mock("./settings", async (importOriginal) => ({
@@ -326,18 +328,18 @@ describe("PlanCriticService.runCritic", () => {
     });
   }
 
-  /** `tryGit` answering rev-parse with a constant and status with the given
-   * porcelain outputs, in call order (the last one repeats). */
+  /** Git answering rev-parse with a constant and raw NUL status records in
+   * call order, with the last status repeated. */
   function mockGit(statusOutputs: string[] = [""]) {
     let statusCalls = 0;
     mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => {
       if (args[0] === "rev-parse") return { ok: true, out: HEAD };
-      if (args[0] === "status") {
-        const out = statusOutputs[Math.min(statusCalls, statusOutputs.length - 1)];
-        statusCalls += 1;
-        return { ok: true, out };
-      }
       return { ok: true, out: "" };
+    });
+    mocks.gitRaw.mockImplementation(async () => {
+      const out = statusOutputs[Math.min(statusCalls, statusOutputs.length - 1)];
+      statusCalls += 1;
+      return out;
     });
   }
 
@@ -492,7 +494,7 @@ describe("PlanCriticService.runCritic", () => {
 
   it("rejects a verdict when the critic touched anything but its verdict file", async () => {
     seedPlannedCard("card-illegal");
-    mockGit(["", " M src/extra.ts\n?? .ralph/CRITIQUE.md"]);
+      mockGit(["", " M src/extra.ts\0?? .ralph/CRITIQUE.md\0"]);
     mockCriticHarness({
       [`.ralph/${CRITIQUE_FILE}`]: "VERDICT: approve\nFine.\n",
       "src/extra.ts": "export const sneaky = true;\n",

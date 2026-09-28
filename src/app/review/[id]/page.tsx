@@ -10,7 +10,7 @@ import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
-import { diffHeaderPath } from "./diffHeader";
+import { diffHeaderPaths } from "./diffHeader";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { hasSuspiciousChars, segmentSuspiciousChars, type DiffLineSegment } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
@@ -21,14 +21,19 @@ import type { DiffResponse } from "../../api/cards/[id]/diff/route";
 /** A diff line with its suspicious-character segments, scanned once when the
  * diff is parsed rather than on every render. */
 type DiffLine = { text: string; segments: DiffLineSegment[] };
-type DiffFile = { header: string; lines: DiffLine[] };
+type DiffFile = { header: string; paths: string[]; lines: DiffLine[] };
 
 function parseDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      current = { header: diffHeaderPath(line), lines: [] };
+      const { source, destination } = diffHeaderPaths(line);
+      current = {
+        header: source === destination ? destination : `${source} → ${destination}`,
+        paths: source === destination ? [destination] : [source, destination],
+        lines: [],
+      };
       files.push(current);
     } else if (current) {
       current.lines.push({ text: line, segments: segmentSuspiciousChars(line) });
@@ -100,9 +105,10 @@ export default function ReviewPage() {
 
   const files = useMemo(() => (diff ? parseDiff(diff.diff) : []), [diff]);
   const evaluation = useMemo(() => (diff?.evaluation ? parseEvaluation(diff.evaluation) : null), [diff]);
-  const flags = useMemo(() => classifySelfModifying(files.map((f) => f.header)), [files]);
-  const sensitiveFlags = useMemo(() => classifySensitivePaths(files.map((f) => f.header)), [files]);
-  const ignoreFilesChanged = useMemo(() => changedIgnoreFiles(files.map((f) => f.header)), [files]);
+  const changedPaths = useMemo(() => files.flatMap((f) => f.paths), [files]);
+  const flags = useMemo(() => classifySelfModifying(changedPaths), [changedPaths]);
+  const sensitiveFlags = useMemo(() => classifySensitivePaths(changedPaths), [changedPaths]);
+  const ignoreFilesChanged = useMemo(() => changedIgnoreFiles(changedPaths), [changedPaths]);
   const hasSuspicious = useMemo(() => (diff ? hasSuspiciousChars(diff.diff) : false), [diff]);
   const loopRun = detail?.runs.find((r) => r.kind === "loop" && r.status === "completed");
   const plan = detail?.plans[0];

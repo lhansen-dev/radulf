@@ -11,7 +11,7 @@ import { changedPaths } from "@/shared/docPaths";
 import { errorMessage } from "@/shared/errorMessage";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { offRunBranchReason, tryGit } from "./git";
+import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { listScopingMessages, type ScopingMessage } from "./scoping";
@@ -228,7 +228,7 @@ export class PlanCriticService {
       deps.moveCard(cardId, "planning", "needs_attention", moveReason);
     };
     const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
-    const status = async () => (await tryGit(worktreePath, "status", "--porcelain")).out;
+    const status = async () => gitRaw(worktreePath, "status", "--porcelain=v1", "-z");
     try {
       // The awaited sandbox setup above opens a window where the user can
       // cancel before this run row existed — never start a harness for such a card.

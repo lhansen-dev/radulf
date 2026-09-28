@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { diffHeaderPath, unquoteGitPath } from "./diffHeader";
-import { classifySensitivePaths } from "./sensitivePaths";
+import { diffHeaderPath, diffHeaderPaths, unquoteGitPath } from "./diffHeader";
+import { changedIgnoreFiles, classifySensitivePaths } from "./sensitivePaths";
 import { classifySelfModifying } from "./selfModifying";
 
 describe("diffHeaderPath", () => {
@@ -16,8 +16,13 @@ describe("diffHeaderPath", () => {
     );
   });
 
-  it("reads a rename's pre-image side", () => {
-    expect(diffHeaderPath("diff --git a/old.ts b/new.ts")).toBe("old.ts");
+  it("uses a rename destination as the primary path and retains both sides", () => {
+    const line = "diff --git a/old.ts b/src/server/sandbox/new.ts";
+    expect(diffHeaderPath(line)).toBe("src/server/sandbox/new.ts");
+    expect(diffHeaderPaths(line)).toEqual({
+      source: "old.ts",
+      destination: "src/server/sandbox/new.ts",
+    });
   });
 
   it("decodes the octal escapes git writes for a non-ASCII path", () => {
@@ -29,6 +34,26 @@ describe("diffHeaderPath", () => {
   it("decodes a quoted path with an embedded quote, which core.quotePath never unquotes", () => {
     const line = String.raw`diff --git "a/src/server/sandbox/we\"ird.ts" "b/src/server/sandbox/we\"ird.ts"`;
     expect(diffHeaderPath(line)).toBe('src/server/sandbox/we"ird.ts');
+  });
+
+  it("decodes a quoted rename destination after an unquoted source", () => {
+    const line = String.raw`diff --git a/old.ts "b/src/server/sandbox/caf\303\251.ts"`;
+    expect(diffHeaderPaths(line)).toEqual({
+      source: "old.ts",
+      destination: "src/server/sandbox/café.ts",
+    });
+  });
+
+  it("keeps a sensitive destination containing the delimiter text", () => {
+    const line = "diff --git a/notes.txt b/src/server/sandbox/policy b/ignored.ts";
+    const paths = diffHeaderPaths(line);
+    expect(paths).toEqual({
+      source: "notes.txt",
+      destination: "src/server/sandbox/policy b/ignored.ts",
+    });
+    expect(classifySensitivePaths(Object.values(paths)).map((f) => f.label)).toContain(
+      "sandbox / containment policy",
+    );
   });
 
   it("decodes a backslash and a tab", () => {
@@ -57,6 +82,22 @@ describe("the security banners this feeds", () => {
   it("raises the self-modifying banner for the same path", () => {
     const flags = classifySelfModifying([diffHeaderPath(quoted)]);
     expect(flags.map((f) => f.label)).toContain("self-modifying: prompts/orchestrator");
+  });
+
+  it("raises both banners when only a rename destination is sensitive", () => {
+    const renamed = "diff --git a/notes.txt b/src/server/sandbox/policy.ts";
+    const paths = Object.values(diffHeaderPaths(renamed));
+    expect(classifySensitivePaths(paths).map((f) => f.label)).toContain(
+      "sandbox / containment policy",
+    );
+    expect(classifySelfModifying(paths).map((f) => f.label)).toContain(
+      "self-modifying: prompts/orchestrator",
+    );
+  });
+
+  it("flags an ignore file that is only the destination of a rename", () => {
+    const renamed = "diff --git a/notes.txt b/.gitignore";
+    expect(changedIgnoreFiles(Object.values(diffHeaderPaths(renamed)))).toEqual([".gitignore"]);
   });
 
   it("would have raised neither before the header was unquoted", () => {

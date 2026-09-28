@@ -24,7 +24,7 @@ import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { errorMessage } from "@/shared/errorMessage";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { offRunBranchReason, tryGit } from "./git";
+import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { snapshotRepoIntegrity } from "./integrity";
@@ -150,7 +150,7 @@ export class EvaluationService {
       deps.moveCard(cardId, "evaluating", "needs_attention", moveReason);
     };
     const sourceStatus = async () =>
-      (await tryGit(worktreePath, "status", "--porcelain", "--", ".", ":(exclude).ralph")).out;
+      gitRaw(worktreePath, "status", "--porcelain=v1", "-z", "--", ".", ":(exclude).ralph");
     const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
     try {
       // The awaited sandbox and integrity setup above open a window where the
@@ -193,6 +193,10 @@ export class EvaluationService {
           throw error;
         }
         if (controller.signal.aborted) return; // cancelCard already finalized
+        const gateLeftovers = await ctx.reap();
+        if (gateLeftovers.length > 0) {
+          return fail(`surviving gate process groups after reap: ${gateLeftovers.join(", ")}`);
+        }
         writeRalphArtifact(worktreePath, GATE_FILE, renderGateFile(gate));
         emitEvent("gate.finished", {
           cardId,

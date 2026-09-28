@@ -84,6 +84,14 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+/** Run git without trimming stdout. Security-sensitive machine formats such
+ * as `--porcelain=v1 -z` use leading spaces and NUL record separators that
+ * must survive exactly as Git emitted them. */
+export async function gitRaw(cwd: string, ...args: string[]): Promise<string> {
+  const { stdout } = await execGit(cwd, args);
+  return stdout;
+}
+
 export async function tryGit(
   cwd: string,
   ...args: string[]
