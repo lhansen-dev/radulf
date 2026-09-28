@@ -16,6 +16,8 @@ export type BreakdownPiece = {
   description: string;
   repoId?: string | null;
   dependsOn?: number[];
+  /** The Jira issue this piece mirrors, upper-cased, or null for none. */
+  jiraKey?: string | null;
 };
 
 /** Statuses in which a piece no longer holds up an ordered epic, and which

@@ -394,6 +394,15 @@ export default function CardDetail() {
             <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
             <span className="text-foreground/40">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
           </div>
+          {card.jiraKey && (
+            <p className="text-sm text-foreground/60">
+              Jira: {detail.jiraUrl ? (
+                <a href={detail.jiraUrl} target="_blank" rel="noreferrer" className="text-accent underline">{card.jiraKey}</a>
+              ) : (
+                <span>{card.jiraKey}</span>
+              )}
+            </p>
+          )}
           {detail.parent && (
             <p className="text-sm text-foreground/60">
               Part of <Link href={`/card/${detail.parent.id}`} className="text-amber-300 hover:underline">{detail.parent.title}</Link>

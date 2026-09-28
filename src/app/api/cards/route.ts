@@ -118,6 +118,7 @@ export async function POST(req: Request) {
         autoApprove: body.autoApprove ? 1 : 0,
         openPr: body.openPr ? 1 : 0,
         baseBranch: body.baseBranch,
+        jiraKey: body.jiraKey ?? null,
         createdAt: now(),
         updatedAt: now(),
       })

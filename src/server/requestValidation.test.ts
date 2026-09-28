@@ -174,6 +174,7 @@ describe("card request validation", () => {
       planCritic: undefined,
       criticModel: null,
       baseBranch: "feature/base",
+      jiraKey: null,
     });
   });
 
@@ -209,5 +210,16 @@ describe("jiraBaseUrl", () => {
     });
     expect(() => validateSettingsPatch({ jiraBaseUrl: "example.atlassian.net" })).toThrow(/must be a URL/);
     expect(() => validateSettingsPatch({ jiraBaseUrl: "ftp://example.atlassian.net" })).toThrow(/http or https/);
+  });
+});
+
+describe("jiraCommentOnDone", () => {
+  it("is opt-in: the default writes nothing to Jira", () => {
+    expect(SETTING_DEFAULTS.jiraCommentOnDone).toBe(false);
+  });
+
+  it("accepts a boolean and rejects anything else", () => {
+    expect(validateSettingsPatch({ jiraCommentOnDone: true })).toEqual({ jiraCommentOnDone: true });
+    expect(() => validateSettingsPatch({ jiraCommentOnDone: "yes" })).toThrow(/must be a boolean/);
   });
 });

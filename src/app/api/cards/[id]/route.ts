@@ -72,6 +72,8 @@ export async function GET(_req: Request, { params }: Ctx) {
   // (runHarness reads it straight off settings at call time), so this is
   // always the current global value, not necessarily what an old run used.
   const settings = getSettings();
+  // Where the card's Jira issue lives, when it has one and Jira is configured.
+  const jiraBase = settings.jiraBaseUrl.trim().replace(/\/+$/, "");
   const models = Object.fromEntries(
     (["planner", "loop", "evaluator", "critic"] as const).map((role) => [role, {
       provider: settings[`${role}Provider`],
@@ -96,6 +98,7 @@ export async function GET(_req: Request, { params }: Ctx) {
     scopingTurn: scopingTurnInFlight(id),
     children: listChildren(id),
     parent: parent ? { id: parent.id, title: parent.title, runMode: parent.runMode } : null,
+    jiraUrl: card.jiraKey && jiraBase ? `${jiraBase}/browse/${encodeURIComponent(card.jiraKey)}` : null,
   });
 }
 

@@ -53,6 +53,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   // Spec 24 decision 8: the imported issue's child issues, each ticked to
   // become a task under this one, and how those tasks should run.
   const [jiraChildren, setJiraChildren] = useState<JiraChild[]>([]);
+  // The issue actually imported, not the text typed into the box: only this
+  // key is known to be a real issue, so only this key is worth persisting.
+  const [jiraKey, setJiraKey] = useState<string | null>(null);
   const [childrenRunMode, setChildrenRunMode] = useState<EpicRunMode>("ordered");
   const includedChildren = jiraChildren.filter((child) => child.include);
   // Importing a file creates its cards directly rather than prefilling this
@@ -83,9 +86,10 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     if (!ref || importing) return;
     setImporting(true); setError("");
     try {
-      const draft = await api<{ title: string; description: string; children?: Omit<JiraChild, "include">[] }>(
+      const draft = await api<{ key: string; title: string; description: string; children?: Omit<JiraChild, "include">[] }>(
         `/api/jira/issue?ref=${encodeURIComponent(ref)}`,
       );
+      setJiraKey(draft.key);
       setTitle(draft.title);
       setDescription(draft.description);
       setJiraChildren((draft.children ?? []).map((child) => ({ ...child, include: true })));
@@ -125,7 +129,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
     : prStatus.ok
       ? "This repo has no `origin` remote to open a pull request against."
       : prStatus.detail;
-  const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || planCritic !== null || autoApprove || openPr || jiraChildren.length > 0;
+  const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || planCritic !== null || autoApprove || openPr || jiraKey !== null || jiraChildren.length > 0;
 
   const requestClose = useCallback(() => {
     if (dirty && !confirm("Discard your unsaved task?")) return;
@@ -168,6 +172,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         autoApprove,
         openPr,
         baseBranch: selectedBranch || null,
+        jiraKey,
       };
       const created = await api<{ id: string }>("/api/cards", { json: request });
       // Jira already wrote the pieces: the ticked children become the tasks
@@ -175,7 +180,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       if (includedChildren.length > 0) {
         await api(`/api/cards/${created.id}/breakdown`, {
           json: {
-            pieces: includedChildren.map(({ title, description }) => ({ title, description })),
+            pieces: includedChildren.map(({ key, title, description }) => ({ title, description, jiraKey: key })),
             runMode: childrenRunMode,
           },
         });

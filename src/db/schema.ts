@@ -116,6 +116,10 @@ export const cards = sqliteTable(
     // is the OR of the two, read at approval time. Same shape as autoApprove,
     // and like it, NOT seeded from the global.
     openPr: integer("open_pr").notNull().default(0),
+    // The Jira issue key this card was imported from (or linked to by hand).
+    // Nullable: most cards have no Jira counterpart at all. Used to comment on
+    // the issue when the card reaches Done.
+    jiraKey: text("jira_key"),
     // Set when a loop run finishes and the card is waiting to be picked up
     // for evaluation. A durable flag rather than an in-memory queue so a
     // second worker process (or a restarted one) can claim the evaluation

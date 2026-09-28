@@ -58,6 +58,19 @@ New task dialog creates the card and asks for the breakdown straight away, and
 a Jira issue with child issues offers those children as the tasks, ticked, with
 a run mode, before the card exists.
 
+**Jira Done comment.** A card imported from Jira keeps the issue key: the card
+page shows it as a link to the issue, and `PATCH /api/cards/{id}` with `jiraKey`
+sets or clears it on any card. With **Comment on Jira when a card is done** on
+under **Settings → Repositories → Jira** (`jiraCommentOnDone`, off by default),
+Radulf posts exactly one plain-text comment on that issue when the card reaches
+Done — what became of the work, merged into the base branch at a short sha or
+the pull request URL, plus the card link (`RADULF_PUBLIC_BASE_URL`, or the card
+id when that is unset). An epic's parent comments once when it closes, and its
+pieces comment on their own keys. There is one attempt with a ~10 second
+timeout, a failure never blocks the card, and the outcome appears on the card
+timeline as `jira.commented` or `jira.comment_failed`. This is the only write
+Radulf makes to Jira.
+
 **1 · Plan.** The planner reads the card, its scoping thread, and the repo, then
 writes plan artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop
 to run, and a `CRITERIA.md` holding the acceptance criteria. This is a single

@@ -2,9 +2,10 @@
  * Card export and import (roadmap item 6).
  *
  * What travels is the card as a piece of *intent*: its title and description,
- * the per-card settings the operator chose for it, and its scoping thread —
- * which spec 17 calls the durable record of why the card is shaped the way it
- * is, and which is the part nobody would reconstruct by hand.
+ * the per-card settings the operator chose for it, the Jira issue it was
+ * imported from — the receiving install still wants to comment there — and its
+ * scoping thread, which spec 17 calls the durable record of why the card is
+ * shaped the way it is, and which is the part nobody would reconstruct by hand.
  *
  * What does not travel is anything that happened. Runs, iterations,
  * transcripts, reviews and worktree paths describe one machine's execution and
@@ -20,6 +21,7 @@ import { ClientError } from "./clientError";
 import { listBranches } from "./git";
 import { emitEvent } from "./events";
 import { requireCard } from "./cards";
+import { isJiraIssueKey } from "./jira";
 import { requireRepo } from "./repos";
 import { record } from "./requestValidation";
 
@@ -33,6 +35,9 @@ export type ExportedCard = {
   title: string;
   description: string;
   baseBranch: string | null;
+  /** The Jira issue this card came from, so the receiving install can still
+   * comment on it. Null when the card never had one. */
+  jiraKey: string | null;
   source: "user" | "agent";
   maxIterations: number | null;
   timeoutMinutes: number | null;
@@ -80,6 +85,7 @@ export function exportCards(selector: { cardId?: string; repoId?: string }): Car
       title: row.title,
       description: row.description,
       baseBranch: row.baseBranch,
+      jiraKey: row.jiraKey ?? null,
       source: row.source,
       maxIterations: row.maxIterations,
       timeoutMinutes: row.timeoutMinutes,
@@ -160,6 +166,7 @@ export async function importCards(repoId: string, payload: unknown): Promise<Imp
           status: "backlog",
           position: 0,
           baseBranch: resolveBranch(card.baseBranch),
+          jiraKey: card.jiraKey,
           source: card.source,
           maxIterations: card.maxIterations,
           timeoutMinutes: card.timeoutMinutes,
@@ -228,6 +235,12 @@ function parseExportedCard(value: unknown, index: number): ExportedCard {
     title,
     description: typeof card.description === "string" ? card.description : "",
     baseBranch: text("baseBranch"),
+    // A key this Radulf does not recognise is dropped rather than fatal: the
+    // card is still worth importing, it just arrives unlinked.
+    jiraKey:
+      typeof card.jiraKey === "string" && isJiraIssueKey(card.jiraKey)
+        ? card.jiraKey.trim().toUpperCase()
+        : null,
     source: card.source === "agent" ? "agent" : "user",
     maxIterations: cap("maxIterations", 1_000),
     timeoutMinutes: cap("timeoutMinutes", 10_080),

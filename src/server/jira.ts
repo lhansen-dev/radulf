@@ -3,9 +3,11 @@ import type { Settings } from "./settings";
 import { errorMessage } from "@/shared/errorMessage";
 
 /**
- * Read-only Jira access for the New Task dialog: fetch one issue and shape it
- * as a card draft. Radulf never writes to Jira. Runs host-side, like the
- * GitHub delivery in github.ts, so the sandboxed agents never hold the token.
+ * Jira access for the New Task dialog: fetch one issue and shape it as a card
+ * draft, plus the two pieces a write needs — `restRoot` and `jiraAuthorization`
+ * — which the one write in this app reuses: the single Done comment in
+ * jiraAnnounce.ts. Runs host-side, like the GitHub delivery in github.ts, so the
+ * sandboxed agents never hold the token.
  */
 
 export type JiraIssue = { key: string; url: string; summary: string; description: string };
@@ -13,6 +15,12 @@ export type JiraCardDraft = { key: string; url: string; title: string; descripti
 type JiraSettings = Pick<Settings, "jiraBaseUrl" | "jiraEmail" | "jiraApiToken">;
 
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]*-\d+$/i;
+
+/** Whether the value is a bare Jira issue key (`DEV-123`, any case, surrounding
+ * space allowed). A pasted link is not a key — use parseJiraIssueRef for that. */
+export function isJiraIssueKey(value: string): boolean {
+  return ISSUE_KEY.test(value.trim());
+}
 
 /** The issue key in a bare key or a pasted link, upper-cased, or null. Covers
  * `/browse/KEY`, a board's `?selectedIssue=KEY`, and any path segment that is
@@ -61,7 +69,7 @@ const REJECTED =
  * default. The unauthenticated `_edge/tenant_info` gives the cloud id; a site
  * that has none, or cannot be reached, is called directly as before.
  */
-async function restRoot(s: JiraSettings): Promise<string> {
+export async function restRoot(s: JiraSettings): Promise<string> {
   const base = siteRoot(s);
   try {
     const res = await fetch(`${base}/_edge/tenant_info`, { signal: AbortSignal.timeout(10_000), cache: "no-store" });
@@ -73,14 +81,20 @@ async function restRoot(s: JiraSettings): Promise<string> {
   return base;
 }
 
-/** One authenticated GET. Credentials trimmed on both sides: a token pasted
- * with a trailing newline is the same failure as a wrong one, and Jira
- * reports neither clearly (see fetchJiraIssue). */
+/** The only credential scheme Jira Cloud takes: the account email and its API
+ * token, basic-auth style. Trimmed on both sides: a token pasted with a
+ * trailing newline is the same failure as a wrong one, and Jira reports neither
+ * clearly (see fetchJiraIssue). Exported for jiraAnnounce.ts, which posts. */
+export function jiraAuthorization(s: JiraSettings): string {
+  return `Basic ${Buffer.from(`${s.jiraEmail.trim()}:${s.jiraApiToken.trim()}`).toString("base64")}`;
+}
+
+/** One authenticated GET. */
 async function jiraGet(s: JiraSettings, root: string, path: string): Promise<Response> {
   try {
     return await fetch(`${root}/${path}`, {
       headers: {
-        Authorization: `Basic ${Buffer.from(`${s.jiraEmail.trim()}:${s.jiraApiToken.trim()}`).toString("base64")}`,
+        Authorization: jiraAuthorization(s),
         Accept: "application/json",
       },
       signal: AbortSignal.timeout(10_000),

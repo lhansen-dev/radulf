@@ -69,11 +69,16 @@ export const SETTING_DEFAULTS = {
   // fails loudly when invoked.
   braveApiKey: "",
   // Jira import in the New Task dialog: the site's base URL, the Atlassian
-  // account email and an API token for that account. Read-only: Radulf fetches
-  // an issue to prefill a card and never writes to Jira. Blank URL disables it.
+  // account email and an API token for that account. Radulf fetches an issue to
+  // prefill a card and writes nothing back unless `jiraCommentOnDone` is on.
+  // Blank URL disables it.
   jiraBaseUrl: "",
   jiraEmail: "",
   jiraApiToken: "",
+  // When on, Radulf posts one plain-text comment on a card's Jira issue when the
+  // card reaches Done. OFF by default because it is the one place Radulf writes
+  // to an external system. No-op while `jiraBaseUrl` is blank.
+  jiraCommentOnDone: false,
   // Per-agent reasoning/thinking effort, applied to every provider via the pi
   // session's thinking level (spec 13 — one harness, so nothing ignores these).
   // "medium" mirrors pi's own built-in default, so these are no-ops until
@@ -227,6 +232,7 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "alertOnReviewReady",
   "alertOnNeedsAttention",
   "alertOnImprovementRunFinished",
+  "jiraCommentOnDone",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   // Upper bound is a guard rail, not a capability claim: past a handful of

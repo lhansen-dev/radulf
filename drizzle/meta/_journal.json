@@ -183,6 +183,13 @@
       "when": 1790367152022,
       "tag": "0025_precheck_passing_plan_row",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1790370554585,
+      "tag": "0026_jira_key",
+      "breakpoints": true
     }
   ]
 }

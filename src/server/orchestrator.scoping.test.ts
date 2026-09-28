@@ -5,6 +5,9 @@ import { setupTestDataDir } from "@/testUtils/testDataDir";
 const mocks = vi.hoisted(() => ({
   proposeScopedPlan: vi.fn(),
   proposeSplit: vi.fn(),
+  // Per-test settings overrides layered on top of the defaults below; the
+  // Jira Done announce reads the same mocked `getSettings` the pump does.
+  settings: {} as Record<string, unknown>,
 }));
 
 vi.mock("./scoping", async (importOriginal) => ({
@@ -23,7 +26,12 @@ vi.mock("./settings", async (importOriginal) => {
     ...original,
     // autoMode off: pump() must not reach for a real planner harness when the
     // breakdown queues its pieces.
-    getSettings: () => ({ ...original.SETTING_DEFAULTS, autoMode: false, sandboxEnabled: false }),
+    getSettings: () => ({
+      ...original.SETTING_DEFAULTS,
+      autoMode: false,
+      sandboxEnabled: false,
+      ...mocks.settings,
+    }),
   };
 });
 
@@ -78,6 +86,7 @@ beforeEach(() => {
     .values({ id: "repo-1", name: "Repo", path: "/tmp/repo-1", defaultBranch: "main", createdAt: now() })
     .run();
   vi.clearAllMocks();
+  for (const key of Object.keys(mocks.settings)) delete mocks.settings[key];
 });
 
 const allCards = () => db.select().from(cards).all().sort((a, b) => a.position - b.position);
@@ -278,6 +287,58 @@ describe("an epic", () => {
     move("b", "reviewing", "done");
     expect(allCards().find((row) => row.id === "epic")!.status).toBe("done");
     expect(db.select().from(events).all().map((e) => e.type)).toContain("epic.completed");
+  });
+
+  it("announces the epic's Done once on its own Jira issue, and never on a piece's", async () => {
+    // The way Settings would turn the opt-in on: the toggle plus a full set of
+    // credentials. With the toggle off (its shipped default) no request is made
+    // at all, which is what every other test in this file runs on.
+    mocks.settings.jiraCommentOnDone = true;
+    mocks.settings.jiraBaseUrl = "https://example.atlassian.net";
+    mocks.settings.jiraEmail = "me@example.com";
+    mocks.settings.jiraApiToken = "tok";
+    // The unauthenticated tenant lookup answers with a cloud id, so the comment
+    // goes to the Atlassian gateway, exactly as jiraAnnounce.ts builds it.
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).endsWith("/_edge/tenant_info")
+        ? new Response(JSON.stringify({ cloudId: "cloud-1" }), {
+            headers: { "content-type": "application/json" },
+          })
+        : new Response("{}", { status: 201 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      seedCard("epic", { jiraKey: "DEV-100" });
+      seedCard("a", { parentCardId: "epic", status: "done", position: 1 });
+      seedCard("b", { parentCardId: "epic", status: "review", position: 2 });
+      const move = (
+        orchestrator as unknown as { moveCard: (id: string, from: string, to: string) => boolean }
+      ).moveCard.bind(orchestrator);
+
+      move("b", "review", "reviewing");
+      move("b", "reviewing", "done");
+
+      // The announce is fire-and-forget, so the event is what says it ran.
+      await vi.waitFor(() =>
+        expect(
+          db
+            .select()
+            .from(events)
+            .all()
+            .some((e) => e.type === "jira.commented" && e.cardId === "epic"),
+        ).toBe(true),
+      );
+
+      const commentUrls = fetchMock.mock.calls
+        .map((call) => String(call[0]))
+        .filter((url) => url.endsWith("/comment"));
+      expect(commentUrls.filter((url) => url.endsWith("/rest/api/2/issue/DEV-100/comment"))).toHaveLength(1);
+      // And only that one: piece `b` carries no key, and a piece that reached
+      // Done through review is announced there, not from here.
+      expect(commentUrls).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

@@ -49,6 +49,7 @@ import { recordProviderFailure } from "./providerRateLimit";
 import { offRunBranchReason, recordWorktree, removeWorktree, tryGit } from "./git";
 import { removeRunTranscripts, runTranscriptDir } from "./retention";
 import { getCard, requireCard, type Card } from "./cards";
+import { announceCardDone } from "./jiraAnnounce";
 import { getRepo, requireRepo, type Repo } from "./repos";
 import { groupBy } from "./queryGrouping";
 import { PlanningService, pendingReplanFeedback, planningDestination, writePlanRow } from "./planningService";
@@ -846,6 +847,11 @@ export class Orchestrator {
     if (!epicFinished(children)) return;
     if (this.moveCard(parentId, "backlog", "done", "every task in the epic finished")) {
       emitEvent("epic.completed", { cardId: parentId, payload: { cardIds: children.map((c) => c.id) } });
+      // Fire-and-forget: `announceCardDone` catches every failure itself, so `void`
+      // cannot drop a rejection, and the pieces announce their own keys through
+      // the review path — this one call is only ever for the parent.
+      const parent = getCard(parentId);
+      if (parent) void announceCardDone(parent, { kind: "epic" });
     }
   }
 
@@ -1252,6 +1258,8 @@ export class Orchestrator {
             evaluatorModel: card.evaluatorModel,
             planCritic: card.planCritic,
             criticModel: card.criticModel,
+            // A piece mirrors its own Jira issue when the proposal named one.
+            jiraKey: piece.jiraKey ?? null,
             createdAt: now(),
             updatedAt: now(),
           })
