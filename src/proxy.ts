@@ -1,8 +1,8 @@
 /**
  * Request proxy — gates every route behind a signed session cookie.
  *
- * When RADULF_AUTH_PASSWORD_HASH is unset, the proxy is a strict no-op so
- * the unauthenticated local-development behavior is preserved.
+ * When RADULF_AUTH_PASSWORD_HASH is unset, loopback requests pass without a
+ * session. Foreign Host headers are rejected to block DNS rebinding.
  *
  * Uses only Web Crypto (no fs, no bcrypt) — the HMAC secret is read from
  * process.env.RADULF_AUTH_SECRET, populated at boot by ensureAuthSecret().
@@ -15,6 +15,7 @@ import {
   verifySession,
   SESSION_COOKIE,
   isAllowedOrigin,
+  isAllowedUnauthenticatedHost,
   requestHost,
 } from "@/server/session";
 
@@ -45,7 +46,7 @@ export async function proxy(request: NextRequest) {
   // rejected, and only browsers attach one. "Foreign" means anything but the
   // loopback host and port this request was addressed to, or the full
   // RADULF_ALLOWED_ORIGIN:
-    // another localhost port must not count, since browsers treat every localhost port
+  // another localhost port must not count, since browsers treat every localhost port
   // as one site for cookies.
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
     const origin = request.headers.get("origin");
@@ -55,6 +56,9 @@ export async function proxy(request: NextRequest) {
   }
 
   if (!authEnabled()) {
+    if (!isAllowedUnauthenticatedHost(requestHost(request))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
     return NextResponse.next();
   }
 

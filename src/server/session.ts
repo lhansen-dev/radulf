@@ -61,6 +61,24 @@ export function requestHost(request: Request): string {
 }
 
 /**
+ * The no-auth deployment is loopback-only. Enforce the same invariant at the
+ * HTTP boundary so DNS rebinding cannot use a foreign Host header to read the
+ * local API through the operator's browser.
+ */
+export function isAllowedUnauthenticatedHost(host: string): boolean {
+  try {
+    const addressed = new URL(`http://${host}`);
+    return (
+      addressed.hostname === "localhost" ||
+      addressed.hostname === "127.0.0.1" ||
+      addressed.hostname === "[::1]"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * CSRF backstop: returns true for allowed origins.
  *
  * Same-origin only: local development accepts an exact loopback host and port.

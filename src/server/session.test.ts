@@ -5,6 +5,7 @@ import {
   signSession,
   verifySession,
   isAllowedOrigin,
+  isAllowedUnauthenticatedHost,
   redirectBase,
 } from "./session";
 
@@ -87,6 +88,17 @@ describe("isAllowedOrigin", () => {
       expect(isAllowedOrigin("https://radulf.example.evil.com", "127.0.0.1:3000")).toBe(false);
     } finally {
       delete process.env.RADULF_ALLOWED_ORIGIN;
+    }
+  });
+});
+
+describe("isAllowedUnauthenticatedHost", () => {
+  it("accepts exact loopback hosts and rejects DNS rebinding hosts", () => {
+    for (const host of ["localhost", "localhost:3000", "127.0.0.1:3000", "[::1]:3000"]) {
+      expect(isAllowedUnauthenticatedHost(host)).toBe(true);
+    }
+    for (const host of ["attacker.example:3000", "localhost.attacker.example", "192.168.1.20:3000", "not a host/"]) {
+      expect(isAllowedUnauthenticatedHost(host)).toBe(false);
     }
   });
 });
