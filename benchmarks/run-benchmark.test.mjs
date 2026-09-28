@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { selectReviewRun, aggregateTokens, percentile } from "./run-benchmark.mjs";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import {
+  aggregateTokens,
+  benchmarkChildEnv,
+  benchmarkSandboxConfig,
+  percentile,
+  runSandboxedCriterion,
+  selectReviewRun,
+} from "./run-benchmark.mjs";
 
 // A card is a plan run plus one or more loop → evaluate cycles. `card.latestRun`
 // is whichever run finished last, which after a normal pipeline (or a
@@ -132,5 +142,60 @@ describe("percentile", () => {
     expect(percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 90)).toBe(9);
     expect(percentile([7], 90)).toBe(7);
     expect(percentile([], 50)).toBe(0);
+  });
+});
+
+describe("criterion isolation", () => {
+  it("uses a root-deny filesystem policy with only the candidate worktree writable", () => {
+    const config = benchmarkSandboxConfig(
+      "/worktree",
+      "/run-tmp",
+      "/home/operator/bin:/usr/bin:/bin",
+      "/home/operator",
+    );
+    expect(config.filesystem.denyRead).toEqual(["/"]);
+    expect(config.filesystem.allowRead).toContain("/worktree");
+    expect(config.filesystem.allowWrite).toEqual(["/worktree", "/run-tmp"]);
+    expect(config.filesystem.denyWrite).toEqual(["/worktree/.git"]);
+    expect(config.network.allowedDomains).toEqual([]);
+    expect(config.filesystem.allowRead).toContain("/home/operator/bin");
+    expect(config.filesystem.allowRead).not.toContain("/home/operator");
+  });
+
+  it("does not pass orchestration credentials to candidate processes", () => {
+    const env = benchmarkChildEnv("/run-tmp", {
+      PATH: "/usr/bin",
+      LANG: "C.UTF-8",
+      RADULF_BENCH_AUTH_COOKIE: "session",
+      OPENROUTER_API_KEY: "secret",
+      GITHUB_TOKEN: "write-token",
+    });
+    expect(env).toMatchObject({ PATH: "/usr/bin", HOME: "/run-tmp", LANG: "C.UTF-8" });
+    expect(env.RADULF_BENCH_AUTH_COOKIE).toBeUndefined();
+    expect(env.OPENROUTER_API_KEY).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+  });
+});
+
+describe.skipIf(
+  process.env.GIT_SSH_COMMAND === "/bin/false" || process.env.SANDBOX_RUNTIME === "1",
+)("criterion isolation with the real kernel sandbox", () => {
+  it("reads candidate files but cannot read a sibling sentinel", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "radulf-benchmark-isolation-"));
+    const worktree = path.join(root, "worktree");
+    const sentinel = path.join(root, "outside-secret");
+    await mkdir(worktree);
+    await writeFile(path.join(worktree, "allowed.txt"), "allowed\n");
+    await writeFile(sentinel, "secret\n");
+
+    try {
+      const allowed = await runSandboxedCriterion("cat allowed.txt", worktree);
+      expect(allowed).toMatchObject({ exitCode: 0, stdout: "allowed\n" });
+
+      const denied = await runSandboxedCriterion(`cat '${sentinel}'`, worktree);
+      expect(denied.exitCode).not.toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

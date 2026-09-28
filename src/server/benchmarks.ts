@@ -182,6 +182,17 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
   if (opts.autoReview) args.push("--auto-review");
 
   const logFd = openSync(logPath, "a");
+  const runnerEnv: NodeJS.ProcessEnv = {
+    NODE_ENV: process.env.NODE_ENV,
+    PATH: process.env.PATH,
+    LANG: process.env.LANG,
+    HOME: process.env.HOME,
+    TMPDIR: process.env.TMPDIR,
+    RADULF_BENCH_AUTH_COOKIE: opts.cookie,
+  };
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("LC_") && value !== undefined) runnerEnv[key] = value;
+  }
   const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
     detached: true,
@@ -191,7 +202,7 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
     // long as it lives (`ps -ef`, /proc/<pid>/cmdline) — that is the whole
     // instance's bearer credential handed to every account on the host. Its
     // environment is readable only by its own owner.
-    env: { ...process.env, RADULF_BENCH_AUTH_COOKIE: opts.cookie },
+    env: runnerEnv,
   });
   child.unref();
   closeSync(logFd);

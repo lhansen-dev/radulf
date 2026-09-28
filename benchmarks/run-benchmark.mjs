@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * run-benchmark.mjs — dependency-free Node ESM benchmark runner for
+ * run-benchmark.mjs — Node ESM benchmark runner for
  * Radulf Phase 3 loop-performance benchmarking.
  *
  * Runs one candidate loop provider/model and a configurable planner model
@@ -24,12 +24,114 @@
  */
 
 import { existsSync } from "node:fs";
-import { readFile, writeFile, access } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 
 const fsReadFile = readFile;
 const fsWriteFile = writeFile;
-const fsAccess = access;
+
+/** Environment for every benchmark-owned child. Candidate code receives no
+ * provider keys, bearer cookie, Git credentials, or CI authority. */
+export function benchmarkChildEnv(tmpdir, source = process.env) {
+  const env = {
+    PATH: source.PATH,
+    HOME: tmpdir,
+    TMPDIR: tmpdir,
+    TERM: "dumb",
+    PYTHONUNBUFFERED: "1",
+    PYTHONNOUSERSITE: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  for (const [key, value] of Object.entries(source)) {
+    if ((key === "LANG" || key.startsWith("LC_")) && value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+/** Root-deny policy for commands that interpret model-controlled files. */
+export function benchmarkSandboxConfig(
+  worktree,
+  tmpdir,
+  pathEnv = process.env.PATH || "",
+  home = os.homedir(),
+) {
+  const readRoots = new Set([
+    worktree,
+    tmpdir,
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/System",
+  ]);
+  for (const entry of pathEnv.split(path.delimiter).filter(Boolean)) {
+    readRoots.add(entry);
+    const parent = path.dirname(entry);
+    const relativeToHome = path.relative(path.resolve(home), path.resolve(parent));
+    const parentInsideHome =
+      relativeToHome === "" ||
+      (!path.isAbsolute(relativeToHome) &&
+        relativeToHome !== ".." &&
+        !relativeToHome.startsWith(`..${path.sep}`));
+    if (parent !== "/" && !parentInsideHome) readRoots.add(parent);
+  }
+  if (process.platform === "linux") {
+    const helper = getApplySeccompBinaryPath();
+    if (!helper) throw new Error("sandbox apply-seccomp helper is missing");
+    readRoots.add(helper);
+  }
+  return {
+    filesystem: {
+      denyRead: ["/"],
+      allowRead: [...readRoots].filter((root) => root !== "/"),
+      allowWrite: [worktree, tmpdir],
+      denyWrite: [path.join(worktree, ".git")],
+    },
+    network: { allowedDomains: [], deniedDomains: [] },
+  };
+}
+
+let benchmarkSandboxReady;
+
+async function initializeBenchmarkSandbox() {
+  if (!benchmarkSandboxReady) {
+    benchmarkSandboxReady = SandboxManager.initialize({
+      filesystem: { denyRead: ["/"], allowRead: [], allowWrite: [], denyWrite: [] },
+      network: { allowedDomains: [], deniedDomains: [] },
+    });
+  }
+  await benchmarkSandboxReady;
+}
+
+/** Execute a fixed criterion while the kernel confines every file it loads. */
+export async function runSandboxedCriterion(command, worktree, timeout = 30_000) {
+  await initializeBenchmarkSandbox();
+  const tmpdir = await mkdtemp(path.join(os.tmpdir(), "radulf-benchmark-criterion-"));
+  const config = benchmarkSandboxConfig(worktree, tmpdir);
+  const previousTmpdir = process.env.CLAUDE_CODE_TMPDIR;
+  try {
+    process.env.CLAUDE_CODE_TMPDIR = tmpdir;
+    SandboxManager.updateConfig(config);
+    const wrapped = await SandboxManager.wrapWithSandbox(command, "/bin/sh", config);
+    return await execCmd("/bin/sh", ["-c", wrapped], {
+      cwd: worktree,
+      timeout,
+      env: benchmarkChildEnv(tmpdir),
+    });
+  } finally {
+    if (previousTmpdir === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
+    else process.env.CLAUDE_CODE_TMPDIR = previousTmpdir;
+    await rm(tmpdir, { recursive: true, force: true });
+  }
+}
 
 // ── Pure helpers (exported for tests) ──────────────────────────
 
@@ -182,7 +284,7 @@ function execCmd(bin, args, opts = {}) {
       cwd: opts.cwd || process.cwd(),
       timeout: opts.timeout || 30_000,
       maxBuffer: 10 * 1024 * 1024, // 10 MB
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: opts.env || benchmarkChildEnv(os.tmpdir()),
     }, (error, stdout, stderr) => {
       if (error && error.killed) {
         // Timeout
@@ -336,7 +438,7 @@ Options:
       `     f. Poll GET /api/cards until terminal status`,
       `     g. GET /api/cards/[id] for every run; sum tokens/cost across all`,
       `     h. Compute per-run metrics`,
-      `     i. Execute CRITERIA.md commands in worktree`,
+      `     i. Execute CRITERIA.md commands in the kernel sandbox`,
       `     j. Compute diff correctness`,
       `  3. Aggregate metrics across runs`,
       `  4. Write JSON report to ${out || "stdout"}`,
@@ -653,33 +755,15 @@ Options:
       const criteriaResults = [];
 
       if (worktreePath) {
-        // Install requirements if present
-        const reqFile = `${worktreePath}/requirements.txt`;
-        try {
-          await fsAccess(reqFile);
-          console.log(`  Installing requirements from ${reqFile}...`);
-          try {
-            const { exitCode: pipCode } = await execCmd(
-              "python3", ["-m", "pip", "install", "-q", "-r", "requirements.txt"],
-              { cwd: worktreePath, timeout: 120_000 }
-            );
-            if (pipCode !== 0) {
-              console.warn("  Warning: pip install exited with code", pipCode);
-            }
-          } catch (e) {
-            console.warn("  Warning: pip install failed:", e.message);
-          }
-        } catch {
-          // No requirements.txt — skip
-        }
-
-        // Run each criterion command
+        // Candidate-authored dependency declarations are never installed by
+        // the host. Fixtures must carry any trusted setup they require.
         let allPassed = true;
         for (const cmd of criteriaCommands) {
           try {
-            const { exitCode, stdout, stderr } = await execCmd(
-              "sh", ["-c", cmd],
-              { cwd: worktreePath, timeout: 30_000 }
+            const { exitCode, stdout, stderr } = await runSandboxedCriterion(
+              cmd,
+              worktreePath,
+              30_000,
             );
             const passed = exitCode === 0;
             criteriaResults.push({ command: cmd, passed, exitCode, stdout, stderr });
@@ -705,7 +789,7 @@ Options:
         const baseBranch = run.baseBranch || "main";
         try {
           const { stdout: diffOut, exitCode: diffCode } = await execCmd(
-            "git", ["-C", worktreePath, "diff", "--stat", `${baseBranch}...HEAD`, "--", ".", ":.ralph"],
+            "git", ["-C", worktreePath, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv", "--stat", `${baseBranch}...HEAD`, "--", ".", ":.ralph"],
             { cwd: worktreePath, timeout: 15_000 }
           );
           if (diffCode === 0) {
