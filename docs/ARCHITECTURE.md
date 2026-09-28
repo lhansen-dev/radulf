@@ -275,6 +275,8 @@ anything that happened — runs, iterations, transcripts, reviews and worktree
 paths describe one machine's execution. Plans are left out on purpose: a plan
 is written against one checkout at one commit, so importing one would land a
 card claiming to be planned for a repository the plan has never seen.
+Automatic approval and pull-request delivery are also reset on import. They
+are authority granted by the receiving operator, not portable card intent.
 
 An import always creates fresh ids in Backlog, and the request, not the file,
 names the target repository. A `baseBranch` the target does not have falls

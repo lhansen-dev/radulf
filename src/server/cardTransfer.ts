@@ -171,8 +171,12 @@ export async function importCards(repoId: string, payload: unknown): Promise<Imp
           maxIterations: card.maxIterations,
           timeoutMinutes: card.timeoutMinutes,
           reviewPlanBeforeImplementation: card.reviewPlanBeforeImplementation ? 1 : 0,
-          autoApprove: card.autoApprove ? 1 : 0,
-          openPr: card.openPr ? 1 : 0,
+          // Importing intent must never import delivery authority. A file from
+          // another trust boundary may describe the work, but only this
+          // installation's operator may opt the new card into automatic
+          // approval or remote publication.
+          autoApprove: 0,
+          openPr: 0,
           grillMe: card.grillMe ? 1 : 0,
           scopingAuthorsPlan: card.scopingAuthorsPlan ? 1 : 0,
           plannerModel: card.plannerModel,
@@ -245,8 +249,12 @@ function parseExportedCard(value: unknown, index: number): ExportedCard {
     maxIterations: cap("maxIterations", 1_000),
     timeoutMinutes: cap("timeoutMinutes", 10_080),
     reviewPlanBeforeImplementation: Boolean(card.reviewPlanBeforeImplementation),
-    autoApprove: Boolean(card.autoApprove),
-    openPr: Boolean(card.openPr),
+    // These fields remain in the export format for compatibility, but are
+    // deliberately inert on import. In particular, do not coerce attacker
+    // controlled strings such as "false" with Boolean, which would enable
+    // the capability.
+    autoApprove: false,
+    openPr: false,
     grillMe: Boolean(card.grillMe),
     scopingAuthorsPlan: Boolean(card.scopingAuthorsPlan),
     plannerModel: text("plannerModel"),

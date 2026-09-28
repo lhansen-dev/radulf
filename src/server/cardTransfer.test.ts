@@ -141,6 +141,8 @@ describe("importCards", () => {
       jiraKey: "DEV-42",
       maxIterations: 9,
       reviewPlanBeforeImplementation: 1,
+      autoApprove: 0,
+      openPr: 0,
       grillMe: 1,
       scopingAuthorsPlan: 1,
       loopModel: "a-loop-model",
@@ -204,6 +206,16 @@ describe("parseCardExport", () => {
   it("drops a jiraKey it does not recognise instead of refusing the file", () => {
     const parsed = parseCardExport({ ...file, cards: [{ title: "A card", jiraKey: "nonsense" }] });
     expect(parsed.cards[0]).toMatchObject({ title: "A card", jiraKey: null });
+  });
+
+  it("never imports automatic approval or publication authority", () => {
+    for (const authority of [true, "true", "false", 1]) {
+      const parsed = parseCardExport({
+        ...file,
+        cards: [{ title: "A card", autoApprove: authority, openPr: authority }],
+      });
+      expect(parsed.cards[0]).toMatchObject({ autoApprove: false, openPr: false });
+    }
   });
 
   it("ignores a field it has never heard of, rather than refusing the file", () => {
