@@ -168,6 +168,7 @@ export function buildFilesystemConfig(opts: {
   gitCommonDir: string;
   tmpdir: string;
   cacheRoot: string;
+  cgroupProcsFile?: string;
 }): FilesystemConfig {
   // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
   // run's own shared .git is re-allowed for reads through opts.gitCommonDir.
@@ -192,7 +193,7 @@ export function buildFilesystemConfig(opts: {
     // doesn't need to name a deny target exactly to reopen it — containing
     // it is enough, per srt's recursive subpath matching.
     allowRead: dropRootsThatWouldReopen(rawAllowRead, protectedRoots),
-    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot],
+    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, ...(opts.cgroupProcsFile ? [opts.cgroupProcsFile] : [])],
     denyWrite: [
       // A linked worktree's `.git` is a FILE naming its gitdir, and it sits
       // inside the worktree write-allow above. Rewriting it to point at a
@@ -236,6 +237,7 @@ export function buildRunSandboxConfig(opts: {
   gitCommonDir: string;
   tmpdir: string;
   cacheRoot: string;
+  cgroupProcsFile?: string;
   networkAllowlistText: string;
   /** Spec 14 opt-in (default off), macOS only: allow the trustd mach service so
    * Go-family tools (go, gh, gcloud, terraform, kubectl) can verify TLS certs —

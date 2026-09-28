@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentEnv, AGENT_GIT_IDENTITY } from "../harness/types";
 import { testSettings } from "@/testUtils/testSettings";
 
-import { cgroupPlanForRun } from "./cgroup";
+import { cgroupPlanForRun, setupRunCgroup } from "./cgroup";
 import {
   mechanismFromDiskutilPlist,
   sampleUsageBytes,
@@ -261,6 +261,35 @@ describe("cgroup plan (spec 14 L3 1e — unit level; enforcement is checklist #9
     expect(files).toContain("io.weight");
     // RLIMIT-style per-process knobs must not sneak in here either.
     expect(files.join()).not.toMatch(/nproc|rlimit/i);
+  });
+
+  it("returns an enforceable cgroup only after required limits verify", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cgroup-"));
+    const plan = cgroupPlanForRun("verified", root);
+    fs.mkdirSync(plan.dir, { recursive: true });
+    for (const file of ["memory.max", "memory.swap.max", "pids.max", "io.weight", "cgroup.procs"]) {
+      fs.writeFileSync(path.join(plan.dir, file), "");
+    }
+    try {
+      const cgroup = setupRunCgroup("verified", root);
+      expect(cgroup?.procsFile).toBe(path.join(plan.dir, "cgroup.procs"));
+      expect(cgroup?.joinLine).toContain("|| exit $?");
+      expect(fs.readFileSync(path.join(plan.dir, "memory.max"), "utf8")).toBe(
+        String(8 * 1024 * 1024 * 1024),
+      );
+      expect(fs.readFileSync(path.join(plan.dir, "pids.max"), "utf8")).toBe("2048");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when a required controller is unavailable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cgroup-"));
+    try {
+      expect(setupRunCgroup("missing", root)).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

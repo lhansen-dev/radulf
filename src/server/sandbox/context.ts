@@ -171,6 +171,7 @@ export async function createRunSandbox(
           gitCommonDir: await resolveGitCommonDir(opts.cwd),
           tmpdir,
           cacheRoot,
+          cgroupProcsFile: cgroup?.procsFile,
           networkAllowlistText: opts.s?.sandboxNetworkAllowlist ?? "",
           weakerIsolationForGoTls,
         })
@@ -190,13 +191,9 @@ export async function createRunSandbox(
     );
   }
 
-  // The real disk bound: the Linux cgroup where present; otherwise the genuine
-  // macOS ceiling when the worktree lives on an APFS quota volume (the README's
-  // hardened option), else the always-on watchdog backstop. Detected on the
-  // worktree — where the agent's writes land — not the run's scratch root.
-  const diskLimitMechanism: DiskLimitMechanism = cgroup
-    ? "cgroup"
-    : await detectMacDiskMechanism(opts?.cwd ?? root);
+  // Cgroups enforce memory and process limits, but cgroup v2 has no disk-space
+  // controller. Stamp the actual disk mechanism independently.
+  const diskLimitMechanism: DiskLimitMechanism = await detectMacDiskMechanism(opts?.cwd ?? root);
 
   const reap = () => reapProcessGroups(pgidFile);
   return {

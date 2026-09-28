@@ -146,6 +146,18 @@ describe("buildFilesystemConfig", () => {
     ]);
   });
 
+  it("allows only the cgroup membership file when a verified cgroup exists", () => {
+    const withCgroup = buildFilesystemConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/data/repo/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      cgroupProcsFile: "/sys/fs/cgroup/radulf/run-1/cgroup.procs",
+    });
+    expect(withCgroup.allowWrite).toContain("/sys/fs/cgroup/radulf/run-1/cgroup.procs");
+    expect(withCgroup.allowWrite).not.toContain("/sys/fs/cgroup/radulf/run-1");
+  });
+
   it("write-denies the entire shared Git directory", () => {
     expect(cfg.denyWrite).toEqual([
       "/data/worktrees/run-1/.git",

@@ -37,6 +37,7 @@ export function cgroupPlanForRun(runId: string, root: string = CGROUP_ROOT): Cgr
 
 export type RunCgroup = {
   dir: string;
+  procsFile: string;
   /** Shell line each bash invocation runs to join the cgroup. */
   joinLine: string;
 };
@@ -48,6 +49,11 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
   const plan = cgroupPlanForRun(runId, root);
   try {
     fs.mkdirSync(plan.dir, { recursive: true });
+    const procsFile = path.join(plan.dir, "cgroup.procs");
+    const required = new Set(["memory.max", "memory.swap.max", "pids.max"]);
+    if (!fs.existsSync(procsFile) || [...required].some((file) => !fs.existsSync(path.join(plan.dir, file)))) {
+      return null;
+    }
     // Controllers must be enabled on the parent before limits apply.
     try {
       fs.writeFileSync(
@@ -58,15 +64,20 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
       // Parent may already delegate them; individual writes below decide.
     }
     for (const [file, value] of plan.writes) {
+      const controlFile = path.join(plan.dir, file);
+      if (!fs.existsSync(controlFile) && !required.has(file)) continue;
       try {
-        fs.writeFileSync(path.join(plan.dir, file), value);
+        fs.writeFileSync(controlFile, value);
+        if (fs.readFileSync(controlFile, "utf8").trim() !== value) throw new Error("cgroup limit mismatch");
       } catch {
-        // A missing controller (e.g. io) must not lose memory/pids limits.
+        if (required.has(file)) return null;
+        // A missing optional io controller must not lose memory/pids limits.
       }
     }
     return {
       dir: plan.dir,
-      joinLine: `echo "$$" > '${plan.dir}/cgroup.procs' 2>/dev/null || true`,
+      procsFile,
+      joinLine: `echo "$$" > '${procsFile}' 2>/dev/null || exit $?`,
     };
   } catch {
     return null;
