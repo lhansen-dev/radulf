@@ -269,6 +269,12 @@ describe("runHarness watchdogs", () => {
     await sleep(600_000, signal);
   };
 
+  it("creates transcripts with private file and directory modes", async () => {
+    await run(async ({ emit }) => emit(textEvt("done")));
+    expect(fs.statSync(scratch).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(scratch, "run.jsonl")).mode & 0o777).toBe(0o600);
+  });
+
   it("kills an invocation that goes silent and reports it as stalled", async () => {
     const result = await runFor(400, silentAfterStart, { stallTimeoutMs: 400 });
 

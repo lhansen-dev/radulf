@@ -38,6 +38,33 @@ function sharedNodeModulesRoot(projectDir: string): string | undefined {
 const nodeModulesRoot = sharedNodeModulesRoot(process.cwd());
 
 const nextConfig: NextConfig = {
+  poweredByHeader: false,
+  experimental: {
+    proxyClientMaxBodySize: "1mb",
+  },
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value:
+              "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; " +
+              "form-action 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+              "script-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self' blob:",
+          },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+          },
+        ],
+      },
+    ];
+  },
   // Only present when node_modules was symlinked in from outside (see above).
   ...(nodeModulesRoot ? { turbopack: { root: nodeModulesRoot } } : {}),
   // The pi coding-agent SDK (the one harness — spec 13) is a large Node package
@@ -52,7 +79,16 @@ const nextConfig: NextConfig = {
   // Runtime worktrees, transcripts, private plans, and benchmark reports are
   // created after deployment and must never be copied into production output.
   outputFileTracingExcludes: {
-    "/*": ["./data/**/*", "./benchmarks/reports/**/*"],
+    "/*": [
+      "./.agents/**/*",
+      "./.codex/**/*",
+      "./.env*",
+      "./.git/**/*",
+      "./benchmarks/reports/**/*",
+      "./data/**/*",
+      "./runtmp/**/*",
+      "./worktrees/**/*",
+    ],
   },
   // The Docs wiki reads repo markdown from disk at request time. Trace those
   // files into the standalone build so the routes work in production, not just

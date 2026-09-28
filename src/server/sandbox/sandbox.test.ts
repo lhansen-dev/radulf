@@ -140,6 +140,8 @@ describe("createRunSandbox", () => {
     const ctx = await createRunSandbox("test-run-1");
     expect(fs.existsSync(ctx.tmpdir)).toBe(true);
     expect(fs.existsSync(ctx.cacheRoot)).toBe(true);
+    expect(fs.statSync(ctx.root).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(ctx.pgidFile).mode & 0o777).toBe(0o600);
     expect(ctx.env.TMPDIR).toBe(ctx.tmpdir);
     // No delegated cgroup subtree in a test env → the watchdog is the bound.
     expect(ctx.diskLimitMechanism).toBe("watchdog");

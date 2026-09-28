@@ -30,7 +30,8 @@ export async function cloneRepository(
   const target = path.join(CLONES_DIR, name);
   if (fs.existsSync(target)) throw new ClientError(`${target} already exists`);
   try {
-    fs.mkdirSync(CLONES_DIR, { recursive: true });
+    fs.mkdirSync(CLONES_DIR, { recursive: true, mode: 0o700 });
+    fs.chmodSync(CLONES_DIR, 0o700);
   } catch (cause) {
     throw new ClientError(`could not create ${CLONES_DIR}: ${errorMessage(cause)}`);
   }

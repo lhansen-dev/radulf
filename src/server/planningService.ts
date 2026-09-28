@@ -272,8 +272,10 @@ export function writePlanRow(
   emitEvent("plan.created", { cardId, runId: opts.runId, payload: { version, origin: opts.origin } });
 
   const statePath = planStatePath(cardId);
-  fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(/* turbopackIgnore: true */ statePath, artifacts.planMd);
+  fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(statePath), { recursive: true, mode: 0o700 });
+  fs.chmodSync(/* turbopackIgnore: true */ path.dirname(statePath), 0o700);
+  fs.writeFileSync(/* turbopackIgnore: true */ statePath, artifacts.planMd, { mode: 0o600 });
+  fs.chmodSync(/* turbopackIgnore: true */ statePath, 0o600);
   return { planId, version };
 }
 

@@ -274,8 +274,10 @@ function baselinePath(runId: string): string {
 }
 
 export function saveBaseline(runId: string, baseline: RepoIntegrityBaseline): void {
-  fs.mkdirSync(baselineDir(), { recursive: true });
-  fs.writeFileSync(baselinePath(runId), JSON.stringify(baseline));
+  fs.mkdirSync(baselineDir(), { recursive: true, mode: 0o700 });
+  fs.chmodSync(baselineDir(), 0o700);
+  fs.writeFileSync(baselinePath(runId), JSON.stringify(baseline), { mode: 0o600 });
+  fs.chmodSync(baselinePath(runId), 0o600);
 }
 
 export function loadBaseline(runId: string): RepoIntegrityBaseline | null {

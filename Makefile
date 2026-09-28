@@ -77,6 +77,7 @@ check-deps:
 
 build: check-deps build-worker ## Production build: the Next.js bundle plus dist/worker.mjs
 	NODE_ENV=production $(BIN)/next build
+	node scripts/sanitize-next-traces.mjs
 
 # esbuild resolves the `@/` alias from tsconfig.json and leaves every
 # node_modules package external, so the bundle is the `src/server` + `src/db`

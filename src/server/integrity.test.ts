@@ -346,6 +346,10 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
   it("persists baselines per run for the pre-merge re-check", async () => {
     const baseline = (await snapshotRepoIntegrity(repo))!;
     saveBaseline("run-abc", baseline);
+    expect(fs.statSync(path.join(testDataDir, "data", "integrity")).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(testDataDir, "data", "integrity", "run-abc.json")).mode & 0o777).toBe(
+      0o600,
+    );
     expect(loadBaseline("run-abc")).toEqual(baseline);
     removeBaseline("run-abc");
     expect(loadBaseline("run-abc")).toBeNull();

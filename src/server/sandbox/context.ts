@@ -149,9 +149,13 @@ export async function createRunSandbox(
   // (1f) inert for every sandboxed run. Keeping it under $TMPDIR fixes that;
   // agent tampering grants no capability the agent's bash doesn't already have.
   const pgidFile = path.join(tmpdir, "pgids");
-  fs.mkdirSync(tmpdir, { recursive: true });
-  fs.mkdirSync(cacheRoot, { recursive: true });
-  fs.writeFileSync(pgidFile, "", { flag: "a" });
+  fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(cacheRoot, { recursive: true, mode: 0o700 });
+  fs.chmodSync(root, 0o700);
+  fs.chmodSync(tmpdir, 0o700);
+  fs.chmodSync(cacheRoot, 0o700);
+  fs.writeFileSync(pgidFile, "", { flag: "a", mode: 0o600 });
+  fs.chmodSync(pgidFile, 0o600);
 
   const cgroup = setupRunCgroup(runId);
   const env = agentEnv({ tmpdir, cacheRoot });

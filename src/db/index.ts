@@ -28,29 +28,39 @@ export const PLANS_DIR = process.env.RADULF_PLANS_DIR
 export const CLONES_DIR = path.join(path.dirname(DATA_DIR), "repos");
 export const TRANSCRIPTS_DIR = path.join(DATA_DIR, "transcripts");
 
-/** chmod 0600, or leave it alone when it is not ours to change. */
+/** chmod 0600 and refuse to continue if sensitive state remains exposed. */
 function tighten(file: string): void {
+  if (!fs.existsSync(file)) return;
   try {
     fs.chmodSync(file, 0o600);
-  } catch {
-    // absent, or owned by another uid
+  } catch (cause) {
+    if ((fs.statSync(file).mode & 0o077) !== 0) throw cause;
+  }
+}
+
+/** Create a private state directory and tighten installs made under old umasks. */
+function privateDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch (cause) {
+    if ((fs.statSync(dir).mode & 0o077) !== 0) throw cause;
   }
 }
 
 function createDb() {
-  fs.mkdirSync(WORKTREES_DIR, { recursive: true });
-  fs.mkdirSync(PLANS_DIR, { recursive: true });
-  fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
+  for (const dir of [DATA_DIR, WORKTREES_DIR, PLANS_DIR, TRANSCRIPTS_DIR]) {
+    privateDir(dir);
+  }
   const dbFile = path.join(DATA_DIR, "radulf.db");
   const sqlite = new Database(dbFile);
   // The database holds every provider key (encrypted, but under a secret
   // sitting beside it), every card and every plan, and a stock umask left it
   // 0644. SQLite gives the -wal and -shm it creates the database file's mode,
-  // so tightening this before `journal_mode = WAL` covers a fresh install —
-  // but an install that already has a 0644 WAL keeps it, and the WAL is where
-  // the most recent writes live, so all three are named. Never fatal: a file
-  // owned by another uid, as a container sharing the volume produces, is
-  // still perfectly usable.
+  // so tightening this before `journal_mode = WAL` covers a fresh install.
+  // An install that already has a 0644 WAL keeps it, and the WAL is where the
+  // most recent writes live, so all three are named. Startup fails if any file
+  // cannot be tightened and remains visible to another account.
   tighten(dbFile);
   sqlite.pragma("journal_mode = WAL");
   for (const suffix of ["-wal", "-shm"]) tighten(dbFile + suffix);
