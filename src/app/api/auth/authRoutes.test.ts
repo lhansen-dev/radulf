@@ -155,6 +155,28 @@ describe("authentication routes", () => {
     expect((await success).status).toBe(307);
   });
 
+  it("rejects a declared oversized login body before parsing it", async () => {
+    const response = await login(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "20000" },
+        body: JSON.stringify({ password: PASSWORD }),
+      }),
+    );
+    expect(response.status).toBe(413);
+  });
+
+  it("rejects an oversized login body without a content-length header", async () => {
+    const response = await login(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `padding=${"x".repeat(20_000)}&password=${PASSWORD}`,
+      }),
+    );
+    expect(response.status).toBe(413);
+  });
+
   it("sets a signed HttpOnly session cookie with transport security matching the request", async () => {
     const httpResponse = await login(loginRequest(PASSWORD));
     const httpCookie = httpResponse.headers.get("set-cookie") ?? "";
@@ -170,12 +192,17 @@ describe("authentication routes", () => {
   it("marks the cookie Secure behind a TLS proxy that speaks plain HTTP to the app", async () => {
     // What a reverse proxy produces: the app is bound to plain HTTP, so
     // request.url says http, while the browser used https.
-    const viaOrigin = await login(
-      loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
-        origin: "https://radulf.example",
-      }),
-    );
-    expect(viaOrigin.headers.get("set-cookie")).toContain("Secure");
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example";
+    try {
+      const viaOrigin = await login(
+        loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
+          origin: "https://radulf.example",
+        }),
+      );
+      expect(viaOrigin.headers.get("set-cookie")).toContain("Secure");
+    } finally {
+      delete process.env.RADULF_ALLOWED_ORIGIN;
+    }
 
     // A caller that sends no Origin at all leaves the forwarded scheme.
     const viaForwarded = await login(
@@ -272,7 +299,7 @@ describe("authentication routes", () => {
   });
 
   it("enforces API sessions and rejects cross-origin mutations", async () => {
-    process.env.RADULF_ALLOWED_ORIGIN = "radulf.example.com";
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example.com";
     try {
       const unauthorized = await proxy(
         new NextRequest("https://radulf.example.com/api/cards", { method: "GET" }),

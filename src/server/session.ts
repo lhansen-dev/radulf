@@ -63,9 +63,9 @@ export function requestHost(request: Request): string {
 /**
  * CSRF backstop: returns true for allowed origins.
  *
- * Same-origin only: the Origin must name the exact host and port the request
- * arrived at, or the deployment host named by RADULF_ALLOWED_ORIGIN (a bare
- * hostname, for a reverse proxy that rewrites Host). This used to accept any
+ * Same-origin only: local development accepts an exact loopback host and port.
+ * Any non-loopback deployment must set RADULF_ALLOWED_ORIGIN to its full
+ * origin, including scheme and any non-default port. This used to accept any
  * localhost or 127.0.0.1 origin on any port. That is not a boundary: browsers
  * treat every localhost port as ONE site, so SameSite=Lax still attaches the
  * session cookie to a request from a page on localhost:8080, and a text/plain
@@ -76,11 +76,39 @@ export function isAllowedOrigin(origin: string | null, host: string): boolean {
   if (!origin) return true; // browser won't send Origin for same-origin GET
   try {
     const url = new URL(origin);
-    return (
-      url.host === host ||
-      (!!process.env.RADULF_ALLOWED_ORIGIN &&
-        url.hostname === process.env.RADULF_ALLOWED_ORIGIN)
-    );
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      return false;
+    }
+
+    const configured = process.env.RADULF_ALLOWED_ORIGIN?.trim();
+    if (configured) {
+      const allowed = new URL(configured);
+      if (
+        !["http:", "https:"].includes(allowed.protocol) ||
+        allowed.username ||
+        allowed.password ||
+        allowed.pathname !== "/" ||
+        allowed.search ||
+        allowed.hash
+      ) {
+        return false;
+      }
+      if (url.origin === allowed.origin) return true;
+    }
+
+    const addressed = new URL(`http://${host}`);
+    const loopback =
+      addressed.hostname === "localhost" ||
+      addressed.hostname === "127.0.0.1" ||
+      addressed.hostname === "[::1]";
+    return loopback && url.host === addressed.host;
   } catch {
     return false;
   }

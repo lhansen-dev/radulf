@@ -440,14 +440,14 @@ sequenceDiagram
   there's no server-side session store. The kill switch for a leaked cookie is **rotating
   the secret** — delete `data/auth-secret` and restart; a fresh secret invalidates every
   outstanding cookie at once.
-- **Cross-origin requests:** Mutating requests are accepted only from the page's own origin
-  (the exact host and port the request was addressed to) and, when set, the hostname in
-  `RADULF_ALLOWED_ORIGIN` (e.g. `RADULF_ALLOWED_ORIGIN=radulf.example.com`). Set it when
-  deploying behind a public hostname. Another `localhost` port does not count: browsers treat
+- **Cross-origin requests:** Local mutating requests are accepted only from the exact loopback
+  host and port the request was addressed to. Non-loopback deployments must set the full public
+  origin in `RADULF_ALLOWED_ORIGIN`, such as `RADULF_ALLOWED_ORIGIN=https://radulf.example.com`.
+  Another `localhost` port does not count: browsers treat
   every localhost port as one site for cookies, so a page on any other local dev server would
   otherwise be able to drive the board. This check runs **whether or not auth is enabled** — the
   no-auth default is exactly when a page you merely visit must not be able to drive your local
-  instance. Clients that send no `Origin` at all (curl, scripts) are unaffected.
+  instance. Clients that send no `Origin` at all are unaffected.
 - **Provider credentials:** API keys are write-only over HTTP. `GET /api/settings` returns
   `••••••••` for any key that is set, and sending that marker back leaves the stored value
   alone, so the settings form round-trips without the key ever reaching the browser.

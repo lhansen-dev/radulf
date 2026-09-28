@@ -43,8 +43,9 @@ export async function proxy(request: NextRequest) {
   // Non-browser clients (curl, scripts) send no Origin at all and are
   // unaffected: isAllowedOrigin(null) is true. Only a foreign Origin is
   // rejected, and only browsers attach one. "Foreign" means anything but the
-  // host and port this request was addressed to (or RADULF_ALLOWED_ORIGIN):
-  // another localhost port counts, since browsers treat every localhost port
+  // loopback host and port this request was addressed to, or the full
+  // RADULF_ALLOWED_ORIGIN:
+    // another localhost port must not count, since browsers treat every localhost port
   // as one site for cookies.
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
     const origin = request.headers.get("origin");

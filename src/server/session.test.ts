@@ -73,11 +73,17 @@ describe("isAllowedOrigin", () => {
     expect(isAllowedOrigin("http://127.0.0.1:3000", "localhost:3000")).toBe(false);
   });
 
-  it("accepts the host named by RADULF_ALLOWED_ORIGIN, whatever Host the proxy rewrote to", () => {
-    process.env.RADULF_ALLOWED_ORIGIN = "radulf.example.com";
+  it("does not trust a matching non-loopback Host header", () => {
+    expect(isAllowedOrigin("https://attacker.example", "attacker.example")).toBe(false);
+  });
+
+  it("accepts only the full origin named by RADULF_ALLOWED_ORIGIN", () => {
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example.com";
     try {
       expect(isAllowedOrigin("https://radulf.example.com", "127.0.0.1:3000")).toBe(true);
       expect(isAllowedOrigin("https://radulf.example.com:443", "127.0.0.1:3000")).toBe(true);
+      expect(isAllowedOrigin("http://radulf.example.com", "127.0.0.1:3000")).toBe(false);
+      expect(isAllowedOrigin("https://radulf.example.com:8443", "127.0.0.1:3000")).toBe(false);
       expect(isAllowedOrigin("https://radulf.example.evil.com", "127.0.0.1:3000")).toBe(false);
     } finally {
       delete process.env.RADULF_ALLOWED_ORIGIN;
@@ -93,7 +99,7 @@ describe("redirectBase", () => {
     });
 
   it("redirects to the origin the browser actually used, not the bind address", () => {
-    process.env.RADULF_ALLOWED_ORIGIN = "192.168.100.68";
+    process.env.RADULF_ALLOWED_ORIGIN = "http://192.168.100.68:3000";
     try {
       const base = redirectBase(req("http://192.168.100.68:3000"));
       expect(new URL("/", base).href).toBe("http://192.168.100.68:3000/");
