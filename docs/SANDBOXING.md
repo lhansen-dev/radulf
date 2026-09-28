@@ -65,12 +65,11 @@ It returns a `RunSandboxContext`:
 | `root` | The run-private scratch root `<data-parent>/runtmp/<runId>/` (contains `tmp/`, `cache/`). |
 | `tmpdir` | Run-private `$TMPDIR` (`root/tmp`) — created at start, deleted at end. |
 | `cacheRoot` | Run-private package-manager cache root (`root/cache`) the host user never consumes. |
-| `pgidFile` | Where each bash invocation records its process-group id — **inside `tmpdir`** so the in-sandbox write is permitted (see [reaping](#process-group-reaping)). |
 | `env` | The allowlist agent env (`agentEnv(...)`). |
-| `commandPrefix` | Preamble prepended to every agent bash command (ulimits, pgid record, cgroup join on Linux). |
+| `commandPrefix` | Preamble prepended to every agent bash command with ulimits and the Linux cgroup join. |
 | `srtConfig` | This run's L1 filesystem + network policy — **present only when `sandboxEnabled`** and a `cwd` was passed. Its *absence* is the explicit signal "do not L1-wrap this run." |
 | `diskLimitMechanism` | The real disk bound in force, stamped on the run row. |
-| `reap()` / `cleanup()` | Kill recorded process groups; then tear down cgroup + delete `root`. |
+| `reap()` / `cleanup()` | Kill parent-recorded process groups, sweep the Linux cgroup, then tear down the cgroup and delete `root`. |
 
 The context is threaded to the harness via `RunHarnessOpts.runContext` and
 consumed in `createRalphSession` / `spawnHook` (`src/server/harness/pi.ts`).
@@ -142,9 +141,9 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 | Access | Paths |
 |--------|-------|
 | **write allow** | the worktree; the run's `$TMPDIR`; the run's cache root; the parent repo's shared `.git` (resolved via `git rev-parse --git-common-dir`, so a linked worktree's pointer file isn't mistaken for it) |
-| **write deny** | `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir. `<git>/refs`, `<git>/packed-refs`, `<git>/HEAD`, `<git>/worktrees/*/HEAD` — every ref and checkout pointer, so agent git cannot commit, move a branch, or check the worktree out onto another branch. The orchestrator makes every commit from the host. |
+| **write deny** | every sibling registered repository; `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir. `<git>/refs`, `<git>/packed-refs`, `<git>/HEAD`, `<git>/worktrees/*/HEAD` — every ref and checkout pointer, so agent git cannot commit, move a branch, or check the worktree out onto another branch. The orchestrator makes every commit from the host. |
 | **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH` (each entry, plus its parent unless that parent is inside `$HOME` or a Radulf root — `~/.cargo/bin` stays readable, `~/.cargo` does not); three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
-| **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, plus a backstop credential denylist |
+| **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, the configured repository browser root, every registered repository root, `/repos` when mounted, plus a backstop credential denylist |
 
 **Backstop credential denylist** (`credentialBackstopDenylist`) is unioned into
 `denyRead` on every run even though `$HOME` is already denied: `~/.ssh`,
@@ -217,7 +216,10 @@ srt cannot reach the pi tools that run *inside* the server process. The same
   `<worktree>-evil` is not inside `<worktree>`).
 - **Wrappers:** `createGuardedFsTools` in
   [`src/server/harness/guardedTools.ts`](../src/server/harness/guardedTools.ts) —
-  guard, then delegate to pi's built-in tool definition (never reimplement).
+  reap every recorded run process group, guard, then delegate to pi's built-in
+  tool definition. Bash and all in-process file tools share a per-run serial
+  lock, so no model-controlled process can swap a symlink after the guard but
+  before the delegate opens it.
 - **Per-role roots** (`pathRootsForRole` in `pi.ts`):
 
   | Role | Read roots | Write roots |
@@ -304,16 +306,26 @@ and a constant `AGENT_GIT_IDENTITY` (needed because the global config is
     is below the shared `APFSContainerSize`.
 - **`diskLimitMechanism`** on the run row records the real bound: `cgroup`
   (Linux), `apfs-quota` (macOS quota volume), or `watchdog` (macOS default).
+- **Docker:** the checked-in Compose worker has whole-container ceilings of
+  12 GiB memory and 4096 processes. Per-run cgroups remain unavailable inside
+  the unprivileged worker container.
 
 ### Process-group reaping
 
-srt wraps a *command*; anything backgrounded inside one (`nohup ./thing &`)
-outlives it. The command preamble records each detached shell's pgid into
-`pgidFile` (which **must** live inside an `allowWrite` root — the run's
-`$TMPDIR` — or the in-sandbox write is denied and reaping is inert). At run end
-`ctx.reap()` kills each recorded group and verifies it is empty **before** the
-integrity check and merge — a surviving process could otherwise plant hooks
-after a check that already passed.
+srt wraps a *command*; anything backgrounded inside one can outlive it. The
+trusted parent records every detached shell process group immediately after
+spawn. The ledger stays in server memory and cannot be erased by agent code.
+Before every in-process file tool, after every gate command, and at run end,
+`ctx.reap()` kills each recorded group. On Linux it also sweeps and verifies
+the run cgroup, which catches descendants that created a new session. The
+Linux sandbox PID namespace provides the same lifecycle boundary when a
+delegated cgroup is unavailable. A protected run without either boundary
+fails closed before any privileged file tool, repository mutation, or
+artifact write after command execution. This applies to protected runs only.
+Disabling sandboxing retains the documented loss of containment.
+Gate reaping happens before trusted code writes `GATE.md`. Run-end reaping
+happens before the integrity check and merge. A surviving process could
+otherwise swap a checked path or plant hooks after a completed check.
 
 ### Repo integrity check
 

@@ -50,8 +50,9 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
   try {
     fs.mkdirSync(plan.dir, { recursive: true });
     const procsFile = path.join(plan.dir, "cgroup.procs");
-    const required = new Set(["memory.max", "memory.swap.max", "pids.max"]);
-    if (!fs.existsSync(procsFile) || [...required].some((file) => !fs.existsSync(path.join(plan.dir, file)))) {
+    const requiredLimits = new Set(["memory.max", "memory.swap.max", "pids.max"]);
+    const requiredFiles = [...requiredLimits, "cgroup.kill"];
+    if (!fs.existsSync(procsFile) || requiredFiles.some((file) => !fs.existsSync(path.join(plan.dir, file)))) {
       return null;
     }
     // Controllers must be enabled on the parent before limits apply.
@@ -65,12 +66,12 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
     }
     for (const [file, value] of plan.writes) {
       const controlFile = path.join(plan.dir, file);
-      if (!fs.existsSync(controlFile) && !required.has(file)) continue;
+      if (!fs.existsSync(controlFile) && !requiredLimits.has(file)) continue;
       try {
         fs.writeFileSync(controlFile, value);
         if (fs.readFileSync(controlFile, "utf8").trim() !== value) throw new Error("cgroup limit mismatch");
       } catch {
-        if (required.has(file)) return null;
+        if (requiredLimits.has(file)) return null;
         // A missing optional io controller must not lose memory/pids limits.
       }
     }
@@ -84,11 +85,26 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
   }
 }
 
+/** Atomically kill every process in a verified run cgroup. Unlike process
+ * groups this also catches descendants that created a new session. */
+export function killRunCgroupProcesses(dir: string): void {
+  fs.writeFileSync(path.join(dir, "cgroup.kill"), "1");
+}
+
+/** True only when the kernel reports no remaining member processes. */
+export function runCgroupEmpty(dir: string): boolean {
+  try {
+    return fs.readFileSync(path.join(dir, "cgroup.procs"), "utf8").trim() === "";
+  } catch {
+    return false;
+  }
+}
+
 /** Kill everything remaining in the run's cgroup and remove it (run end). */
 export function killRunCgroup(dir: string): void {
   try {
     // cgroup.kill (Linux 5.14+) SIGKILLs the whole subtree atomically.
-    fs.writeFileSync(path.join(dir, "cgroup.kill"), "1");
+    killRunCgroupProcesses(dir);
   } catch {
     // Best-effort; the pgid reap already ran.
   }

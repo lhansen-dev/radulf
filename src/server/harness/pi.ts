@@ -17,7 +17,10 @@ import { DATA_DIR } from "@/db";
 import { contextWindowFor, listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
 import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
-import { createSandboxedBashOperations } from "../sandbox/srt";
+import {
+  createSandboxedBashOperations,
+  createSerializedBashOperations,
+} from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
 import { createGuardedFsTools } from "./guardedTools";
 import { DEFAULT_MOCK_SCENARIO, mockProviderConfig } from "./mock";
@@ -630,8 +633,14 @@ export async function createRalphSession(
     spawnHook: (ctx) => ({ ...ctx, env: runContext?.env ?? agentEnv() }),
     operations:
       shouldSandboxBash(opts.role, runContext?.srtConfig) && runContext?.srtConfig
-        ? createSandboxedBashOperations(runContext.srtConfig, { tmpdir: runContext.tmpdir })
-        : undefined,
+          ? createSandboxedBashOperations(runContext.srtConfig, {
+            tmpdir: runContext.tmpdir,
+            runExclusive: runContext.runExclusive,
+            tracker: runContext,
+          })
+        : runContext
+          ? createSerializedBashOperations(runContext.runExclusive, runContext)
+          : undefined,
   }) as unknown as ToolDefinition;
 
   // Web search (Brave) — pi has no web tool and extensions are disabled, so
@@ -668,7 +677,13 @@ export async function createRalphSession(
   // (see pathRootsForRole). Guarded tools override the built-ins by name, so
   // only the ones the session's tool set names take effect.
   const { readRoots, writeRoots } = pathRootsForRole(opts.role, opts.cwd);
-  for (const guarded of createGuardedFsTools(opts.cwd, readRoots, writeRoots)) {
+  for (const guarded of createGuardedFsTools(
+    opts.cwd,
+    readRoots,
+    writeRoots,
+    runContext?.reap,
+    runContext?.runExclusive,
+  )) {
     if (tools.includes(guarded.name)) customTools.push(guarded);
   }
 

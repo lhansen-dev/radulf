@@ -2367,6 +2367,10 @@ export class Orchestrator {
               throw e;
             }
             if (!active()) return;
+            const gateLeftovers = await ctx.reap();
+            if (gateLeftovers.length > 0) {
+              return fail(`surviving gate process groups after reap: ${gateLeftovers.join(", ")}`);
+            }
             writeRalphArtifact(worktreePath, GATE_FILE, renderGateFile(gate));
             emitEvent("gate.finished", {
               cardId,

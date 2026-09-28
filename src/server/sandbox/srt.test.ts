@@ -165,6 +165,28 @@ describe("buildFilesystemConfig", () => {
     ]);
   });
 
+  it("read-denies every repository root and re-allows only active Git metadata", () => {
+    const isolated = buildFilesystemConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/repos/active/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      repositoryRoots: ["/repos", "/repos/active", "/repos/sibling"],
+    });
+    expect(isolated.denyRead).toEqual(expect.arrayContaining([
+      "/repos",
+      "/repos/active",
+      "/repos/sibling",
+    ]));
+    expect(isolated.allowRead).toContain("/repos/active/.git");
+    expect(isolated.allowRead).not.toContain("/repos");
+    expect(isolated.denyWrite).toEqual(expect.arrayContaining([
+      "/repos",
+      "/repos/active",
+      "/repos/sibling",
+    ]));
+  });
+
   it("keeps the credential backstop, including gh's store, even though $HOME is already denied", () => {
     // Spec 15 gave the HOST process the operator's GitHub credential to push
     // and open PRs. The agent must gain nothing from that: this fails if a
@@ -325,6 +347,7 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
     outside = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-outside-"));
     gitCommonDir = path.join(outside, "git-common");
     fs.mkdirSync(gitCommonDir);
+    fs.writeFileSync(path.join(outside, "sibling-secret.txt"), "sibling secret");
     fs.writeFileSync(path.join(worktree, ".git"), gitPointer);
   });
 
@@ -339,6 +362,7 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
       gitCommonDir,
       tmpdir: worktree,
       cacheRoot: worktree,
+      repositoryRoots: [outside],
       networkAllowlistText: "",
     });
   }
@@ -379,12 +403,20 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
   const sh = (cmd: string) =>
     runSandboxedCommand(cmd, config(), (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]));
 
-  it("runSandboxedCommand allows a write inside the worktree and denies one outside it", async () => {
+  it("allows a worktree write and prevents a host write outside it", async () => {
     await sh(`echo hi > ${worktree}/ok.txt`);
     expect(fs.existsSync(path.join(worktree, "ok.txt"))).toBe(true);
 
-    await expect(sh(`echo hi > ${outside}/bad.txt`)).rejects.toThrow();
+    // A Linux denyRead may present an ephemeral masked directory where the
+    // shell reports success. The security property is that no write reaches
+    // the sibling host repository. Other platforms may reject the command.
+    await sh(`echo hi > ${outside}/bad.txt`).catch(() => undefined);
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
+  });
+
+  it("denies reads from a sibling repository while retaining active Git metadata reads", async () => {
+    await expect(sh(`cat ${path.join(outside, "sibling-secret.txt")}`)).rejects.toThrow();
+    await expect(sh(`ls ${gitCommonDir}`)).resolves.toBeDefined();
   });
 
   it("runSandboxedCommand denies rewriting the worktree's .git pointer file, though the worktree is writable", async () => {

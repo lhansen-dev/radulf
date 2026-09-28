@@ -48,6 +48,8 @@ function guard(
   readRoots: string[],
   writeRoots: string[],
   cwd: string,
+  quiesce?: () => Promise<number[]>,
+  runExclusive?: <T>(operation: () => Promise<T>) => Promise<T>,
 ): ToolDefinition {
   const delegate = def.execute.bind(def);
   const writeDenied = [realpathBestEffort(path.join(cwd, ".git"))];
@@ -56,17 +58,28 @@ function guard(
     // async so a guard rejection surfaces as a rejected promise, not a
     // synchronous throw the caller must special-case.
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const p = { ...(params as Record<string, unknown>) };
-      for (const { arg, kind } of argSpecs) {
-        const value = p[arg];
-        if (typeof value === "string" && value.length > 0) {
-          p[arg] =
-            kind === "write"
-              ? guardPathWithPinnedRoots(value, writeRoots, cwd, writeDenied)
-              : guardPathWithPinnedRoots(value, readRoots, cwd);
+      const operation = async () => {
+        // Bash may leave a symlink flipper behind after its tool call returns.
+        // Stop every recorded process group before resolving a pathname so no
+        // attacker-controlled process can swap an ancestor between the guard
+        // and the SDK delegate.
+        const leftovers = await quiesce?.();
+        if (leftovers && leftovers.length > 0) {
+          throw new Error(`surviving process groups after reap: ${leftovers.join(", ")}`);
         }
-      }
-      return delegate(toolCallId, p, signal, onUpdate, ctx);
+        const p = { ...(params as Record<string, unknown>) };
+        for (const { arg, kind } of argSpecs) {
+          const value = p[arg];
+          if (typeof value === "string" && value.length > 0) {
+            p[arg] =
+              kind === "write"
+                ? guardPathWithPinnedRoots(value, writeRoots, cwd, writeDenied)
+                : guardPathWithPinnedRoots(value, readRoots, cwd);
+          }
+        }
+        return delegate(toolCallId, p, signal, onUpdate, ctx);
+      };
+      return runExclusive ? runExclusive(operation) : operation();
     },
   };
 }
@@ -81,6 +94,8 @@ export function createGuardedFsTools(
   cwd: string,
   readRoots: string[],
   writeRoots: string[],
+  quiesce?: () => Promise<number[]>,
+  runExclusive?: <T>(operation: () => Promise<T>) => Promise<T>,
 ): ToolDefinition[] {
   const pinnedCwd = realpathBestEffort(cwd);
   const pinRoot = (root: string): string => {
@@ -98,7 +113,15 @@ export function createGuardedFsTools(
   // variance), which is safe here — same cast the scrubbed bash tool uses.
   const asDef = (d: unknown) => d as ToolDefinition;
   const g = (d: unknown, specs: { arg: string; kind: PathArgKind }[]) =>
-    guard(asDef(d), specs, pinnedReadRoots, pinnedWriteRoots, pinnedCwd);
+    guard(
+      asDef(d),
+      specs,
+      pinnedReadRoots,
+      pinnedWriteRoots,
+      pinnedCwd,
+      quiesce,
+      runExclusive,
+    );
 
   return [
     g(createReadToolDefinition(pinnedCwd), [{ arg: "path", kind: "read" }]),

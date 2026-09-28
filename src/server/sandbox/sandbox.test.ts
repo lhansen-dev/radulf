@@ -18,7 +18,13 @@ import {
 // at a throwaway dir before loading it.
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-"));
 process.env.RADULF_DATA_DIR = path.join(testDataDir, "data");
-const { buildCommandPrefix, createRunSandbox, reapProcessGroups, readPgids, runScratchRoot } =
+const {
+  buildCommandPrefix,
+  createRunSandbox,
+  processTreeSupervisorAvailable,
+  reapProcessGroups,
+  runScratchRoot,
+} =
   await import("./context");
 
 const execFileAsync = promisify(execFile);
@@ -141,21 +147,16 @@ describe("createRunSandbox", () => {
     expect(fs.existsSync(ctx.tmpdir)).toBe(true);
     expect(fs.existsSync(ctx.cacheRoot)).toBe(true);
     expect(fs.statSync(ctx.root).mode & 0o777).toBe(0o700);
-    expect(fs.statSync(ctx.pgidFile).mode & 0o777).toBe(0o600);
     expect(ctx.env.TMPDIR).toBe(ctx.tmpdir);
     // No delegated cgroup subtree in a test env → the watchdog is the bound.
     expect(ctx.diskLimitMechanism).toBe("watchdog");
-    // The pgid file MUST sit inside the run's TMPDIR — an L1 allowWrite root —
-    // or the commandPrefix's in-sandbox `echo "$$" >> pgids` is denied and
-    // process-group reaping (1f) is inert for every sandboxed run.
-    expect(ctx.pgidFile.startsWith(ctx.tmpdir + path.sep)).toBe(true);
     await ctx.cleanup();
     await ctx.cleanup();
     expect(fs.existsSync(ctx.root)).toBe(false);
   });
 
   it("keeps ulimit -u and -v out of the preamble (self-DoS / Go+JVM breakage)", () => {
-    const prefix = buildCommandPrefix("/tmp/pgids", null);
+    const prefix = buildCommandPrefix(null);
     expect(prefix).toMatch(/ulimit -t /);
     expect(prefix).toMatch(/ulimit -f /);
     expect(prefix).not.toMatch(/ulimit -u/);
@@ -201,31 +202,71 @@ describe("createRunSandbox", () => {
       await ctx.cleanup();
     }
   });
+
+  it("serializes model-controlled operations for the full delegate lifetime", async () => {
+    const ctx = await createRunSandbox("test-run-exclusive");
+    const events: string[] = [];
+    let releaseFirst: () => void = () => undefined;
+    let markEntered: () => void = () => undefined;
+    const firstEntered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    try {
+      const first = ctx.runExclusive(async () => {
+        events.push("first entered");
+        markEntered();
+        await firstBlocked;
+        events.push("first left");
+      });
+      await firstEntered;
+      const second = ctx.runExclusive(async () => {
+        events.push("second entered");
+      });
+      await Promise.resolve();
+      expect(events).toEqual(["first entered"]);
+
+      releaseFirst();
+      await Promise.all([first, second]);
+      expect(events).toEqual(["first entered", "first left", "second entered"]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
 });
 
 describe("process-group reaping (spec 14 L3 1f)", () => {
+  it("requires a cgroup or Linux sandbox namespace for protected transitions", () => {
+    expect(processTreeSupervisorAvailable("darwin", true, false)).toBe(false);
+    expect(processTreeSupervisorAvailable("linux", true, false)).toBe(true);
+    expect(processTreeSupervisorAvailable("darwin", true, true)).toBe(true);
+  });
+
   it("kills a backgrounded process (`nohup sleep 600 &`) and verifies the group is empty", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-reap-"));
-    const pgidFile = path.join(dir, "pgids");
+    const pgids = new Set<number>();
     try {
       // Mirror pi's bash spawn: detached shell (its own process group) that
-      // runs the commandPrefix then backgrounds a long sleep and exits.
-      const prefix = buildCommandPrefix(pgidFile, null);
+      // backgrounds a long sleep and exits. The trusted parent records the
+      // PID directly rather than accepting an attacker-writable ledger.
       await new Promise<void>((resolve, reject) => {
-        const child = spawn("/bin/bash", ["-c", `${prefix}\nnohup sleep 600 >/dev/null 2>&1 &`], {
+        const child = spawn("/bin/bash", ["-c", "nohup sleep 600 >/dev/null 2>&1 &"], {
           detached: true,
           stdio: "ignore",
         });
+        if (child.pid) pgids.add(child.pid);
         child.on("exit", () => resolve());
         child.on("error", reject);
         child.unref();
       });
-      const pgids = readPgids(pgidFile);
-      expect(pgids.length).toBe(1);
+      expect(pgids.size).toBe(1);
+      const [pgid] = [...pgids];
       // The sleep survives its shell — exactly the escape being closed.
       const alive = () => {
         try {
-          process.kill(-pgids[0], 0);
+          process.kill(-pgid, 0);
           return true;
         } catch {
           return false;
@@ -233,24 +274,14 @@ describe("process-group reaping (spec 14 L3 1f)", () => {
       };
       expect(alive()).toBe(true);
 
-      const leftover = await reapProcessGroups(pgidFile);
+      const leftover = await reapProcessGroups(pgids);
       expect(leftover).toEqual([]);
       expect(alive()).toBe(false);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await reapProcessGroups(pgids);
     }
   });
 
-  it("ignores garbage and dangerous pgid values", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-reap2-"));
-    const pgidFile = path.join(dir, "pgids");
-    try {
-      fs.writeFileSync(pgidFile, `0\n1\n-5\nnot-a-pid\n${process.pid}\n`);
-      expect(readPgids(pgidFile)).toEqual([]);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("cgroup plan (spec 14 L3 1e — unit level; enforcement is checklist #9)", () => {
@@ -269,7 +300,7 @@ describe("cgroup plan (spec 14 L3 1e — unit level; enforcement is checklist #9
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cgroup-"));
     const plan = cgroupPlanForRun("verified", root);
     fs.mkdirSync(plan.dir, { recursive: true });
-    for (const file of ["memory.max", "memory.swap.max", "pids.max", "io.weight", "cgroup.procs"]) {
+    for (const file of ["memory.max", "memory.swap.max", "pids.max", "io.weight", "cgroup.procs", "cgroup.kill"]) {
       fs.writeFileSync(path.join(plan.dir, file), "");
     }
     try {

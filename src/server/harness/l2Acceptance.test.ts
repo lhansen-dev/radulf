@@ -68,6 +68,31 @@ it("wraps exactly pi's six file tools, keeping their built-in names", () => {
   ]);
 });
 
+it("quiesces sandbox processes before resolving and delegating a path", async () => {
+  const target = path.join(wt, "quiesce-link");
+  fs.symlinkSync(path.join(wt, "src", "app.ts"), target);
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  const tool = createGuardedFsTools(wt, readRoots, writeRoots, async () => {
+    fs.unlinkSync(target);
+    fs.symlinkSync(secret, target);
+    return [];
+  }).find((definition) => definition.name === "read");
+  if (!tool) throw new Error("no guarded read tool");
+  try {
+    await expect(run(tool, { path: target })).rejects.toThrow(BOUNDARY);
+  } finally {
+    fs.rmSync(target, { force: true });
+  }
+});
+
+it("fails closed when process-group reaping cannot quiesce a run", async () => {
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  const tool = createGuardedFsTools(wt, readRoots, writeRoots, async () => [4242])
+    .find((definition) => definition.name === "read");
+  if (!tool) throw new Error("no guarded read tool");
+  await expect(run(tool, { path: "src/app.ts" })).rejects.toThrow(/surviving process groups/);
+});
+
 describe("L2 acceptance — planner (read checkout, write .ralph only, no bash)", () => {
   it("allows reading source anywhere in the checkout", async () => {
     await expect(run(toolFor("planner", "read"), { path: "src/app.ts" })).resolves.toBeDefined();
