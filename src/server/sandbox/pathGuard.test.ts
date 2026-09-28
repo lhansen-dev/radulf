@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
   deniedPathMessage,
   guardPath,
   isInsideOrEqual,
+  normalizeToolPath,
   pathBoundaryMessage,
   realpathBestEffort,
 } from "./pathGuard";
@@ -50,6 +52,8 @@ describe("guardPath — spec 14 Layer 2 containment", () => {
     ["a symlink inside the worktree targeting an outside path", "link"],
     // The temp worktree is under os.tmpdir(), never under HOME.
     ["a ~-expanded path under $HOME", "~/.ssh/id_ed25519"],
+    ["an @-prefixed absolute path", `@${outside}`],
+    ["a file URL", pathToFileURL(outside).href],
   ])("rejects %s", (_label, p) => {
     expect(() => guardPath(p, roots, worktree)).toThrow(pathBoundaryMessage(roots));
   });
@@ -65,6 +69,14 @@ describe("guardPath — spec 14 Layer 2 containment", () => {
     expect(guardPath("src/a.ts", roots, worktree, denied)).toBe(
       path.join(fs.realpathSync(worktree), "src", "a.ts"),
     );
+  });
+});
+
+describe("normalizeToolPath", () => {
+  it("matches the alternate path forms accepted by the SDK", () => {
+    expect(normalizeToolPath(`@${outside}`)).toBe(outside);
+    expect(normalizeToolPath(pathToFileURL(outside).href)).toBe(outside);
+    expect(normalizeToolPath("src/narrow\u202fspace.ts")).toBe("src/narrow space.ts");
   });
 });
 

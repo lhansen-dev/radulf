@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -95,6 +96,33 @@ describe("L2 acceptance — planner (read checkout, write .ralph only, no bash)"
     await expect(
       run(toolFor("planner", "read"), { path: "~/.ssh/id_ed25519" }),
     ).rejects.toThrow(BOUNDARY);
+  });
+  it("blocks SDK alternate spellings for outside reads and writes", async () => {
+    const alternatePaths = [`@${secret}`, pathToFileURL(secret).href];
+    for (const alternatePath of alternatePaths) {
+      await expect(run(toolFor("planner", "read"), { path: alternatePath })).rejects.toThrow(BOUNDARY);
+      await expect(
+        run(toolFor("planner", "write"), { path: alternatePath, content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+    }
+  });
+
+  it("keeps its write root pinned when .ralph is replaced", async () => {
+    const { readRoots, writeRoots } = pathRootsForRole("planner", wt);
+    const writeTool = createGuardedFsTools(wt, readRoots, writeRoots).find((d) => d.name === "write");
+    if (!writeTool) throw new Error("no guarded write tool");
+    const original = path.join(wt, ".ralph-original");
+    fs.renameSync(path.join(wt, ".ralph"), original);
+    fs.symlinkSync(evil, path.join(wt, ".ralph"));
+    try {
+      await expect(
+        run(writeTool, { path: ".ralph/escaped.md", content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+      expect(fs.existsSync(path.join(evil, "escaped.md"))).toBe(false);
+    } finally {
+      fs.unlinkSync(path.join(wt, ".ralph"));
+      fs.renameSync(original, path.join(wt, ".ralph"));
+    }
   });
 });
 
