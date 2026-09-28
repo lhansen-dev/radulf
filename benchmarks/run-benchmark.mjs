@@ -23,7 +23,7 @@
  * from a test never touches argv or the network.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
@@ -52,6 +52,33 @@ export function benchmarkChildEnv(tmpdir, source = process.env) {
     if ((key === "LANG" || key.startsWith("LC_")) && value !== undefined) env[key] = value;
   }
   return env;
+}
+
+/** Every top-level entry of the filesystem root except the kernel
+ * pseudo-filesystems, standing in for a bare `denyRead: ["/"]`. The sandbox
+ * runtime expands `/` to this same list but keeps symlinked entries and
+ * mounts a tmpfs on each, and bwrap 0.12 refuses a symlink as a mount
+ * destination, so on merged-usr Linux (where /bin, /sbin, /lib and /lib64
+ * point into /usr) the sandbox never starts. Skipping the symlinks loses
+ * nothing: a read through one resolves to its target, which that target's
+ * own root entry covers. */
+export function rootReadDenyRoots(rootDir = "/") {
+  const pseudo = new Set(["proc", "dev", "sys"]);
+  return readdirSync(rootDir, { withFileTypes: true })
+    .filter((entry) => !pseudo.has(entry.name) && !entry.isSymbolicLink())
+    .map((entry) => path.join(rootDir, entry.name));
+}
+
+/** The sandbox re-binds each read root that falls under a denied directory
+ * onto its own path, and bwrap refuses a symlink as a mount destination, so
+ * resolve each root that exists to its real path; one that does not exist
+ * stays as written. */
+function realReadRoot(root) {
+  try {
+    return realpathSync.native(root);
+  } catch {
+    return root;
+  }
 }
 
 /** Root-deny policy for commands that interpret model-controlled files. */
@@ -90,8 +117,8 @@ export function benchmarkSandboxConfig(
   }
   return {
     filesystem: {
-      denyRead: ["/"],
-      allowRead: [...readRoots].filter((root) => root !== "/"),
+      denyRead: rootReadDenyRoots(),
+      allowRead: [...new Set([...readRoots].map(realReadRoot))].filter((root) => root !== "/"),
       allowWrite: [worktree, tmpdir],
       denyWrite: [path.join(worktree, ".git")],
     },

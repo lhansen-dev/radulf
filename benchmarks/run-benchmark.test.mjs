@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   benchmarkChildEnv,
   benchmarkSandboxConfig,
   percentile,
+  rootReadDenyRoots,
   runSandboxedCriterion,
   selectReviewRun,
 } from "./run-benchmark.mjs";
@@ -153,7 +154,7 @@ describe("criterion isolation", () => {
       "/home/operator/bin:/usr/bin:/bin",
       "/home/operator",
     );
-    expect(config.filesystem.denyRead).toEqual(["/"]);
+    expect(config.filesystem.denyRead).toEqual(rootReadDenyRoots());
     expect(config.filesystem.allowRead).toContain("/worktree");
     expect(config.filesystem.allowWrite).toEqual(["/worktree", "/run-tmp"]);
     expect(config.filesystem.denyWrite).toEqual(["/worktree/.git"]);
@@ -174,6 +175,32 @@ describe("criterion isolation", () => {
     expect(env.RADULF_BENCH_AUTH_COOKIE).toBeUndefined();
     expect(env.OPENROUTER_API_KEY).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
+  });
+
+  it("denies every real root entry but skips symlinks and kernel pseudo-filesystems", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "radulf-benchmark-root-"));
+    try {
+      for (const name of ["usr", "home", "proc", "dev", "sys"]) await mkdir(path.join(root, name));
+      await symlink("usr/bin", path.join(root, "bin"));
+      expect(rootReadDenyRoots(root).sort()).toEqual([path.join(root, "home"), path.join(root, "usr")]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a symlinked read root to its target so the sandbox can bind it", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "radulf-benchmark-roots-"));
+    const link = path.join(root, "link");
+    await mkdir(path.join(root, "real"));
+    const real = await realpath(path.join(root, "real"));
+    await symlink(real, link);
+    try {
+      const config = benchmarkSandboxConfig("/worktree", "/run-tmp", link, "/home/operator");
+      expect(config.filesystem.allowRead).toContain(real);
+      expect(config.filesystem.allowRead).not.toContain(link);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
