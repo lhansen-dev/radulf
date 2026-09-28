@@ -30,16 +30,20 @@ afterEach(() => {
 });
 
 describe("provisionNodeModules", () => {
-  it("hard-links the checkout's install into the worktree with its symlinks intact", async () => {
+  it("copies the checkout's install without sharing writable files", async () => {
     seedInstall(repo);
 
-    await expect(provisionNodeModules(repo, worktree)).resolves.toBe("hardlinked");
+    await expect(provisionNodeModules(repo, worktree)).resolves.toBe("copied");
 
     const original = fs.statSync(path.join(repo, "node_modules", "pkg", "index.js"));
     const linked = fs.statSync(path.join(worktree, "node_modules", "pkg", "index.js"));
-    expect(linked.ino).toBe(original.ino);
-    expect(linked.nlink).toBe(2);
+    expect(linked.ino).not.toBe(original.ino);
     expect(fs.readlinkSync(path.join(worktree, "node_modules", ".bin", "pkg"))).toBe("../pkg/index.js");
+
+    fs.writeFileSync(path.join(worktree, "node_modules", "pkg", "index.js"), "agent edit\n");
+    expect(fs.readFileSync(path.join(repo, "node_modules", "pkg", "index.js"), "utf8")).toBe(
+      "module.exports = 1;\n",
+    );
   });
 
   it("skips when the lockfiles differ", async () => {
