@@ -81,6 +81,10 @@ services:
     init: true
     restart: unless-stopped
     command: ["node", "dist/worker.mjs"]
+    # A whole-worker ceiling for platforms where the unprivileged container
+    # cannot create the per-run cgroups used by a host Linux install.
+    mem_limit: 12g
+    pids_limit: 4096
     # Shutdown drains in-flight runs for up to 30s (src/server/shutdown.ts).
     stop_grace_period: 45s
     extra_hosts:

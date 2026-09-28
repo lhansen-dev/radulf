@@ -247,10 +247,6 @@ services:
       - 192.168.1.1
     # Repositories owned by a uid other than 1000.
     user: "1001:1001"
-    # A hard bound on the whole container, since per-run cgroup limits do not
-    # apply inside it. Size for one worker plus the runs it drives.
-    mem_limit: 12g
-    pids_limit: 4096
     # SSH clone URLs: the one key the git host knows and the host's
     # known_hosts, read-only. Create home/.ssh on the volume first
     # (`docker compose exec worker mkdir -p -m 700 /var/lib/radulf/home/.ssh`)
@@ -339,10 +335,10 @@ What that means in practice:
 - **The web process** is confined exactly as a default Docker container is,
   with every capability dropped on top.
 - **Per-run memory and pid limits** are not applied. They come from a per-run
-  cgroup that the `node` user cannot create inside the container, so runs are
-  bounded by the disk watchdog and wall clocks instead, and the run row
-  records `watchdog`. For a hard bound on the whole container, set `mem_limit`
-  and `pids_limit` in a [per-host override](#per-host-overrides).
+  cgroup that the `node` user cannot create inside the container. The checked-in
+  Compose worker instead has a hard whole-container limit of 12 GiB memory and
+  4096 processes. Runs also retain the disk watchdog and wall clocks, and the
+  run row records `watchdog`. A per-host override may tighten either limit.
 
 Turning the sandbox off in Settings to avoid the relaxed options is the wrong
 trade. It removes the layer that actually contains the agent.
