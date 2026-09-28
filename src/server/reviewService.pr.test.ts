@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 // Spec 15 acceptance tests: delivering an approved diff as a GitHub pull
@@ -20,7 +20,17 @@ const mocks = vi.hoisted(() => ({
   createPullRequest: vi.fn(),
   findOpenPullRequest: vi.fn(),
   invalidateGithubStatus: vi.fn(),
-  settings: { openPr: false, autoApprove: false },
+  // The four Jira fields exist because the Done announce (jiraAnnounce.ts) reads
+  // the same mocked `getSettings` the delivery does; every spec 15 test leaves
+  // the opt-in off, which is also its shipped default.
+  settings: {
+    openPr: false,
+    autoApprove: false,
+    jiraCommentOnDone: false,
+    jiraBaseUrl: "",
+    jiraEmail: "",
+    jiraApiToken: "",
+  },
 }));
 
 vi.mock("./git", async (importOriginal) => ({
@@ -58,7 +68,7 @@ function seedRepo() {
     .run();
 }
 
-function seedCard(id: string, openPr: 0 | 1) {
+function seedCard(id: string, openPr: 0 | 1, jiraKey?: string) {
   db.insert(cards)
     .values({
       id,
@@ -68,6 +78,7 @@ function seedCard(id: string, openPr: 0 | 1) {
       status: "review",
       position: 1,
       openPr,
+      jiraKey: jiraKey ?? null,
       summary: "The evaluator's summary of the change.",
       createdAt: now(),
       updatedAt: now(),
@@ -121,6 +132,40 @@ function makeDeps() {
   };
 }
 
+/** Turns the Jira credentials on for a test and answers them: the tenant lookup
+ * yields a cloud id (so the comment goes to the gateway, like every other Jira
+ * call) and the comment POST succeeds. The `vi.fn` comes back so a test can
+ * count the comment requests — exactly one is the point — and read its body. */
+function stubJiraFetch() {
+  const fetchMock = vi.fn(async (url: string) =>
+    String(url).endsWith("/_edge/tenant_info")
+      ? new Response(JSON.stringify({ cloudId: "cloud-1" }), {
+          headers: { "content-type": "application/json" },
+        })
+      : new Response("{}", { status: 201 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** Turn Jira on the way Settings would: the opt-in plus a full set of
+ * credentials. A blank field anywhere in here and the announce stays silent. */
+function enableJiraComments() {
+  mocks.settings.jiraCommentOnDone = true;
+  mocks.settings.jiraBaseUrl = "https://example.atlassian.net";
+  mocks.settings.jiraEmail = "me@example.com";
+  mocks.settings.jiraApiToken = "tok";
+}
+
+/** The comment requests posted, ignoring the unauthenticated tenant lookup. The
+ * mock only declares the url, so the init it actually received is read back out
+ * through this one cast. */
+function commentRequests(fetchMock: ReturnType<typeof stubJiraFetch>): [string, RequestInit][] {
+  return fetchMock.mock.calls
+    .filter(([url]) => String(url).includes("/comment"))
+    .map((call) => call as unknown as [string, RequestInit]);
+}
+
 function decision(cardId: string): Record<string, unknown> | undefined {
   const row = db
     .select()
@@ -143,6 +188,10 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
     vi.clearAllMocks();
     mocks.settings.openPr = false;
     mocks.settings.autoApprove = false;
+    mocks.settings.jiraCommentOnDone = false;
+    mocks.settings.jiraBaseUrl = "";
+    mocks.settings.jiraEmail = "";
+    mocks.settings.jiraApiToken = "";
     mocks.mergeBranch.mockResolvedValue({ ok: true, mergeCommit: "abc123" });
     mocks.mergeBaseIntoWorktree.mockResolvedValue({ ok: true, conflicted: false, out: "" });
     mocks.removeWorktree.mockResolvedValue(undefined);
@@ -156,6 +205,19 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
     });
     mocks.findOpenPullRequest.mockResolvedValue({ ok: true, pr: null });
     seedRepo();
+  });
+
+  // The comment's `Card:` line falls back to the bare card id when Radulf has
+  // not been told its own address, which is what these tests read back.
+  let previousPublicBase: string | undefined;
+  beforeEach(() => {
+    previousPublicBase = process.env.RADULF_PUBLIC_BASE_URL;
+    delete process.env.RADULF_PUBLIC_BASE_URL;
+  });
+  afterEach(() => {
+    if (previousPublicBase === undefined) delete process.env.RADULF_PUBLIC_BASE_URL;
+    else process.env.RADULF_PUBLIC_BASE_URL = previousPublicBase;
+    vi.unstubAllGlobals();
   });
 
   it("1 — delivers by local merge and spawns no gh when PR delivery is off", async () => {
@@ -441,5 +503,97 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
       alreadyOpen: true,
       draft: false,
     });
+  });
+
+  it("9 — comments on the Jira issue once the merged card is Done", async () => {
+    enableJiraComments();
+    const fetchMock = stubJiraFetch();
+    seedCard("card-merge", 0, "DEV-7");
+    const run = seedRun("card-merge");
+    mocks.mergeBranch.mockResolvedValue({ ok: true, mergeCommit: "abc1234567" });
+
+    const result = await new ReviewService(makeDeps()).approve(run.id);
+
+    expect(result).toEqual({ ok: true });
+    const posted = commentRequests(fetchMock).filter(([url]) =>
+      String(url).endsWith("/rest/api/2/issue/DEV-7/comment"),
+    );
+    expect(posted).toHaveLength(1);
+    const init = posted[0]![1];
+    expect(init.headers).toMatchObject({
+      Authorization: `Basic ${Buffer.from("me@example.com:tok").toString("base64")}`,
+    });
+    const body = String(JSON.parse(init.body as string).body);
+    // What landed, where it landed, and how to get back to the card — all
+    // things Radulf already knew, none of them invented.
+    expect(body).toContain("Card card-merge");
+    expect(body).toContain("main");
+    expect(body).toContain("abc1234");
+    expect(body).toContain("Card: card-merge");
+    expect(
+      db
+        .select()
+        .from(events)
+        .where(and(eq(events.cardId, "card-merge"), eq(events.type, "jira.commented")))
+        .all(),
+    ).toHaveLength(1);
+  });
+
+  it("9b — comments the pull request URL when the card is Done", async () => {
+    enableJiraComments();
+    const fetchMock = stubJiraFetch();
+    seedCard("card-pr-jira", 1, "DEV-8");
+    const run = seedRun("card-pr-jira");
+    mocks.createPullRequest.mockResolvedValue({ ok: true, url: "https://github.com/o/r/pull/9" });
+
+    const result = await new ReviewService(makeDeps()).approve(run.id);
+
+    expect(result.ok).toBe(true);
+    const posted = commentRequests(fetchMock);
+    expect(posted).toHaveLength(1);
+    expect(String(JSON.parse(posted[0]![1].body as string).body)).toContain(
+      "https://github.com/o/r/pull/9",
+    );
+  });
+
+  it("9c — writes nothing to Jira while the opt-in is off", async () => {
+    mocks.settings.jiraBaseUrl = "https://example.atlassian.net";
+    mocks.settings.jiraEmail = "me@example.com";
+    mocks.settings.jiraApiToken = "tok";
+    const fetchMock = stubJiraFetch();
+    seedCard("card-off", 0, "DEV-9");
+    const run = seedRun("card-off");
+
+    expect((await new ReviewService(makeDeps()).approve(run.id)).ok).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("9d — writes nothing to Jira for a card with no issue key", async () => {
+    enableJiraComments();
+    const fetchMock = stubJiraFetch();
+    seedCard("card-no-key", 0);
+    const run = seedRun("card-no-key");
+
+    expect((await new ReviewService(makeDeps()).approve(run.id)).ok).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("9e — still comments when the cleanup after Done throws", async () => {
+    // The announce sits before the worktree cleanup on purpose: cleanup can
+    // throw, the card stays Done, and a second approval returns early on the
+    // review row — so an announce placed after it would be lost for good.
+    enableJiraComments();
+    const fetchMock = stubJiraFetch();
+    seedCard("card-cleanup", 0, "DEV-11");
+    const run = seedRun("card-cleanup");
+    mocks.removeWorktree.mockRejectedValueOnce(new Error("worktree busy"));
+    const deps = makeDeps();
+
+    const result = await new ReviewService(deps).approve(run.id);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("worktree busy");
+    expect(deps.moveCard).toHaveBeenCalledWith("card-cleanup", "reviewing", "done");
+    expect(commentRequests(fetchMock)).toHaveLength(1);
   });
 });

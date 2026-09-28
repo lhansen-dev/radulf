@@ -24,6 +24,7 @@ import {
   stripRalphForDelivery,
 } from "./git";
 import { createPullRequest, findOpenPullRequest, githubStatus, invalidateGithubStatus } from "./github";
+import { announceCardDone, type DoneOutcome } from "./jiraAnnounce";
 import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
@@ -303,6 +304,7 @@ export class ReviewService {
     run: Run,
     repo: Repo,
     payload: Record<string, unknown>,
+    outcome: DoneOutcome,
     mergeCommit?: string,
   ) {
     db.insert(reviews)
@@ -311,6 +313,10 @@ export class ReviewService {
     if (!this.deps.moveCard(card.id, "reviewing", "done")) {
       throw new ClientError("review claim was lost before completion");
     }
+    // Deliberately before the cleanup below: `removeWorktree` can throw, and a
+    // second approval would then return early on the review row just inserted —
+    // so announcing after it could lose the comment on a card that is Done.
+    await announceCardDone(card, outcome);
     removeBaseline(run.id);
     await removeWorktree(repo.path, run.worktreePath, run.branch);
     decided(card.id, run.id, payload);
@@ -564,6 +570,7 @@ export class ReviewService {
       run,
       repo,
       { mergeCommit: result.mergeCommit, ...(result.alreadyMerged ? { alreadyMerged: true } : {}) },
+      { kind: "merge", baseBranch, mergeCommit: result.mergeCommit! },
       result.mergeCommit,
     );
     return { ok: true };
@@ -656,13 +663,19 @@ export class ReviewService {
       branch: run.branch,
     });
     if (existing.ok && existing.pr) {
-      await this.completeApproval(card, run, repo, {
-        delivery: "pr",
-        grantedBy: card.openPr ? "card" : "global",
-        draft: existing.pr.isDraft,
-        prUrl: existing.pr.url,
-        alreadyOpen: true,
-      });
+      await this.completeApproval(
+        card,
+        run,
+        repo,
+        {
+          delivery: "pr",
+          grantedBy: card.openPr ? "card" : "global",
+          draft: existing.pr.isDraft,
+          prUrl: existing.pr.url,
+          alreadyOpen: true,
+        },
+        { kind: "pr", prUrl: existing.pr.url },
+      );
       return { ok: true };
     }
 
@@ -681,12 +694,18 @@ export class ReviewService {
 
     // The remote holds the branch now, so the local worktree and branch are
     // reclaimed exactly as they are after a merge (spec 15 open question 2).
-    await this.completeApproval(card, run, repo, {
-      delivery: "pr",
-      grantedBy: card.openPr ? "card" : "global",
-      draft,
-      ...(pr.url ? { prUrl: pr.url } : {}),
-    });
+    await this.completeApproval(
+      card,
+      run,
+      repo,
+      {
+        delivery: "pr",
+        grantedBy: card.openPr ? "card" : "global",
+        draft,
+        ...(pr.url ? { prUrl: pr.url } : {}),
+      },
+      { kind: "pr", prUrl: pr.url ?? null },
+    );
     return { ok: true };
   }
 
