@@ -14,7 +14,7 @@
  * secrets (spec 25 decision 8).
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "@/db";
 
@@ -59,7 +59,12 @@ export function ensureAuthSecret(): void {
   // Resolved here rather than at import time: settingsCrypto imports this
   // module, and tests that mock "@/db" without DATA_DIR must still load it.
   const secretFile = join(DATA_DIR, "auth-secret");
-  mkdirSync(DATA_DIR, { recursive: true });
+  mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(DATA_DIR, 0o700);
+  } catch (cause) {
+    if ((statSync(DATA_DIR).mode & 0o077) !== 0) throw cause;
+  }
   let secret = readSecret(secretFile);
   if (!secret) {
     const fresh = randomBytes(32).toString("hex");
@@ -77,14 +82,12 @@ export function ensureAuthSecret(): void {
       secret = waitForSecret(secretFile);
     }
   }
-  // An install that predates the mode above still has a world-readable secret,
-  // so tighten it in place. Never fatal: under a container that runs as a
-  // different uid over the same volume the file is not ours to chmod, and it
-  // is still perfectly readable.
+  // An install that predates the mode above may have a world-readable secret,
+  // so tighten it in place and fail closed if it remains exposed.
   try {
     chmodSync(secretFile, 0o600);
-  } catch {
-    // not ours to tighten
+  } catch (cause) {
+    if ((statSync(secretFile).mode & 0o077) !== 0) throw cause;
   }
 
   process.env.RADULF_AUTH_SECRET = secret;

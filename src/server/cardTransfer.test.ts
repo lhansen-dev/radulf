@@ -67,7 +67,7 @@ const cardRows = () => db.select().from(cards).all();
 
 describe("exportCards", () => {
   it("carries the intent and the scoping thread, and nothing that happened", () => {
-    seedCard("card-1");
+    seedCard("card-1", { jiraKey: "DEV-42" });
 
     const exported = exportCards({ cardId: "card-1" });
 
@@ -77,6 +77,7 @@ describe("exportCards", () => {
       title: "Card card-1",
       description: "## Problem\nBrute force.",
       baseBranch: "release/2",
+      jiraKey: "DEV-42",
       source: "user",
       maxIterations: 9,
       timeoutMinutes: 45,
@@ -122,7 +123,7 @@ describe("exportCards", () => {
 
 describe("importCards", () => {
   it("round-trips a card into another repository, in Backlog with a fresh id", async () => {
-    seedCard("card-1");
+    seedCard("card-1", { jiraKey: "DEV-42" });
     const exported = exportCards({ cardId: "card-1" });
     db.delete(cards).run();
 
@@ -137,8 +138,11 @@ describe("importCards", () => {
       description: "## Problem\nBrute force.",
       // Importing never starts work, whatever the card was doing before.
       status: "backlog",
+      jiraKey: "DEV-42",
       maxIterations: 9,
       reviewPlanBeforeImplementation: 1,
+      autoApprove: 0,
+      openPr: 0,
       grillMe: 1,
       scopingAuthorsPlan: 1,
       loopModel: "a-loop-model",
@@ -191,11 +195,27 @@ describe("parseCardExport", () => {
       title: "A card",
       description: "",
       baseBranch: null,
+      jiraKey: null,
       source: "user",
       maxIterations: null,
       autoApprove: false,
       scoping: [],
     });
+  });
+
+  it("drops a jiraKey it does not recognise instead of refusing the file", () => {
+    const parsed = parseCardExport({ ...file, cards: [{ title: "A card", jiraKey: "nonsense" }] });
+    expect(parsed.cards[0]).toMatchObject({ title: "A card", jiraKey: null });
+  });
+
+  it("never imports automatic approval or publication authority", () => {
+    for (const authority of [true, "true", "false", 1]) {
+      const parsed = parseCardExport({
+        ...file,
+        cards: [{ title: "A card", autoApprove: authority, openPr: authority }],
+      });
+      expect(parsed.cards[0]).toMatchObject({ autoApprove: false, openPr: false });
+    }
   });
 
   it("ignores a field it has never heard of, rather than refusing the file", () => {

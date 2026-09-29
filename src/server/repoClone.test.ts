@@ -29,6 +29,7 @@ describe("cloneRepository", () => {
     const cloned = await cloneRepository(`file://${source}`, "");
 
     expect(CLONES_DIR).toBe(path.join(root, "repos"));
+    expect(fs.statSync(CLONES_DIR).mode & 0o777).toBe(0o700);
     const name = path.basename(source);
     expect(cloned).toEqual({ name, path: path.join(CLONES_DIR, name), defaultBranch: "trunk" });
     expect(git(cloned.path, "remote", "get-url", "origin")).toBe(`file://${source}`);

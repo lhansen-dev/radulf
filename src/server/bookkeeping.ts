@@ -26,6 +26,7 @@ import path from "node:path";
 import { DATA_DIR } from "@/db";
 import { firstUnchecked, markChecked } from "./checklist";
 import { tryGit } from "./git";
+import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
 
 // ---------------------------------------------------------------------------
 // 0. Plan state
@@ -135,14 +136,90 @@ export function ralphDirPath(worktreePath: string): string {
 
 /** The file's contents, or `""` when it does not exist. */
 export function readFileIfExists(filePath: string): string {
-  return fs.existsSync(/* turbopackIgnore: true */ filePath)
-    ? fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf8")
-    : "";
+  let fd: number | undefined;
+  try {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ filePath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) return "";
+    fd = fs.openSync(
+      /* turbopackIgnore: true */ filePath,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.size > 4 * 1024 * 1024) return "";
+    return fs.readFileSync(fd, "utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function safeRalphDir(ralphDir: string): boolean {
+  try {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ ralphDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    return isInsideOrEqual(realpathBestEffort(ralphDir), realpathBestEffort(path.dirname(ralphDir)));
+  } catch {
+    return false;
+  }
+}
+
+/** Create or validate the real worktree-local artifact directory. */
+export function ensureRalphDir(worktreePath: string): string {
+  const dir = ralphDirPath(worktreePath);
+  try {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`unsafe .ralph path in ${worktreePath}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    fs.mkdirSync(/* turbopackIgnore: true */ dir, { mode: 0o700 });
+  }
+  if (!safeRalphDir(dir)) throw new Error(`unsafe .ralph path in ${worktreePath}`);
+  fs.chmodSync(/* turbopackIgnore: true */ dir, 0o700);
+  return realpathBestEffort(dir);
+}
+
+/** Read one regular artifact without following file or directory symlinks. */
+export function readRalphArtifact(worktreePath: string, name: string): string {
+  const dir = ralphDirPath(worktreePath);
+  if (path.basename(name) !== name || !safeRalphDir(dir)) return "";
+  return readFileIfExists(path.join(/* turbopackIgnore: true */ dir, name));
+}
+
+/** Atomically replace one host-owned artifact without following a planted link. */
+export function writeRalphArtifact(worktreePath: string, name: string, content: string): void {
+  if (path.basename(name) !== name) throw new Error(`invalid .ralph artifact name: ${name}`);
+  const dir = ensureRalphDir(worktreePath);
+  const target = path.join(/* turbopackIgnore: true */ dir, name);
+  const temporary = path.join(dir, `.host-${process.pid}-${crypto.randomUUID()}`);
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(
+      /* turbopackIgnore: true */ temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    fs.writeFileSync(fd, content, "utf8");
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(/* turbopackIgnore: true */ temporary, target);
+    fs.chmodSync(/* turbopackIgnore: true */ target, 0o600);
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    fs.rmSync(/* turbopackIgnore: true */ temporary, { force: true });
+  }
 }
 
 /** Remove the named `.ralph/` files; missing ones are not an error. */
 export function removeRalphFiles(worktreePath: string, names: readonly string[]): void {
   const dir = ralphDirPath(worktreePath);
+  if (!safeRalphDir(dir)) {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ dir, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink()) fs.rmSync(/* turbopackIgnore: true */ dir, { force: true });
+    return;
+  }
   for (const name of names) {
     fs.rmSync(path.join(/* turbopackIgnore: true */ dir, name), { force: true });
   }
@@ -153,9 +230,11 @@ export const DONE_FILE_NAMES = ["DONE", "DONE.md"] as const;
 
 /** The DONE signal file present in `ralphDir`, or null when there is none. */
 export function doneFilePath(ralphDir: string): string | null {
+  if (!safeRalphDir(ralphDir)) return null;
   for (const name of DONE_FILE_NAMES) {
     const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
-    if (fs.existsSync(/* turbopackIgnore: true */ p)) return p;
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ p, { throwIfNoEntry: false });
+    if (stat?.isFile() && !stat.isSymbolicLink()) return p;
   }
   return null;
 }
@@ -172,13 +251,9 @@ function iterationDonePath(ralphDir: string): string {
  * empty (after trimming).
  */
 export function readIterationDone(ralphDir: string): string | null {
-  const p = iterationDonePath(ralphDir);
-  try {
-    const content = fs.readFileSync(/* turbopackIgnore: true */ p, "utf8").trim();
-    return content || null;
-  } catch {
-    return null;
-  }
+  if (!safeRalphDir(ralphDir)) return null;
+  const content = readFileIfExists(iterationDonePath(ralphDir)).trim();
+  return content || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +492,7 @@ export async function performDoneBookkeeping(opts: {
     return null;
   }
 
-  const content = fs.readFileSync(/* turbopackIgnore: true */ donePath, "utf8").trim();
+  const content = readFileIfExists(donePath).trim();
   // First line is the TLDR summary.
   const firstNewline = content.indexOf("\n");
   const summary = firstNewline === -1 ? content : content.slice(0, firstNewline);

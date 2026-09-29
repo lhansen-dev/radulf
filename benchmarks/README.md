@@ -17,12 +17,14 @@ and — for existing-codebase fixtures — `seed/`, the starting codebase.
 
 ## Runner
 
-`run-benchmark.mjs` is a dependency-free Node (≥18) script shared by every
+`run-benchmark.mjs` is a Node script shared by every
 fixture. It creates a card per run through the Radulf API, waits for the
 loop to finish, executes the fixture's criteria in the run's worktree, and
 reports wall time, iterations, model turns, p50/p90 iteration time, token
 and cost sums, criteria pass rate, and diff correctness, aggregated across
-runs. The p50/p90 use the same nearest-rank rule as the analytics tab, so a
+runs. Criteria execute inside a root-deny kernel sandbox with no network or
+orchestration credentials. Candidate-authored dependency declarations are
+never installed by the runner. The p50/p90 use the same nearest-rank rule as the analytics tab, so a
 report and the tab agree on the same durations.
 
 ```bash

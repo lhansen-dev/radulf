@@ -113,6 +113,41 @@ describe("transcriptWatchers", () => {
     expect(watchedTranscripts()).toEqual([]);
   });
 
+  // What the events tailer hands the registry for a run that began and ended
+  // between two polls: `run.started` … `run.finished` in one synchronous batch,
+  // with the `runs` row already settled. Refusing to attach there left a client
+  // that was connected throughout with no live transcript for the whole run —
+  // the intermittency that broke `make check-split` (card 2026-09-26).
+  it("delivers the transcript when the whole run arrives in one batch after it settled", async () => {
+    seedRun("run-late", "plan", "completed");
+    const line = JSON.stringify({ t: "text", role: "assistant", content: "already finished" });
+    fs.writeFileSync(path.join(runTranscriptDir("run-late"), "plan.jsonl"), `${line}\n`);
+    const onPush = vi.fn();
+    bus.on("transcript", onPush);
+    const stopRegistry = startTranscriptWatchers(60_000);
+    try {
+      emitEvent("run.started", { cardId: "card-1", runId: "run-late" });
+      expect(watchedTranscripts()).toEqual([{ runId: "run-late", iteration: 0 }]);
+      emitEvent("run.finished", { cardId: "card-1", runId: "run-late", payload: {} });
+      // The same batch that armed it retires it: no watcher outlives the run.
+      expect(watchedTranscripts()).toEqual([]);
+
+      await sleep(50);
+      // The catch-up read the attach started is still delivered (it is the
+      // watcher's last batch) and is the only one it makes.
+      expect(onPush).toHaveBeenCalledTimes(1);
+      expect(onPush.mock.calls[0][0]).toMatchObject({
+        runId: "run-late",
+        iteration: 0,
+        fromCursor: 0,
+        lines: [{ t: "text", role: "assistant", content: "already finished" }],
+      });
+    } finally {
+      bus.off("transcript", onPush);
+      stopRegistry();
+    }
+  });
+
   it("follows a loop run's latest iteration, closing the previous watcher", () => {
     seedRun("run-loop", "loop");
     syncTranscriptWatchers();

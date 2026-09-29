@@ -34,7 +34,7 @@ export type GithubStatus =
 async function run(
   args: string[],
   options: { cwd?: string; timeoutMs: number },
-): Promise<{ ok: boolean; out: string; code?: string | number }> {
+): Promise<{ ok: boolean; out: string; stdout: string; code?: string | number }> {
   const { err, stdout, stderr, timedOut } = await execBounded("gh", args, {
     timeoutMs: options.timeoutMs,
     maxBuffer: 8 * 1024 * 1024,
@@ -48,10 +48,11 @@ async function run(
     },
   });
   const out = ((stdout ?? "") + (stderr ?? "")).trim();
-  if (!err) return { ok: true, out };
+  if (!err) return { ok: true, out, stdout: (stdout ?? "").trim() };
   return {
     ok: false,
     out: timedOut ? `gh ${args[0]} timed out after ${options.timeoutMs}ms` : out || err.message,
+    stdout: (stdout ?? "").trim(),
     // A non-zero exit arrives as a number; a spawn failure arrives as a
     // string such as "ENOENT" (no `gh` on PATH) or "EACCES" (not executable).
     code: err.code ?? undefined,
@@ -137,4 +138,49 @@ export async function createPullRequest(options: {
   // informational line cannot be mistaken for the result.
   const urls = result.out.match(/https:\/\/\S+\/pull\/\d+/g);
   return { ok: true, ...(urls ? { url: urls[urls.length - 1] } : {}) };
+}
+
+/**
+ * Look up an already-open pull request for `branch` against `baseBranch`.
+ *
+ * This exists so a retried delivery can adopt the PR an earlier attempt already
+ * opened: `gh pr create` refuses a second PR for the same head branch, so
+ * without this lookup a retry that fails after the first push+create is stuck
+ * reporting an error while a live PR sits on GitHub. Returns `pr: null` when
+ * there is genuinely nothing to adopt, and `ok: false` only when the lookup
+ * itself failed — a caller must not read a failure as "no PR".
+ */
+export async function findOpenPullRequest(options: {
+  worktreePath: string;
+  baseBranch: string;
+  branch: string;
+}): Promise<{ ok: true; pr: { url: string; isDraft: boolean } | null } | { ok: false; error: string }> {
+  const result = await run(
+    [
+      "pr",
+      "list",
+      "--head",
+      options.branch,
+      "--base",
+      options.baseBranch,
+      "--state",
+      "open",
+      "--json",
+      "url,isDraft",
+      "--limit",
+      "1",
+    ],
+    { cwd: options.worktreePath, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (!result.ok) return { ok: false, error: result.out || "gh pr list failed" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return { ok: false, error: "gh pr list returned unparseable output" };
+  }
+  if (!Array.isArray(parsed)) return { ok: false, error: "gh pr list returned unparseable output" };
+  const first = parsed[0] as { url?: unknown; isDraft?: unknown } | undefined;
+  if (!first) return { ok: true, pr: null };
+  return { ok: true, pr: { url: String(first.url), isDraft: Boolean(first.isDraft) } };
 }

@@ -155,6 +155,65 @@ describe("authentication routes", () => {
     expect((await success).status).toBe(307);
   });
 
+  it("rejects a declared oversized login body before parsing it", async () => {
+    const response = await login(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "20000" },
+        body: JSON.stringify({ password: PASSWORD }),
+      }),
+    );
+    expect(response.status).toBe(413);
+  });
+
+  it("rejects an oversized login body without a content-length header", async () => {
+    const response = await login(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `padding=${"x".repeat(20_000)}&password=${PASSWORD}`,
+      }),
+    );
+    expect(response.status).toBe(413);
+  });
+
+  it("times out a slow login body before it occupies a password-check slot", async () => {
+    vi.useFakeTimers();
+    const body = new ReadableStream<Uint8Array>({ start() {} });
+    const request = new Request("http://localhost/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const response = login(request);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect((await response).status).toBe(408);
+  });
+
+  it("does not let slow request bodies consume password-check slots", async () => {
+    vi.useFakeTimers();
+    const stalled = Array.from({ length: 8 }, () => {
+      const body = new ReadableStream<Uint8Array>({ start() {} });
+      return login(
+        new Request("http://localhost/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body,
+          duplex: "half",
+        } as RequestInit & { duplex: "half" }),
+      );
+    });
+
+    const success = login(loginRequest(PASSWORD));
+    await settle(20_000);
+
+    expect((await success).status).toBe(307);
+    expect((await Promise.all(stalled)).map((response) => response.status)).toEqual(
+      Array(8).fill(408),
+    );
+  });
+
   it("sets a signed HttpOnly session cookie with transport security matching the request", async () => {
     const httpResponse = await login(loginRequest(PASSWORD));
     const httpCookie = httpResponse.headers.get("set-cookie") ?? "";
@@ -170,12 +229,17 @@ describe("authentication routes", () => {
   it("marks the cookie Secure behind a TLS proxy that speaks plain HTTP to the app", async () => {
     // What a reverse proxy produces: the app is bound to plain HTTP, so
     // request.url says http, while the browser used https.
-    const viaOrigin = await login(
-      loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
-        origin: "https://radulf.example",
-      }),
-    );
-    expect(viaOrigin.headers.get("set-cookie")).toContain("Secure");
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example";
+    try {
+      const viaOrigin = await login(
+        loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
+          origin: "https://radulf.example",
+        }),
+      );
+      expect(viaOrigin.headers.get("set-cookie")).toContain("Secure");
+    } finally {
+      delete process.env.RADULF_ALLOWED_ORIGIN;
+    }
 
     // A caller that sends no Origin at all leaves the forwarded scheme.
     const viaForwarded = await login(
@@ -253,6 +317,17 @@ describe("authentication routes", () => {
     expect(read.headers.get("x-middleware-next")).toBe("1");
   });
 
+  it("rejects a foreign Host header when auth is disabled", async () => {
+    delete process.env.RADULF_AUTH_PASSWORD_HASH;
+    const response = await proxy(
+      new NextRequest("http://127.0.0.1:3000/api/cards", {
+        method: "GET",
+        headers: { host: "attacker.example:3000" },
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
   it("lets the liveness check through without a session, so a container HEALTHCHECK works with auth on", async () => {
     const health = await proxy(new NextRequest("http://localhost:3000/api/health", { method: "GET" }));
     expect(health.headers.get("x-middleware-next")).toBe("1");
@@ -272,7 +347,7 @@ describe("authentication routes", () => {
   });
 
   it("enforces API sessions and rejects cross-origin mutations", async () => {
-    process.env.RADULF_ALLOWED_ORIGIN = "radulf.example.com";
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example.com";
     try {
       const unauthorized = await proxy(
         new NextRequest("https://radulf.example.com/api/cards", { method: "GET" }),

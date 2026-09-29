@@ -20,27 +20,28 @@ export function isDocPath(relPath: string): boolean {
 }
 
 /**
- * Extract the affected worktree-relative paths from `git status --porcelain`
- * output. Renames (`R  old -> new`) report the destination — the path that now
- * exists in the tree.
+ * Extract affected paths from the exact output of
+ * `git status --porcelain=v1 -z`. The NUL form never quotes path names and
+ * emits a rename destination first, followed by a separate source record.
+ * Both identities are security-relevant: allowing only the destination would
+ * let an evaluator move implementation code into an allowed documentation
+ * path and thereby delete the implementation.
+ * Human-readable arrow parsing is intentionally unsupported because the
+ * arrow may be part of a valid file name.
  */
 export function changedPaths(porcelain: string): string[] {
-  return porcelain
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .map((line) => {
-      // Porcelain v1 is `XY path`, three columns before the path. A caller
-      // that trimmed the whole output (tryGit does) has stripped the leading
-      // space from the first line whenever X was a space, an unstaged change,
-      // leaving `Y path`: slicing three characters there eats the path's first
-      // letter, and `docs/ARCHITECTURE.md` was once judged as `ocs/...`. A
-      // blank Y column keeps three columns (`M  path`), so the tell is a
-      // space in column two followed by a non-space.
-      const columns = line[1] === " " && line[2] !== " " ? 2 : 3;
-      const rest = line.slice(columns);
-      const arrow = rest.indexOf(" -> ");
-      const p = arrow === -1 ? rest : rest.slice(arrow + 4);
-      return p.replace(/^"(.*)"$/, "$1");
-    });
+  const records = porcelain.split("\0");
+  const paths: string[] = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
+    if (!record) continue;
+    const status = record.slice(0, 2);
+    paths.push(record[2] === " " ? record.slice(3) : record);
+    if (status.includes("R") || status.includes("C")) {
+      const source = records[i + 1];
+      if (source) paths.push(source);
+      i += 1;
+    }
+  }
+  return paths;
 }

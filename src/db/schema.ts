@@ -116,6 +116,10 @@ export const cards = sqliteTable(
     // is the OR of the two, read at approval time. Same shape as autoApprove,
     // and like it, NOT seeded from the global.
     openPr: integer("open_pr").notNull().default(0),
+    // The Jira issue key this card was imported from (or linked to by hand).
+    // Nullable: most cards have no Jira counterpart at all. Used to comment on
+    // the issue when the card reaches Done.
+    jiraKey: text("jira_key"),
     // Set when a loop run finishes and the card is waiting to be picked up
     // for evaluation. A durable flag rather than an in-memory queue so a
     // second worker process (or a restarted one) can claim the evaluation
@@ -160,6 +164,10 @@ export const plans = sqliteTable("plans", {
   // Spec 17: "A card that carries its own plan is stamped as such on the plan
   // row, so the origin of any plan is always recoverable."
   origin: text("origin").$type<PlanOrigin>().notNull().default("planner"),
+  // Spec 31: JSON array of check commands that already exited the way their
+  // criterion wanted on the untouched worktree; NULL for plans that predate the
+  // pre-check. The post-DONE probe reports but does not repair these.
+  precheckPassing: text("precheck_passing"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("plans_card_version_idx").on(table.cardId, table.version)]);
 

@@ -122,7 +122,7 @@ Everything that must outlive a container is under one named volume,
 |------|----------|
 | `data/` | SQLite database, transcripts, `auth-secret`, and `pi-agent/` with the subscription logins. Denied to agent bash. |
 | `repos/` | Repositories added by URL. Radulf clones them here. Denied to agent bash like `data/`; a run reaches its own repo's `.git` through the same carve-out as on a host. |
-| `worktrees/`, `plans/`, `runtmp/` | Per-run agent output, derived as siblings of `data/` exactly as on a host. |
+| `worktrees/`, `plans/`, `runtmp/` | Per-run agent output, derived as siblings of `data/` exactly as on a host. A worktree of a repository whose checkout carries a `node_modules` gets a full copy of it at creation, because hard links cannot cross from a bind mount into the volume; budget the install's size per card in flight. The retention sweep reclaims it with the worktree. |
 | `home/` | The container user's `$HOME`: `gh`'s login and any `.gitconfig`. Denied to agent bash, and on the sandbox's credential denylist. |
 
 `docker compose down` keeps the volume. `docker compose down -v` deletes it,
@@ -148,9 +148,16 @@ docker compose exec -it worker gh auth setup-git
 ```
 
 Both persist in `home/` on the volume, which both services mount, so a login
-done in either container is seen by both. For SSH URLs, put a key under
-`home/.ssh` on the volume instead. A clone that would prompt for a credential
-fails in seconds with git's message rather than hanging.
+done in either container is seen by both. For SSH URLs (`git@host:…` or
+`ssh://`), the container needs a private key the git host knows and that
+host's entry in `known_hosts`, both under `home/.ssh`. The narrowest way in
+is to bind-mount just those two files from the host, read-only, in a per-host
+override for both services, see [Per-host overrides](#per-host-overrides); a
+deploy key made for Radulf is better than a personal one. Git runs `ssh` in
+batch mode, so a host missing from `known_hosts` fails with `Host key
+verification failed` rather than prompting: connect to it from the host once
+first. A clone that would prompt for a credential likewise fails in seconds
+with git's message rather than hanging.
 
 Checkouts that already live on the host can still be mounted: set
 `RADULF_REPOS_DIR` in `.env` to the directory holding them, and they appear at
@@ -222,7 +229,7 @@ because its environment is an allowlist:
 
 `compose.yaml` is the checked-in shape of the service. Anything specific to
 one host goes in `compose.override.yaml` beside it, which compose loads on its
-own and git ignores. Three overrides come up:
+own and git ignores. Four overrides come up:
 
 Overrides are per service: the same block under `worker:` applies to the
 worker containers, and DNS or `user:` usually belong on both.
@@ -240,15 +247,21 @@ services:
       - 192.168.1.1
     # Repositories owned by a uid other than 1000.
     user: "1001:1001"
-    # A hard bound on the whole container, since per-run cgroup limits do not
-    # apply inside it. Size for one worker plus the runs it drives.
-    mem_limit: 12g
-    pids_limit: 4096
+    # SSH clone URLs: the one key the git host knows and the host's
+    # known_hosts, read-only. Create home/.ssh on the volume first
+    # (`docker compose exec worker mkdir -p -m 700 /var/lib/radulf/home/.ssh`)
+    # so Docker does not create it root-owned. Agent bash never sees $HOME.
+    volumes:
+      - ~/.ssh/id_ed25519:/var/lib/radulf/home/.ssh/id_ed25519:ro
+      - ~/.ssh/known_hosts:/var/lib/radulf/home/.ssh/known_hosts:ro
   web:
     dns:
       - 100.100.100.100
       - 192.168.1.1
     user: "1001:1001"
+    volumes:
+      - ~/.ssh/id_ed25519:/var/lib/radulf/home/.ssh/id_ed25519:ro
+      - ~/.ssh/known_hosts:/var/lib/radulf/home/.ssh/known_hosts:ro
 ```
 
 `docker compose config` prints the merged result, which is the quickest way to
@@ -267,8 +280,13 @@ confirm an override took.
 | Add workers | `docker compose up -d --scale worker=2` |
 | Roll back | `git checkout <tag> && docker compose up -d --build` |
 
-Stopping a worker waits up to 45 seconds so an in-flight run can drain, the
-same shutdown path a `SIGTERM` takes on a host.
+Stopping a worker waits up to 45 seconds so an in-flight run, or a review
+delivery it has claimed, can drain — the same shutdown path a `SIGTERM` takes
+on a host. If the window elapses with work still active, the worker hands it
+back before exiting: it interrupts its own runs (a checkpointed loop goes
+straight back to Ready), fails its own running delivery, frees its repo lease
+and deletes its `workers` row, so a replacement worker picks the card up on its
+first pump rather than after `workerStaleSeconds`.
 
 Migrations run forward at boot and are not reversed by a rollback. Take a
 backup before updating. The database is in WAL mode, so copy it through
@@ -317,10 +335,10 @@ What that means in practice:
 - **The web process** is confined exactly as a default Docker container is,
   with every capability dropped on top.
 - **Per-run memory and pid limits** are not applied. They come from a per-run
-  cgroup that the `node` user cannot create inside the container, so runs are
-  bounded by the disk watchdog and wall clocks instead, and the run row
-  records `watchdog`. For a hard bound on the whole container, set `mem_limit`
-  and `pids_limit` in a [per-host override](#per-host-overrides).
+  cgroup that the `node` user cannot create inside the container. The checked-in
+  Compose worker instead has a hard whole-container limit of 12 GiB memory and
+  4096 processes. Runs also retain the disk watchdog and wall clocks, and the
+  run row records `watchdog`. A per-host override may tighten either limit.
 
 Turning the sandbox off in Settings to avoid the relaxed options is the wrong
 trade. It removes the layer that actually contains the agent.

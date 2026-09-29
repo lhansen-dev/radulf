@@ -8,14 +8,17 @@ import {
   captureIterationState,
   deterministicCommitMessage,
   doneFilePath,
+  ensureRalphDir,
   hasIterationWorkProduct,
   performDoneBookkeeping,
   performIterationBookkeeping,
   ralphDirPath,
   readFileIfExists,
   readIterationDone,
+  readRalphArtifact,
   removeRalphFiles,
   taskInjectionBlock,
+  writeRalphArtifact,
 } from "./bookkeeping";
 import { tryGit } from "./git";
 
@@ -143,6 +146,11 @@ describe("signal-file helpers", () => {
     expect(readFileIfExists(file)).toBe("");
     fs.writeFileSync(file, "  summary \n");
     expect(readFileIfExists(file)).toBe("  summary \n");
+    const target = path.join(dir, "target");
+    const link = path.join(dir, "link");
+    fs.writeFileSync(target, "secret");
+    fs.symlinkSync(target, link);
+    expect(readFileIfExists(link)).toBe("");
   });
 
   it("finds either DONE spelling and removes the named files, missing ones included", () => {
@@ -156,6 +164,34 @@ describe("signal-file helpers", () => {
     expect(doneFilePath(ralphDir)).toBe(path.join(ralphDir, "DONE"));
     removeRalphFiles(dir, ["DONE", "DONE.md", "BLOCKED"]);
     expect(fs.readdirSync(ralphDir)).toEqual([]);
+  });
+
+  it("rejects a symlinked .ralph directory and never deletes its target", () => {
+    const worktree = tmpDir();
+    const outside = tmpDir();
+    fs.writeFileSync(path.join(outside, "DONE"), "outside");
+    fs.symlinkSync(outside, ralphDirPath(worktree));
+
+    expect(readRalphArtifact(worktree, "DONE")).toBe("");
+    expect(doneFilePath(ralphDirPath(worktree))).toBeNull();
+    expect(() => ensureRalphDir(worktree)).toThrow(/unsafe .ralph path/);
+    removeRalphFiles(worktree, ["DONE"]);
+    expect(fs.existsSync(path.join(outside, "DONE"))).toBe(true);
+    expect(fs.existsSync(ralphDirPath(worktree))).toBe(false);
+  });
+
+  it("atomically replaces a planted artifact link without touching its target", () => {
+    const worktree = tmpDir();
+    const dir = ensureRalphDir(worktree);
+    const target = path.join(worktree, "host-file");
+    fs.writeFileSync(target, "preserve me");
+    fs.symlinkSync(target, path.join(dir, "PROMPT.md"));
+
+    writeRalphArtifact(worktree, "PROMPT.md", "trusted prompt");
+
+    expect(fs.readFileSync(target, "utf8")).toBe("preserve me");
+    expect(readRalphArtifact(worktree, "PROMPT.md")).toBe("trusted prompt");
+    expect(fs.lstatSync(path.join(dir, "PROMPT.md")).isSymbolicLink()).toBe(false);
   });
 });
 

@@ -236,7 +236,8 @@ and `tasksSucceeded` only ever move in lockstep with a card's own events.
 ## Gotchas
 
 - **A dirty working tree fails every merge — after the tokens are spent.**
-  The merge refuses with `target checkout has uncommitted changes`, and it only
+  The merge refuses with `target checkout <path> has uncommitted changes — commit
+  or stash them there, then press Retry merge`, and it only
   happens at the *end* of a card, so a full plan → loop → evaluate cycle is paid
   for and then lands in Needs Attention. Nothing validates this when the run is
   created, so an unclean checkout costs you the whole budget one card at a time.

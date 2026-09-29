@@ -8,6 +8,7 @@ import { setupTestDataDir } from "@/testUtils/testDataDir";
 const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   tryGit: vi.fn(),
+  gitRaw: vi.fn(),
   // The fixture worktree is not a real checkout; the guard would otherwise
   // report it as no longer sharing the repository's git dir.
   offRunBranchReason: vi.fn().mockResolvedValue(null),
@@ -20,6 +21,7 @@ vi.mock("./harness", async (importOriginal) => ({
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
   tryGit: mocks.tryGit,
+  gitRaw: mocks.gitRaw,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
 vi.mock("./settings", async (importOriginal) => ({
@@ -44,6 +46,7 @@ const {
   namedSpecFiles,
   renderCriticPrompt,
   consecutiveCriticRevisions,
+  consecutivePlanRevisions,
 } = await import("./planCriticService");
 
 describe("criticEnabled", () => {
@@ -103,6 +106,28 @@ describe("renderCriticPrompt", () => {
     expect(CRITIQUE_FILE).toBe("CRITIQUE.md");
   });
 
+  it("keeps `$` sequences in the plan verbatim rather than expanding replacement patterns", () => {
+    // In a string replacement `$&`, `` $` `` and `$'` splice in the match or the
+    // text around it. A plan that quotes a bcrypt hash or ends a regex with
+    // `$'` used to come back with a copy of the critic prompt spliced into it.
+    const planMd = "single quotes keep the literal `$` of '$2b$12$hash'; grep -Eq '^\\s*a: b\\s*$' f; $& $$";
+    const rendered = renderCriticPrompt(template, {
+      title: "Add manifests",
+      description: "d",
+      scoping: [],
+      specFiles: [],
+      planVersion: 6,
+      planMd,
+      criteriaMd: "C-$'-C",
+      promptMd: "R-$`-R",
+    });
+
+    expect(rendered).toContain(`P=${planMd}\n`);
+    expect(rendered).toContain("C=C-$'-C\n");
+    expect(rendered).toContain("R=R-$`-R\n");
+    expect(rendered.split("T=Add manifests")).toHaveLength(2);
+  });
+
   it("uses fallbacks for an empty description, thread and spec list", () => {
     const rendered = renderCriticPrompt(template, {
       title: "Add critic",
@@ -137,7 +162,13 @@ describe("renderCriticPrompt", () => {
 });
 
 describe("consecutiveCriticRevisions", () => {
-  function seedRun(id: string, cardId: string, kind: "loop" | "critique", startedAt: string, exitReason: string | null) {
+  function seedRun(
+    id: string,
+    cardId: string,
+    kind: "loop" | "critique" | "plan",
+    startedAt: string,
+    exitReason: string | null,
+  ) {
     db.insert(runs)
       .values({
         id,
@@ -188,6 +219,25 @@ describe("consecutiveCriticRevisions", () => {
     seedRun("r6", "card-b", "critique", "2024-01-01T00:00:00.000Z", "revise");
     expect(consecutiveCriticRevisions("card-b")).toBe(1);
     expect(consecutiveCriticRevisions("card-none")).toBe(0);
+  });
+
+  it("counts the critic's revisions and the pre-check's separately, since the latest loop", () => {
+    db.insert(repos)
+      .values({ id: "repo-1", name: "Repo", path: path.join(testDataDir, "repo"), defaultBranch: "main", createdAt: now() })
+      .onConflictDoNothing()
+      .run();
+    seedCard("card-c");
+
+    // One of each since the loop, plus a pre-check revise before it that must
+    // not count against the shared budget.
+    seedRun("r7", "card-c", "plan", "2024-01-01T00:00:00.000Z", "precheck revise");
+    seedRun("r8", "card-c", "loop", "2024-01-02T00:00:00.000Z", "done");
+    seedRun("r9", "card-c", "critique", "2024-01-03T00:00:00.000Z", "revise");
+    seedRun("r10", "card-c", "plan", "2024-01-04T00:00:00.000Z", "precheck revise");
+    expect(consecutivePlanRevisions("card-c")).toEqual({ critic: 1, precheck: 1 });
+    // The critic-only reader keeps its old meaning: the pre-check's rows stay out of it.
+    expect(consecutiveCriticRevisions("card-c")).toBe(1);
+    expect(consecutivePlanRevisions("card-none")).toEqual({ critic: 0, precheck: 0 });
   });
 });
 
@@ -278,18 +328,18 @@ describe("PlanCriticService.runCritic", () => {
     });
   }
 
-  /** `tryGit` answering rev-parse with a constant and status with the given
-   * porcelain outputs, in call order (the last one repeats). */
+  /** Git answering rev-parse with a constant and raw NUL status records in
+   * call order, with the last status repeated. */
   function mockGit(statusOutputs: string[] = [""]) {
     let statusCalls = 0;
     mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => {
       if (args[0] === "rev-parse") return { ok: true, out: HEAD };
-      if (args[0] === "status") {
-        const out = statusOutputs[Math.min(statusCalls, statusOutputs.length - 1)];
-        statusCalls += 1;
-        return { ok: true, out };
-      }
       return { ok: true, out: "" };
+    });
+    mocks.gitRaw.mockImplementation(async () => {
+      const out = statusOutputs[Math.min(statusCalls, statusOutputs.length - 1)];
+      statusCalls += 1;
+      return out;
     });
   }
 
@@ -401,9 +451,50 @@ describe("PlanCriticService.runCritic", () => {
     expect(deps.replan).not.toHaveBeenCalled();
   });
 
+  it("escalates to plan_review when a pre-check revise fills the shared budget", async () => {
+    seedPlannedCard("card-shared-budget");
+    seedPriorRevise("card-shared-budget", 1);
+    // The pre-check already sent this plan back once; one more revise from the
+    // critic exhausts the same two-revision budget, not a separate one.
+    db.insert(runs)
+      .values({
+        id: `precheck-card-shared-budget`,
+        cardId: "card-shared-budget",
+        planId: "plan-card-shared-budget",
+        kind: "plan",
+        status: "completed",
+        exitReason: "precheck revise",
+        feedback: "`test -f README.md` already passes.",
+        worktreePath: "/tmp/wt",
+        branch: "ralph/card-shared-budget",
+        baseBranch: "main",
+        startedAt: "2024-01-02T00:00:30.000Z",
+        endedAt: "2024-01-02T00:00:45.000Z",
+      })
+      .run();
+    mockCriticHarness({ [`.ralph/${CRITIQUE_FILE}`]: "VERDICT: revise\nStill wrong.\n" });
+    const deps = makeDeps();
+
+    await new PlanCriticService(deps).runCritic("card-shared-budget");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(
+      expect.any(String),
+      "completed",
+      "revise — revision limit reached",
+      expect.any(Object),
+    );
+    expect(deps.moveCard).toHaveBeenCalledWith(
+      "card-shared-budget",
+      "planning",
+      "plan_review",
+      expect.stringContaining("revision limit"),
+    );
+    expect(deps.replan).not.toHaveBeenCalled();
+  });
+
   it("rejects a verdict when the critic touched anything but its verdict file", async () => {
     seedPlannedCard("card-illegal");
-    mockGit(["", " M src/extra.ts\n?? .ralph/CRITIQUE.md"]);
+      mockGit(["", " M src/extra.ts\0?? .ralph/CRITIQUE.md\0"]);
     mockCriticHarness({
       [`.ralph/${CRITIQUE_FILE}`]: "VERDICT: approve\nFine.\n",
       "src/extra.ts": "export const sneaky = true;\n",

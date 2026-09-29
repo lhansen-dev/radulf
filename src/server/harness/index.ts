@@ -236,8 +236,12 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   const startedAtMs = Date.now();
   const version = harnessPackageVersion();
 
-  fs.mkdirSync(path.dirname(opts.transcriptPath), { recursive: true });
-  const out = fs.createWriteStream(opts.transcriptPath, { flags: "a" });
+  const transcriptDir = path.dirname(opts.transcriptPath);
+  fs.mkdirSync(transcriptDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(transcriptDir, 0o700);
+  const transcriptFd = fs.openSync(opts.transcriptPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND, 0o600);
+  fs.chmodSync(opts.transcriptPath, 0o600);
+  const out = fs.createWriteStream(opts.transcriptPath, { fd: transcriptFd, autoClose: true });
   // Resolve only once the transcript is flushed (or failed): a caller reads it
   // back as soon as this returns. end()'s callback also fires on error.
   const closeTranscript = () => new Promise<void>((resolve) => out.end(() => resolve()));

@@ -1,12 +1,15 @@
-import fs from "node:fs";
-import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
-import { ralphDirPath, readFileIfExists, removeRalphFiles } from "./bookkeeping";
-import { gateFilePath, renderGateFile, renderGateSection, runGateCommand, type GateResult } from "./gate";
+import {
+  ensureRalphDir,
+  readRalphArtifact,
+  removeRalphFiles,
+  writeRalphArtifact,
+} from "./bookkeeping";
+import { GATE_FILE, renderGateFile, renderGateSection, runGateCommand, type GateResult } from "./gate";
 import {
   EVALUATION_NOTES_FILE,
   EVALUATION_NOTES_SECTION,
@@ -21,7 +24,7 @@ import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { errorMessage } from "@/shared/errorMessage";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { offRunBranchReason, tryGit } from "./git";
+import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { snapshotRepoIntegrity } from "./integrity";
@@ -55,11 +58,14 @@ export function renderEvaluatorPrompt(
   baseBranch: string,
   criteria: string,
 ) {
+  // Replacer functions, not strings: a string replacement expands `$&`, `` $` ``
+  // and `$'` in the value into the surrounding prompt, and plans do contain
+  // those sequences: a bcrypt hash, a regex anchor before a closing quote.
   return template
-    .replaceAll("{{TITLE}}", title)
-    .replaceAll("{{DESCRIPTION}}", description || "(no description)")
-    .replaceAll("{{BASE_BRANCH}}", baseBranch)
-    .replaceAll("{{CRITERIA}}", criteria.trim() || "(no acceptance criteria were recorded)");
+    .replaceAll("{{TITLE}}", () => title)
+    .replaceAll("{{DESCRIPTION}}", () => description || "(no description)")
+    .replaceAll("{{BASE_BRANCH}}", () => baseBranch)
+    .replaceAll("{{CRITERIA}}", () => criteria.trim() || "(no acceptance criteria were recorded)");
 }
 
 export type EvaluationServiceDependencies = StageDependencies & {
@@ -104,7 +110,7 @@ export class EvaluationService {
     const model = card.evaluatorModel || settings.evaluatorModel;
     const { worktreePath, branch } = loopRun;
     const baseBranch = loopRun.baseBranch ?? repo.defaultBranch;
-    const ralphDir = ralphDirPath(worktreePath);
+    ensureRalphDir(worktreePath);
     // Spec 26: a retry inherits the attempt it retries. Decided before this
     // run's row exists, since the rule reads the card's latest run.
     const previous = previousFailedAttempt(cardId, "evaluate");
@@ -144,7 +150,7 @@ export class EvaluationService {
       deps.moveCard(cardId, "evaluating", "needs_attention", moveReason);
     };
     const sourceStatus = async () =>
-      (await tryGit(worktreePath, "status", "--porcelain", "--", ".", ":(exclude).ralph")).out;
+      gitRaw(worktreePath, "status", "--porcelain=v1", "-z", "--", ".", ":(exclude).ralph");
     const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
     try {
       // The awaited sandbox and integrity setup above open a window where the
@@ -170,9 +176,8 @@ export class EvaluationService {
       // is missing (a loop run that predates spec 29, or a gate added after
       // the loop finished). Before the status snapshot below, so whatever a
       // build leaves in the worktree is never attributed to the evaluator.
-      const gatePath = gateFilePath(worktreePath);
       const gateCommand = repo.gateCommand?.trim() ?? "";
-      if (gateCommand && !fs.existsSync(/* turbopackIgnore: true */ gatePath)) {
+      if (gateCommand && !readRalphArtifact(worktreePath, GATE_FILE)) {
         emitEvent("gate.started", { cardId, runId, payload: { command: gateCommand } });
         let gate: GateResult;
         try {
@@ -188,14 +193,18 @@ export class EvaluationService {
           throw error;
         }
         if (controller.signal.aborted) return; // cancelCard already finalized
-        fs.writeFileSync(/* turbopackIgnore: true */ gatePath, renderGateFile(gate));
+        const gateLeftovers = await ctx.reap();
+        if (gateLeftovers.length > 0) {
+          return fail(`surviving gate process groups after reap: ${gateLeftovers.join(", ")}`);
+        }
+        writeRalphArtifact(worktreePath, GATE_FILE, renderGateFile(gate));
         emitEvent("gate.finished", {
           cardId,
           runId,
           payload: { exitCode: gate.exitCode, timedOut: gate.timedOut, durationMs: gate.durationMs, error: gate.error },
         });
       }
-      const gateSection = gateCommand ? renderGateSection(readFileIfExists(gatePath)) : "";
+      const gateSection = gateCommand ? renderGateSection(readRalphArtifact(worktreePath, GATE_FILE)) : "";
 
       const [headBefore, sourceStatusBefore] = await Promise.all([head(), sourceStatus()]);
       // Spec 26: the previous attempt's notes and command digest, the running
@@ -208,7 +217,7 @@ export class EvaluationService {
           stage: "evaluator",
           attempt: previous,
           digest,
-          notes: readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, EVALUATION_NOTES_FILE)),
+        notes: readRalphArtifact(worktreePath, EVALUATION_NOTES_FILE),
         });
         emitEvent("attempt.forwarded", {
           cardId,
@@ -245,12 +254,17 @@ export class EvaluationService {
       if (controller.signal.aborted) return; // cancelCard already finalized
       telemetry = runTelemetry(result);
 
+      const leftoverProcesses = await ctx.reap();
+      if (leftoverProcesses.length > 0) {
+        return fail(`surviving process group(s) after reap: ${leftoverProcesses.join(", ")}`);
+      }
+
       // Spec 26 decision 4: a complete verdict on disk outlives the watchdog
       // that killed the session, the way a loop's signal file does (spec 18
       // item 1). Every check below still applies to it.
-      const evaluationPath = path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md");
       const recovered =
-        (result.timedOut || result.stalled) && parseEvaluation(readFileIfExists(evaluationPath)) !== null;
+        (result.timedOut || result.stalled) &&
+        parseEvaluation(readRalphArtifact(worktreePath, "EVALUATION.md")) !== null;
       if (recovered) {
         emitEvent("evaluation.recovered_after_timeout", {
           cardId,
@@ -262,7 +276,10 @@ export class EvaluationService {
         if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
       }
 
-      const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch);
+      const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch, {
+        cardId,
+        runId,
+      });
       if (violation) return fail(violation);
 
       // The verdict commit below must land on the run branch and nowhere else.
@@ -284,7 +301,7 @@ export class EvaluationService {
         return fail(`evaluator modified non-doc files (${illegalPaths.join(", ")}); verdict rejected`);
       }
 
-      const evaluationMd = readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"));
+      const evaluationMd = readRalphArtifact(worktreePath, "EVALUATION.md");
       const evaluation = evaluationMd ? parseEvaluation(evaluationMd) : null;
       if (!evaluation) return fail("evaluator wrote no usable VERDICT in .ralph/EVALUATION.md");
 
@@ -307,7 +324,7 @@ export class EvaluationService {
         exitReason: (typeof EVALUATOR_CLEARED_EXITS)[number],
         moveReason: string,
       ) => {
-        const summary = readFileIfExists(path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md")).trim();
+        const summary = readRalphArtifact(worktreePath, "SUMMARY.md").trim();
         if (summary) {
           db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
           emitEvent("card.summarized", { cardId, runId });

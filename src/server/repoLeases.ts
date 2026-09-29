@@ -61,6 +61,18 @@ export function releaseStaleLeases(live: Set<string>): string[] {
   return stale.map((r) => r.repoPath);
 }
 
+/**
+ * Release every lease `workerId` holds — a worker handing back its own leases
+ * on shutdown; returns the repo paths freed.
+ */
+export function releaseLeasesHeldBy(workerId: string): string[] {
+  const held = db.select().from(repoLeases).where(eq(repoLeases.workerId, workerId)).all();
+  for (const row of held) {
+    db.delete(repoLeases).where(eq(repoLeases.repoPath, row.repoPath)).run();
+  }
+  return held.map((r) => r.repoPath);
+}
+
 /** Id of the worker holding the lease on `repoPath`, or null if it is free. */
 export function leaseHolder(repoPath: string): string | null {
   const row = db

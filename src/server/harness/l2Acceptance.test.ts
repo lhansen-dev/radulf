@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -67,6 +68,31 @@ it("wraps exactly pi's six file tools, keeping their built-in names", () => {
   ]);
 });
 
+it("quiesces sandbox processes before resolving and delegating a path", async () => {
+  const target = path.join(wt, "quiesce-link");
+  fs.symlinkSync(path.join(wt, "src", "app.ts"), target);
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  const tool = createGuardedFsTools(wt, readRoots, writeRoots, async () => {
+    fs.unlinkSync(target);
+    fs.symlinkSync(secret, target);
+    return [];
+  }).find((definition) => definition.name === "read");
+  if (!tool) throw new Error("no guarded read tool");
+  try {
+    await expect(run(tool, { path: target })).rejects.toThrow(BOUNDARY);
+  } finally {
+    fs.rmSync(target, { force: true });
+  }
+});
+
+it("fails closed when process-group reaping cannot quiesce a run", async () => {
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  const tool = createGuardedFsTools(wt, readRoots, writeRoots, async () => [4242])
+    .find((definition) => definition.name === "read");
+  if (!tool) throw new Error("no guarded read tool");
+  await expect(run(tool, { path: "src/app.ts" })).rejects.toThrow(/surviving process groups/);
+});
+
 describe("L2 acceptance — planner (read checkout, write .ralph only, no bash)", () => {
   it("allows reading source anywhere in the checkout", async () => {
     await expect(run(toolFor("planner", "read"), { path: "src/app.ts" })).resolves.toBeDefined();
@@ -95,6 +121,33 @@ describe("L2 acceptance — planner (read checkout, write .ralph only, no bash)"
     await expect(
       run(toolFor("planner", "read"), { path: "~/.ssh/id_ed25519" }),
     ).rejects.toThrow(BOUNDARY);
+  });
+  it("blocks SDK alternate spellings for outside reads and writes", async () => {
+    const alternatePaths = [`@${secret}`, pathToFileURL(secret).href];
+    for (const alternatePath of alternatePaths) {
+      await expect(run(toolFor("planner", "read"), { path: alternatePath })).rejects.toThrow(BOUNDARY);
+      await expect(
+        run(toolFor("planner", "write"), { path: alternatePath, content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+    }
+  });
+
+  it("keeps its write root pinned when .ralph is replaced", async () => {
+    const { readRoots, writeRoots } = pathRootsForRole("planner", wt);
+    const writeTool = createGuardedFsTools(wt, readRoots, writeRoots).find((d) => d.name === "write");
+    if (!writeTool) throw new Error("no guarded write tool");
+    const original = path.join(wt, ".ralph-original");
+    fs.renameSync(path.join(wt, ".ralph"), original);
+    fs.symlinkSync(evil, path.join(wt, ".ralph"));
+    try {
+      await expect(
+        run(writeTool, { path: ".ralph/escaped.md", content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+      expect(fs.existsSync(path.join(evil, "escaped.md"))).toBe(false);
+    } finally {
+      fs.unlinkSync(path.join(wt, ".ralph"));
+      fs.renameSync(original, path.join(wt, ".ralph"));
+    }
   });
 });
 

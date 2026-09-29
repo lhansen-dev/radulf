@@ -1,10 +1,12 @@
 import { eq } from "drizzle-orm";
 import { db, cards, repos, runs } from "@/db";
 import { assertBranchExists, assertUsableRepo } from "@/server/git";
+import { assertInsideBrowsableRoot } from "@/server/folderBrowser";
 import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo, parseGateCommand, requireRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { removeCardArtifacts } from "@/server/retention";
+import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../../_lib";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -23,8 +25,9 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const patch: Partial<typeof repos.$inferInsert> = {};
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
     if (typeof body.path === "string" && body.path.trim()) {
-      await assertUsableRepo(body.path.trim());
-      patch.path = body.path.trim();
+      const repoPath = assertInsideBrowsableRoot(body.path.trim(), getSettings().folderBrowserRoot);
+      await assertUsableRepo(repoPath);
+      patch.path = repoPath;
     }
     if (typeof body.defaultBranch === "string" && body.defaultBranch.trim()) {
       await assertBranchExists(patch.path ?? current.path, body.defaultBranch.trim(), "defaultBranch");

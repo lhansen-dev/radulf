@@ -7,10 +7,11 @@ import type { ProviderId } from "./providers";
 import { providerBreakerStatus, recordProviderOutcome } from "./circuitBreaker";
 import { recordProviderFailure } from "./providerRateLimit";
 import { createWorktree, currentBranch, recordWorktree } from "./git";
+import { provisionNodeModules } from "./worktreeDeps";
 import { runTranscriptDir } from "./retention";
 import type { RunSandboxContext } from "./sandbox/context";
 import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
-import { checkRepoIntegrity, type RepoIntegrityBaseline } from "./integrity";
+import { inspectRepoIntegrity, type RepoIntegrityBaseline } from "./integrity";
 
 /** Shared scaffolding for the three pipeline stages (plan, loop, evaluate). */
 
@@ -41,7 +42,23 @@ export async function resolveWorktree(repo: Repo, card: Card, runId: string, pre
     prev?.baseBranch ?? card.baseBranch ?? (await currentBranch(repo.path, repo.defaultBranch));
   const { worktreePath, branch } =
     prev ?? (await createWorktree(repo.path, baseBranch, card.title, runId));
+  if (!prev) await provisionDeps(repo.path, worktreePath, card.id);
   return { worktreePath, branch, baseBranch, created: !prev };
+}
+
+/** Best effort: a worktree without the checkout's install is what every run
+ * had until now, so a provisioning failure is an event, not a failed run. No
+ * runId on either event: the run row does not exist yet (events.run_id is a
+ * real FK), which is also why this runs here and not in startRunRow. */
+async function provisionDeps(repoPath: string, worktreePath: string, cardId: string) {
+  const startedAt = Date.now();
+  try {
+    const mode = await provisionNodeModules(repoPath, worktreePath);
+    if (mode === "skipped") return;
+    emitEvent("worktree.deps_provisioned", { cardId, payload: { mode, durationMs: Date.now() - startedAt } });
+  } catch (err) {
+    emitEvent("worktree.deps_failed", { cardId, payload: { error: String(err).slice(0, 300) } });
+  }
 }
 
 /** Insert a stage's run row, then emit the events that reference it
@@ -149,19 +166,36 @@ export function harnessFailure(
 }
 
 /** Spec 14 run-end ordering: reap surviving processes and verify the group is
- * empty before drawing any integrity conclusion, then verify the parent repo. */
+ * empty before drawing any integrity conclusion, then verify the parent repo.
+ *
+ * Spec 19 (card 2026-09-25): a remote-tracking ref that moved, appeared or was
+ * deleted is reported on the run as `repo.integrity_warning` and does NOT fail
+ * it — `git fetch` in the user's checkout moves those refs constantly and that
+ * is not tampering. The event is emitted whether or not the run also has real
+ * violations, so a warning is never swallowed by a sibling violation. */
 export async function integrityViolationReason(
   ctx: RunSandboxContext,
   repoPath: string,
   baseline: RepoIntegrityBaseline | null,
   runBranch: string,
+  ids: { cardId: string; runId: string },
 ): Promise<string | null> {
   const leftover = await ctx.reap();
   if (leftover.length > 0) {
     return `surviving process group(s) after reap: ${leftover.join(", ")}`;
   }
   if (!baseline) return null;
-  const violations = await checkRepoIntegrity(repoPath, baseline, { runBranch, checkRefs: true });
+  const { violations, warnings } = await inspectRepoIntegrity(repoPath, baseline, {
+    runBranch,
+    checkRefs: true,
+  });
+  if (warnings.length > 0) {
+    emitEvent("repo.integrity_warning", {
+      cardId: ids.cardId,
+      runId: ids.runId,
+      payload: { refs: warnings },
+    });
+  }
   return violations.length > 0 ? `repo integrity violation: ${violations.join("; ")}` : null;
 }
 

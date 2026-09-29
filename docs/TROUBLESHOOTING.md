@@ -131,6 +131,14 @@ prevent. This is checked after the process group is reaped and before the
 evaluator sees anything. Treat it as a containment failure worth reporting —
 see [SECURITY.md](../SECURITY.md).
 
+**`repo.integrity_warning` event on the timeline**
+Remote-tracking refs (`refs/remotes/…`) moved, appeared or were deleted in the
+registered checkout while the run was live — usually someone ran `git fetch` or
+`git push` there. The run was **not** failed: Radulf never reads a
+remote-tracking ref to decide what lands, so those refs cannot have changed the
+diff, the review or the merge target. The refs listed on the timeline are
+informational.
+
 **`install-script gate: unapproved lifecycle scripts in …`**
 A dependency change introduced lifecycle scripts that have not been approved.
 Nothing unapproved reaches the evaluator. Review the named packages and approve
@@ -146,14 +154,51 @@ disk-limits section.
 Radulf was restarted while the run was in flight. The run is marked interrupted
 and the card returns to Needs Attention; restart it.
 
+**`worker shut down before this stage finished`**
+The worker was stopped (`SIGTERM`, `docker compose restart worker`, Restart in
+the app) and its drain window elapsed with this run still active. Before
+exiting, the worker interrupted the run itself and handed the card back: a
+checkpointed loop returns to Ready and the next worker resumes it from the
+first unchecked task; a plan or evaluate run parks the card in Needs
+Attention — restart it. Nothing waits for `workerStaleSeconds` here; that
+window only applies when a worker dies without draining.
+
 ## Approving a merge
 
 The merge is the one moment Radulf writes to your checkout, so it checks
 preconditions first and aborts cleanly rather than leaving a half-merge.
 
-**`target checkout has uncommitted changes`**
+**`target checkout <repo path> has uncommitted changes — commit or stash them there, then press Retry merge`**
 The merge target must be clean. The work is not lost — clean the tree, then
-`POST /api/cards/:id/retry-merge`.
+press Retry merge (`POST /api/cards/:id/retry-merge`).
+
+**`worker <id> stopped heartbeating during delivery — press Retry merge; …`**
+The worker running the merge died partway through and the stale reaper parked
+the card (the same message appears when a worker was stopped and its drain
+window elapsed with the delivery still running — it fails its own delivery
+before exiting). Press Retry merge: if the worker left its own `--no-commit` merge of
+the run branch half-finished in the parent checkout (`MERGE_HEAD` set), Radulf
+aborts it and merges again; if the worker had already committed the merge but
+died before recording it, Radulf recognises the branch is already in the base
+and records the existing merge commit (`alreadyMerged: true` in the activity's
+`review.decided` payload) instead of merging twice. The pull-request delivery
+has the same idempotent retry: if the earlier attempt's `gh pr create` already
+succeeded, Retry merge finds the open PR for the branch and adopts it
+(`alreadyOpen: true` plus its `prUrl` in the payload) instead of running
+`gh pr create` again, which would fail with "a pull request for branch … already
+exists".
+You will not see this message when the worker died *after* the merge had
+already landed and the card had moved to Done: the reaper then finishes the
+delivery as landed (`recoveredAfterWorkerLoss: true` in the `review.decided`
+payload, no error) and leaves the card where it is, and the worktree, branch
+and integrity baseline it left behind are reclaimed by the next worker pump
+tick (`removed N finished-card worktree(s)` in the log).
+
+**`a merge started outside Radulf is in progress in <repo path> (MERGE_HEAD …)`**
+The parent checkout has an in-progress merge whose `MERGE_HEAD` is *not* this
+card's run branch, so Radulf will not touch it. Finish or abort that merge
+yourself (`git merge --continue` / `git merge --abort` in the repo), then press
+Retry merge.
 
 This is worth watching during an
 [Improvement Run](IMPROVEMENT_RUNS.md#gotchas): nothing validates the tree when

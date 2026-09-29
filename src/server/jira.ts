@@ -3,9 +3,11 @@ import type { Settings } from "./settings";
 import { errorMessage } from "@/shared/errorMessage";
 
 /**
- * Read-only Jira access for the New Task dialog: fetch one issue and shape it
- * as a card draft. Radulf never writes to Jira. Runs host-side, like the
- * GitHub delivery in github.ts, so the sandboxed agents never hold the token.
+ * Jira access for the New Task dialog: fetch one issue and shape it as a card
+ * draft, plus the two pieces a write needs — `restRoot` and `jiraAuthorization`
+ * — which the one write in this app reuses: the single Done comment in
+ * jiraAnnounce.ts. Runs host-side, like the GitHub delivery in github.ts, so the
+ * sandboxed agents never hold the token.
  */
 
 export type JiraIssue = { key: string; url: string; summary: string; description: string };
@@ -13,6 +15,12 @@ export type JiraCardDraft = { key: string; url: string; title: string; descripti
 type JiraSettings = Pick<Settings, "jiraBaseUrl" | "jiraEmail" | "jiraApiToken">;
 
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]*-\d+$/i;
+
+/** Whether the value is a bare Jira issue key (`DEV-123`, any case, surrounding
+ * space allowed). A pasted link is not a key — use parseJiraIssueRef for that. */
+export function isJiraIssueKey(value: string): boolean {
+  return ISSUE_KEY.test(value.trim());
+}
 
 /** The issue key in a bare key or a pasted link, upper-cased, or null. Covers
  * `/browse/KEY`, a board's `?selectedIssue=KEY`, and any path segment that is
@@ -43,24 +51,57 @@ function siteRoot(s: JiraSettings): string {
   return s.jiraBaseUrl.trim().replace(/\/+$/, "");
 }
 
-const REJECTED = "Jira rejected the account email or API token in Settings";
+/** Where an Atlassian account creates API tokens. The rejection points here,
+ * since the fix is always a new token pasted into Settings. */
+const TOKEN_PAGE = "https://id.atlassian.com/manage-profile/security/api-tokens";
 
-/** One authenticated GET against the site. Trimmed on both sides: a token
- * pasted with a trailing newline is the same failure as a wrong one, and
- * Jira reports neither clearly (see fetchJiraIssue). */
-async function jiraGet(s: JiraSettings, path: string): Promise<Response> {
+const REJECTED =
+  "Jira rejected the account email or API token in Settings: the email must be the one on the " +
+  `Atlassian account, and the token an unexpired API token from ${TOKEN_PAGE}`;
+
+/**
+ * Where the REST calls go. Atlassian also serves every Jira Cloud site
+ * through its gateway, keyed by the site's cloud id, and the gateway accepts
+ * tokens the site itself refuses with a bare 401: a token created "with
+ * scopes" (the kind the token page recommends) works only there, and on
+ * 2026-09-25 a real site also refused a token created without scopes that
+ * the gateway took, for a reason the 401 did not give. So the gateway is the
+ * default. The unauthenticated `_edge/tenant_info` gives the cloud id; a site
+ * that has none, or cannot be reached, is called directly as before.
+ */
+export async function restRoot(s: JiraSettings): Promise<string> {
   const base = siteRoot(s);
   try {
-    return await fetch(`${base}/${path}`, {
+    const res = await fetch(`${base}/_edge/tenant_info`, { signal: AbortSignal.timeout(10_000), cache: "no-store" });
+    const { cloudId } = (await res.json()) as { cloudId?: unknown };
+    if (typeof cloudId === "string" && cloudId) return `https://api.atlassian.com/ex/jira/${cloudId}`;
+  } catch {
+    // Not Jira Cloud, or the site is down: jiraGet against the site says which.
+  }
+  return base;
+}
+
+/** The only credential scheme Jira Cloud takes: the account email and its API
+ * token, basic-auth style. Trimmed on both sides: a token pasted with a
+ * trailing newline is the same failure as a wrong one, and Jira reports neither
+ * clearly (see fetchJiraIssue). Exported for jiraAnnounce.ts, which posts. */
+export function jiraAuthorization(s: JiraSettings): string {
+  return `Basic ${Buffer.from(`${s.jiraEmail.trim()}:${s.jiraApiToken.trim()}`).toString("base64")}`;
+}
+
+/** One authenticated GET. */
+async function jiraGet(s: JiraSettings, root: string, path: string): Promise<Response> {
+  try {
+    return await fetch(`${root}/${path}`, {
       headers: {
-        Authorization: `Basic ${Buffer.from(`${s.jiraEmail.trim()}:${s.jiraApiToken.trim()}`).toString("base64")}`,
+        Authorization: jiraAuthorization(s),
         Accept: "application/json",
       },
       signal: AbortSignal.timeout(10_000),
       cache: "no-store",
     });
   } catch (e) {
-    throw new ClientError(`cannot reach Jira at ${base}: ${errorMessage(e)}`);
+    throw new ClientError(`cannot reach Jira at ${root}: ${errorMessage(e)}`);
   }
 }
 
@@ -71,9 +112,10 @@ export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<Jira
   const key = parseJiraIssueRef(ref);
   if (!key) throw new ClientError("that does not look like a Jira issue link or key");
   const base = siteRoot(s);
+  const root = await restRoot(s);
   // REST v2 returns the description as wiki markup text, which reads well in
   // a card; v3 would return Atlassian Document Format. Both are handled below.
-  const res = await jiraGet(s, `rest/api/2/issue/${encodeURIComponent(key)}?fields=summary,description`);
+  const res = await jiraGet(s, root, `rest/api/2/issue/${encodeURIComponent(key)}?fields=summary,description`);
   if (res.status === 401) throw new ClientError(REJECTED);
   if (res.status === 403) throw new ClientError(`Jira refused this account access to ${key}`);
   if (res.status === 404) {
@@ -82,7 +124,7 @@ export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<Jira
     // not exist. Only /myself says which of the two it was. Observed on
     // 2026-09-23 against a real site, where a bad token made every issue
     // "not found".
-    if ((await jiraGet(s, "rest/api/2/myself")).status === 401) throw new ClientError(REJECTED);
+    if ((await jiraGet(s, root, "rest/api/2/myself")).status === 401) throw new ClientError(REJECTED);
     throw new ClientError(`${key} was not found in Jira, or this account cannot see it`);
   }
   if (!res.ok) throw new ClientError(`Jira responded ${res.status} for ${key}`);
@@ -110,8 +152,9 @@ export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<Jira
  */
 export async function fetchJiraChildren(key: string, s: JiraSettings): Promise<JiraIssue[]> {
   const base = siteRoot(s);
+  const root = await restRoot(s);
   const jql = encodeURIComponent(`parent = ${key} ORDER BY rank ASC`);
-  const res = await jiraGet(s, `rest/api/2/search/jql?jql=${jql}&fields=summary,description&maxResults=100`);
+  const res = await jiraGet(s, root, `rest/api/2/search/jql?jql=${jql}&fields=summary,description&maxResults=100`);
   if (!res.ok) throw new ClientError(`Jira responded ${res.status} listing the child issues of ${key}`);
   const body = (await res.json()) as {
     issues?: { key?: string; fields?: { summary?: unknown; description?: unknown } }[];

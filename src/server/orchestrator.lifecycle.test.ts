@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   mergeBranch: vi.fn(),
   removeWorktree: vi.fn(),
   tryGit: vi.fn(),
+  gitRaw: vi.fn(),
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
   startDiskWatchdog: vi.fn(),
@@ -85,6 +86,7 @@ vi.mock("./git", async (importOriginal) => ({
   mergeBranch: mocks.mergeBranch,
   removeWorktree: mocks.removeWorktree,
   tryGit: mocks.tryGit,
+  gitRaw: mocks.gitRaw,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
 
@@ -101,6 +103,8 @@ const {
   plans,
   repos,
   reviews,
+  reviewDeliveries,
+  repoLeases,
   runs,
   settings,
   worktrees,
@@ -281,6 +285,8 @@ describe("Orchestrator cancellation lifecycle", () => {
     db.delete(improvementRuns).run();
     db.delete(reviews).run();
     db.delete(iterations).run();
+    db.delete(reviewDeliveries).run();
+    db.delete(repoLeases).run();
     db.delete(runs).run();
     db.delete(plans).run();
     db.delete(events).run();
@@ -309,6 +315,7 @@ describe("Orchestrator cancellation lifecycle", () => {
     });
     mocks.preflightProvider.mockResolvedValue(undefined);
     mocks.tryGit.mockImplementation(async () => ({ ok: true, out: "" }));
+    mocks.gitRaw.mockResolvedValue("");
     mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.startDiskWatchdog.mockImplementation(() => ({ stop: vi.fn() }));
     mocks.mergeBranch.mockReturnValue({ ok: true, mergeCommit: "merge-commit" });
@@ -1189,6 +1196,83 @@ describe("Orchestrator cancellation lifecycle", () => {
 
       // Two loop iterations, not a spin: the repair pass and then the handover.
       expect(loopCalls()).toHaveLength(2);
+    });
+
+    it("reports but does not repair a check the pre-check found already passing", async () => {
+      // Spec 31: the pre-check ran these commands against the untouched
+      // worktree and recorded that `test -f never-written.md` already exited
+      // the way its criterion wants. Such a check cannot show the work was
+      // done, so its failure buys no iteration — only the check that could
+      // still be made to pass does.
+      card("probe-precheck");
+      plan("probe-precheck");
+      db.update(plans)
+        .set({
+          acceptanceCriteria: "- [ ] `test -f never-written.md` fails and `test -f docs/USAGE.md` succeeds",
+          precheckPassing: JSON.stringify(["test -f never-written.md"]),
+        })
+        .where(eq(plans.cardId, "probe-precheck"))
+        .run();
+      // Nothing ever writes never-written.md, which is the point: the tolerated
+      // check still exits non-zero, exactly as its criterion wants, so it never
+      // shows up as a failure at all.
+      doneEveryIteration();
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("probe-precheck");
+      await vi.waitFor(() => expect(loopRun("probe-precheck")?.exitReason).toBe("done-signal"));
+
+      // The repair is for the one check that can be satisfied, then handover.
+      expect(loopCalls()).toHaveLength(2);
+      const repairPrompt = loopCalls()[1][0].prompt;
+      expect(repairPrompt).toContain("test -f docs/USAGE.md");
+      expect(repairPrompt).not.toContain("never-written.md");
+      const probes = db
+        .select()
+        .from(events)
+        .all()
+        .filter((e) => e.type === "acceptance.probe" && e.cardId === "probe-precheck");
+      // One probe event: the repair pass used the run's single repair, so the
+      // second DONE is taken at its word and handed straight to evaluation.
+      expect(probes).toHaveLength(1);
+      for (const probe of probes) {
+        expect(JSON.parse(probe.payload).alreadyPassing).toEqual([]);
+      }
+    });
+
+    it("hands straight over when the only failing check was pre-check tolerated", async () => {
+      // The other half of spec 31: repairing this check means making the card's
+      // own work break a criterion, so the loop gets no iteration for it — the
+      // failure goes to the evaluator as reported.
+      card("probe-precheck-only");
+      plan("probe-precheck-only");
+      db.update(plans)
+        .set({
+          acceptanceCriteria: "- [ ] `test -f never-written.md` fails",
+          precheckPassing: JSON.stringify(["test -f never-written.md"]),
+        })
+        .where(eq(plans.cardId, "probe-precheck-only"))
+        .run();
+      // The loop writes the file, so the inverted check now exits 0 — a failure
+      // the probe reports and refuses to spend an iteration on.
+      doneEveryIteration((cwd) => {
+        fs.writeFileSync(path.join(cwd, "never-written.md"), "written anyway");
+      });
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      orchestrator.startCard("probe-precheck-only");
+      await vi.waitFor(() => expect(loopRun("probe-precheck-only")?.exitReason).toBe("done-signal"));
+
+      expect(loopCalls()).toHaveLength(1);
+      const probes = db
+        .select()
+        .from(events)
+        .all()
+        .filter((e) => e.type === "acceptance.probe" && e.cardId === "probe-precheck-only");
+      expect(probes).toHaveLength(1);
+      const payload = JSON.parse(probes[0].payload);
+      expect(payload.alreadyPassing).toEqual(["test -f never-written.md"]);
+      expect(payload.failed.map((f: { command: string }) => f.command)).toEqual(["test -f never-written.md"]);
     });
 
     it("leaves a plan whose criteria carry no commands exactly as it was", async () => {
@@ -2128,6 +2212,121 @@ describe("Orchestrator cancellation lifecycle", () => {
       // Shutdown can now finish instead of burning its whole budget.
       await vi.waitFor(() => expect(orchestrator.hasInFlightWork()).toBe(false));
     });
+
+    it("counts a review delivery this worker is running as in-flight work", () => {
+      card("drain-owned-delivery", "reviewing");
+      plan("drain-owned-delivery");
+      completedRun("drain-owned-delivery", "drain-owned-delivery-run");
+      const orchestrator = new Orchestrator({ autoStart: false });
+      // Card is `reviewing` and no run is running — nothing in flight yet.
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      db.insert(reviewDeliveries)
+        .values({
+          id: "drain-owned-delivery-1",
+          runId: "drain-owned-delivery-run",
+          cardId: "drain-owned-delivery",
+          repoId: "repo-1",
+          fromStatus: "review",
+          approvedBy: "human",
+          status: "running",
+          workerId: orchestrator.workerId,
+          createdAt: now(),
+          claimedAt: now(),
+        })
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(true);
+
+      // Another worker's running delivery is not ours to drain.
+      db.update(reviewDeliveries)
+        .set({ workerId: "some-other-worker" })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      // A finished delivery we owned no longer counts.
+      db.update(reviewDeliveries)
+        .set({ workerId: orchestrator.workerId, status: "finished" })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      // A pending (unclaimed) delivery is not in flight on any worker.
+      db.update(reviewDeliveries)
+        .set({ status: "pending", workerId: null })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+    });
+
+    it("waits for a review delivery mid-merge to finish before reporting idle", async () => {
+      card("drain-delivery", "review");
+      plan("drain-delivery");
+      completedRun("drain-delivery", "drain-delivery-run");
+      const merge = deferred<{ ok: boolean; mergeCommit: string }>();
+      mocks.mergeBranch.mockReturnValueOnce(merge.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      const approval = orchestrator.approve("drain-delivery-run");
+      await vi.waitFor(() => expect(mocks.mergeBranch).toHaveBeenCalledTimes(1));
+      // SIGTERM lands while the merge is still running.
+      orchestrator.startDraining();
+
+      const delivery = () =>
+        db
+          .select()
+          .from(reviewDeliveries)
+          .where(eq(reviewDeliveries.runId, "drain-delivery-run"))
+          .get();
+      expect(getCard("drain-delivery").status).toBe("reviewing");
+      expect(delivery()).toMatchObject({ status: "running", workerId: orchestrator.workerId });
+      // The drain must not report idle while our claimed delivery is mid-merge.
+      expect(orchestrator.hasInFlightWork()).toBe(true);
+
+      merge.resolve({ ok: true, mergeCommit: "merge-commit" });
+      await expect(approval).resolves.toEqual({ ok: true });
+      await vi.waitFor(() => expect(orchestrator.hasInFlightWork()).toBe(false));
+      expect(getCard("drain-delivery").status).toBe("done");
+      expect(delivery()).toMatchObject({ status: "finished", ok: 1 });
+      expect(db.select().from(repoLeases).all()).toEqual([]);
+    });
+
+    it("a draining worker stops claiming pending deliveries", async () => {
+      card("drain-pending", "reviewing");
+      plan("drain-pending");
+      completedRun("drain-pending", "drain-pending-run");
+      const orchestrator = new Orchestrator({ autoStart: false });
+      orchestrator.startDraining();
+
+      // The delivery lands after SIGTERM: another worker must pick it up.
+      db.insert(reviewDeliveries)
+        .values({
+          id: "drain-pending-delivery",
+          runId: "drain-pending-run",
+          cardId: "drain-pending",
+          repoId: "repo-1",
+          fromStatus: "review",
+          approvedBy: "human",
+          status: "pending",
+          createdAt: now(),
+        })
+        .run();
+
+      orchestrator.pump();
+      await settle();
+
+      expect(
+        db
+          .select()
+          .from(reviewDeliveries)
+          .where(eq(reviewDeliveries.id, "drain-pending-delivery"))
+          .get(),
+      ).toMatchObject({ status: "pending", workerId: null });
+      expect(db.select().from(repoLeases).all()).toEqual([]);
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      // A pending, unclaimed delivery is not this worker's work.
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+    });
   });
 
   describe("failed-step retries", () => {
@@ -2201,6 +2400,39 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
     });
 
+    it("a web-only process queues a finished loop's evaluation and a worker's pump runs it", async () => {
+      card("web-retry-done", "needs_attention");
+      plan("web-retry-done");
+      completedRun("web-retry-done", "web-done-loop", {
+        status: "failed",
+        exitReason: "repo integrity violation: ref moved: refs/heads/beta",
+      });
+      const worktreePath = db.select().from(runs).where(eq(runs.id, "web-done-loop")).get()!.worktreePath;
+      fs.writeFileSync(path.join(worktreePath, ".ralph", "DONE"), "Every task done.\n");
+      fs.mkdirSync(path.dirname(planStatePath("web-retry-done")), { recursive: true });
+      fs.writeFileSync(planStatePath("web-retry-done"), "## Tasks\n- [x] implement the task\n");
+      mocks.runHarness.mockImplementationOnce(async () => {
+        writeEvaluation(worktreePath, "VERDICT: approve\n\nFinished work, evaluated.");
+        return successfulHarnessResult;
+      });
+
+      // The web process only flags the card; nothing runs in it.
+      const web = new Orchestrator({ passive: true });
+      expect(web.retryFailedStep("web-retry-done")).toEqual({ ok: true, step: "evaluate" });
+      expect(getCard("web-retry-done").status).toBe("needs_attention");
+      expect(getCard("web-retry-done").evaluationPending).toBe(1);
+      expect(mocks.runHarness).not.toHaveBeenCalled();
+
+      // A worker's pump claims the queued evaluation and runs it, skipping the loop.
+      const worker = new Orchestrator({ autoStart: false });
+      worker.pump();
+      await vi.waitFor(() => expect(getCard("web-retry-done").status).toBe("review"));
+
+      const cardRuns = db.select().from(runs).all().filter((run) => run.cardId === "web-retry-done");
+      expect(cardRuns.map((run) => run.kind)).toEqual(["loop", "evaluate"]);
+      expect(mocks.runHarness.mock.calls[0][0].role).toBe("evaluator");
+    });
+
     it("retries a failed evaluator without rerunning the loop", async () => {
       card("retry-evaluator", "needs_attention");
       plan("retry-evaluator");
@@ -2261,6 +2493,7 @@ describe("Orchestrator cancellation lifecycle", () => {
           ? { ok: true, out: " M specs/05-ui-design.md" }
           : { ok: true, out: "" },
       );
+      mocks.gitRaw.mockResolvedValue(" M specs/05-ui-design.md\0");
       mocks.runHarness.mockImplementationOnce(async () => {
         writeEvaluation(worktreePath, "VERDICT: approve\n\nCriteria pass.");
         fs.writeFileSync(path.join(worktreePath, ".ralph", "SUMMARY.md"), "Doc summary");
@@ -2306,6 +2539,9 @@ describe("Orchestrator cancellation lifecycle", () => {
         args[0] === "status"
           ? { ok: true, out: evaluatorTouchedSource ? " M src/feature.ts" : "" }
           : { ok: true, out: "" },
+      );
+      mocks.gitRaw.mockImplementation(async () =>
+        evaluatorTouchedSource ? " M src/feature.ts\0" : "",
       );
       mocks.runHarness.mockImplementationOnce(async () => {
         writeEvaluation(worktreePath, "VERDICT: approve\n\nLooks good.");

@@ -12,9 +12,17 @@ import {
   runGateCommand,
   type GateResult,
 } from "./gate";
+import { reapProcessGroups } from "./sandbox/context";
 
 /** No sandbox policy and no prefix: the plain path every unit test here takes. */
-const ctx = { env: process.env, commandPrefix: undefined, srtConfig: undefined } as unknown as RunSandboxContext;
+const ctx = {
+  env: process.env,
+  commandPrefix: undefined,
+  srtConfig: undefined,
+  markCommandStarted: () => undefined,
+  trackProcessGroup: () => undefined,
+  reap: async () => [],
+} as unknown as RunSandboxContext;
 const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-gate-"));
 
 describe("runGateCommand", () => {
@@ -61,6 +69,24 @@ describe("runGateCommand", () => {
     const pending = runGateCommand({ command: "sleep 5", worktreePath, ctx, timeoutMs: 5_000, signal: controller.signal });
     controller.abort();
     await expect(pending).rejects.toThrow();
+  });
+
+  it("reaps a background process group before returning to the artifact writer", async () => {
+    const pgids = new Set<number>();
+    const reaping = {
+      ...ctx,
+      trackProcessGroup: (pgid: number) => pgids.add(pgid),
+      reap: () => reapProcessGroups(pgids),
+    } as unknown as RunSandboxContext;
+    const result = await runGateCommand({
+      command: "nohup sleep 60 >/dev/null 2>&1 &",
+      worktreePath,
+      ctx: reaping,
+      timeoutMs: 5_000,
+    });
+    expect(result).toMatchObject({ exitCode: 0, error: null });
+    const [pgid] = [...pgids];
+    expect(() => process.kill(-pgid, 0)).toThrow();
   });
 });
 

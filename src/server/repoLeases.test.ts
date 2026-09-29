@@ -4,7 +4,7 @@ import { setupTestDataDir } from "@/testUtils/testDataDir";
 setupTestDataDir("radulf-repo-leases-");
 
 const { db, now, repoLeases, workers } = await import("@/db");
-const { acquireRepoLease, releaseRepoLease, releaseStaleLeases, leaseHolder } =
+const { acquireRepoLease, releaseRepoLease, releaseStaleLeases, releaseLeasesHeldBy, leaseHolder } =
   await import("./repoLeases");
 
 const STALE_SECONDS = 120;
@@ -83,6 +83,15 @@ describe("repoLeases", () => {
     expect(leaseHolder("/repo/b")).toBe("live-b");
     expect(leaseHolder("/repo/c")).toBeNull();
     expect(leaseHolder("/repo/d")).toBeNull();
+  });
+
+  it("releaseLeasesHeldBy frees only that worker's leases", () => {
+    db.insert(repoLeases).values({ repoPath: "/repo/x", workerId: "live-a", acquiredAt: now() }).run();
+    db.insert(repoLeases).values({ repoPath: "/repo/y", workerId: "live-b", acquiredAt: now() }).run();
+    expect(releaseLeasesHeldBy("live-a")).toEqual(["/repo/x"]);
+    expect(leaseHolder("/repo/x")).toBeNull();
+    expect(leaseHolder("/repo/y")).toBe("live-b");
+    expect(releaseLeasesHeldBy("nobody")).toEqual([]);
   });
 
   it("releaseStaleLeases with no live workers frees everything", () => {

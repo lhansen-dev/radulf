@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   tryGit: vi.fn(),
+  gitRaw: vi.fn(),
   offRunBranchReason: vi.fn(),
   // Mutable so the Phase 18.1 regression test below can flip sandboxing on
   // for just that one test (it needs a real git repo + real srtConfig build
@@ -46,6 +47,7 @@ vi.mock("./harness", async (importOriginal) => ({
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
   tryGit: mocks.tryGit,
+  gitRaw: mocks.gitRaw,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
 vi.mock("./settings", async (importOriginal) => ({
@@ -229,6 +231,17 @@ describe("renderEvaluatorPrompt", () => {
   });
 });
 
+describe("renderEvaluatorPrompt replacement patterns", () => {
+  it("keeps `$` sequences in the criteria verbatim", () => {
+    // `$'` after a regex anchor, `$&` and `` $` `` are special in a string
+    // replacement; the evaluator must see the criteria exactly as written.
+    const criteria = "grep -Eq '^\\s*hostUsers: false\\s*$' deployment.yaml && echo \"$&$`$$\"";
+    expect(renderEvaluatorPrompt("{{TITLE}}|{{CRITERIA}}", "Evaluate me", "d", "main", criteria)).toBe(
+      `Evaluate me|${criteria}`,
+    );
+  });
+});
+
 describe("EvaluationService.runEvaluator", () => {
   beforeEach(() => {
     db.delete(events).run();
@@ -240,6 +253,7 @@ describe("EvaluationService.runEvaluator", () => {
     mocks.runHarness.mockReset();
     mocks.runHarness.mockResolvedValue({ timedOut: false, error: "", code: 0, lastText: "done" });
     mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    mocks.gitRaw.mockResolvedValue("");
     mocks.offRunBranchReason.mockResolvedValue(null);
     mocks.settings.sandboxEnabled = false;
     mocks.settings.sandboxWeakerIsolationForGoTls = false;
@@ -304,21 +318,17 @@ describe("EvaluationService.runEvaluator", () => {
     expect(mocks.tryGit.mock.calls.some(([, cmd]) => cmd === "commit")).toBe(false);
   });
 
-  it("accepts approve-time doc edits even when git's first status line arrives trimmed", async () => {
+  it("accepts approve-time doc edits from exact NUL-delimited status records", async () => {
     seedCard("card-doc-edits");
     const planId = seedPlan("card-doc-edits");
     seedLoopRun("card-doc-edits", planId);
     mockEvaluationVerdict("VERDICT: approve\n\nDocs refreshed.");
-    // tryGit trims stdout, so the first porcelain line loses the leading space
-    // of its unstaged-change marker. Before the harness the tree is clean;
-    // after it two docs changed. Every other git call answers as before.
     let statusCalls = 0;
-    mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => {
-      if (args[0] === "status") {
-        statusCalls += 1;
-        return { ok: true, out: statusCalls === 1 ? "" : "M docs/ARCHITECTURE.md\n M docs/TROUBLESHOOTING.md" };
-      }
-      return { ok: true, out: "" };
+    mocks.gitRaw.mockImplementation(async () => {
+      statusCalls += 1;
+      return statusCalls === 1
+        ? ""
+        : " M docs/ARCHITECTURE.md\0 M docs/TROUBLESHOOTING.md\0";
     });
     const deps = makeDeps();
 

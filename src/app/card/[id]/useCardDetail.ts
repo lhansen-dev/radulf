@@ -71,6 +71,8 @@ export type CardDetailData = {
     /** Spec 24. Absent on older cached responses. */
     parentCardId?: string | null;
     runMode?: EpicRunMode | null;
+    /** The Jira issue this card mirrors, if it was created from one. */
+    jiraKey?: string | null;
   };
   repo: { id: string; name: string; path: string; defaultBranch: string } | null;
   plans: Plan[];
@@ -105,6 +107,9 @@ export type CardDetailData = {
   /** Spec 24: this card's pieces, in queue order, and the epic it belongs to. */
   children?: ChildCard[];
   parent?: { id: string; title: string; runMode: EpicRunMode | null } | null;
+  /** Deep link to the card's Jira issue; null when there is no key or Jira
+   * isn't configured. Absent on older cached responses. */
+  jiraUrl?: string | null;
 };
 
 /** Card detail data and card-scoped live refresh. */

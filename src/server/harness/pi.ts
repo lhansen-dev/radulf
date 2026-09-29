@@ -14,10 +14,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR } from "@/db";
-import { listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
+import { contextWindowFor, listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
 import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
-import { createSandboxedBashOperations } from "../sandbox/srt";
+import {
+  createSandboxedBashOperations,
+  createSerializedBashOperations,
+} from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
 import { createGuardedFsTools } from "./guardedTools";
 import { DEFAULT_MOCK_SCENARIO, mockProviderConfig } from "./mock";
@@ -111,7 +114,8 @@ let runtimePromise: Promise<ModelRuntime> | undefined;
 export function getModelRuntime(): Promise<ModelRuntime> {
   if (!runtimePromise) {
     const dir = piAgentDir();
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
     runtimePromise = ModelRuntime.create({
       authPath: path.join(dir, "auth.json"),
       modelsPath: path.join(dir, "models.json"),
@@ -302,7 +306,9 @@ export async function resolveModel(
     }
     // Ask the server what it is actually serving. The context window is a
     // per-deployment number (vLLM's --max-model-len), so it cannot be a
-    // constant here, and a wrong one surfaces as a 400 deep into a loop.
+    // constant here, and a wrong one surfaces as a 400 deep into a loop. A
+    // server that reports none gets the operator's per-model entry from
+    // Settings, when there is one.
     const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey, parseHeaderLines(s.omlxHeaders));
     const meta = served.find((x) => x.id === model);
     if (!meta) {
@@ -310,7 +316,7 @@ export async function resolveModel(
         `the local endpoint does not serve model "${model}" (serving: ${served.map((x) => x.id).join(", ") || "nothing"})`,
       );
     }
-    runtime.registerProvider("omlx", omlxProviderConfig(model, s, meta.contextWindow));
+    runtime.registerProvider("omlx", omlxProviderConfig(model, s, contextWindowFor(model, s, meta.contextWindow)));
     const m = runtime.getModel(pid, model);
     if (!m) throw new Error(`the local endpoint does not serve model "${model}"`);
     return m;
@@ -627,8 +633,14 @@ export async function createRalphSession(
     spawnHook: (ctx) => ({ ...ctx, env: runContext?.env ?? agentEnv() }),
     operations:
       shouldSandboxBash(opts.role, runContext?.srtConfig) && runContext?.srtConfig
-        ? createSandboxedBashOperations(runContext.srtConfig, { tmpdir: runContext.tmpdir })
-        : undefined,
+          ? createSandboxedBashOperations(runContext.srtConfig, {
+            tmpdir: runContext.tmpdir,
+            runExclusive: runContext.runExclusive,
+            tracker: runContext,
+          })
+        : runContext
+          ? createSerializedBashOperations(runContext.runExclusive, runContext)
+          : undefined,
   }) as unknown as ToolDefinition;
 
   // Web search (Brave) — pi has no web tool and extensions are disabled, so
@@ -665,7 +677,13 @@ export async function createRalphSession(
   // (see pathRootsForRole). Guarded tools override the built-ins by name, so
   // only the ones the session's tool set names take effect.
   const { readRoots, writeRoots } = pathRootsForRole(opts.role, opts.cwd);
-  for (const guarded of createGuardedFsTools(opts.cwd, readRoots, writeRoots)) {
+  for (const guarded of createGuardedFsTools(
+    opts.cwd,
+    readRoots,
+    writeRoots,
+    runContext?.reap,
+    runContext?.runExclusive,
+  )) {
     if (tools.includes(guarded.name)) customTools.push(guarded);
   }
 

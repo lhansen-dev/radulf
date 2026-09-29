@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { git, initScratchRepo } from "@/testUtils/gitRepo";
 import fs from "node:fs";
 import path from "node:path";
@@ -129,6 +129,29 @@ describe("repository inspection", () => {
       git(repo, "worktree", "remove", "--force", wt);
       git(repo, "branch", "-D", "ralph/run-hooks");
       fs.rmSync(marker, { force: true });
+    }
+  });
+
+  it("host commits replace a planted COMMIT_EDITMSG link without touching its target", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-message-wt-${process.pid}`);
+    const target = path.join(os.tmpdir(), `ralph-message-target-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-message");
+    fs.writeFileSync(target, "preserve me");
+    try {
+      const gitDir = git(wt, "rev-parse", "--absolute-git-dir");
+      const messagePath = path.join(gitDir, "COMMIT_EDITMSG");
+      fs.rmSync(messagePath, { force: true });
+      fs.symlinkSync(target, messagePath);
+      fs.writeFileSync(path.join(wt, "change.txt"), "x");
+      await hostGit(wt, "add", "-A");
+      await hostGit(wt, "commit", "-m", "safe host commit");
+
+      expect(fs.readFileSync(target, "utf8")).toBe("preserve me");
+      expect(fs.lstatSync(messagePath).isSymbolicLink()).toBe(false);
+    } finally {
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-message");
+      fs.rmSync(target, { force: true });
     }
   });
 
@@ -332,6 +355,103 @@ describe("mergeBranch concurrency (spec 20: different cards, same repo)", () => 
     expect(execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
       encoding: "utf8",
     }).trim()).toBe(defaultBranch);
+  });
+});
+
+describe("mergeBranch recovery (half-finished merge in the parent checkout)", () => {
+  let dir: string;
+  let defaultBranch: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-recovery-"));
+    git(dir, "init");
+    git(dir, "config", "user.email", "test@test.com");
+    git(dir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(dir, "README.md"), "base\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "initial");
+    defaultBranch = git(dir, "rev-parse", "--abbrev-ref", "HEAD");
+
+    git(dir, "checkout", "-b", "ralph/x");
+    fs.writeFileSync(path.join(dir, "x.txt"), "x\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "x change");
+    git(dir, "checkout", defaultBranch);
+
+    git(dir, "checkout", "-b", "other");
+    fs.writeFileSync(path.join(dir, "other.txt"), "other\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "other change");
+    git(dir, "checkout", defaultBranch);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("aborts Radulf's own abandoned merge of the run branch and redoes it", async () => {
+    // A dead worker left `merge --no-commit ralph/x` half-done in the parent.
+    git(dir, "merge", "--no-ff", "--no-commit", "ralph/x");
+    expect(git(dir, "rev-parse", "MERGE_HEAD")).toBe(git(dir, "rev-parse", "ralph/x"));
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+    expect(result.ok).toBe(true);
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+    expect(git(dir, "rev-parse", "--abbrev-ref", "HEAD")).toBe(defaultBranch);
+    expect(git(dir, "log", "--oneline")).toContain("ralph: merge x");
+    expect(fs.existsSync(path.join(dir, "x.txt"))).toBe(true);
+  });
+
+  it("refuses a foreign in-progress merge by name and leaves it untouched", async () => {
+    git(dir, "merge", "--no-ff", "--no-commit", "other");
+    try {
+      const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain(dir);
+      expect(result.error).toContain("outside Radulf");
+      // The foreign merge is exactly as we found it.
+      expect(git(dir, "rev-parse", "MERGE_HEAD")).toBe(git(dir, "rev-parse", "other"));
+      expect(git(dir, "status", "--porcelain")).not.toBe("");
+    } finally {
+      git(dir, "merge", "--abort");
+    }
+  });
+
+  it("recognises a merge that already landed and records it as alreadyMerged", async () => {
+    // A dead worker committed the merge but died before the DB write.
+    git(dir, "merge", "--no-ff", "-m", "ralph: merge x", "ralph/x");
+    const merged = git(dir, "rev-parse", "HEAD");
+    // Base moved on afterwards; the merge commit is no longer the tip.
+    fs.writeFileSync(path.join(dir, "after.txt"), "after\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "after");
+    const tip = git(dir, "rev-parse", "HEAD");
+    const count = git(dir, "rev-list", "--count", "HEAD");
+
+    let called = false;
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x again", () => {
+      called = true;
+    });
+
+    expect(result).toEqual({ ok: true, mergeCommit: merged, alreadyMerged: true });
+    expect(called).toBe(false);
+    expect(git(dir, "rev-parse", "HEAD")).toBe(tip);
+    expect(git(dir, "rev-list", "--count", "HEAD")).toBe(count);
+  });
+
+  it("names the dirty checkout and tells the operator how to recover, without starting a merge", async () => {
+    fs.writeFileSync(path.join(dir, "scratch.txt"), "wip\n");
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(dir);
+    expect(result.error).toContain("uncommitted changes");
+    expect(result.error).toContain("Retry merge");
+    // No merge was started.
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
   });
 });
 

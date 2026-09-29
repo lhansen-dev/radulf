@@ -1,12 +1,44 @@
-import { exec } from "node:child_process";
+import { exec, type ChildProcess } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 import { ralphDirPath } from "./bookkeeping";
 import type { RunSandboxContext } from "./sandbox/context";
 import { runSandboxedCommand } from "./sandbox/srt";
 import { errorMessage } from "@/shared/errorMessage";
 
-const execAsync = promisify(exec);
+// Node forwards spawn options such as `detached` through `exec`, but its public
+// ExecOptions type omits that field. Keep the narrow cast here and cover the
+// process-group behavior with the live reaping regression in gate.test.ts.
+const execDetached = exec as unknown as (
+  command: string,
+  options: {
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+    timeout: number;
+    maxBuffer: number;
+    signal?: AbortSignal;
+    detached: true;
+  },
+  callback: (error: Error | null, stdout: string, stderr: string) => void,
+) => ChildProcess;
+
+function execDetachedAsync(
+  command: string,
+  options: Parameters<typeof execDetached>[1],
+  ctx: RunSandboxContext,
+): Promise<{ stdout: string; stderr: string }> {
+  ctx.markCommandStarted();
+  return new Promise((resolve, reject) => {
+    const child = execDetached(command, options, (error, stdout, stderr) => {
+      if (error) {
+        Object.assign(error, { stdout, stderr });
+        reject(error);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+    if (child.pid && process.platform !== "win32") ctx.trackProcessGroup(child.pid);
+  });
+}
 
 /**
  * Spec 27: the repository gate, run by the orchestrator so the evaluator
@@ -56,9 +88,20 @@ async function execute(
   env: NodeJS.ProcessEnv | undefined,
   timeout: number,
   signal: AbortSignal | undefined,
+  ctx: RunSandboxContext,
 ): Promise<Outcome> {
   try {
-    const { stdout, stderr } = await execAsync(toRun, { cwd, env, timeout, maxBuffer: GATE_MAX_BUFFER, signal });
+    const { stdout, stderr } = await execDetachedAsync(toRun, {
+      cwd,
+      timeout,
+      maxBuffer: GATE_MAX_BUFFER,
+      ...(env ? { env } : {}),
+      ...(signal ? { signal } : {}),
+      // The command prefix records the shell pid as a process-group id. Give
+      // the gate its own group so post-command reaping can actually kill any
+      // background descendants before the trusted process writes GATE.md.
+      detached: true,
+    }, ctx);
     return { exitCode: 0, timedOut: false, error: null, output: tail(`${stdout}${stderr}`) };
   } catch (e) {
     // Cancelled from outside: the caller owns that outcome.
@@ -91,14 +134,26 @@ export async function runGateCommand(opts: {
   // The prefix's lines end in `|| true` with no separator of their own; the
   // command must be its own line, not the right-hand side of that `||`.
   const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
-  const run = (toRun: string) => execute(toRun, worktreePath, ctx.env, timeoutMs, signal);
+  const run = (toRun: string) => execute(toRun, worktreePath, ctx.env, timeoutMs, signal, ctx);
   let outcome: Outcome;
   try {
     outcome = ctx.srtConfig ? await runSandboxedCommand(prefixed, ctx.srtConfig, run, { tmpdir: ctx.tmpdir }) : await run(prefixed);
   } catch (e) {
-    if (signal?.aborted) throw e;
+    if (signal?.aborted) {
+      await ctx.reap();
+      throw e;
+    }
     // A wrap that could not be built: the gate did not run, and says so.
     outcome = { exitCode: null, timedOut: false, error: errorMessage(e), output: "" };
+  }
+  const leftovers = await ctx.reap();
+  if (leftovers.length > 0) {
+    outcome = {
+      exitCode: null,
+      timedOut: false,
+      error: `surviving gate process groups after reap: ${leftovers.join(", ")}`,
+      output: outcome.output,
+    };
   }
   return {
     command,

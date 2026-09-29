@@ -394,6 +394,15 @@ export default function CardDetail() {
             <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
             <span className="text-foreground/40">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
           </div>
+          {card.jiraKey && (
+            <p className="text-sm text-foreground/60">
+              Jira: {detail.jiraUrl ? (
+                <a href={detail.jiraUrl} target="_blank" rel="noreferrer" className="text-accent underline">{card.jiraKey}</a>
+              ) : (
+                <span>{card.jiraKey}</span>
+              )}
+            </p>
+          )}
           {detail.parent && (
             <p className="text-sm text-foreground/60">
               Part of <Link href={`/card/${detail.parent.id}`} className="text-amber-300 hover:underline">{detail.parent.title}</Link>
@@ -530,6 +539,26 @@ export default function CardDetail() {
                   </div>
                 );
               }
+              if (e.type === "repo.integrity_warning") {
+                const refs = parseIntegrityWarning(e.payload);
+                if (refs) {
+                  return (
+                    <div
+                      key={e.id}
+                      data-testid="integrity-warning"
+                      className="my-1 rounded border border-amber-800/50 bg-amber-950/40 p-2 text-xs"
+                    >
+                      <span className="font-mono text-foreground/50">{e.createdAt.slice(11, 19)} </span>
+                      <span className="font-medium text-amber-300">⚠ Remote-tracking refs changed during the run</span>
+                      <ul className="mt-1 font-mono text-foreground/70">
+                        {refs.map((ref) => (
+                          <li key={ref}>{ref}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                }
+              }
               return (
                 <div key={e.id} className="text-xs text-foreground/50 font-mono">
                   {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
@@ -553,6 +582,21 @@ function parseCritiqueDecided(payload: string): { verdict: string; feedback: str
     if (typeof parsed.verdict !== "string") return null;
     const feedback = typeof parsed.feedback === "string" ? parsed.feedback.slice(0, 500) : "";
     return { verdict: parsed.verdict, feedback };
+  } catch {
+    return null;
+  }
+}
+
+/** The `repo.integrity_warning` event payload (spec 19 amendment): the
+ * human-readable lines describing remote-tracking refs that moved, appeared or
+ * were deleted during a run. Null when the payload is not shaped that way, so
+ * the row falls back to the raw event line. */
+function parseIntegrityWarning(payload: string): string[] | null {
+  try {
+    const parsed = JSON.parse(payload) as { refs?: unknown };
+    return Array.isArray(parsed.refs) && parsed.refs.every((ref) => typeof ref === "string")
+      ? (parsed.refs as string[])
+      : null;
   } catch {
     return null;
   }

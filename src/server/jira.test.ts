@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchJiraChildren, fetchJiraIssue, jiraCardDraft, parseJiraIssueRef, wikiToMarkdown } from "./jira";
+import {
+  fetchJiraChildren,
+  fetchJiraIssue,
+  isJiraIssueKey,
+  jiraCardDraft,
+  parseJiraIssueRef,
+  wikiToMarkdown,
+} from "./jira";
 
 const configured = { jiraBaseUrl: "https://example.atlassian.net/", jiraEmail: "me@example.com", jiraApiToken: "tok" };
 
@@ -22,6 +29,16 @@ describe("parseJiraIssueRef", () => {
       expect(parseJiraIssueRef(input)).toBeNull();
     },
   );
+});
+
+describe("isJiraIssueKey", () => {
+  it.each(["DEV-1", " dev-1 "])("accepts %s", (input) => {
+    expect(isJiraIssueKey(input)).toBe(true);
+  });
+
+  it.each(["", "DEV123", "https://x/browse/DEV-1"])("rejects %s", (input) => {
+    expect(isJiraIssueKey(input)).toBe(false);
+  });
 });
 
 describe("wikiToMarkdown", () => {
@@ -67,15 +84,19 @@ describe("wikiToMarkdown", () => {
 describe("fetchJiraIssue", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  /** The site answers `_edge/tenant_info` with its cloud id; everything else,
+   * which then goes to the gateway, gets the given status and body. */
   function stubFetch(status: number, body: unknown) {
-    const fetchMock = vi.fn(
-      async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }),
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith("/_edge/tenant_info")
+        ? new Response(JSON.stringify({ cloudId: "cloud-1" }), { headers: { "content-type": "application/json" } })
+        : new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }),
     );
     vi.stubGlobal("fetch", fetchMock);
     return fetchMock;
   }
 
-  it("fetches the issue through REST v2 with basic auth and converts wiki markup", async () => {
+  it("fetches the issue through the gateway for the site's cloud id, with basic auth, and converts wiki markup", async () => {
     const fetchMock = stubFetch(200, {
       key: "DEV-123",
       fields: { summary: "  Fix the widget ", description: "h2. Why\nIt is *slow*." },
@@ -89,8 +110,9 @@ describe("fetchJiraIssue", () => {
       summary: "Fix the widget",
       description: "## Why\nIt is **slow**.",
     });
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("https://example.atlassian.net/rest/api/2/issue/DEV-123?fields=summary,description");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://example.atlassian.net/_edge/tenant_info");
+    const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.atlassian.com/ex/jira/cloud-1/rest/api/2/issue/DEV-123?fields=summary,description");
     expect((init.headers as Record<string, string>).Authorization).toBe(
       `Basic ${Buffer.from("me@example.com:tok").toString("base64")}`,
     );
@@ -139,22 +161,38 @@ describe("fetchJiraIssue", () => {
   it("tells a rejected token apart from a missing issue, since Jira answers both with 404", async () => {
     // Jira Cloud falls back to anonymous on a bad token: the issue lookup
     // says 404, and only /myself admits the 401.
-    const fetchMock = vi.fn(async (url: string) =>
-      new Response("{}", { status: url.endsWith("/rest/api/2/myself") ? 401 : 404 }),
-    );
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/_edge/tenant_info")) return new Response(JSON.stringify({ cloudId: "cloud-1" }));
+      return new Response("{}", { status: url.endsWith("/rest/api/2/myself") ? 401 : 404 });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchJiraIssue("DEV-1", configured)).rejects.toThrow(/email or API token/);
-    expect(fetchMock.mock.calls.map(([url]) => String(url).split("/rest/")[1])).toEqual([
-      "api/2/issue/DEV-1?fields=summary,description",
-      "api/2/myself",
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://example.atlassian.net/_edge/tenant_info",
+      "https://api.atlassian.com/ex/jira/cloud-1/rest/api/2/issue/DEV-1?fields=summary,description",
+      "https://api.atlassian.com/ex/jira/cloud-1/rest/api/2/myself",
     ]);
+  });
+
+  it("calls the site itself when it has no cloud id", async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith("/_edge/tenant_info")
+        ? new Response("not found", { status: 404 })
+        : new Response(JSON.stringify({ key: "DEV-1", fields: { summary: "s" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const issue = await fetchJiraIssue("DEV-1", configured);
+
+    expect(issue.url).toBe("https://example.atlassian.net/browse/DEV-1");
+    expect(fetchMock.mock.calls[1][0]).toBe("https://example.atlassian.net/rest/api/2/issue/DEV-1?fields=summary,description");
   });
 
   it("trims a token pasted with whitespace around it", async () => {
     const fetchMock = stubFetch(200, { key: "DEV-1", fields: { summary: "s" } });
     await fetchJiraIssue("DEV-1", { ...configured, jiraApiToken: "  tok\n" });
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toBe(
       `Basic ${Buffer.from("me@example.com:tok").toString("base64")}`,
     );
@@ -179,9 +217,9 @@ describe("fetchJiraChildren", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("lists the issue's children through search/jql in rank order, shaped like the issue", async () => {
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (url: string) =>
       new Response(
-        JSON.stringify({
+        JSON.stringify(url.endsWith("/_edge/tenant_info") ? { cloudId: "cloud-1" } : {
           issues: [
             { key: "DEV-2", fields: { summary: " First ", description: "h2. Why\nBecause." } },
             { key: "DEV-3", fields: { summary: "Second", description: null } },
@@ -200,9 +238,9 @@ describe("fetchJiraChildren", () => {
       { key: "DEV-2", url: "https://example.atlassian.net/browse/DEV-2", summary: "First", description: "## Why\nBecause." },
       { key: "DEV-3", url: "https://example.atlassian.net/browse/DEV-3", summary: "Second", description: "" },
     ]);
-    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    const [url] = fetchMock.mock.calls[1] as unknown as [string];
     expect(url).toBe(
-      `https://example.atlassian.net/rest/api/2/search/jql?jql=${encodeURIComponent("parent = DEV-1 ORDER BY rank ASC")}&fields=summary,description&maxResults=100`,
+      `https://api.atlassian.com/ex/jira/cloud-1/rest/api/2/search/jql?jql=${encodeURIComponent("parent = DEV-1 ORDER BY rank ASC")}&fields=summary,description&maxResults=100`,
     );
   });
 

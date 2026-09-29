@@ -13,7 +13,6 @@ import {
   createSandboxedBashOperations,
   credentialBackstopDenylist,
   dropRootsThatWouldReopen,
-  gitWorktreeDenies,
   initializeSandboxRuntimeOnce,
   parseNetworkAllowlist,
   resetSandboxRuntimeForTests,
@@ -144,23 +143,48 @@ describe("buildFilesystemConfig", () => {
       "/data/worktrees/run-1",
       "/data/runtmp/run-1/tmp",
       "/data/runtmp/run-1/cache",
+    ]);
+  });
+
+  it("allows only the cgroup membership file when a verified cgroup exists", () => {
+    const withCgroup = buildFilesystemConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/data/repo/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      cgroupProcsFile: "/sys/fs/cgroup/radulf/run-1/cgroup.procs",
+    });
+    expect(withCgroup.allowWrite).toContain("/sys/fs/cgroup/radulf/run-1/cgroup.procs");
+    expect(withCgroup.allowWrite).not.toContain("/sys/fs/cgroup/radulf/run-1");
+  });
+
+  it("write-denies the entire shared Git directory", () => {
+    expect(cfg.denyWrite).toEqual([
+      "/data/worktrees/run-1/.git",
       "/data/repo/.git",
     ]);
   });
 
-  it("carves the hook/config and ref vectors out of the git-write allow", () => {
-    // The `*` patterns are macOS-only. See gitWorktreeDenies.
-    expect(cfg.denyWrite).toEqual([
-      "/data/worktrees/run-1/.git",
-      "/data/repo/.git/hooks",
-      "/data/repo/.git/config",
-      "/data/repo/.git/refs",
-      "/data/repo/.git/packed-refs",
-      "/data/repo/.git/HEAD",
-      ...(process.platform === "darwin"
-        ? ["/data/repo/.git/worktrees/*/config", "/data/repo/.git/worktrees/*/HEAD"]
-        : []),
-    ]);
+  it("read-denies every repository root and re-allows only active Git metadata", () => {
+    const isolated = buildFilesystemConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/repos/active/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      repositoryRoots: ["/repos", "/repos/active", "/repos/sibling"],
+    });
+    expect(isolated.denyRead).toEqual(expect.arrayContaining([
+      "/repos",
+      "/repos/active",
+      "/repos/sibling",
+    ]));
+    expect(isolated.allowRead).toContain("/repos/active/.git");
+    expect(isolated.allowRead).not.toContain("/repos");
+    expect(isolated.denyWrite).toEqual(expect.arrayContaining([
+      "/repos",
+      "/repos/active",
+      "/repos/sibling",
+    ]));
   });
 
   it("keeps the credential backstop, including gh's store, even though $HOME is already denied", () => {
@@ -269,50 +293,6 @@ describe("resolveGitCommonDir", () => {
   });
 });
 
-describe("gitWorktreeDenies", () => {
-  let repoDir: string;
-  let gitCommonDir: string;
-  let worktreePath: string;
-
-  beforeAll(async () => {
-    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wtdeny-"));
-    await git(repoDir, "init");
-    await git(repoDir, "config", "user.email", "t@t.com");
-    await git(repoDir, "config", "user.name", "T");
-    fs.writeFileSync(path.join(repoDir, "f"), "x");
-    await git(repoDir, "add", ".");
-    await git(repoDir, "commit", "-m", "init");
-    gitCommonDir = await resolveGitCommonDir(repoDir);
-    worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wtdeny-wt-"));
-    await git(repoDir, "worktree", "add", worktreePath, "-b", "wtdeny");
-  });
-
-  afterAll(async () => {
-    await git(repoDir, "worktree", "remove", "--force", worktreePath).catch(() => {});
-    fs.rmSync(repoDir, { recursive: true, force: true });
-    fs.rmSync(worktreePath, { recursive: true, force: true });
-  });
-
-  it("names the config and HEAD of every registered linked worktree as concrete paths", () => {
-    // Concrete, not a `*` pattern: bwrap has no pattern support, so the
-    // pattern form protected nothing on Linux.
-    const denies = gitWorktreeDenies(gitCommonDir);
-    const wtDir = path.join(gitCommonDir, "worktrees", path.basename(worktreePath));
-    expect(denies).toContain(path.join(wtDir, "config"));
-    expect(denies).toContain(path.join(wtDir, "HEAD"));
-    expect(denies.every((p) => path.isAbsolute(p) && !p.includes("*"))).toBe(true);
-  });
-
-  it("returns nothing for a repo with no linked worktrees, rather than throwing", () => {
-    const bare = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-nowt-"));
-    try {
-      expect(gitWorktreeDenies(path.join(bare, ".git"))).toEqual([]);
-    } finally {
-      fs.rmSync(bare, { recursive: true, force: true });
-    }
-  });
-});
-
 describeOnHost("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)", () => {
   it("reports this platform as supported", () => {
     // This suite only runs in this repo's dev/CI environment (macOS or
@@ -353,6 +333,7 @@ describeOnHost("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mo
 describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandboxed process)", () => {
   let worktree: string;
   let outside: string;
+  let gitCommonDir: string;
 
   // What a real linked worktree always carries by the time a run config is
   // built: `.git` as a pointer FILE. It is on the write-deny list, and bwrap
@@ -364,6 +345,9 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
     await initializeSandboxRuntimeOnce();
     worktree = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-"));
     outside = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-outside-"));
+    gitCommonDir = path.join(outside, "git-common");
+    fs.mkdirSync(gitCommonDir);
+    fs.writeFileSync(path.join(outside, "sibling-secret.txt"), "sibling secret");
     fs.writeFileSync(path.join(worktree, ".git"), gitPointer);
   });
 
@@ -375,9 +359,10 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
   function config() {
     return buildRunSandboxConfig({
       worktree,
-      gitCommonDir: worktree,
+      gitCommonDir,
       tmpdir: worktree,
       cacheRoot: worktree,
+      repositoryRoots: [outside],
       networkAllowlistText: "",
     });
   }
@@ -418,12 +403,20 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
   const sh = (cmd: string) =>
     runSandboxedCommand(cmd, config(), (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]));
 
-  it("runSandboxedCommand allows a write inside the worktree and denies one outside it", async () => {
+  it("allows a worktree write and prevents a host write outside it", async () => {
     await sh(`echo hi > ${worktree}/ok.txt`);
     expect(fs.existsSync(path.join(worktree, "ok.txt"))).toBe(true);
 
-    await expect(sh(`echo hi > ${outside}/bad.txt`)).rejects.toThrow();
+    // A Linux denyRead may present an ephemeral masked directory where the
+    // shell reports success. The security property is that no write reaches
+    // the sibling host repository. Other platforms may reject the command.
+    await sh(`echo hi > ${outside}/bad.txt`).catch(() => undefined);
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
+  });
+
+  it("denies reads from a sibling repository while retaining active Git metadata reads", async () => {
+    await expect(sh(`cat ${path.join(outside, "sibling-secret.txt")}`)).rejects.toThrow();
+    await expect(sh(`ls ${gitCommonDir}`)).resolves.toBeDefined();
   });
 
   it("runSandboxedCommand denies rewriting the worktree's .git pointer file, though the worktree is writable", async () => {
@@ -452,17 +445,21 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
     // any comparison, buggy or not, and never catch that class of bug.
     const worktreeA = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-a-"));
     const worktreeB = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-b-"));
+    const gitCommonA = path.join(worktreeA, ".git-common");
+    const gitCommonB = path.join(worktreeB, ".git-common");
+    fs.mkdirSync(gitCommonA);
+    fs.mkdirSync(gitCommonB);
     try {
       const cfgA = buildRunSandboxConfig({
         worktree: worktreeA,
-        gitCommonDir: worktreeA,
+        gitCommonDir: gitCommonA,
         tmpdir: worktreeA,
         cacheRoot: worktreeA,
         networkAllowlistText: "",
       });
       const cfgB = buildRunSandboxConfig({
         worktree: worktreeB,
-        gitCommonDir: worktreeB,
+        gitCommonDir: gitCommonB,
         tmpdir: worktreeB,
         cacheRoot: worktreeB,
         networkAllowlistText: "",
@@ -592,8 +589,6 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
  * check of the mechanism the table names.
  */
 describeOnHost("acceptance-test table — individual rows verified directly (spec 14 §Acceptance tests)", () => {
-  /** Seed contents of the per-worktree git config the deny must preserve. */
-  const WT_CONFIG = "# pre-existing\n";
   let worktree: string;
   let repoDir: string;
   let gitCommonDir: string;
@@ -627,12 +622,6 @@ describeOnHost("acceptance-test table — individual rows verified directly (spe
     // git itself would not refuse inside a linked worktree.
     await git(repoDir, "branch", "accept-other");
     gitCommonDir = await resolveGitCommonDir(worktree);
-    // Seed the per-worktree config BEFORE the first sandboxed run. For a deny
-    // path that doesn't exist yet, srt has bwrap create a read-only mount
-    // point for it on the host and only unlinks it in a process-exit handler —
-    // so once any run() has happened, this file is no longer writable from the
-    // test process either.
-    fs.writeFileSync(path.join(gitCommonDir, "worktrees", path.basename(worktree), "config"), WT_CONFIG);
   });
 
   afterAll(async () => {
@@ -719,12 +708,23 @@ describeOnHost("acceptance-test table — individual rows verified directly (spe
     expect(fs.readFileSync(path.join(gitCommonDir, "config"), "utf8")).toBe(before);
   });
 
-  it("write `<repo>/.git/worktrees/<name>/config` — L1 write deny (per-worktree carve-out)", async () => {
-    // Seeded in beforeAll. Denied on Linux only because the carve-out names
-    // this config as a concrete path: a `*` pattern is inert under bwrap.
-    const wtConfig = path.join(gitCommonDir, "worktrees", path.basename(worktree), "config");
-    await expect(run(`echo evil >> ${wtConfig}`)).rejects.toThrow();
-    expect(fs.readFileSync(wtConfig, "utf8")).toBe(WT_CONFIG);
+  it("cannot plant COMMIT_EDITMSG as a symlink for the next host commit", async () => {
+    const hostFile = path.join(repoDir, "host-file");
+    fs.writeFileSync(hostFile, "preserve me");
+    const commitMessage = path.join(
+      gitCommonDir,
+      "worktrees",
+      path.basename(worktree),
+      "COMMIT_EDITMSG",
+    );
+    await expect(run(`ln -s ${hostFile} ${commitMessage}`)).rejects.toThrow();
+    expect(fs.lstatSync(commitMessage, { throwIfNoEntry: false })).toBeUndefined();
+    expect(fs.readFileSync(hostFile, "utf8")).toBe("preserve me");
+  });
+
+  it("allows ordinary read-only Git inspection", async () => {
+    await expect(run(`GIT_OPTIONAL_LOCKS=0 git -C ${worktree} status --short`)).resolves.toBeDefined();
+    await expect(run(`GIT_OPTIONAL_LOCKS=0 git -C ${worktree} diff --stat`)).resolves.toBeDefined();
   });
 
   it("`git checkout` onto another branch inside the worktree — L1 write deny of the worktree's HEAD", async () => {

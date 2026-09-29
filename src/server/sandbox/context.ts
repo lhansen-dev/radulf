@@ -1,11 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { DATA_DIR, type DiskLimitMechanism } from "@/db";
+import { db, DATA_DIR, repos, type DiskLimitMechanism } from "@/db";
 import { sleep } from "@/shared/sleep";
 import type { Settings } from "../settings";
+import { browsableRoot } from "../folderBrowser";
 import { agentEnv } from "../harness/types";
-import { setupRunCgroup, killRunCgroup, type RunCgroup } from "./cgroup";
+import {
+  setupRunCgroup,
+  killRunCgroup,
+  killRunCgroupProcesses,
+  runCgroupEmpty,
+  type RunCgroup,
+} from "./cgroup";
 import { detectMacDiskMechanism } from "./diskWatchdog";
 import { buildRunSandboxConfig, resolveGitCommonDir } from "./srt";
 
@@ -31,8 +38,6 @@ export type RunSandboxContext = {
   tmpdir: string;
   /** Run-private package-manager cache root the host never consumes. */
   cacheRoot: string;
-  /** File where each bash invocation records its process-group id. */
-  pgidFile: string;
   /** The allowlist agent env for this run (spec 14 L3). */
   env: NodeJS.ProcessEnv;
   /** Preamble prepended to every agent bash command (ulimits, pgid record,
@@ -52,6 +57,14 @@ export type RunSandboxContext = {
    * before that insert (PLAN.md Phase 18.1: emitting the event here raced
    * ahead of `events.run_id`'s FK and crashed run start). */
   weakerIsolationEnabled: boolean;
+  /** Mark that an attacker-controlled command has started. */
+  markCommandStarted(): void;
+  /** Record a detached shell group from the trusted parent process. */
+  trackProcessGroup(pgid: number): void;
+  /** Serialize bash and in-process file tools for this run. Combined with
+   * pre-file-tool reaping, this removes every attacker-controlled process
+   * that could mutate a checked pathname before the SDK opens it. */
+  runExclusive<T>(operation: () => Promise<T>): Promise<T>;
   /** Kill every recorded process group; returns pgids still alive after. */
   reap(): Promise<number[]>;
   /** Reap, tear down the cgroup, and delete the run-private root. */
@@ -60,6 +73,14 @@ export type RunSandboxContext = {
 
 const REAP_RETRIES = 10;
 const REAP_RETRY_MS = 100;
+
+export function processTreeSupervisorAvailable(
+  platform: NodeJS.Platform,
+  hasSandboxPolicy: boolean,
+  hasCgroup: boolean,
+): boolean {
+  return hasCgroup || (platform === "linux" && hasSandboxPolicy);
+}
 
 /** True while any process remains in the group. */
 function groupAlive(pgid: number): boolean {
@@ -71,32 +92,12 @@ function groupAlive(pgid: number): boolean {
   }
 }
 
-export function readPgids(pgidFile: string): number[] {
-  let raw = "";
-  try {
-    raw = fs.readFileSync(pgidFile, "utf8");
-  } catch {
-    return [];
-  }
-  const ids = new Set<number>();
-  for (const line of raw.split("\n")) {
-    const n = Number.parseInt(line.trim(), 10);
-    // Guard: never a signal to pid 0/1/-1 territory. Recorded pgids are the
-    // detached bash shells' own pids, never the server's.
-    if (Number.isInteger(n) && n > 1 && n !== process.pid) ids.add(n);
-  }
-  return [...ids];
-}
-
 /**
- * Kill every recorded process group and verify each is empty (spec 14 L3
- * process-group reaping). Must run BEFORE the repo integrity check and before
- * merge — a surviving process can plant hooks after a check that already
- * passed. Best-effort against a process that re-execs into a new session; on
- * Linux the cgroup kill sweeps those too.
+ * Kill every trusted-parent-recorded process group and verify each is empty.
+ * The IDs must never come from an agent-writable file: an attacker could
+ * truncate that ledger immediately after starting a symlink flipper.
  */
-export async function reapProcessGroups(pgidFile: string): Promise<number[]> {
-  const pgids = readPgids(pgidFile);
+export async function reapProcessGroups(pgids: Iterable<number>): Promise<number[]> {
   const leftover: number[] = [];
   for (const pgid of pgids) {
     for (let attempt = 0; groupAlive(pgid); attempt++) {
@@ -125,13 +126,12 @@ export async function reapProcessGroups(pgidFile: string): Promise<number[]> {
  * Both are recorded here so they are not reintroduced. The per-tree bound is
  * the Linux cgroup; macOS is bounded by the disk watchdog + wall clocks.
  */
-export function buildCommandPrefix(pgidFile: string, cgroup: RunCgroup | null): string {
+export function buildCommandPrefix(cgroup: RunCgroup | null): string {
   const lines = [
+    ...(cgroup ? [cgroup.joinLine] : []),
     "ulimit -t 900 2>/dev/null || true",
     "ulimit -f 8388608 2>/dev/null || true", // 512-byte blocks → 4 GiB max file
-    `echo "$$" >> '${pgidFile}' 2>/dev/null || true`,
   ];
-  if (cgroup) lines.push(cgroup.joinLine);
   return lines.join("\n");
 }
 
@@ -142,17 +142,11 @@ export async function createRunSandbox(
   const root = path.join(runScratchRoot(), runId);
   const tmpdir = path.join(root, "tmp");
   const cacheRoot = path.join(root, "cache");
-  // The pgid file MUST live inside an L1 allowWrite root (the run's private
-  // TMPDIR is one — see buildFilesystemConfig): the commandPrefix's
-  // `echo "$$" >> pgids` runs INSIDE the sandbox, so a pgid file at the run
-  // root (not writable) is silently denied, leaving process-group reaping
-  // (1f) inert for every sandboxed run. Keeping it under $TMPDIR fixes that;
-  // agent tampering grants no capability the agent's bash doesn't already have.
-  const pgidFile = path.join(tmpdir, "pgids");
-  fs.mkdirSync(tmpdir, { recursive: true });
-  fs.mkdirSync(cacheRoot, { recursive: true });
-  fs.writeFileSync(pgidFile, "", { flag: "a" });
-
+  fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(cacheRoot, { recursive: true, mode: 0o700 });
+  fs.chmodSync(root, 0o700);
+  fs.chmodSync(tmpdir, 0o700);
+  fs.chmodSync(cacheRoot, 0o700);
   const cgroup = setupRunCgroup(runId);
   const env = agentEnv({ tmpdir, cacheRoot });
 
@@ -171,6 +165,12 @@ export async function createRunSandbox(
           gitCommonDir: await resolveGitCommonDir(opts.cwd),
           tmpdir,
           cacheRoot,
+          repositoryRoots: [
+            browsableRoot(opts.s?.folderBrowserRoot ?? ""),
+            ...(fs.existsSync("/repos") ? ["/repos"] : []),
+            ...db.select({ path: repos.path }).from(repos).all().map((repo) => repo.path),
+          ],
+          cgroupProcsFile: cgroup?.procsFile,
           networkAllowlistText: opts.s?.sandboxNetworkAllowlist ?? "",
           weakerIsolationForGoTls,
         })
@@ -190,26 +190,79 @@ export async function createRunSandbox(
     );
   }
 
-  // The real disk bound: the Linux cgroup where present; otherwise the genuine
-  // macOS ceiling when the worktree lives on an APFS quota volume (the README's
-  // hardened option), else the always-on watchdog backstop. Detected on the
-  // worktree — where the agent's writes land — not the run's scratch root.
-  const diskLimitMechanism: DiskLimitMechanism = cgroup
-    ? "cgroup"
-    : await detectMacDiskMechanism(opts?.cwd ?? root);
+  // Cgroups enforce memory and process limits, but cgroup v2 has no disk-space
+  // controller. Stamp the actual disk mechanism independently.
+  const diskLimitMechanism: DiskLimitMechanism = await detectMacDiskMechanism(opts?.cwd ?? root);
 
-  const reap = () => reapProcessGroups(pgidFile);
+  const processGroups = new Set<number>();
+  let commandStarted = false;
+  const reap = async (): Promise<number[]> => {
+    await reapProcessGroups(processGroups);
+    for (const pgid of processGroups) {
+      if (!groupAlive(pgid)) processGroups.delete(pgid);
+    }
+
+    if (cgroup) {
+      for (let attempt = 0; !runCgroupEmpty(cgroup.dir); attempt += 1) {
+        if (attempt >= REAP_RETRIES) {
+          throw new Error("run cgroup still contains processes after reap");
+        }
+        killRunCgroupProcesses(cgroup.dir);
+        await sleep(REAP_RETRY_MS);
+      }
+      for (const pgid of processGroups) {
+        if (!groupAlive(pgid)) processGroups.delete(pgid);
+      }
+    } else if (
+      commandStarted &&
+      sandboxEnabled &&
+      !processTreeSupervisorAvailable(process.platform, srtConfig !== undefined, cgroup !== null)
+    ) {
+      // A child may call setsid and leave its original process group. Without
+      // a cgroup or Linux sandbox PID namespace there is no complete
+      // process-tree boundary. Protected runs therefore never cross into a
+      // privileged file tool, repository mutation, or artifact write after
+      // command execution. An explicit sandbox opt-out keeps its documented
+      // unsafe behavior.
+      throw new Error(
+        "cannot prove command quiescence without a verified process-tree supervisor",
+      );
+    }
+    return [...processGroups];
+  };
+  let operationTail = Promise.resolve();
+  const runExclusive = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = operationTail;
+    let release: () => void = () => undefined;
+    operationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
   return {
     runId,
     root,
     tmpdir,
     cacheRoot,
-    pgidFile,
     env,
-    commandPrefix: buildCommandPrefix(pgidFile, cgroup),
+    commandPrefix: buildCommandPrefix(cgroup),
     diskLimitMechanism,
     srtConfig,
     weakerIsolationEnabled,
+    markCommandStarted() {
+      commandStarted = true;
+    },
+    trackProcessGroup(pgid: number) {
+      if (Number.isInteger(pgid) && pgid > 1 && pgid !== process.pid) {
+        processGroups.add(pgid);
+      }
+    },
+    runExclusive,
     reap,
     async cleanup() {
       try {

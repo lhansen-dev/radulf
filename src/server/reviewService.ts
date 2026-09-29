@@ -23,7 +23,8 @@ import {
   removeWorktree,
   stripRalphForDelivery,
 } from "./git";
-import { createPullRequest, githubStatus, invalidateGithubStatus } from "./github";
+import { createPullRequest, findOpenPullRequest, githubStatus, invalidateGithubStatus } from "./github";
+import { announceCardDone, type DoneOutcome } from "./jiraAnnounce";
 import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
@@ -261,7 +262,7 @@ export class ReviewService {
       throw new ClientError("card status changed while it was being abandoned");
     }
     // Spec 25: a web-only process never writes to a repository. It leaves the
-    // worktree and branch behind for a worker's removeAbandonedWorktrees sweep.
+    // worktree and branch behind for a worker's removeFinishedWorktrees sweep.
     const run = this.deps.latestWorktreeRun(cardId);
     if (run && !this.deps.passive?.()) await removeWorktree(repo.path, run.worktreePath, run.branch);
     fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
@@ -303,6 +304,7 @@ export class ReviewService {
     run: Run,
     repo: Repo,
     payload: Record<string, unknown>,
+    outcome: DoneOutcome,
     mergeCommit?: string,
   ) {
     db.insert(reviews)
@@ -311,6 +313,10 @@ export class ReviewService {
     if (!this.deps.moveCard(card.id, "reviewing", "done")) {
       throw new ClientError("review claim was lost before completion");
     }
+    // Deliberately before the cleanup below: `removeWorktree` can throw, and a
+    // second approval would then return early on the review row just inserted —
+    // so announcing after it could lose the comment on a card that is Done.
+    await announceCardDone(card, outcome);
     removeBaseline(run.id);
     await removeWorktree(repo.path, run.worktreePath, run.branch);
     decided(card.id, run.id, payload);
@@ -559,7 +565,14 @@ export class ReviewService {
       return { ok: false, error: result.error };
     }
 
-    await this.completeApproval(card, run, repo, { mergeCommit: result.mergeCommit }, result.mergeCommit);
+    await this.completeApproval(
+      card,
+      run,
+      repo,
+      { mergeCommit: result.mergeCommit, ...(result.alreadyMerged ? { alreadyMerged: true } : {}) },
+      { kind: "merge", baseBranch, mergeCommit: result.mergeCommit! },
+      result.mergeCommit,
+    );
     return { ok: true };
   }
 
@@ -637,6 +650,35 @@ export class ReviewService {
     const pushed = await pushBranch(run.worktreePath, run.branch);
     if (!pushed.ok) return failed(`git push failed: ${pushed.error}`);
 
+    // An earlier attempt may have died after `gh pr create` succeeded — the
+    // card sits in needs_attention while a live PR already waits on GitHub.
+    // Adopt that PR instead of re-running `gh pr create`, which would fail with
+    // "a pull request for branch ... already exists" and leave the card stuck.
+    // When the lookup itself fails (`existing.ok === false`) there is no
+    // evidence either way, so fall through to `createPullRequest` exactly as
+    // before — never toward a merge.
+    const existing = await findOpenPullRequest({
+      worktreePath: run.worktreePath,
+      baseBranch,
+      branch: run.branch,
+    });
+    if (existing.ok && existing.pr) {
+      await this.completeApproval(
+        card,
+        run,
+        repo,
+        {
+          delivery: "pr",
+          grantedBy: card.openPr ? "card" : "global",
+          draft: existing.pr.isDraft,
+          prUrl: existing.pr.url,
+          alreadyOpen: true,
+        },
+        { kind: "pr", prUrl: existing.pr.url },
+      );
+      return { ok: true };
+    }
+
     // Draft turns on who released THIS diff, not on the card's flags, so that
     // "a non-draft PR from Radulf was seen by a human" holds by construction.
     const draft = approvedBy === "auto";
@@ -652,12 +694,18 @@ export class ReviewService {
 
     // The remote holds the branch now, so the local worktree and branch are
     // reclaimed exactly as they are after a merge (spec 15 open question 2).
-    await this.completeApproval(card, run, repo, {
-      delivery: "pr",
-      grantedBy: card.openPr ? "card" : "global",
-      draft,
-      ...(pr.url ? { prUrl: pr.url } : {}),
-    });
+    await this.completeApproval(
+      card,
+      run,
+      repo,
+      {
+        delivery: "pr",
+        grantedBy: card.openPr ? "card" : "global",
+        draft,
+        ...(pr.url ? { prUrl: pr.url } : {}),
+      },
+      { kind: "pr", prUrl: pr.url ?? null },
+    );
     return { ok: true };
   }
 

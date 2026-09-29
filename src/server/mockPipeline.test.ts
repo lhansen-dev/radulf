@@ -82,10 +82,14 @@ async function runScenario(
     planCritic?: 0 | 1;
     cardId?: string;
     afterLoopStarts?: (repo: ReturnType<typeof seedRepo>) => void;
+    /** Runs after the loop run's row exists AND its integrity baseline is
+     * snapshotted (both precede the run's `run.started` event) — for fault
+     * injection that must land inside the baseline→check window. */
+    afterLoopBaseline?: (repo: ReturnType<typeof seedRepo>) => void;
   } = {},
 ) {
   const cardId = opts.cardId ?? `card-${scenario}`;
-  const { afterLoopStarts } = opts;
+  const { afterLoopStarts, afterLoopBaseline } = opts;
   db.insert(cards)
     .values({
       id: cardId,
@@ -108,6 +112,23 @@ async function runScenario(
     await waitFor(() => Boolean(cardRuns(cardId, "loop")[0]?.worktreePath));
     afterLoopStarts(repo);
   }
+  if (afterLoopBaseline) {
+    // The loop's baseline is taken just before its `run.started` event fires
+    // (orchestrator runLoop), so that event is the observable signal that the
+    // baseline exists and a ref change now counts as "during the run".
+    await waitFor(() => {
+      const loop = cardRuns(cardId, "loop")[0];
+      if (!loop) return false;
+      return (
+        db
+          .select()
+          .from(events)
+          .where(and(eq(events.runId, loop.id), eq(events.type, "run.started")))
+          .all().length > 0
+      );
+    });
+    afterLoopBaseline(repo);
+  }
   await waitFor(() => TERMINAL.has(cardStatus(cardId)) && !orch.hasInFlightWork());
   return { cardId, repo };
 }
@@ -122,6 +143,17 @@ const cardRuns = (cardId: string, kind?: "plan" | "critique" | "loop" | "evaluat
     .where(kind ? and(eq(runs.cardId, cardId), eq(runs.kind, kind)) : eq(runs.cardId, cardId))
     .orderBy(asc(runs.startedAt))
     .all();
+
+/** One kind of event this card emitted, oldest first, payload parsed. */
+function cardEvents<T = Record<string, unknown>>(cardId: string, type: string): T[] {
+  return db
+    .select()
+    .from(events)
+    .where(and(eq(events.cardId, cardId), eq(events.type, type)))
+    .orderBy(asc(events.id))
+    .all()
+    .map((e) => JSON.parse(e.payload) as T);
+}
 
 async function waitFor(done: () => boolean, timeoutMs = 25_000) {
   const deadline = Date.now() + timeoutMs;
@@ -200,6 +232,63 @@ describe("mock provider — full pipeline", () => {
     expect(cardRuns(cardId, "plan")).toHaveLength(2);
     const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
     expect(replan?.feedback).toContain("Mock critique");
+  }, 30_000);
+
+  it("precheck-revise-once: a check that already passes on the untouched worktree buys exactly one replan", async () => {
+    const { cardId } = await runScenario("precheck-revise-once", seedRepo("precheck-revise-once"));
+    expect(cardStatus(cardId)).toBe("review");
+    expect(cardRuns(cardId, "plan").map((r) => r.exitReason)).toEqual([
+      "precheck revise",
+      "plan artifacts written",
+    ]);
+    // The pre-check is not the critic and never runs the critic.
+    expect(cardRuns(cardId, "critique")).toHaveLength(0);
+
+    const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+    expect(replan?.feedback).toContain("test -f README.md");
+
+    // Two reports, one per plan: the first plan's check passed before anything
+    // ran, the re-plan's did not — and the second plan is the one that shipped.
+    const prechecks = cardEvents<{ alreadyPassing: string[]; revise: boolean }>(cardId, "acceptance.precheck");
+    expect(prechecks.map((p) => p.alreadyPassing)).toEqual([["test -f README.md"], []]);
+
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "completed", exitReason: "done-signal", iterationsDone: 1 });
+
+    // The re-plan's check failed when it was pre-checked and passes now, so the
+    // post-DONE probe has nothing to report and no repair was owed.
+    const probes = cardEvents<{ failed: unknown[] }>(cardId, "acceptance.probe");
+    expect(probes).toHaveLength(1);
+    for (const probe of probes) expect(probe.failed).toEqual([]);
+  }, 30_000);
+
+  it("precheck-still-inverted: a check that cannot stop passing is reported after DONE, not repaired", async () => {
+    const { cardId } = await runScenario("precheck-still-inverted", seedRepo("precheck-still-inverted"));
+    expect(cardStatus(cardId)).toBe("review");
+    expect(cardRuns(cardId, "plan").map((r) => r.exitReason)).toEqual([
+      "precheck revise",
+      "plan artifacts written",
+    ]);
+
+    const alreadyPassing = ["test -f mock-output/task-1.md"];
+    const prechecks = cardEvents<{ alreadyPassing: string[]; revise: boolean }>(cardId, "acceptance.precheck");
+    expect(prechecks.map((p) => p.alreadyPassing)).toEqual([alreadyPassing, alreadyPassing]);
+    // One bounded replan per plan: the second finding ships with the plan.
+    expect(prechecks.map((p) => p.revise)).toEqual([true, false]);
+
+    // The loop ran once. Its DONE failed the pre-checked check, and that
+    // failure was excused rather than turned into a second iteration.
+    const loops = cardRuns(cardId, "loop");
+    expect(loops).toHaveLength(1);
+    expect(loops[0]).toMatchObject({ status: "completed", exitReason: "done-signal", iterationsDone: 1 });
+
+    const probes = cardEvents<{ failed: { command: string }[]; alreadyPassing: string[] }>(
+      cardId,
+      "acceptance.probe",
+    );
+    expect(probes).toHaveLength(1);
+    expect(probes[0].alreadyPassing).toEqual(alreadyPassing);
+    expect(probes[0].failed.map((f) => f.command)).toEqual(alreadyPassing);
   }, 30_000);
 
   it("planner-questions: parks the card for a human", async () => {
@@ -298,6 +387,27 @@ describe("mock provider — full pipeline", () => {
     expect(cardStatus(cardId)).toBe("done");
     expect(gitIn(repo.repoPath, "show", "main:mock-output/task-1.md")).toContain("resolved by mock");
   }, 40_000);
+
+  it("remote-tracking ref noise: a fetch in the parent checkout mid-run warns instead of failing the run", async () => {
+    const { cardId } = await runScenario("happy-path", seedRepo("remote-ref-noise"), {
+      cardId: "card-remote-ref-noise",
+      afterLoopBaseline: (r) => gitIn(r.repoPath, "update-ref", "refs/remotes/origin/beta", "HEAD"),
+    });
+    expect(cardStatus(cardId)).toBe("review");
+    const [loop] = cardRuns(cardId, "loop");
+    expect(loop).toMatchObject({ status: "completed", exitReason: "done-signal" });
+
+    const warnings = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, cardId), eq(events.type, "repo.integrity_warning")))
+      .all();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].runId).toBe(loop.id);
+    expect((JSON.parse(warnings[0].payload as string) as { refs: string[] }).refs).toEqual([
+      "ref appeared: refs/remotes/origin/beta",
+    ]);
+  }, 30_000);
 
   it("graph epic: independent pieces run together, a dependent piece waits, an abandoned dependency does not block", async () => {
     patchSettings({ maxConcurrentCards: 2 });

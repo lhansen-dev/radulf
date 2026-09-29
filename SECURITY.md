@@ -70,6 +70,10 @@ rejected, because browsers treat every localhost port as one site and would
 attach the session cookie to its requests. Requests carrying no `Origin`
 header at all (curl, scripts, the app itself) are unaffected.
 
+When authentication is disabled, Radulf also accepts only exact loopback
+`Host` values. This HTTP-layer check backs up the loopback bind and prevents a
+browser from reaching the local API through a DNS-rebinding hostname.
+
 Provider API keys (OpenRouter, oMLX, Brave) are write-only over HTTP:
 `GET /api/settings` renders any key that is set as `••••••••`, and sending that
 marker back leaves the stored value untouched. At rest they are encrypted with

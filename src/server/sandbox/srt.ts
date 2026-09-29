@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 import {
@@ -11,7 +11,7 @@ import {
   type NetworkConfig,
 } from "@anthropic-ai/sandbox-runtime";
 import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
-import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
+import { getShellConfig, type BashOperations } from "@earendil-works/pi-coding-agent";
 
 import { CLONES_DIR, DATA_DIR, WORKTREES_DIR } from "@/db";
 import { errorMessage } from "@/shared/errorMessage";
@@ -160,49 +160,30 @@ export async function resolveGitCommonDir(worktree: string): Promise<string> {
  * denied wholesale, then this run's own worktree is individually re-opened
  * — verified live (PLAN_SPEC_14.md Phase 5) that a narrow `allowRead`
  * re-opens a path inside a broader `denyRead`. Write is allow-only: the
- * worktree, run-private TMPDIR/cache, and the parent repo's shared `.git`
- * except the hook/config vectors.
+ * worktree and run-private TMPDIR/cache. The parent repo's shared `.git` is
+ * readable but entirely write-denied because host-side Git owns every update.
  */
-/** The per-worktree files agent git must not write: `config` is the
- * `core.hooksPath` code-execution vector, `HEAD` is the checkout pointer. */
-const WORKTREE_DENY_FILES = ["config", "HEAD"];
-
-/**
- * Concrete `<gitCommonDir>/worktrees/<name>/{config,HEAD}` paths for every
- * linked worktree registered right now.
- *
- * srt glob-expands only its OWN mandatory deny list (via ripgrep `--iglob`).
- * A caller-supplied `denyWrite` entry is taken as a literal path: Seatbelt
- * still matches `*` as a pattern, but bwrap has no pattern support and would
- * mount over a path whose component is literally `*`, protecting nothing. So
- * the pattern form alone left these write vectors open on Linux:
- * `core.hooksPath` in a per-worktree config is arbitrary code execution on
- * the next git command, and a rewritten per-worktree `HEAD` is
- * `git checkout` onto another branch. Enumerating gives both platforms a
- * real deny.
- */
-export function gitWorktreeDenies(gitCommonDir: string): string[] {
-  const worktreesDir = path.join(gitCommonDir, "worktrees");
-  let entries;
-  try {
-    entries = fs.readdirSync(worktreesDir, { withFileTypes: true });
-  } catch {
-    return []; // no linked worktrees registered — nothing to carve out
-  }
-  return entries
-    .filter((e) => e.isDirectory())
-    .flatMap((e) => WORKTREE_DENY_FILES.map((name) => path.join(worktreesDir, e.name, name)));
-}
-
 export function buildFilesystemConfig(opts: {
   worktree: string;
   gitCommonDir: string;
   tmpdir: string;
   cacheRoot: string;
+  repositoryRoots?: string[];
+  cgroupProcsFile?: string;
 }): FilesystemConfig {
   // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
-  // run's own shared .git is re-allowed through opts.gitCommonDir below.
-  const protectedRoots = [HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR];
+  // run's own shared .git is re-allowed for reads through opts.gitCommonDir.
+  const repositoryRoots = [...new Set(opts.repositoryRoots ?? [])];
+  const protectedRoots = [
+    ...new Set([HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR, ...repositoryRoots]),
+  ];
+  const siblingRepositoryRoots = repositoryRoots.filter((root) => {
+    const relative = path.relative(path.resolve(root), path.resolve(opts.worktree));
+    const containsWorktree =
+      relative === "" ||
+      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+    return !containsWorktree;
+  });
   const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
     opts.worktree,
@@ -223,34 +204,23 @@ export function buildFilesystemConfig(opts: {
     // doesn't need to name a deny target exactly to reopen it — containing
     // it is enough, per srt's recursive subpath matching.
     allowRead: dropRootsThatWouldReopen(rawAllowRead, protectedRoots),
-    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, opts.gitCommonDir],
+    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, ...(opts.cgroupProcsFile ? [opts.cgroupProcsFile] : [])],
     denyWrite: [
+      // A read-denied repository becomes an opaque mount on Linux. Also mark
+      // sibling repositories read-only so a write cannot land in that mount
+      // or in the host checkout on another platform. An ancestor containing
+      // this run's worktree is excluded so its narrow allowWrite still works.
+      ...siblingRepositoryRoots,
       // A linked worktree's `.git` is a FILE naming its gitdir, and it sits
       // inside the worktree write-allow above. Rewriting it to point at a
       // gitdir the agent populated (with its own config, hooks, fsmonitor)
       // makes every host-side git call in the worktree trust that gitdir.
       // srt's own `.git` protection skips the file case, so it goes here.
       path.join(opts.worktree, ".git"),
-      path.join(opts.gitCommonDir, "hooks"),
-      path.join(opts.gitCommonDir, "config"),
-      // Every ref and checkout pointer. The orchestrator makes each commit
-      // from the host, so agent git has no legitimate ref write: this stops
-      // `git checkout <base>` inside the worktree, `git commit`,
-      // `git branch -f`, `git reset` and `git update-ref` at the kernel, with
-      // the orchestrator's run-branch guard as the backstop for unsandboxed
-      // runs. `packed-refs` need not exist yet; srt then binds a read-only
-      // stub in its place for the command's duration.
-      path.join(opts.gitCommonDir, "refs"),
-      path.join(opts.gitCommonDir, "packed-refs"),
-      path.join(opts.gitCommonDir, "HEAD"),
-      ...gitWorktreeDenies(opts.gitCommonDir),
-      // Kept on macOS only: Seatbelt honours the pattern, which also covers a
-      // worktree registered after this config was built — something the
-      // snapshot above cannot. On Linux the same entry is inert at best, so
-      // there it would only add a bogus literal-`*` mount.
-      ...(process.platform === "darwin"
-        ? WORKTREE_DENY_FILES.map((name) => path.join(opts.gitCommonDir, "worktrees", "*", name))
-        : []),
+      // Agent Git only needs reads. Denying the whole common directory also
+      // covers indexes, logs, messages, locks, refs, configs, and worktree
+      // administration files that a filename denylist would inevitably miss.
+      opts.gitCommonDir,
     ],
   };
 }
@@ -283,6 +253,8 @@ export function buildRunSandboxConfig(opts: {
   gitCommonDir: string;
   tmpdir: string;
   cacheRoot: string;
+  repositoryRoots?: string[];
+  cgroupProcsFile?: string;
   networkAllowlistText: string;
   /** Spec 14 opt-in (default off), macOS only: allow the trustd mach service so
    * Go-family tools (go, gh, gcloud, terraform, kubectl) can verify TLS certs —
@@ -540,6 +512,78 @@ export async function runSandboxedCommand<T>(
   }
 }
 
+type ProcessTracker = {
+  markCommandStarted(): void;
+  trackProcessGroup(pgid: number): void;
+};
+
+function killProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // The process already exited.
+    }
+  }
+}
+
+/** Local bash backend that records the detached shell PID in trusted parent
+ * memory immediately after spawn. An in-sandbox command can neither erase nor
+ * replace this ledger. */
+function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
+  return {
+    async exec(command, cwd, options) {
+      if (options.signal?.aborted) throw new Error("aborted");
+      const shell = getShellConfig();
+      const fromStdin = shell.commandTransport === "stdin";
+      tracker?.markCommandStarted();
+      const child = spawn(shell.shell, fromStdin ? shell.args : [...shell.args, command], {
+        cwd,
+        detached: process.platform !== "win32",
+        env: options.env,
+        stdio: [fromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      if (fromStdin) {
+        child.stdin?.on("error", () => undefined);
+        child.stdin?.end(command);
+      }
+      if (child.pid && process.platform !== "win32") tracker?.trackProcessGroup(child.pid);
+
+      child.stdout?.on("data", options.onData);
+      child.stderr?.on("data", options.onData);
+      let timedOut = false;
+      const timeoutMs = options.timeout === undefined ? undefined : options.timeout * 1000;
+      const timeout = timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            if (child.pid) killProcessGroup(child.pid);
+          }, timeoutMs);
+      const onAbort = () => {
+        if (child.pid) killProcessGroup(child.pid);
+      };
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        const exitCode = await new Promise<number | null>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("exit", resolve);
+        });
+        if (options.signal?.aborted) throw new Error("aborted");
+        if (timedOut) throw new Error(`timeout:${options.timeout}`);
+        return { exitCode: exitCode ?? 1 };
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", onAbort);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }
+    },
+  };
+}
+
 /** The serialized half: apply this run's config process-wide and wrap under
  * it, with no other call able to do either in between.
  *
@@ -584,17 +628,37 @@ async function wrapUnderPolicy(
  */
 export function createSandboxedBashOperations(
   runConfig: SandboxRuntimeConfig,
-  opts?: { tmpdir?: string },
+  opts?: {
+    tmpdir?: string;
+    runExclusive?: <T>(operation: () => Promise<T>) => Promise<T>;
+    tracker?: ProcessTracker;
+  },
 ): BashOperations {
-  const local = createLocalBashOperations();
+  const local = createTrackedBashOperations(opts?.tracker);
   return {
     async exec(command, cwd, options) {
-      return runSandboxedCommand(
-        command,
-        runConfig,
-        (wrapped) => local.exec(wrapped, cwd, options),
-        opts,
-      );
+      const operation = () =>
+        runSandboxedCommand(
+          command,
+          runConfig,
+          (wrapped) => local.exec(wrapped, cwd, options),
+          opts,
+        );
+      return opts?.runExclusive ? opts.runExclusive(operation) : operation();
+    },
+  };
+}
+
+/** Serialize an explicitly unsandboxed run's bash with its guarded file tools.
+ * The operator has disabled L1, but L2 must still not regain a path race. */
+export function createSerializedBashOperations(
+  runExclusive: <T>(operation: () => Promise<T>) => Promise<T>,
+  tracker?: ProcessTracker,
+): BashOperations {
+  const local = createTrackedBashOperations(tracker);
+  return {
+    exec(command, cwd, options) {
+      return runExclusive(() => local.exec(command, cwd, options));
     },
   };
 }

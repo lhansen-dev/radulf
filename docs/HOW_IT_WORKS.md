@@ -58,6 +58,19 @@ New task dialog creates the card and asks for the breakdown straight away, and
 a Jira issue with child issues offers those children as the tasks, ticked, with
 a run mode, before the card exists.
 
+**Jira Done comment.** A card imported from Jira keeps the issue key: the card
+page shows it as a link to the issue, and `PATCH /api/cards/{id}` with `jiraKey`
+sets or clears it on any card. With **Comment on Jira when a card is done** on
+under **Settings → Repositories → Jira** (`jiraCommentOnDone`, off by default),
+Radulf posts exactly one plain-text comment on that issue when the card reaches
+Done — what became of the work, merged into the base branch at a short sha or
+the pull request URL, plus the card link (`RADULF_PUBLIC_BASE_URL`, or the card
+id when that is unset). An epic's parent comments once when it closes, and its
+pieces comment on their own keys. There is one attempt with a ~10 second
+timeout, a failure never blocks the card, and the outcome appears on the card
+timeline as `jira.commented` or `jira.comment_failed`. This is the only write
+Radulf makes to Jira.
+
 **1 · Plan.** The planner reads the card, its scoping thread, and the repo, then
 writes plan artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop
 to run, and a `CRITERIA.md` holding the acceptance criteria. This is a single
@@ -243,6 +256,21 @@ evaluator still decides. Only check-shaped commands run — `test`, `grep`,
 `find`, `ls` and their kin — and anything else in backticks is left alone. The
 repair pass happens at most once per run, because a criterion can be written so
 that it can never pass.
+
+The same commands are also run the other way round, before the loop exists. Once
+the planner finishes, its check commands are run against the worktree nobody has
+touched yet, and one that already exits the way its criterion wants cannot show
+that this card's work got done — it would report the same thing had the loop
+changed nothing. Those commands are listed in an `acceptance.precheck` event on
+the card's timeline, and the plan goes back to the planner once, sharing the plan
+critic's two-revision cap so the two cannot ping-pong a card. A plan that comes
+back with such a check still in it ships as written: the card proceeds, and if
+that check fails after DONE the failure is reported on the timeline but buys no
+repair iteration — the loop would spend its one repair pass making a tautology
+pass. Checks under a `## Regression` heading in `CRITERIA.md` are skipped by the
+pre-check, since of course they pass now, and are probed after DONE like every
+other criterion. None of this moves the asymmetry: a zero exit still proves
+nothing. Spec 31 records the decision.
 
 Once those checks pass, the orchestrator merges the base branch into the
 worktree, so the evaluator judges the code that will actually land. A clean

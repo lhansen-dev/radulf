@@ -12,6 +12,7 @@ const { acquireRepoLease, releaseRepoLease } = await import("./repoLeases");
 const {
   snapshotRepoIntegrity,
   checkRepoIntegrity,
+  inspectRepoIntegrity,
   saveBaseline,
   loadBaseline,
   removeBaseline,
@@ -161,10 +162,86 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
     try {
       expect(
         await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
-      ).toEqual(["ref appeared: refs/remotes/origin/someone-elses-branch"]);
+      ).toEqual([]);
+      // A fetch or a push elsewhere in the checkout is not tampering, so it
+      // warns instead of failing the run (card 2026-09-25) — and only for the
+      // ref outside our namespace.
+      expect(
+        await inspectRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual({
+        violations: [],
+        warnings: ["ref appeared: refs/remotes/origin/someone-elses-branch"],
+      });
     } finally {
       git(repo, "update-ref", "-d", "refs/remotes/origin/ralph/pushed-card-run4");
       git(repo, "update-ref", "-d", "refs/remotes/origin/someone-elses-branch");
+    }
+  });
+
+  it("warns about a moved and a newly fetched remote-tracking ref (card 2026-09-25)", async () => {
+    const beta = "refs/remotes/origin/beta";
+    const incoming = "refs/remotes/origin/new-branch";
+    // A commit on a throwaway line of history for the ref to move to, so no
+    // local branch or `main` has to move with it.
+    const tree = git(repo, "rev-parse", "HEAD^{tree}");
+    const fetched = git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "fetched from origin");
+    git(repo, "update-ref", beta, "HEAD");
+    try {
+      const baseline = (await snapshotRepoIntegrity(repo))!;
+      // A `git fetch` in the user's checkout advances one ref and reveals another.
+      git(repo, "update-ref", beta, fetched);
+      git(repo, "update-ref", incoming, "HEAD");
+      const { violations, warnings } = await inspectRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(violations).toEqual([]);
+      expect(warnings).toHaveLength(2);
+      expect(
+        warnings.some((w) => /^ref moved: refs\/remotes\/origin\/beta \(/.test(w)),
+      ).toBe(true);
+      expect(warnings).toContain("ref appeared: refs/remotes/origin/new-branch");
+    } finally {
+      git(repo, "update-ref", "-d", beta);
+      git(repo, "update-ref", "-d", incoming);
+    }
+  });
+
+  it("warns about a remote-tracking ref pruned since the baseline (card 2026-09-25)", async () => {
+    const gone = "refs/remotes/origin/gone";
+    git(repo, "update-ref", gone, "HEAD");
+    try {
+      const baseline = (await snapshotRepoIntegrity(repo))!;
+      // `git fetch --prune` after the branch was deleted on the remote.
+      git(repo, "update-ref", "-d", gone);
+      const { violations, warnings } = await inspectRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(violations).toEqual([]);
+      expect(warnings).toEqual(["ref deleted: refs/remotes/origin/gone"]);
+    } finally {
+      git(repo, "update-ref", "-d", gone);
+    }
+  });
+
+  it("still fails on a moved local branch nobody recorded writing", async () => {
+    const beta = "refs/heads/beta";
+    git(repo, "update-ref", beta, "HEAD");
+    try {
+      const baseline = (await snapshotRepoIntegrity(repo))!;
+      const tree = git(repo, "rev-parse", "HEAD^{tree}");
+      const moved = git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "someone else's commit");
+      git(repo, "update-ref", beta, moved);
+      const { violations, warnings } = await inspectRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatch(/^ref moved: refs\/heads\/beta /);
+      expect(warnings).toEqual([]);
+    } finally {
+      git(repo, "update-ref", "-d", beta);
     }
   });
 
@@ -269,6 +346,10 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
   it("persists baselines per run for the pre-merge re-check", async () => {
     const baseline = (await snapshotRepoIntegrity(repo))!;
     saveBaseline("run-abc", baseline);
+    expect(fs.statSync(path.join(testDataDir, "data", "integrity")).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(testDataDir, "data", "integrity", "run-abc.json")).mode & 0o777).toBe(
+      0o600,
+    );
     expect(loadBaseline("run-abc")).toEqual(baseline);
     removeBaseline("run-abc");
     expect(loadBaseline("run-abc")).toBeNull();

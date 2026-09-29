@@ -17,14 +17,14 @@ on:
         required: false
         default: "3"
 
-# contents: write is scoped to THIS workflow only, so the report-commit step
-# below can push — ci.yml stays read-only. Never copy this block into ci.yml.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # A full n=3 pass over all four fixtures is many real card runs end to
     # end (plan -> loop -> evaluate, each a real provider round trip); budget
     # generously rather than risk a late-run cutoff losing completed reports.
@@ -46,12 +46,12 @@ jobs:
       BENCH_REPO_PATH: /tmp/radulf-bench-repo
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Sandbox is on by default (Settings.sandboxEnabled) and a real card
       # run shells out through it — same dependency install ci.yml uses to
       # make srt.test.ts's real-process tests pass on Linux.
       - uses: ./.github/actions/linux-sandbox-deps
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -122,9 +122,9 @@ jobs:
       - name: Run the benchmark corpus
         # No "run everything" mode exists in run-benchmark.mjs (--fixture is
         # required, one fixture per invocation) — loop over the corpus.
-        # --auth-cookie is a placeholder, not a real session: proxy.ts no-ops
-        # entirely when RADULF_AUTH_PASSWORD_HASH is unset (this runner never
-        # sets it), so no valid cookie is required either.
+        # --auth-cookie is a placeholder, not a real session: proxy.ts permits
+        # exact loopback hosts without a session when RADULF_AUTH_PASSWORD_HASH
+        # is unset, so no valid cookie is required here.
         run: |
           mkdir -p benchmarks/reports
           date_tag=$(date -u +%Y-%m-%d)
@@ -150,11 +150,30 @@ jobs:
         if: always()
         run: pkill -f "next start" 2>/dev/null || true
 
+      - name: Upload benchmark reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmark-reports
+          path: benchmarks/reports/*.json
+          if-no-files-found: error
+
+  publish:
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download benchmark reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: benchmark-reports
+          path: benchmarks/reports
+
       - name: Commit new reports
-        # Reports are git-tracked as of this phase (benchmarks/reports/ was
-        # removed from .gitignore) so results are diffable/historical instead
-        # of vanishing into a gitignored, per-machine directory. Rebase before
-        # push in case the branch moved during this job's long runtime.
+        # This job never receives provider credentials and never executes files
+        # from the candidate repository. It only publishes the report artifact
+        # produced by the read-only benchmark job.
         run: |
           git config user.name "radulf-bot"
           git config user.email "radulf-bot@users.noreply.github.com"

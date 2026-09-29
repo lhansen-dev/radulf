@@ -10,7 +10,11 @@ import {
 
 import path from "node:path";
 
-import { guardPath } from "../sandbox/pathGuard";
+import {
+  guardPathWithPinnedRoots,
+  isInsideOrEqual,
+  realpathBestEffort,
+} from "../sandbox/pathGuard";
 
 /**
  * Layer 2 (spec 14): thin wrappers around pi's built-in file tools that
@@ -44,23 +48,38 @@ function guard(
   readRoots: string[],
   writeRoots: string[],
   cwd: string,
+  quiesce?: () => Promise<number[]>,
+  runExclusive?: <T>(operation: () => Promise<T>) => Promise<T>,
 ): ToolDefinition {
   const delegate = def.execute.bind(def);
-  const writeDenied = [path.join(cwd, ".git")];
+  const writeDenied = [realpathBestEffort(path.join(cwd, ".git"))];
   return {
     ...def,
     // async so a guard rejection surfaces as a rejected promise, not a
     // synchronous throw the caller must special-case.
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const p = params as Record<string, unknown>;
-      for (const { arg, kind } of argSpecs) {
-        const value = p[arg];
-        if (typeof value === "string" && value.length > 0) {
-          if (kind === "write") guardPath(value, writeRoots, cwd, writeDenied);
-          else guardPath(value, readRoots, cwd);
+      const operation = async () => {
+        // Bash may leave a symlink flipper behind after its tool call returns.
+        // Stop every recorded process group before resolving a pathname so no
+        // attacker-controlled process can swap an ancestor between the guard
+        // and the SDK delegate.
+        const leftovers = await quiesce?.();
+        if (leftovers && leftovers.length > 0) {
+          throw new Error(`surviving process groups after reap: ${leftovers.join(", ")}`);
         }
-      }
-      return delegate(toolCallId, params, signal, onUpdate, ctx);
+        const p = { ...(params as Record<string, unknown>) };
+        for (const { arg, kind } of argSpecs) {
+          const value = p[arg];
+          if (typeof value === "string" && value.length > 0) {
+            p[arg] =
+              kind === "write"
+                ? guardPathWithPinnedRoots(value, writeRoots, cwd, writeDenied)
+                : guardPathWithPinnedRoots(value, readRoots, cwd);
+          }
+        }
+        return delegate(toolCallId, p, signal, onUpdate, ctx);
+      };
+      return runExclusive ? runExclusive(operation) : operation();
     },
   };
 }
@@ -75,20 +94,41 @@ export function createGuardedFsTools(
   cwd: string,
   readRoots: string[],
   writeRoots: string[],
+  quiesce?: () => Promise<number[]>,
+  runExclusive?: <T>(operation: () => Promise<T>) => Promise<T>,
 ): ToolDefinition[] {
+  const pinnedCwd = realpathBestEffort(cwd);
+  const pinRoot = (root: string): string => {
+    const pinned = realpathBestEffort(root);
+    if (!isInsideOrEqual(pinned, pinnedCwd)) {
+      throw new Error(`tool root escapes its working tree: ${root}`);
+    }
+    return pinned;
+  };
+  const pinnedReadRoots = readRoots.map(pinRoot);
+  const pinnedWriteRoots = writeRoots.map(pinRoot);
+
   // Cast through unknown: each factory returns a definition whose schema is
   // narrower than the generic ToolDefinition element type (renderCall
   // variance), which is safe here — same cast the scrubbed bash tool uses.
   const asDef = (d: unknown) => d as ToolDefinition;
   const g = (d: unknown, specs: { arg: string; kind: PathArgKind }[]) =>
-    guard(asDef(d), specs, readRoots, writeRoots, cwd);
+    guard(
+      asDef(d),
+      specs,
+      pinnedReadRoots,
+      pinnedWriteRoots,
+      pinnedCwd,
+      quiesce,
+      runExclusive,
+    );
 
   return [
-    g(createReadToolDefinition(cwd), [{ arg: "path", kind: "read" }]),
-    g(createWriteToolDefinition(cwd), [{ arg: "path", kind: "write" }]),
-    g(createEditToolDefinition(cwd), [{ arg: "path", kind: "write" }]),
-    g(createGrepToolDefinition(cwd), [{ arg: "path", kind: "read" }]),
-    g(createFindToolDefinition(cwd), [{ arg: "path", kind: "read" }]),
-    g(createLsToolDefinition(cwd), [{ arg: "path", kind: "read" }]),
+    g(createReadToolDefinition(pinnedCwd), [{ arg: "path", kind: "read" }]),
+    g(createWriteToolDefinition(pinnedCwd), [{ arg: "path", kind: "write" }]),
+    g(createEditToolDefinition(pinnedCwd), [{ arg: "path", kind: "write" }]),
+    g(createGrepToolDefinition(pinnedCwd), [{ arg: "path", kind: "read" }]),
+    g(createFindToolDefinition(pinnedCwd), [{ arg: "path", kind: "read" }]),
+    g(createLsToolDefinition(pinnedCwd), [{ arg: "path", kind: "read" }]),
   ];
 }

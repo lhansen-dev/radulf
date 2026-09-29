@@ -93,6 +93,9 @@ export function agentEnv(ctx?: AgentEnvContext): NodeJS.ProcessEnv {
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_ASKPASS = "/bin/false";
   env.GIT_SSH_COMMAND = "/bin/false";
+  // Read-only inspection must never opportunistically refresh the index.
+  // Required locks still work for host-side Git, which does not use this env.
+  env.GIT_OPTIONAL_LOCKS = "0";
   Object.assign(env, AGENT_GIT_IDENTITY);
 
   if (ctx?.extra) Object.assign(env, ctx.extra);

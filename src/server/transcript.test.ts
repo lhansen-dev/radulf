@@ -263,6 +263,11 @@ describe("startTranscriptPush", () => {
 
     const stopFn = startTranscriptPush(file, "run-c", 1);
     stop = stopFn;
+    // Let the catch-up read fired by attaching settle before stopping. A batch
+    // already in flight when stop() lands is still delivered (the "delivers the
+    // batch already being read when stop() lands" test below) — what stop()
+    // forbids is any NEW read, which is what this test pins down.
+    await new Promise((resolve) => setTimeout(resolve, 10));
     stopFn();
     stop = null;
     expect(close).toHaveBeenCalledOnce();
@@ -278,5 +283,126 @@ describe("startTranscriptPush", () => {
     bus.off("transcript", onPush);
 
     expect(sawPush).toBe(false);
+  });
+
+  // Spec 25: in a split deployment the web process attaches when it first sees
+  // the run as running, which is essentially always BEFORE the harness has
+  // created the file. Creation must therefore be noticed on the containing
+  // directory's watch event: while the only fallback was a 300 ms stat poll, a
+  // run or iteration shorter than one tick attached nothing and delivered no
+  // live transcript at all — what made `make check-split` fail intermittently
+  // (card 2026-09-25).
+  it("attaches as soon as the directory reports the new file, without a poll tick", async () => {
+    let dirCallback: (() => void) | undefined;
+    vi.spyOn(fs, "watch").mockImplementation(((p: unknown, cb: () => void) => {
+      if (p === file && !fs.existsSync(file)) {
+        const err = new Error("ENOENT") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err; // fs.watch needs a path that exists
+      }
+      if (p !== file) dirCallback = cb; // the containing directory
+      return { close: vi.fn() } as unknown as fs.FSWatcher;
+    }) as typeof fs.watch);
+    const pollOpts: unknown[] = [];
+    vi.spyOn(fs, "watchFile").mockImplementation(((_p: unknown, opts: unknown) => {
+      pollOpts.push(opts);
+      return fs;
+    }) as unknown as typeof fs.watchFile);
+
+    stop = startTranscriptPush(file, "run-appear", 1);
+    expect(dirCallback).toBeDefined();
+    // The stat poll stays as the backstop for a run directory that doesn't
+    // exist yet, and its interval is the worst-case delay before a run's first
+    // line is pushed — so it has to stay small.
+    expect((pollOpts[0] as { interval: number }).interval).toBeLessThanOrEqual(100);
+
+    fs.writeFileSync(file, `${JSON.stringify({ t: "raw", line: "first" })}\n`);
+    const pending = nextTranscriptPush("run-appear");
+    dirCallback!(); // the writer created the file; no timer may have to tick
+    const push = await pending;
+
+    expect(push.iteration).toBe(1);
+    expect(push.fromCursor).toBe(0);
+    expect(push.lines).toEqual([{ t: "raw", line: "first" }]);
+    expect(push.cursor).toBe(fs.statSync(file).size);
+  });
+
+  // The events tailer can hand the web process `iteration.started` and
+  // `run.finished` in one batch, so the watcher is attached and stopped before
+  // its catch-up read resolves. Those lines are already on disk: dropping them
+  // left a fast run with an empty live transcript.
+  it("delivers the batch already being read when stop() lands, then goes silent", async () => {
+    fs.writeFileSync(file, `${JSON.stringify({ t: "raw", line: "one" })}\n`);
+    let watchCallback: (() => void) | undefined;
+    vi.spyOn(fs, "watch").mockImplementation(((_path: unknown, cb: () => void) => {
+      watchCallback = cb;
+      return { close: vi.fn() } as unknown as fs.FSWatcher;
+    }) as typeof fs.watch);
+
+    const pending = nextTranscriptPush("run-stop");
+    const stopFn = startTranscriptPush(file, "run-stop", 1);
+    stopFn(); // stopped while the catch-up read from attaching is still in flight
+    stop = null;
+
+    const push = await pending;
+    expect(push.fromCursor).toBe(0);
+    expect(push.lines).toEqual([{ t: "raw", line: "one" }]);
+
+    // That batch is the last one: a stray fs event after stop() starts no new
+    // read.
+    const after: TranscriptPush[] = [];
+    const onPush = (p: TranscriptPush) => {
+      if (p.runId === "run-stop") after.push(p);
+    };
+    bus.on("transcript", onPush);
+    fs.appendFileSync(file, `${JSON.stringify({ t: "raw", line: "two" })}\n`);
+    watchCallback!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    bus.off("transcript", onPush);
+    expect(after).toEqual([]);
+  });
+
+  // Spec 25, and the hot path in a split deployment: the web process arms the
+  // watcher on `run.started`/`iteration.started`, while the worker creates the
+  // run's transcript DIRECTORY (`runTranscriptDir`, at the first harness call)
+  // and the JSONL file (at its first write) afterwards. So watching the file's
+  // own directory isn't possible yet either — the watch starts on the deepest
+  // level that exists and walks down. `make check-split` failed intermittently
+  // while this case was left to the stat poll (card 2026-09-26).
+  it("follows a transcript directory created after the watcher started, without a poll tick", async () => {
+    const runDir = path.join(dir, "run-nested");
+    const nested = path.join(runDir, "iter-001.jsonl");
+    const watched: string[] = [];
+    const realWatch = fs.watch;
+    vi.spyOn(fs, "watch").mockImplementation(((p: unknown, cb: unknown) => {
+      watched.push(String(p));
+      return realWatch(p as fs.PathLike, cb as never);
+    }) as typeof fs.watch);
+
+    const pending = nextTranscriptPush("run-nested");
+    stop = startTranscriptPush(nested, "run-nested", 1);
+    // [0] is the attach attempt on the file itself, which is what fails here;
+    // the stand-in watch then sits on `dir` — never on the missing `run-nested`
+    // directory, which fs.watch would refuse outright.
+    expect(watched).toEqual([nested, dir]);
+
+    fs.mkdirSync(runDir, { recursive: true });
+    // The ancestor's event has to be processed before the file is written, or
+    // the attach succeeds from the ancestor's event and the walk-down never
+    // happens. Poll for it: it is an fs event, but a slow machine must not make
+    // this test red.
+    for (let i = 0; i < 100 && !watched.includes(runDir); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(watched).toContain(runDir); // the watch moved down a level
+
+    const line = `${JSON.stringify({ t: "raw", line: "first" })}\n`;
+    fs.writeFileSync(nested, line);
+    const push = await pending;
+
+    expect(push.iteration).toBe(1);
+    expect(push.fromCursor).toBe(0);
+    expect(push.lines).toEqual([{ t: "raw", line: "first" }]);
+    expect(push.cursor).toBe(fs.statSync(nested).size);
   });
 });

@@ -39,6 +39,12 @@ describe("renderImprovePrompt", () => {
     expect(renderImprovePrompt([], "{{FOCUS}}", "   ")).toBe(noFocus);
   });
 
+  it("keeps `$` sequences in the titles and focus verbatim", () => {
+    expect(renderImprovePrompt(["Costs $$ and `$'`"], "{{EXISTING_CARDS}} / {{FOCUS}}", "match `\\s*$` then $&")).toBe(
+      "- Costs $$ and `$'` / match `\\s*$` then $&",
+    );
+  });
+
   it("lists every prior title as a bullet", () => {
     expect(renderImprovePrompt(["First card", "Second card"], "Open work:\n{{EXISTING_CARDS}}")).toBe(
       "Open work:\n- First card\n- Second card",

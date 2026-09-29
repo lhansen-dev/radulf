@@ -73,6 +73,7 @@ describe("validateSettingsPatch", () => {
         loopReasoningLevel: "high",
         omlxBaseUrl: "http://127.0.0.1:8000",
         omlxHeaders: "kong-api-key: abc123\n",
+        omlxContextWindows: "Qwen/Qwen3-8B: 131072\n",
         plannerPromptTemplate: "Plan {{TITLE}}",
         sandboxEnabled: false,
         sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -90,6 +91,7 @@ describe("validateSettingsPatch", () => {
       loopReasoningLevel: "high",
       omlxBaseUrl: "http://127.0.0.1:8000",
       omlxHeaders: "kong-api-key: abc123\n",
+      omlxContextWindows: "Qwen/Qwen3-8B: 131072\n",
       plannerPromptTemplate: "Plan {{TITLE}}",
       sandboxEnabled: false,
       sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -110,6 +112,8 @@ describe("validateSettingsPatch", () => {
     [{ omlxBaseUrl: "file:///tmp/model" }, /http or https/],
     [{ omlxHeaders: "kong-api-key abc123" }, /omlxHeaders: line 1 must look like "Name: value"/],
     [{ omlxHeaders: 42 }, /omlxHeaders must be a string/],
+    [{ omlxContextWindows: "Qwen/Qwen3-8B 131072" }, /omlxContextWindows: line 1 must look like "model-id: tokens"/],
+    [{ omlxContextWindows: 131072 }, /omlxContextWindows must be a string/],
     [{ evaluatorPromptTemplate: 42 }, /must be a string/],
     [{ improvePromptTemplate: "x".repeat(100_001) }, /at most 100000 characters/],
     [{ madeUpSetting: true }, /unknown setting/],
@@ -170,6 +174,7 @@ describe("card request validation", () => {
       planCritic: undefined,
       criticModel: null,
       baseBranch: "feature/base",
+      jiraKey: null,
     });
   });
 
@@ -205,5 +210,16 @@ describe("jiraBaseUrl", () => {
     });
     expect(() => validateSettingsPatch({ jiraBaseUrl: "example.atlassian.net" })).toThrow(/must be a URL/);
     expect(() => validateSettingsPatch({ jiraBaseUrl: "ftp://example.atlassian.net" })).toThrow(/http or https/);
+  });
+});
+
+describe("jiraCommentOnDone", () => {
+  it("is opt-in: the default writes nothing to Jira", () => {
+    expect(SETTING_DEFAULTS.jiraCommentOnDone).toBe(false);
+  });
+
+  it("accepts a boolean and rejects anything else", () => {
+    expect(validateSettingsPatch({ jiraCommentOnDone: true })).toEqual({ jiraCommentOnDone: true });
+    expect(() => validateSettingsPatch({ jiraCommentOnDone: "yes" })).toThrow(/must be a boolean/);
   });
 });

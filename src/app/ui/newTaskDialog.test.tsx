@@ -130,10 +130,59 @@ describe("NewTaskDialog", () => {
     const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit?][];
     const breakdown = calls.find(([url]) => url === "/api/cards/card-1/breakdown")!;
     expect(JSON.parse(String(breakdown[1]?.body))).toEqual({
-      pieces: [{ title: "[DEV-501] Part one", description: "Jira: https://jira.example/browse/DEV-501" }],
+      pieces: [{ title: "[DEV-501] Part one", description: "Jira: https://jira.example/browse/DEV-501", jiraKey: "DEV-501" }],
       runMode: "parallel",
     });
     expect(onCreated).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("sends the imported Jira key on the card and on every imported piece", async () => {
+    cleanup();
+    const user = userEvent.setup();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Import from Jira"), "DEV-500");
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await screen.findByLabelText("[DEV-501] Part one");
+    await user.click(screen.getByRole("button", { name: "Create epic with 2 tasks" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/card/card-1"));
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit?][];
+    const created = calls.find(([url, init]) => url === "/api/cards" && init?.method === "POST")!;
+    expect(JSON.parse(String(created[1]?.body)).jiraKey).toBe("DEV-500");
+    const breakdown = calls.find(([url]) => url === "/api/cards/card-1/breakdown")!;
+    expect(JSON.parse(String(breakdown[1]?.body)).pieces).toEqual([
+      { title: "[DEV-501] Part one", description: expect.any(String), jiraKey: "DEV-501" },
+      { title: "[DEV-502] Part two", description: expect.any(String), jiraKey: "DEV-502" },
+    ]);
+    cleanup();
+  });
+
+  it("sends no Jira key when nothing was imported", async () => {
+    cleanup();
+    const user = userEvent.setup();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
+        onClose={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Title"), "A local task");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/cards", expect.objectContaining({ method: "POST" })));
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit?][];
+    const created = calls.find(([url, init]) => url === "/api/cards" && init?.method === "POST")!;
+    expect(JSON.parse(String(created[1]?.body)).jiraKey).toBeNull();
     cleanup();
   });
 
@@ -367,6 +416,7 @@ describe("NewTaskDialog", () => {
         autoApprove: false,
         openPr: false,
         baseBranch: null,
+        jiraKey: null,
       });
     });
   });

@@ -63,7 +63,21 @@ the pieces that make that safe are:
   checkpointed loop goes back to Ready and the pump opens a fresh run on the
   first unchecked task, while every other kind of run parks the card in Needs
   Attention. It also parks cards whose claimed review delivery died mid-merge
-  and deletes the stale `workers` rows.
+  — unless the card is already `done` (or the run has an approved `reviews`
+  row), which means the merge landed before the worker died: then the
+  delivery is finished as landed (`ok = 1`, `review.decided` payload carries
+  `recoveredAfterWorkerLoss: true`) and the card is left alone, while the
+  worktree, branch and integrity baseline the worker never got to remove are
+  reclaimed by the workers' finished-card worktree sweep
+  (`removeFinishedWorktrees` in `src/server/retention.ts`, run on every pump
+  tick for `done` and `abandoned` cards) — and deletes the stale `workers`
+  rows. A worker that is stopped deliberately
+  does not wait for a peer to notice: `releaseOwnedWork()` (called from the
+  shutdown drain in `src/server/shutdown.ts` on both the clean and the
+  timed-out path) stops its own timers, runs the reaper's per-run and
+  per-delivery bodies over its own `running` rows with exit reason `worker
+  shut down before this stage finished`, releases its `repo_leases` rows and
+  deletes its own `workers` row before `process.exit`.
 - **The control column.** A web process holds no `AbortController` for a run
   another process owns, so cancel, reset and pause also write the nullable
   `runs.control` column (`cancel` | `pause`); the owning worker polls that
@@ -174,8 +188,9 @@ process group first (a surviving process could plant hooks after a check that
 already passed), then verify parent-repo integrity, then force the install-script
 gate, then run the acceptance-criteria probe, then merge the base branch into
 the worktree (`baseSync.ts`, after waiting for the repo's delivery lease to be
-free; a conflict becomes a resolve task for the loop and the next bookkeeping
-commit completes the merge), then run the repository gate (`gate.ts`; a failure
+free; a base whose history was rewritten under the branch first gets the
+branch's own commits replayed onto its new tip; a conflict becomes a resolve
+task for the loop and the next bookkeeping commit completes the merge), then run the repository gate (`gate.ts`; a failure
 becomes a repair task), and only then hand to the evaluator. Sync conflicts and
 gate failures together get at most two rounds per run (spec 29).
 
@@ -260,6 +275,8 @@ anything that happened — runs, iterations, transcripts, reviews and worktree
 paths describe one machine's execution. Plans are left out on purpose: a plan
 is written against one checkout at one commit, so importing one would land a
 card claiming to be planned for a repository the plan has never seen.
+Automatic approval and pull-request delivery are also reset on import. They
+are authority granted by the receiving operator, not portable card intent.
 
 An import always creates fresh ids in Backlog, and the request, not the file,
 names the target repository. A `baseBranch` the target does not have falls
@@ -293,7 +310,12 @@ back up.
 ## Git
 
 `src/server/git.ts` wraps every git call. Each run gets a worktree on its own
-branch (`createWorktree`), so your checkout is untouched until a merge. Every
+branch (`createWorktree`), so your checkout is untouched until a merge. A fresh
+worktree also receives the checkout's `node_modules` when both sides carry the
+same `package-lock.json`: hard links on one filesystem, a copy across mounts,
+and nothing otherwise, leaving the agent to install (`worktreeDeps.ts`). The
+alternative agents reached for, a symlink to the checkout's install, is the one
+layout Turbopack's `next build` refuses. Every
 host-side call pins `core.hooksPath=/dev/null` and `core.fsmonitor=false`:
 these run unsandboxed in a worktree the agent has just written to, and a
 relative `core.hooksPath` (husky's) resolves against that worktree. Your own
@@ -301,10 +323,17 @@ hooks therefore do not run on Radulf's merge commits; the reviewed diff is the
 gate. `offRunBranchReason` refuses to commit into a worktree that has left its
 run branch or whose `.git` pointer no longer leads to the repository.
 
-`mergeBranch` is the one write to the user's repo. It checks out the base
-branch, refuses a dirty tree, merges `--no-ff --no-commit` so `.ralph/` can be
-dropped before committing, and restores your original branch on every path
-including failure. It distinguishes a content conflict (`conflict: true`,
+`mergeBranch` is the one write to the user's repo. Before touching anything it
+looks for a merge already in progress in the parent checkout: if `MERGE_HEAD`
+is this run branch (a delivery worker died between `merge --no-commit` and
+`commit`) it runs `git merge --abort` and starts over; any other `MERGE_HEAD`
+is refused with an error naming the repo path. If the run branch is already an
+ancestor of the base (the worker committed but died before the DB write) it
+returns `alreadyMerged: true` with the existing merge commit and moves no ref.
+Otherwise it checks out the base branch, refuses a dirty tree (the error names
+the repo path and tells the operator to commit or stash and press Retry merge),
+merges `--no-ff --no-commit` so `.ralph/` can be dropped before committing, and
+restores your original branch on every path including failure. It distinguishes a content conflict (`conflict: true`,
 recoverable — the card goes back to the loop via `mergeBaseIntoWorktree`) from
 an unrecoverable failure. It carries no lock of its own: the caller holds the
 repo's `repo_leases` row (`src/server/repoLeases.ts`), which serializes merges
@@ -371,7 +400,18 @@ process — never one per SSE client. A watcher starts when the bus delivers
 `run.started`/`iteration.started` for that run, or when a periodic scan every
 `RADULF_TRANSCRIPT_SCAN_INTERVAL_MS` ms (default 5000) of the `runs` table finds
 it; for a loop run it follows the latest iteration file. It stops on
-`run.finished` or when the row is no longer running. The stage runner
+`run.finished` or when the row is no longer running. A watcher is normally
+armed before the writer has created anything: the harness mkdirs the run's
+transcript directory and creates the JSONL file later, so
+`watchTranscript` in `src/server/transcript.ts` watches the deepest directory
+that exists yet, moves that watch down as each level appears, and catches up
+from cursor 0 the moment the file is there — the first live line arrives on an
+fs event, not on a timer. A start event arms the watcher even when the row has
+already settled: the tailer reads the `events` table in batches, so a short run
+reaches a passive web process as `run.started` … `run.finished` delivered after
+the fact, and attaching anyway is what still gets its lines out — the attach
+catches up from cursor 0 and the `run.finished` in that same batch retires the
+watcher. The stage runner
 (`src/server/stage.ts`) no longer starts a push; scoping turns
 (`src/server/scoping.ts`) still start their own because they stay in the web
 process. The SSE route `src/app/api/events/stream/route.ts` still broadcasts

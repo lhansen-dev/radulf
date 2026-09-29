@@ -64,25 +64,53 @@ function closingQuote(value: string): number {
   return -1;
 }
 
-/**
- * The path a `diff --git` line is about — its pre-image (`a/`) side, which is
- * what the review page keys its file list and its banners off.
- *
- * Falls back to the whole line when nothing parses, which is what the old
- * inline regex did on every quoted header; that at least shows the reviewer
- * the raw line instead of an empty file entry.
- */
-export function diffHeaderPath(line: string): string {
+export type DiffHeaderPaths = { source: string; destination: string };
+
+/** Both identities in a `diff --git` header. Security classification must
+ * consider both sides of a rename, while the destination is the primary file
+ * shown to the reviewer. */
+export function diffHeaderPaths(line: string): DiffHeaderPaths {
   const rest = line.slice("diff --git ".length);
   if (rest.startsWith('"')) {
     const end = closingQuote(rest);
     if (end !== -1) {
-      const unquoted = unquoteGitPath(rest.slice(0, end + 1));
-      if (unquoted.startsWith("a/")) return unquoted.slice(2);
+      const source = unquoteGitPath(rest.slice(0, end + 1));
+      const destinationPart = rest.slice(end + 1).trimStart();
+      const destinationEnd = destinationPart.startsWith('"')
+        ? closingQuote(destinationPart)
+        : -1;
+      const destination = destinationEnd === -1
+        ? destinationPart
+        : unquoteGitPath(destinationPart.slice(0, destinationEnd + 1));
+      if (source.startsWith("a/") && destination.startsWith("b/")) {
+        return { source: source.slice(2), destination: destination.slice(2) };
+      }
     }
   }
-  // Unquoted. `(.*)` is greedy and backtracks to the LAST " b/", so a path
-  // containing a space still resolves.
-  const match = /^a\/(.*) b\/.*$/.exec(rest);
-  return match ? match[1] : line;
+  // Git may leave spaces unquoted, including the exact ` b/` delimiter text
+  // inside a path. The grammar is ambiguous in that case. Use the earliest
+  // plausible destination marker so a sensitive destination remains whole
+  // and a sensitive source prefix remains visible to classification. Picking
+  // the last marker allowed a destination such as
+  // `src/server/sandbox/policy b/ignored.ts` to lose its sensitive prefix.
+  const candidates = [rest.indexOf(" b/"), rest.indexOf(' "b/')].filter(
+    (index) => index !== -1,
+  );
+  const split = candidates.length > 0 ? Math.min(...candidates) : -1;
+  if (split !== -1) {
+    const source = rest.slice(0, split);
+    const rawDestination = rest.slice(split + 1);
+    const destination = rawDestination.startsWith('"')
+      ? unquoteGitPath(rawDestination)
+      : rawDestination;
+    if (source.startsWith("a/") && destination.startsWith("b/")) {
+      return { source: source.slice(2), destination: destination.slice(2) };
+    }
+  }
+  return { source: line, destination: line };
+}
+
+/** The destination path used as the primary review identity. */
+export function diffHeaderPath(line: string): string {
+  return diffHeaderPaths(line).destination;
 }

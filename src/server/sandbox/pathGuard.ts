@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /**
  * Layer 2 path containment (spec 14): the OS sandbox (L1) cannot reach the
@@ -32,6 +35,20 @@ function expandTilde(input: string): string {
     return path.join(os.homedir(), input.slice(2));
   }
   return input;
+}
+
+/**
+ * Apply the same path spellings accepted by pi's built-in file tools before
+ * enforcing containment. The delegate receives the canonical path returned by
+ * guardPath, so it cannot reinterpret a checked `@`, file URL, or Unicode
+ * space form as a different filesystem location.
+ */
+export function normalizeToolPath(input: string): string {
+  let normalized = input.replace(UNICODE_SPACES, " ");
+  if (normalized.startsWith("@")) normalized = normalized.slice(1);
+  normalized = expandTilde(normalized);
+  if (/^file:\/\//.test(normalized)) return fileURLToPath(normalized);
+  return normalized;
 }
 
 /**
@@ -88,14 +105,35 @@ export function guardPath(
   cwd: string,
   deniedRoots: string[] = [],
 ): string {
-  const expanded = expandTilde(input);
-  const abs = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+  return guardPathInternal(input, allowedRoots, cwd, deniedRoots, false);
+}
+
+/** Guard against roots that were canonicalized when the tool was created. */
+export function guardPathWithPinnedRoots(
+  input: string,
+  allowedRoots: string[],
+  cwd: string,
+  deniedRoots: string[] = [],
+): string {
+  return guardPathInternal(input, allowedRoots, cwd, deniedRoots, true);
+}
+
+function guardPathInternal(
+  input: string,
+  allowedRoots: string[],
+  cwd: string,
+  deniedRoots: string[],
+  rootsArePinned: boolean,
+): string {
+  const normalized = normalizeToolPath(input);
+  const abs = path.isAbsolute(normalized) ? normalized : path.resolve(cwd, normalized);
   const real = realpathBestEffort(abs);
-  if (deniedRoots.some((root) => isInsideOrEqual(real, realpathBestEffort(root)))) {
+  const rootPath = (root: string) => (rootsArePinned ? root : realpathBestEffort(root));
+  if (deniedRoots.some((root) => isInsideOrEqual(real, rootPath(root)))) {
     throw new Error(deniedPathMessage(deniedRoots));
   }
   for (const root of allowedRoots) {
-    if (isInsideOrEqual(real, realpathBestEffort(root))) return real;
+    if (isInsideOrEqual(real, rootPath(root))) return real;
   }
   throw new Error(pathBoundaryMessage(allowedRoots));
 }

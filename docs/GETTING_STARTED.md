@@ -93,8 +93,12 @@ OpenRouter and a local server need no login at all — set an API key or a base 
    from the issue, opening with a link back to it. An issue with child issues
    lists them too, each ticked to become a task under this one, so an epic
    comes over as an epic. This needs the site URL, your Atlassian account
-   email and an API token under **Settings → Repositories → Jira**. Radulf
-   only ever reads from Jira.
+   email and an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
+   under **Settings → Repositories → Jira**. A token with or without scopes
+   works: Radulf reaches the site through Atlassian's api.atlassian.com
+   gateway, which accepts both kinds. Radulf reads from Jira, and writes back
+   only the optional Done comment described under **Jira Done comment** in
+   [How it works](HOW_IT_WORKS.md).
 3. **Move it to Todo.** This is the ordered execution queue. With Auto Mode on
    (the default) the card starts when its turn arrives; **Start now** claims the
    slot immediately.

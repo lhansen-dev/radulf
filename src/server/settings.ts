@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db, settings, upsertSettingJson } from "@/db";
 import { invalid, record } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
-import { parseHeaderLines } from "./localEndpoint";
+import { parseContextWindowLines, parseHeaderLines } from "./localEndpoint";
 import { REASONING_LEVELS } from "@/shared/providers";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -57,6 +57,11 @@ export const SETTING_DEFAULTS = {
   // gateway that authenticates on a header of its own (Kong's `kong-api-key`)
   // rather than the bearer token above. Sent with every request to it.
   omlxHeaders: "",
+  // Context windows for the local endpoint's models, one `model-id: tokens`
+  // per line, for a server that reports none at /v1/models (or reports the
+  // wrong one). An entry wins over the served number; a model with neither
+  // runs on the harness's conservative default.
+  omlxContextWindows: "",
   openrouterApiKey: "",
   // Brave Search API key. When set, the planner gains a `web_search` tool —
   // planner only, since the loop and evaluator hold bash and must not also hold
@@ -64,11 +69,16 @@ export const SETTING_DEFAULTS = {
   // fails loudly when invoked.
   braveApiKey: "",
   // Jira import in the New Task dialog: the site's base URL, the Atlassian
-  // account email and an API token for that account. Read-only: Radulf fetches
-  // an issue to prefill a card and never writes to Jira. Blank URL disables it.
+  // account email and an API token for that account. Radulf fetches an issue to
+  // prefill a card and writes nothing back unless `jiraCommentOnDone` is on.
+  // Blank URL disables it.
   jiraBaseUrl: "",
   jiraEmail: "",
   jiraApiToken: "",
+  // When on, Radulf posts one plain-text comment on a card's Jira issue when the
+  // card reaches Done. OFF by default because it is the one place Radulf writes
+  // to an external system. No-op while `jiraBaseUrl` is blank.
+  jiraCommentOnDone: false,
   // Per-agent reasoning/thinking effort, applied to every provider via the pi
   // session's thinking level (spec 13 — one harness, so nothing ignores these).
   // "medium" mirrors pi's own built-in default, so these are no-ops until
@@ -222,6 +232,7 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "alertOnReviewReady",
   "alertOnNeedsAttention",
   "alertOnImprovementRunFinished",
+  "jiraCommentOnDone",
 ]);
 const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   // Upper bound is a guard rail, not a capability claim: past a handful of
@@ -357,6 +368,13 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         } catch (e) {
           invalid(`omlxHeaders: ${errorMessage(e)}`);
         }
+      }
+    } else if (key === "omlxContextWindows") {
+      if (typeof settingValue !== "string") invalid("omlxContextWindows must be a string");
+      try {
+        parseContextWindowLines(settingValue);
+      } catch (e) {
+        invalid(`omlxContextWindows: ${errorMessage(e)}`);
       }
     } else if (PROMPT_TEMPLATE_SETTINGS.has(key)) {
       if (typeof settingValue !== "string") invalid(`${key} must be a string`);

@@ -4,7 +4,9 @@ import { and, eq, inArray, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
 import { cards, db, events, repos, runs, settings, worktrees, TRANSCRIPTS_DIR } from "@/db";
 import { planStatePath } from "./bookkeeping";
 import { ClientError } from "./clientError";
+import { FINISHED_STATUSES } from "./epics";
 import { markWorktreeRemoved, removeWorktree } from "./git";
+import { removeBaseline } from "./integrity";
 
 export type CleanupResult = {
   runsDeleted: number;
@@ -97,22 +99,38 @@ export async function removeCardArtifacts(repoPath: string, artifacts: CardArtif
   fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
 }
 
-/** Spec 25: a web-only process abandons a card without touching the
- * repository (reviewService.abandon), so the worktree and branch the card
- * leaves behind are reclaimed here, by a worker, on its pump tick. Safe to
- * repeat and to run from several workers: `removeWorktree` swallows a
- * worktree or branch that is already gone, and the row stamp is a no-op the
- * second time. */
-export async function removeAbandonedWorktrees(): Promise<number> {
+/** Reclaim the worktree, branch, `worktrees` row and integrity baseline of
+ * every finished (done/abandoned) card. Two ways they get left behind: a
+ * web-only process abandons a card without ever touching the repository
+ * (reviewService.abandon, spec 25), and a delivery worker that died between
+ * finishing the card and removing its worktree — after `completeApproval` had
+ * already moved the card to `done` — leaves the same things behind. Either way
+ * a worker reclaims them here, on its pump tick. Safe to repeat and to run
+ * from several workers: `removeWorktree` swallows a worktree or branch that is
+ * already gone, the row stamp and `removeBaseline` are no-ops the second time. */
+export async function removeFinishedWorktrees(): Promise<number> {
   const rows = db
-    .select({ path: worktrees.path, branch: worktrees.branch, repoPath: repos.path })
+    .select({
+      path: worktrees.path,
+      branch: worktrees.branch,
+      repoPath: repos.path,
+      runId: worktrees.runId,
+    })
     .from(worktrees)
     .innerJoin(runs, eq(worktrees.runId, runs.id))
     .innerJoin(cards, eq(runs.cardId, cards.id))
     .innerJoin(repos, eq(worktrees.repoId, repos.id))
-    .where(and(isNull(worktrees.removedAt), eq(cards.status, "abandoned")))
+    .where(and(isNull(worktrees.removedAt), inArray(cards.status, [...FINISHED_STATUSES])))
     .all();
-  for (const row of rows) await removeWorktree(row.repoPath, row.path, row.branch);
+  for (const row of rows) {
+    // The order matters: `removeWorktree` stamps `removedAt` and this sweep
+    // only selects `removedAt IS NULL`, so a baseline deleted afterwards would
+    // be stranded forever if the process died — or the deletion threw — in
+    // between. Baseline first keeps the row retryable, matching
+    // `completeApproval` in reviewService.ts.
+    if (row.runId !== null) removeBaseline(row.runId);
+    await removeWorktree(row.repoPath, row.path, row.branch);
+  }
   return rows.length;
 }
 
