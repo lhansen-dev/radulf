@@ -117,6 +117,9 @@ describe("validateSettingsPatch", () => {
     [{ evaluatorPromptTemplate: 42 }, /must be a string/],
     [{ improvePromptTemplate: "x".repeat(100_001) }, /at most 100000 characters/],
     [{ madeUpSetting: true }, /unknown setting/],
+    // Inherited from Object.prototype, so `in` alone would have accepted them.
+    [{ constructor: "x" }, /unknown setting: constructor/],
+    [JSON.parse('{"__proto__": "x"}'), /unknown setting: __proto__/],
   ])("rejects invalid settings %#", (value, expected) => {
     expect(() => validateSettingsPatch(value)).toThrow(expected);
   });

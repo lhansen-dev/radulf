@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { db, settings, upsertSettingJson } from "@/db";
-import { invalid, record } from "./requestValidation";
+import { invalid, record, rejectUnknownKeys } from "./requestValidation";
 import { decryptSecret, encryptSecret } from "./settingsCrypto";
 import { parseContextWindowLines, parseHeaderLines } from "./localEndpoint";
 import { REASONING_LEVELS } from "@/shared/providers";
@@ -301,12 +301,20 @@ export function redactSettings(value: Settings): Settings {
   return out;
 }
 
+const SETTING_KEYS = Object.keys(SETTING_DEFAULTS) as (keyof Settings)[];
+const SETTING_KEY_SET = new Set<string>(SETTING_KEYS);
+
 export function validateSettingsPatch(value: unknown): Partial<Settings> {
   const body = record(value, "settings body");
+  // A Set of own keys, not `key in SETTING_DEFAULTS`, which also accepts
+  // inherited names such as `constructor` and `toString`.
+  rejectUnknownKeys(body, SETTING_KEY_SET, "setting");
   const patch: Partial<Settings> = {};
-  for (const [rawKey, settingValue] of Object.entries(body)) {
-    if (!(rawKey in SETTING_DEFAULTS)) invalid(`unknown setting: ${rawKey}`);
-    const key = rawKey as keyof Settings;
+  // Walk the known names rather than the body's, so a property name written
+  // to `patch` never comes from the request.
+  for (const key of SETTING_KEYS) {
+    if (!Object.hasOwn(body, key)) continue;
+    const settingValue = body[key];
     if (BOOLEAN_SETTINGS.has(key)) {
       if (typeof settingValue !== "boolean") invalid(`${key} must be a boolean`);
     } else if (INTEGER_SETTINGS[key]) {
