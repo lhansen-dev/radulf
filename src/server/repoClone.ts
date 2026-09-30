@@ -54,7 +54,9 @@ export async function cloneRepository(
 
 /** `https://host/owner/repo.git` -> `repo`: the last path segment, less `.git`. */
 function nameFromUrl(url: string): string {
-  const last = url.replace(/\/+$/, "").split(/[/:]/).pop() ?? "";
+  // The last non-empty segment, so trailing slashes are skipped without a
+  // `/\/+$/` strip, which backtracks quadratically on a long run of slashes.
+  const last = url.split(/[/:]/).filter(Boolean).pop() ?? "";
   return last.replace(/\.git$/, "");
 }
 
