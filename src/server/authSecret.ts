@@ -14,9 +14,10 @@
  * secrets (spec 25 decision 8).
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "@/db";
+import { privateDir, tighten } from "@/db/privateFs";
 
 /** Trimmed file content, or "" when the file does not exist yet. */
 function readSecret(file: string): string {
@@ -59,12 +60,7 @@ export function ensureAuthSecret(): void {
   // Resolved here rather than at import time: settingsCrypto imports this
   // module, and tests that mock "@/db" without DATA_DIR must still load it.
   const secretFile = join(DATA_DIR, "auth-secret");
-  mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  try {
-    chmodSync(DATA_DIR, 0o700);
-  } catch (cause) {
-    if ((statSync(DATA_DIR).mode & 0o077) !== 0) throw cause;
-  }
+  privateDir(DATA_DIR);
   let secret = readSecret(secretFile);
   if (!secret) {
     const fresh = randomBytes(32).toString("hex");
@@ -84,11 +80,7 @@ export function ensureAuthSecret(): void {
   }
   // An install that predates the mode above may have a world-readable secret,
   // so tighten it in place and fail closed if it remains exposed.
-  try {
-    chmodSync(secretFile, 0o600);
-  } catch (cause) {
-    if ((statSync(secretFile).mode & 0o077) !== 0) throw cause;
-  }
+  tighten(secretFile);
 
   process.env.RADULF_AUTH_SECRET = secret;
 }

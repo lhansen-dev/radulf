@@ -15,6 +15,7 @@ import {
 import { StuckDetector } from "./stuckDetector";
 import { withStreamLiveness } from "./streamLiveness";
 import type { TranscriptEvent, HarnessId } from "./types";
+import { privateDir, tighten } from "@/db/privateFs";
 import { errorMessage } from "@/shared/errorMessage";
 
 /**
@@ -237,10 +238,9 @@ export async function runHarness(opts: RunHarnessOpts): Promise<RunnerResult> {
   const version = harnessPackageVersion();
 
   const transcriptDir = path.dirname(opts.transcriptPath);
-  fs.mkdirSync(transcriptDir, { recursive: true, mode: 0o700 });
-  fs.chmodSync(transcriptDir, 0o700);
+  privateDir(transcriptDir);
   const transcriptFd = fs.openSync(opts.transcriptPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND, 0o600);
-  fs.chmodSync(opts.transcriptPath, 0o600);
+  tighten(opts.transcriptPath);
   const out = fs.createWriteStream(opts.transcriptPath, { fd: transcriptFd, autoClose: true });
   // Resolve only once the transcript is flushed (or failed): a caller reads it
   // back as soon as this returns. end()'s callback also fires on error.

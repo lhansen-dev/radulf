@@ -11,6 +11,7 @@ import {
   buildNetworkConfig,
   buildRunSandboxConfig,
   createSandboxedBashOperations,
+  createTrackedBashOperations,
   credentialBackstopDenylist,
   dropRootsThatWouldReopen,
   initializeSandboxRuntimeOnce,
@@ -45,6 +46,53 @@ describe("credentialBackstopDenylist", () => {
     expect(list).toContain(path.join(home, ".cargo", "credentials.toml"));
     expect(list).toContain(path.join(home, ".local", "share", "keyrings"));
     expect(list.every((p) => p.startsWith(home))).toBe(true);
+  });
+});
+
+describe("createTrackedBashOperations", () => {
+  const exec = (command: string, timeout?: number) => {
+    const chunks: Buffer[] = [];
+    const pgids: number[] = [];
+    const ops = createTrackedBashOperations({
+      markCommandStarted: () => undefined,
+      trackProcessGroup: (pgid) => pgids.push(pgid),
+    });
+    const result = ops.exec(command, os.tmpdir(), { onData: (d) => chunks.push(d), timeout });
+    return { result, output: () => Buffer.concat(chunks).toString(), pgids };
+  };
+
+  it("keeps output a descendant writes just after the shell exits", async () => {
+    // `exit` can fire before the pipes are drained; resolving there and
+    // destroying them used to drop the tail.
+    const run = exec("(sleep 0.03; echo late) & echo early");
+    expect((await run.result).exitCode).toBe(0);
+    expect(run.output()).toBe("early\nlate\n");
+  });
+
+  it("does not wait on a quiet background process that inherited the pipes", async () => {
+    const run = exec("sleep 30 & echo started");
+    const startedAt = Date.now();
+    try {
+      expect((await run.result).exitCode).toBe(0);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(run.output()).toBe("started\n");
+    } finally {
+      for (const pgid of run.pgids) {
+        try {
+          process.kill(-pgid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  });
+
+  it("rejects a zero timeout before running the command", async () => {
+    const marker = path.join(os.tmpdir(), `radulf-timeout-zero-${process.pid}`);
+    const run = exec(`touch ${marker}`, 0);
+    await expect(run.result).rejects.toThrow(/Invalid timeout/);
+    expect(run.pgids).toEqual([]);
+    expect(fs.existsSync(marker)).toBe(false);
   });
 });
 
@@ -185,6 +233,19 @@ describe("buildFilesystemConfig", () => {
       "/repos/active",
       "/repos/sibling",
     ]));
+  });
+
+  it("write-denies only repository roots that do not contain the worktree", () => {
+    const cfg = buildFilesystemConfig({
+      worktree: "/browse/worktrees/run-1",
+      gitCommonDir: "/browse/active/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      repositoryRoots: ["/browse", "/browse/worktrees/run-1", "/browse/worktrees/run-1-evil"],
+    });
+    expect(cfg.denyWrite).not.toContain("/browse");
+    expect(cfg.denyWrite).not.toContain("/browse/worktrees/run-1");
+    expect(cfg.denyWrite).toContain("/browse/worktrees/run-1-evil");
   });
 
   it("keeps the credential backstop, including gh's store, even though $HOME is already denied", () => {

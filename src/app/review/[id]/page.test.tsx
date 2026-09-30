@@ -184,6 +184,28 @@ describe("ReviewPage — Phase 4 diff hardening banners", () => {
     expect(screen.getByText(/self-modifying \/ load-bearing diff/i)).toBeTruthy();
   });
 
+  it("shows an ordinary edit to a path containing ` b/` as one file, not a rename", async () => {
+    mockDiff(
+      "diff --git a/docs/x b/y.md b/docs/x b/y.md\nindex 111..222 100644\n--- a/docs/x b/y.md\n+++ b/docs/x b/y.md\n" +
+        "@@ -1 +1 @@\n-old\n+new\n",
+    );
+    render(<ReviewPage />);
+    expect((await screen.findAllByText("docs/x b/y.md")).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/→/)).toBeNull();
+  });
+
+  it("takes a rename's identities from its rename lines when the header reads as symmetric", async () => {
+    // Renaming `x b/src/server/sandbox/p.ts b/x` to `src/server/sandbox/p.ts`
+    // yields a header that also reads as an edit of `x b/src/server/sandbox/p.ts`,
+    // which raises no banner.
+    mockDiff(
+      "diff --git a/x b/src/server/sandbox/p.ts b/x b/src/server/sandbox/p.ts\n" +
+        "similarity index 100%\nrename from x b/src/server/sandbox/p.ts b/x\nrename to src/server/sandbox/p.ts\n",
+    );
+    render(<ReviewPage />);
+    expect(await screen.findByText(/Touches sandbox \/ security-critical code/)).toBeTruthy();
+  });
+
   it("flags a .gitattributes change", async () => {
     mockDiff(
       "diff --git a/.gitattributes b/.gitattributes\nindex 111..222 100644\n--- a/.gitattributes\n+++ b/.gitattributes\n" +

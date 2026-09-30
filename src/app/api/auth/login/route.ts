@@ -145,20 +145,26 @@ export async function POST(request: Request) {
   passwordChecksInFlight++;
 
   let valid = false;
+  let released = false;
   try {
     const hash = process.env.RADULF_AUTH_PASSWORD_HASH;
     valid = !!hash && (await bcrypt.compare(password, hash));
     if (!valid) {
       recordLoginFailure(clientKey);
-      // Keep the admission slot through the failure delay. Releasing it
-      // before the response delay lets a flood queue unbounded bcrypt work.
-      await new Promise((r) =>
-        setTimeout(r, shared ? loginFailureDelayMs(clientKey) : BASE_FAILURE_DELAY_MS),
-      );
+      // Keep the admission slot through the flat baseline delay only, so a
+      // flood is throttled to one compare per slot per second. The shared
+      // bucket's escalation runs after the slot is released: holding a slot
+      // for up to 15s would let eight bad guesses in flight fill every slot
+      // and 503 the operator — the lockout the shared bucket exists to avoid.
+      const escalationMs = shared ? loginFailureDelayMs(clientKey) - BASE_FAILURE_DELAY_MS : 0;
+      await new Promise((r) => setTimeout(r, BASE_FAILURE_DELAY_MS));
+      passwordChecksInFlight--;
+      released = true;
+      if (escalationMs > 0) await new Promise((r) => setTimeout(r, escalationMs));
       return err("Invalid password", 401);
     }
   } finally {
-    passwordChecksInFlight--;
+    if (!released) passwordChecksInFlight--;
   }
 
   // Success — issue a session cookie

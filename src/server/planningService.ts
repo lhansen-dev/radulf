@@ -3,6 +3,7 @@ import path from "node:path";
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, plans, runs, reviews, type PlanOrigin, type ScopingRole } from "@/db";
+import { privateDir, tighten } from "@/db/privateFs";
 import { emitEvent } from "./events";
 import { addScopingMessage, listScopingMessages, type ScopingMessage } from "./scoping";
 import { LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS } from "@/shared/failedStep";
@@ -272,10 +273,9 @@ export function writePlanRow(
   emitEvent("plan.created", { cardId, runId: opts.runId, payload: { version, origin: opts.origin } });
 
   const statePath = planStatePath(cardId);
-  fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(statePath), { recursive: true, mode: 0o700 });
-  fs.chmodSync(/* turbopackIgnore: true */ path.dirname(statePath), 0o700);
+  privateDir(path.dirname(statePath));
   fs.writeFileSync(/* turbopackIgnore: true */ statePath, artifacts.planMd, { mode: 0o600 });
-  fs.chmodSync(/* turbopackIgnore: true */ statePath, 0o600);
+  tighten(statePath);
   return { planId, version };
 }
 

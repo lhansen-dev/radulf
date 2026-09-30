@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, asc, eq, gte } from "drizzle-orm";
 import { DATA_DIR, db, now, refWrites } from "@/db";
+import { privateDir, tighten } from "@/db/privateFs";
 import { tryGit } from "./git";
 import { leaseHolder } from "./repoLeases";
 
@@ -274,10 +275,9 @@ function baselinePath(runId: string): string {
 }
 
 export function saveBaseline(runId: string, baseline: RepoIntegrityBaseline): void {
-  fs.mkdirSync(baselineDir(), { recursive: true, mode: 0o700 });
-  fs.chmodSync(baselineDir(), 0o700);
+  privateDir(baselineDir());
   fs.writeFileSync(baselinePath(runId), JSON.stringify(baseline), { mode: 0o600 });
-  fs.chmodSync(baselinePath(runId), 0o600);
+  tighten(baselinePath(runId));
 }
 
 export function loadBaseline(runId: string): RepoIntegrityBaseline | null {

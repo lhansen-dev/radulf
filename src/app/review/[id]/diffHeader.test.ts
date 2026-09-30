@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffHeaderPath, diffHeaderPaths, unquoteGitPath } from "./diffHeader";
+import { diffHeaderPath, diffHeaderPaths, extendedHeaderPath, unquoteGitPath } from "./diffHeader";
 import { changedIgnoreFiles, classifySensitivePaths } from "./sensitivePaths";
 import { classifySelfModifying } from "./selfModifying";
 
@@ -54,6 +54,21 @@ describe("diffHeaderPath", () => {
     expect(classifySensitivePaths(Object.values(paths)).map((f) => f.label)).toContain(
       "sandbox / containment policy",
     );
+  });
+
+  it("reads a symmetric header as one path even when it contains the delimiter", () => {
+    const line = "diff --git a/docs/x b/y.md b/docs/x b/y.md";
+    expect(diffHeaderPaths(line)).toEqual({ source: "docs/x b/y.md", destination: "docs/x b/y.md" });
+  });
+
+  it("reads rename and copy lines from the extended header", () => {
+    expect(extendedHeaderPath("rename from u b/u")).toEqual({ side: "source", path: "u b/u" });
+    expect(extendedHeaderPath("rename to u b/u b/u")).toEqual({ side: "destination", path: "u b/u b/u" });
+    expect(extendedHeaderPath(String.raw`copy to "caf\303\251.ts"`)).toEqual({
+      side: "destination",
+      path: "café.ts",
+    });
+    expect(extendedHeaderPath("index 111..222 100644")).toBeNull();
   });
 
   it("decodes a backslash and a tab", () => {

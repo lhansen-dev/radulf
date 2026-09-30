@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 import {
@@ -17,6 +17,7 @@ import { CLONES_DIR, DATA_DIR, WORKTREES_DIR } from "@/db";
 import { errorMessage } from "@/shared/errorMessage";
 import { git } from "../git";
 import { isInsideOrEqual } from "./pathGuard";
+import { createSerialQueue } from "./serialQueue";
 
 /**
  * Layer 1 — OS sandbox on agent bash (spec 14 Phase 6), via
@@ -177,13 +178,9 @@ export function buildFilesystemConfig(opts: {
   const protectedRoots = [
     ...new Set([HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR, ...repositoryRoots]),
   ];
-  const siblingRepositoryRoots = repositoryRoots.filter((root) => {
-    const relative = path.relative(path.resolve(root), path.resolve(opts.worktree));
-    const containsWorktree =
-      relative === "" ||
-      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
-    return !containsWorktree;
-  });
+  const siblingRepositoryRoots = repositoryRoots.filter(
+    (root) => !isInsideOrEqual(path.resolve(opts.worktree), path.resolve(root)),
+  );
   const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
     opts.worktree,
@@ -377,17 +374,16 @@ export function resetSandboxRuntimeForTests(): void {
 
 /**
  * Serializing queue for the wrap-and-`updateConfig` step (PLAN.md Phase 18.2,
- * superseding Phase 4's hard-throw guard below). `sandboxQueueTail` is a
- * promise-chain mutex: each call captures the current tail, replaces it with
- * its own "done" promise, then awaits the tail it captured — so calls take
- * that step one at a time, in arrival order, without rejecting any of them.
+ * superseding Phase 4's hard-throw guard below). `serializeSandboxWrap` is a
+ * promise-chain mutex (`createSerialQueue`), so calls take that step one at a
+ * time, in arrival order, without rejecting any of them.
  *
  * Only that step is serialized. Two commands that agree on network policy run
  * concurrently, which is what one-loop-per-repo (Phase 10) needs: an
  * `npm install` in one repo must not block every bash command in another for
  * minutes. What keeps them safe is the claim below, not this queue.
  */
-let sandboxQueueTail: Promise<void> = Promise.resolve();
+const serializeSandboxWrap = createSerialQueue();
 
 /**
  * The only slice of `SandboxRuntimeConfig` that `updateConfig()` actually
@@ -529,13 +525,71 @@ function killProcessGroup(pid: number): void {
   }
 }
 
+const EXIT_STDIO_IDLE_MS = 100;
+
+/**
+ * Resolve with the shell's exit code once its output is drained. `exit` can
+ * fire while stdout/stderr still hold unread chunks, so resolving there and
+ * destroying the pipes drops the tail of the output. Wait for both pipes to
+ * end instead — or, when a backgrounded descendant inherited them and keeps
+ * them open, for the pipes to fall idle for a short grace after `exit`. This
+ * is pi's own local-backend behavior, which it does not export.
+ */
+function waitForChildOutput(child: ChildProcess): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    let exitCode: number | null = null;
+    let exited = false;
+    let settled = false;
+    let openPipes = [child.stdout, child.stderr].filter(Boolean).length;
+    let idle: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (idle) clearTimeout(idle);
+      resolve(exitCode);
+    };
+    const armIdle = () => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(finish, EXIT_STDIO_IDLE_MS);
+    };
+    const onEnd = () => {
+      openPipes -= 1;
+      if (exited && openPipes === 0) finish();
+    };
+    const onData = () => {
+      if (exited && !settled) armIdle();
+    };
+    for (const pipe of [child.stdout, child.stderr]) {
+      pipe?.once("end", onEnd);
+      pipe?.on("data", onData);
+    }
+    child.once("error", (e) => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    });
+    child.once("exit", (code) => {
+      exited = true;
+      exitCode = code;
+      if (openPipes === 0) finish();
+      else armIdle();
+    });
+  });
+}
+
 /** Local bash backend that records the detached shell PID in trusted parent
  * memory immediately after spawn. An in-sandbox command can neither erase nor
  * replace this ledger. */
-function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
+export function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
   return {
     async exec(command, cwd, options) {
       if (options.signal?.aborted) throw new Error("aborted");
+      const timeoutMs = options.timeout === undefined ? undefined : options.timeout * 1000;
+      // pi's backend rejects these too: a zero timer would kill the command
+      // before it ran, and a non-finite one would never fire.
+      if (timeoutMs !== undefined && !(Number.isFinite(timeoutMs) && timeoutMs > 0)) {
+        throw new Error("Invalid timeout: must be a finite number of seconds");
+      }
       const shell = getShellConfig();
       const fromStdin = shell.commandTransport === "stdin";
       tracker?.markCommandStarted();
@@ -555,7 +609,6 @@ function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
       child.stdout?.on("data", options.onData);
       child.stderr?.on("data", options.onData);
       let timedOut = false;
-      const timeoutMs = options.timeout === undefined ? undefined : options.timeout * 1000;
       const timeout = timeoutMs === undefined
         ? undefined
         : setTimeout(() => {
@@ -567,10 +620,7 @@ function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
       };
       options.signal?.addEventListener("abort", onAbort, { once: true });
       try {
-        const exitCode = await new Promise<number | null>((resolve, reject) => {
-          child.once("error", reject);
-          child.once("exit", resolve);
-        });
+        const exitCode = await waitForChildOutput(child);
         if (options.signal?.aborted) throw new Error("aborted");
         if (timedOut) throw new Error(`timeout:${options.timeout}`);
         return { exitCode: exitCode ?? 1 };
@@ -601,20 +651,17 @@ async function wrapUnderPolicy(
   runConfig: SandboxRuntimeConfig,
   tmpdir?: string,
 ): Promise<string> {
-  const myTurn = sandboxQueueTail;
-  const { promise: myDone, resolve: releaseMyTurn } = Promise.withResolvers<void>();
-  sandboxQueueTail = myDone;
-  await myTurn;
-  const previous = process.env.CLAUDE_CODE_TMPDIR;
-  try {
-    if (tmpdir !== undefined) process.env.CLAUDE_CODE_TMPDIR = tmpdir;
-    SandboxManager.updateConfig(runConfig);
-    return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
-  } finally {
-    if (previous === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
-    else process.env.CLAUDE_CODE_TMPDIR = previous;
-    releaseMyTurn();
-  }
+  return serializeSandboxWrap(async () => {
+    const previous = process.env.CLAUDE_CODE_TMPDIR;
+    try {
+      if (tmpdir !== undefined) process.env.CLAUDE_CODE_TMPDIR = tmpdir;
+      SandboxManager.updateConfig(runConfig);
+      return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
+      else process.env.CLAUDE_CODE_TMPDIR = previous;
+    }
+  });
 }
 
 /**

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import {
@@ -14,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { DATA_DIR } from "@/db";
+import { privateDir } from "@/db/privateFs";
 import { contextWindowFor, listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
 import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
@@ -114,8 +114,7 @@ let runtimePromise: Promise<ModelRuntime> | undefined;
 export function getModelRuntime(): Promise<ModelRuntime> {
   if (!runtimePromise) {
     const dir = piAgentDir();
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(dir, 0o700);
+    privateDir(dir);
     runtimePromise = ModelRuntime.create({
       authPath: path.join(dir, "auth.json"),
       modelsPath: path.join(dir, "models.json"),

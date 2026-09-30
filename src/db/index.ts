@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { withMigrationLock } from "./migrationLock";
+import { privateDir, tighten } from "./privateFs";
 import * as schema from "./schema";
 
 export const DATA_DIR = process.env.RADULF_DATA_DIR
@@ -27,26 +28,6 @@ export const PLANS_DIR = process.env.RADULF_PLANS_DIR
 // deny, and on a container install inside the same volume as everything else.
 export const CLONES_DIR = path.join(path.dirname(DATA_DIR), "repos");
 export const TRANSCRIPTS_DIR = path.join(DATA_DIR, "transcripts");
-
-/** chmod 0600 and refuse to continue if sensitive state remains exposed. */
-function tighten(file: string): void {
-  if (!fs.existsSync(file)) return;
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch (cause) {
-    if ((fs.statSync(file).mode & 0o077) !== 0) throw cause;
-  }
-}
-
-/** Create a private state directory and tighten installs made under old umasks. */
-function privateDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(dir, 0o700);
-  } catch (cause) {
-    if ((fs.statSync(dir).mode & 0o077) !== 0) throw cause;
-  }
-}
 
 function createDb() {
   for (const dir of [DATA_DIR, WORKTREES_DIR, PLANS_DIR, TRANSCRIPTS_DIR]) {

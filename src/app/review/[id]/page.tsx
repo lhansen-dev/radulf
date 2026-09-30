@@ -10,7 +10,7 @@ import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
-import { diffHeaderPaths } from "./diffHeader";
+import { diffHeaderPaths, extendedHeaderPath, type DiffHeaderPaths } from "./diffHeader";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
 import { hasSuspiciousChars, segmentSuspiciousChars, type DiffLineSegment } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
@@ -23,19 +23,37 @@ import type { DiffResponse } from "../../api/cards/[id]/diff/route";
 type DiffLine = { text: string; segments: DiffLineSegment[] };
 type DiffFile = { header: string; paths: string[]; lines: DiffLine[] };
 
+function setFilePaths(file: DiffFile, { source, destination }: DiffHeaderPaths) {
+  file.header = source === destination ? destination : `${source} → ${destination}`;
+  file.paths = source === destination ? [destination] : [source, destination];
+}
+
 function parseDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
+  let identity: DiffHeaderPaths = { source: "", destination: "" };
+  // True until the file's first `---`/`@@` line: only the extended header
+  // before it can carry `rename from`/`rename to`, never hunk content.
+  let inExtendedHeader = false;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      const { source, destination } = diffHeaderPaths(line);
-      current = {
-        header: source === destination ? destination : `${source} → ${destination}`,
-        paths: source === destination ? [destination] : [source, destination],
-        lines: [],
-      };
+      identity = diffHeaderPaths(line);
+      current = { header: "", paths: [], lines: [] };
+      setFilePaths(current, identity);
+      inExtendedHeader = true;
       files.push(current);
     } else if (current) {
+      if (inExtendedHeader) {
+        if (line.startsWith("--- ") || line.startsWith("@@")) {
+          inExtendedHeader = false;
+        } else {
+          const named = extendedHeaderPath(line);
+          if (named) {
+            identity = { ...identity, [named.side]: named.path };
+            setFilePaths(current, identity);
+          }
+        }
+      }
       current.lines.push({ text: line, segments: segmentSuspiciousChars(line) });
     }
   }
