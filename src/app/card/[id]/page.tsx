@@ -16,7 +16,7 @@ import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
-import { DialogShell, ROLES, ROLE_LABELS, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
+import { DialogShell, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import {
@@ -53,6 +53,15 @@ const RETIRED_TABS: Record<string, (typeof TABS)[number]> = {
   plan: "Task",
   transcript: "Activity",
 };
+
+/** Every model that can work on a card, in pipeline order. */
+const MODEL_ROLES = [
+  ["scoping", "Scoping / breakdown model"],
+  ["planner", "Planner model"],
+  ["critic", "Plan critic model"],
+  ["loop", "Loop model"],
+  ["evaluator", "Evaluator model"],
+] as const;
 
 export default function CardDetail() {
   const { id } = useParams<{ id: string }>();
@@ -431,9 +440,10 @@ export default function CardDetail() {
           </div>
           {detail.models && (
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-foreground/60">
-              {ROLES.map((role) => {
+              {MODEL_ROLES.map(([role, label]) => {
                 const m = detail.models![role];
-                return <span key={role}>{ROLE_LABELS[role]}: <span className="font-mono text-foreground/80">{formatProviderModel(m.provider, m.model, m.reasoningLevel)}</span></span>;
+                if (!m) return null;
+                return <span key={role}>{label}: <span className="font-mono text-foreground/80">{formatProviderModel(m.provider, m.model, m.reasoningLevel)}</span></span>;
               })}
             </div>
           )}

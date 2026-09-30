@@ -162,6 +162,8 @@ beforeEach(() => {
               planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
               loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
               evaluator: { provider: "anthropic", model: null, reasoningLevel: "off" },
+              critic: { provider: "openrouter", model: "critic-model", reasoningLevel: "low" },
+              scoping: { provider: "openrouter", model: "scoping-model", reasoningLevel: "high" },
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -186,8 +188,8 @@ beforeEach(() => {
 describe("CardDetail", () => {
   it("shows the plan critic flag, inherited by default", async () => {
     render(<CardDetail />);
-    expect(await screen.findByText(/Plan critic/)).toBeTruthy();
-    expect(screen.getByText(/Plan critic/).textContent).toContain("Default");
+    expect(await screen.findByText(/Plan critic:/)).toBeTruthy();
+    expect(screen.getByText(/Plan critic:/).textContent).toContain("Default");
   });
 
   it("reviews current config before posting approval for the exact run and hash", async () => {
@@ -265,6 +267,9 @@ describe("CardDetail", () => {
     expect(screen.getByText("anthropic/opus (medium)")).toBeTruthy();
     expect(screen.getByText("anthropic/sonnet (high)")).toBeTruthy();
     expect(screen.getByText("anthropic/default (off)")).toBeTruthy();
+    expect(screen.getByText("openrouter/critic-model (low)")).toBeTruthy();
+    expect(screen.getByText("openrouter/scoping-model (high)")).toBeTruthy();
+    expect(screen.getByText(/Scoping \/ breakdown model/)).toBeTruthy();
   });
 
   it.each([
