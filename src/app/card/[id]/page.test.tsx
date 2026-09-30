@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import CardDetail from "./page";
 
 vi.mock("next/link", () => ({
@@ -21,6 +21,37 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/card/c1",
 }));
 
+// react-window needs ResizeObserver and real layout, neither of which jsdom
+// has. The stand-in keeps the two things the transcript view depends on: the
+// rendered row count, and an imperative handle whose scrollToRow refuses an
+// index the list has not rendered yet, exactly as the real one does.
+const listStub = vi.hoisted(() => {
+  const element = { scrollHeight: 1000, scrollTop: 900, clientHeight: 100 };
+  type ScrollToRow = (opts: { index: number; align?: string }) => void;
+  const stub = {
+    rowCount: 0,
+    scrollToRow: vi.fn(),
+    element,
+    // One ref object for the whole test file: the real useListRef is stable
+    // across renders, and the view's effects depend on that identity.
+    ref: { current: null as null | { element: typeof element; scrollToRow: ScrollToRow } },
+  };
+  const scrollToRow: ScrollToRow = (opts) => {
+    if (opts.index >= stub.rowCount) throw new RangeError(`Invalid index specified: ${opts.index}`);
+    stub.scrollToRow(opts);
+  };
+  stub.ref.current = { element, scrollToRow };
+  return stub;
+});
+vi.mock("react-window", () => ({
+  List: ({ rowCount }: { rowCount: number }) => {
+    listStub.rowCount = rowCount;
+    return <div data-testid="transcript-list" data-rowcount={rowCount} />;
+  },
+  useListRef: () => listStub.ref,
+  useDynamicRowHeight: () => 28,
+}));
+
 class MockEventSource {
   onopen: (() => void) | null = null;
   onerror: ((e: Event) => void) | null = null;
@@ -31,10 +62,22 @@ class MockEventSource {
 let cardStatus = "plan_review";
 let cardRuns: Array<Record<string, unknown>> = [];
 let cardPlans: Array<Record<string, unknown>> = [];
+let cardEvents: Array<Record<string, unknown>> = [];
+let cardScoping: Array<Record<string, unknown>> = [];
+let cardChildren: Array<Record<string, unknown>> = [];
+let cardParent: Record<string, unknown> | null = null;
+let cardJiraKey: string | null = null;
+let cardJiraUrl: string | null = null;
 
 beforeEach(() => {
   cleanup();
   cardStatus = "plan_review";
+  cardEvents = [];
+  cardScoping = [];
+  cardChildren = [];
+  cardParent = null;
+  cardJiraKey = null;
+  cardJiraUrl = null;
   cardRuns = [
     {
       id: "r1",
@@ -98,19 +141,40 @@ beforeEach(() => {
               loopModel: null,
               evaluatorModel: null,
               reviewPlanBeforeImplementation: 0,
+              planCritic: null,
+              criticModel: null,
               autoApprove: 0,
               summary: null,
               startedAt: null,
               createdAt: "",
               baseBranch: null,
+              jiraKey: cardJiraKey,
             },
             repo: null,
             plans: cardPlans,
             runs: cardRuns,
-            events: [],
+            events: cardEvents,
+            scoping: cardScoping,
+            children: cardChildren,
+            parent: cardParent,
+            jiraUrl: cardJiraUrl,
+            models: {
+              planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
+              loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
+              evaluator: { provider: "anthropic", model: null, reasoningLevel: "off" },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
+      );
+    }
+    // The transcript drill-down loads its lines from here.
+    if (url.startsWith("/api/runs/")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ lines: [], cursor: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
       );
     }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
@@ -120,45 +184,102 @@ beforeEach(() => {
 });
 
 describe("CardDetail", () => {
-  it("renders the Planned by badge with the model tag", async () => {
+  it("shows the plan critic flag, inherited by default", async () => {
+    render(<CardDetail />);
+    expect(await screen.findByText(/Plan critic/)).toBeTruthy();
+    expect(screen.getByText(/Plan critic/).textContent).toContain("Default");
+  });
+
+  it("reviews current config before posting approval for the exact run and hash", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    // The API returns events oldest first. An earlier delivery failure must
+    // not hide the newer config blocker (the live card's regression).
+    cardEvents = [
+      { id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ prFailed: "remote is not a GitHub host" }), createdAt: "" },
+      { id: 2, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" },
+    ];
+    const originalFetch = globalThis.fetch;
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (input === "/api/cards/c1/review-config") {
+        return Promise.resolve(new Response(JSON.stringify({ runId: "r1", configHash: "a".repeat(64), content: "[user]\nname = Trusted identity" })));
+      }
+      if (input === "/api/cards/c1/approve-config") return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+      return originalFetch(input, init);
+    });
+    globalThis.fetch = fetch;
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review Git config" }));
+    expect(await screen.findByText(/name = Trusted identity/)).toBeTruthy();
+    expect(fetch.mock.calls.some(([url]) => url === "/api/cards/c1/approve-config")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Accept config and retry merge" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/cards/c1/approve-config", expect.objectContaining({
+      body: JSON.stringify({ runId: "r1", configHash: "a".repeat(64) }),
+    })));
+  });
+
+  it("hides the old config blocker after config approval", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    cardEvents = [
+      { id: 1, runId: "r1", type: "review.decided", payload: JSON.stringify({ integrityViolation: "pre-merge repo integrity violation: .git/config changed" }), createdAt: "" },
+      { id: 2, runId: "r1", type: "repo.config_approved", payload: "{}", createdAt: "" },
+    ];
+    render(<CardDetail />);
+    await screen.findByRole("button", { name: "Retry merge" });
+    expect(screen.queryByRole("button", { name: "Review Git config" })).toBeNull();
+  });
+
+  it("renders a remote-tracking ref integrity warning on the timeline", async () => {
+    cardRuns = [{ ...cardRuns[0], kind: "loop" }];
+    cardEvents = [
+      {
+        id: 1,
+        runId: "r1",
+        type: "repo.integrity_warning",
+        payload: JSON.stringify({
+          refs: [
+            "ref moved: refs/remotes/origin/beta (abc123 → def456)",
+            "ref appeared: refs/remotes/origin/feat/x",
+          ],
+        }),
+        createdAt: "2026-09-25T01:41:00.000Z",
+      },
+    ];
+    render(<CardDetail />);
+    // The timeline lives on the Activity tab; the tab is read from (and written
+    // to) the URL, so put it back for the tests that follow.
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    const row = await screen.findByTestId("integrity-warning");
+    expect(row.textContent).toContain("refs/remotes/origin/beta");
+    expect(row.textContent).toContain("refs/remotes/origin/feat/x");
+    expect(row.textContent).toContain("Remote-tracking refs");
+    window.history.replaceState({}, "", "/card/c1");
+  });
+
+  it("shows the planner badge and each role's resolved provider, model, and reasoning level", async () => {
     render(<CardDetail />);
 
     expect(await screen.findByText(/Planned by/)).toBeTruthy();
     expect(screen.getByText("claude-subscription/opus")).toBeTruthy();
+    expect(screen.getByText("anthropic/opus (medium)")).toBeTruthy();
+    expect(screen.getByText("anthropic/sonnet (high)")).toBeTruthy();
+    expect(screen.getByText("anthropic/default (off)")).toBeTruthy();
   });
 
-  it.each(["plan", "loop", "evaluate"])(
-    "offers to retry a failed %s step on a needs-attention card",
-    async (kind) => {
-      cardStatus = "needs_attention";
-      cardRuns = [
-        {
-          id: `failed-${kind}`,
-          kind,
-          status: "failed",
-          iterationsDone: 0,
-          exitReason: `${kind} failed`,
-          startedAt: "2026-07-17T10:00:00.000Z",
-          endedAt: "2026-07-17T10:01:00.000Z",
-          iterations: [],
-        },
-      ];
-
-      render(<CardDetail />);
-
-      expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
-    },
-  );
-
-  it("offers to retry a failed evaluator from needs_attention", async () => {
+  it.each([
+    ["plan", "failed"],
+    ["loop", "failed"],
+    ["evaluate", "timeout"],
+  ])("offers to retry a %s step that ended %s on a needs-attention card", async (kind, status) => {
     cardStatus = "needs_attention";
     cardRuns = [
       {
-        id: "failed-evaluate",
-        kind: "evaluate",
-        status: "timeout",
+        id: `failed-${kind}`,
+        kind,
+        status,
         iterationsDone: 0,
-        exitReason: "evaluation timed out",
+        exitReason: `${kind} ${status}`,
         startedAt: "2026-07-17T10:00:00.000Z",
         endedAt: "2026-07-17T10:01:00.000Z",
         iterations: [],
@@ -170,25 +291,312 @@ describe("CardDetail", () => {
     expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
   });
 
-  it("shows 'Plan is running…' when planning is active and no plan exists", async () => {
-    cardStatus = "planning";
-    cardPlans = [];
+  it("points a card the planner questioned at its scoping thread, and offers to plan again", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "plan-q", kind: "plan", status: "completed", iterationsDone: 0, exitReason: "planner raised follow-up questions", startedAt: "", endedAt: "", iterations: [] },
+    ];
+    cardEvents = [
+      { id: 1, runId: "plan-q", type: "plan.questions", payload: JSON.stringify({ questions: "1. Which module?" }), createdAt: "2026-09-21T10:00:00.000Z" },
+    ];
+    cardScoping = [{ id: 1, role: "planner", content: "1. Which module?", createdAt: "" }];
 
     render(<CardDetail />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Plan" }));
-
-    expect(await screen.findByText("Plan is running…")).toBeTruthy();
+    expect(await screen.findByText("The planner needs more detail before it can plan this task")).toBeTruthy();
+    // The questions are shown once — in the thread (as a rendered list), not
+    // duplicated verbatim in the banner.
+    expect(screen.queryByText("1. Which module?")).toBeNull();
+    expect(screen.getByText("Which module?").tagName).toBe("LI");
+    expect(screen.getByText("Planner asked")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plan again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Answer and plan again" })).toBeTruthy();
   });
 
-  it("shows 'No plan yet' fallback when status is todo and no plan exists", async () => {
-    cardStatus = "todo";
+  it("sends a loop that stopped on a blocker back to the planner, not to a retry", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "loop-b", kind: "loop", status: "failed", iterationsDone: 5, exitReason: "loop blocked", feedback: "No Atlassian session in the sandbox.", startedAt: "2026-09-21T16:10:00.000Z", endedAt: "2026-09-21T16:12:00.000Z", planId: "p1", iterations: [] },
+    ];
+    cardScoping = [{ id: 1, role: "loop", content: "No Atlassian session in the sandbox.", createdAt: "" }];
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("The loop stopped on something it cannot resolve")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plan again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry failed step" })).toBeNull();
+    // Shown once, in the thread, labelled as the loop's.
+    expect(screen.getAllByText("No Atlassian session in the sandbox.")).toHaveLength(1);
+    expect(screen.getByText("Loop blocked")).toBeTruthy();
+  });
+
+  it("offers to plan again, not retry, when the checklist ran out without a DONE signal", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "loop-x", kind: "loop", status: "failed", iterationsDone: 0, exitReason: "plan checklist exhausted without a DONE signal", startedAt: "2026-09-21T16:18:00.000Z", endedAt: "2026-09-21T16:18:00.000Z", planId: "p1", iterations: [] },
+    ];
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("Every task is ticked, but the loop never signalled done")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plan again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry failed step" })).toBeNull();
+  });
+
+  it("still shows questions raised before the thread existed", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      { id: "plan-q", kind: "plan", status: "completed", iterationsDone: 0, exitReason: "planner raised follow-up questions", startedAt: "", endedAt: "", iterations: [] },
+    ];
+    cardEvents = [
+      { id: 1, runId: "plan-q", type: "plan.questions", payload: JSON.stringify({ questions: "1. Which module?" }), createdAt: "2026-09-21T10:00:00.000Z" },
+    ];
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("1. Which module?")).toBeTruthy();
+    expect(screen.queryByText("Planner asked")).toBeNull();
+  });
+
+  it("lets a needs-attention card change its model overrides before retrying", async () => {
+    cardStatus = "needs_attention";
+    cardRuns = [
+      {
+        id: "failed-evaluate",
+        kind: "evaluate",
+        status: "failed",
+        iterationsDone: 0,
+        exitReason: "evaluator failed: 402",
+        startedAt: "2026-07-17T10:00:00.000Z",
+        endedAt: "2026-07-17T10:01:00.000Z",
+        iterations: [],
+      },
+    ];
+    const baseFetch = globalThis.fetch;
+    const patches: unknown[] = [];
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/providers/anthropic/models") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ models: [{ value: "haiku", displayName: "Haiku" }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/api/cards/c1" && init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)));
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+
+    render(<CardDetail />);
+
+    expect(await screen.findByRole("button", { name: "Retry failed step" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit model overrides" }));
+    // The picker is the shared one from the task dialogs: a text input with a
+    // datalist of the provider's models, filled once the model list loads.
+    const evaluatorInput = await screen.findByLabelText("Evaluator model");
+    await screen.findAllByRole("button", { name: "Haiku" });
+    fireEvent.change(evaluatorInput, { target: { value: "haiku" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({ plannerModel: null, loopModel: null, evaluatorModel: "haiku" });
+  });
+
+  it("shows an epic's tasks and progress, offers Start all and Pause all, and changes the run mode", async () => {
+    cardStatus = "backlog";
+    cardRuns = [];
+    cardPlans = [];
+    cardChildren = [
+      { id: "a", title: "Add the limiter", status: "done", position: 1, repoId: "r", startedAt: null, updatedAt: "" },
+      { id: "b", title: "Surface the lockout", status: "looping", position: 2, repoId: "r", startedAt: "", updatedAt: "" },
+      { id: "c", title: "Document it", status: "todo", position: 3, repoId: "r", startedAt: null, updatedAt: "" },
+    ];
+    const posts: string[] = [];
+    const patches: unknown[] = [];
+    const baseFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(url);
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      if (init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)));
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("confirm", () => true);
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("Epic · 1 of 3 tasks done")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Surface the lockout" }).getAttribute("href")).toBe("/card/b");
+    expect(screen.getByText("Running")).toBeTruthy();
+    // The epic never runs itself: the set's actions replace the card's.
+    expect(screen.queryByRole("button", { name: "Add to Todo" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Start all" }));
+    await waitFor(() => expect(posts).toContain("/api/cards/c1/start-all"));
+    fireEvent.click(screen.getByRole("button", { name: "Pause all" }));
+    await waitFor(() => expect(posts).toContain("/api/cards/c1/pause-all"));
+    fireEvent.change(screen.getByLabelText("Run mode"), { target: { value: "parallel" } });
+    await waitFor(() => expect(patches).toEqual([{ runMode: "parallel" }]));
+    vi.unstubAllGlobals();
+  });
+
+  it("names the epic a task belongs to", async () => {
+    cardParent = { id: "e1", title: "Harden login", runMode: "ordered" };
+
+    render(<CardDetail />);
+
+    expect((await screen.findByRole("link", { name: "Harden login" })).getAttribute("href")).toBe("/card/e1");
+    expect(screen.getByText(/its tasks run in order/)).toBeTruthy();
+  });
+
+  it("links a card's Jira key to its issue", async () => {
+    cardJiraKey = "DEV-7";
+    cardJiraUrl = "https://jira.example/browse/DEV-7";
+
+    render(<CardDetail />);
+
+    const link = await screen.findByRole("link", { name: "DEV-7" });
+    expect(link.getAttribute("href")).toBe("https://jira.example/browse/DEV-7");
+  });
+
+  it("shows a card's Jira key as plain text when Jira isn't configured", async () => {
+    cardJiraKey = "DEV-7";
+    cardJiraUrl = null;
+
+    render(<CardDetail />);
+
+    expect(await screen.findByText("DEV-7")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "DEV-7" })).toBeNull();
+  });
+
+  // The plan lives on the Task tab, which is the default — no click needed.
+  it.each([
+    ["planning", "Plan is running"],
+    ["todo", "No plan yet — start the task to run planning."],
+  ])("shows a %s card with no plan as %j", async (status, text) => {
+    cardStatus = status;
     cardPlans = [];
 
     render(<CardDetail />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Plan" }));
+    expect(await screen.findByText(text)).toBeTruthy();
+  });
 
-    expect(await screen.findByText("No plan yet — start the task to run planning.")).toBeTruthy();
+  it("offers only Task and Activity tabs, with the plan documents on Task", async () => {
+    render(<CardDetail />);
+
+    const tabs = (await screen.findAllByRole("tab")).map((t) => t.textContent);
+    expect(tabs).toEqual(["Task", "Activity"]);
+    expect(await screen.findByText(/PLAN.md/)).toBeTruthy();
+    expect(screen.getByText(/CRITERIA.md/)).toBeTruthy();
+    expect(screen.getByText(/PROMPT.md/)).toBeTruthy();
+  });
+
+  it("drills from a run into its transcript and back, inside the Activity tab", async () => {
+    cardStatus = "looping";
+    cardRuns = [
+      {
+        id: "r1",
+        kind: "plan",
+        status: "completed",
+        iterationsDone: 0,
+        exitReason: null,
+        startedAt: "2026-07-17T10:00:00.000Z",
+        endedAt: "2026-07-17T10:01:00.000Z",
+        provider: "anthropic",
+        model: "opus",
+        planId: "p1",
+        iterations: [],
+      },
+    ];
+
+    render(<CardDetail />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Planning/ }));
+    fireEvent.click(screen.getByRole("button", { name: "view transcript" }));
+
+    // The transcript replaces the table, with a way back.
+    const back = await screen.findByRole("button", { name: "← Back to runs" });
+    expect(screen.queryByRole("button", { name: /Planning/ })).toBeNull();
+
+    fireEvent.click(back);
+    expect(await screen.findByRole("button", { name: /Planning/ })).toBeTruthy();
+  });
+
+  /** A live transcript that arrives in two chunks: the historical load, then
+   * an appended tail. Returns the fetch spy so a test can count the reads. */
+  function liveTranscriptInTwoChunks() {
+    cardStatus = "looping";
+    cardRuns = [
+      { id: "r1", kind: "plan", status: "completed", iterationsDone: 0, exitReason: null, startedAt: "2026-07-17T10:00:00.000Z", endedAt: "2026-07-17T10:01:00.000Z", provider: "anthropic", model: "opus", planId: "p1", iterations: [] },
+    ];
+    const baseFetch = globalThis.fetch;
+    let reads = 0;
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/runs/")) {
+        reads += 1;
+        const body = reads === 1
+          ? { lines: [{ t: "text", role: "assistant", content: "one" }], cursor: 10, hasMore: true, truncated: false, reset: false }
+          : { lines: [{ t: "text", role: "assistant", content: "two" }], cursor: 20, hasMore: false, truncated: false, reset: false };
+        return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+    listStub.rowCount = 0;
+    listStub.scrollToRow.mockClear();
+  }
+
+  it("follows a live transcript's tail only once the new rows are rendered", async () => {
+    liveTranscriptInTwoChunks();
+    listStub.element.scrollTop = 900; // sitting at the bottom
+
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Planning/ }));
+    fireEvent.click(screen.getByRole("button", { name: "view transcript" }));
+
+    await waitFor(() => expect(listStub.rowCount).toBe(2));
+    // Fired after each commit while following, for the row count the list
+    // actually has — never for a row it did not have yet, which is what threw
+    // RangeError before. The stub throws on such an index, so reaching the
+    // final call proves every earlier one was in range too.
+    await waitFor(() => expect(listStub.scrollToRow).toHaveBeenLastCalledWith({ index: 1, align: "end" }));
+    expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  });
+
+  it("offers Jump to latest instead of stealing the scroll position when the reader is not at the bottom", async () => {
+    liveTranscriptInTwoChunks();
+    listStub.element.scrollTop = 0; // scrolled up, reading
+
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Planning/ }));
+    fireEvent.click(screen.getByRole("button", { name: "view transcript" }));
+
+    expect(await screen.findByRole("button", { name: "Jump to latest" })).toBeTruthy();
+    expect(listStub.scrollToRow).not.toHaveBeenCalled();
+  });
+
+  it("lands an old ?tab=plan link on Task and ?tab=transcript on Activity", async () => {
+    window.history.replaceState({}, "", "/card/c1?tab=plan");
+    render(<CardDetail />);
+
+    const planTab = await screen.findByRole("tab", { name: "Task" });
+    expect(planTab.getAttribute("aria-selected")).toBe("true");
+
+    cleanup();
+    window.history.replaceState({}, "", "/card/c1?tab=transcript");
+    render(<CardDetail />);
+
+    const activityTab = await screen.findByRole("tab", { name: "Activity" });
+    expect(activityTab.getAttribute("aria-selected")).toBe("true");
+    window.history.replaceState({}, "", "/card/c1");
   });
 });

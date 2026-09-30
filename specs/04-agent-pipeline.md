@@ -82,6 +82,8 @@ the Ralph pattern. The orchestrator injects the relevant slice of that memory
 as one self-contained task. It never overwrites an existing worktree PLAN.md
 when (re)starting a run, since its checked state is the progress record.
 
+Spec 30 adds a plan critic between this phase and the loop: see [30-plan-critic.md](30-plan-critic.md).
+
 ## Phase 2 — Ralph loop (configured loop provider)
 
 **Trigger:** card is `ready` and the single pipeline slot is free (one ticket

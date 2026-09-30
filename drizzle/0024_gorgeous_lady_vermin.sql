@@ -1,0 +1,1 @@
+ALTER TABLE `improvement_runs` ADD `stop_requested_at` text;

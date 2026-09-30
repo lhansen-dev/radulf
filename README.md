@@ -99,7 +99,7 @@ flowchart LR
         C["ChatGPT / Codex<br/>subscription"]
         G["GitHub Copilot<br/>subscription"]
         O["OpenRouter<br/>API key · remote"]
-        M["oMLX<br/>local · Apple Silicon"]
+        M["Local / self-hosted<br/>OpenAI-compatible"]
     end
     P --> H
     L --> H
@@ -127,8 +127,8 @@ cd radulf
 # 2 · Install
 make install
 
-# 3 · Log in a provider (opens pi — type /login, then Ctrl+C)
-make login
+# 3 · Log in a provider (or do it in Settings → Providers & keys)
+make login   # opens pi — type /login, then Ctrl+C
 
 # 4 · Run
 make dev
@@ -146,6 +146,10 @@ The SQLite database and every runtime directory (`./data`, plus the agent-writab
 `./worktrees`, `./plans` and `./runtmp` beside it) are created automatically on first
 run and are all gitignored — **no manual migration step needed**.
 
+Running it on a server? [`docs/DOCKER.md`](docs/DOCKER.md) builds the same thing
+into one image run as two containers, `web` and `worker`: `docker compose up -d --build`,
+one volume for state, and restarts handled by Docker instead of a service unit.
+
 > [!TIP]
 > **First time here?** Once the dev server is up, open the in-app **Docs** tab
 > (desktop rail / mobile bottom nav, or [`/docs`](http://localhost:3000/docs)). Its
@@ -155,20 +159,25 @@ run and are all gitignored — **no manual migration step needed**.
 ### Before your first loop: log in a provider
 
 Radulf needs at least one provider. For the subscription providers, this is a **one-time**
-interactive login through pi's own UI, pointed at Radulf's agent dir:
+login. Do it in the app: **Settings → Providers & keys → Sign in**, which runs pi's own
+login flow and shows you what it asks for — a link to open and a code to paste back for
+Claude and Codex, a device code for Copilot ([spec 23](specs/23-provider-login-in-app.md)).
+It expects your browser to be on another machine, so it works the same on a server or in
+Docker as on a laptop.
+
+A terminal still works, and is the only option with no browser to hand:
 
 ```bash
 make login   # opens pi → type /login → pick Claude, ChatGPT, or Copilot
 ```
 
 `/login` is a command you type **inside** pi, not a shell command. Quit pi when it
-reports success (`Ctrl+C`); the credential lands in `data/pi-agent/auth.json`, which is
-where Radulf looks. `make login` is what points pi at that directory — running `pi`
-straight from your shell would write to `~/.pi/agent/` instead, and Radulf would still
-see no provider.
+reports success (`Ctrl+C`). Use the `make login` target rather than running `pi`
+yourself — [`PROVIDERS.md`](docs/PROVIDERS.md#the-five-providers) explains where the
+credential lands and what goes wrong otherwise.
 
-OpenRouter and oMLX need **no login** — set them in the app's **Settings** page (an
-OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for the full matrix.
+OpenRouter and a local server need **no login** — set them in the app's **Settings**
+page (an OpenRouter API key, or the local server's base URL). See [Requirements](#requirements) for the full matrix.
 
 ---
 
@@ -176,7 +185,7 @@ OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for
 
 | What | Detail |
 |------|--------|
-| 🖥️ **OS** | **macOS (Apple Silicon or Intel).** Linux (incl. WSL2) is best-effort / future — the sandbox has a Linux implementation but is not release-verified there. Native Windows and WSL1 are not supported. |
+| 🖥️ **OS** | **macOS (Apple Silicon or Intel).** Linux (including WSL2) is best-effort: the sandbox has a Linux implementation, but it is not release-verified. Native Windows and WSL1 are not supported. |
 | 🟢 **Node** | 22 or newer |
 | 📦 **pi SDK** | [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) — a pinned dependency. No global install, no CLIs. |
 | 🔒 **Sandbox runtime** | [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) — a pinned dependency ([spec 14](specs/14-sandboxing.md)). Kernel-enforced containment for agent bash: Seatbelt (`sandbox-exec`) on macOS, bubblewrap + a seccomp filter on Linux. On **Ubuntu 24.04+**, the default AppArmor policy blocks bubblewrap's unprivileged user namespace — Radulf's startup preflight detects this (`kernel.apparmor_restrict_unprivileged_userns=1`) and logs the exact remediation (grant `bwrap` the `userns` capability via an AppArmor profile, or set the sysctl to `0`). The sandbox is on by default (`sandboxEnabled` in Settings); turning it off is a deliberate, logged escape hatch — see spec 14's Failure semantics. **How it's implemented:** [`SANDBOXING.md`](docs/SANDBOXING.md). |
@@ -186,14 +195,14 @@ OpenRouter API key, or the oMLX base URL). See [Requirements](#requirements) for
 
 | Provider | Auth | Where | Notes |
 |----------|------|-------|-------|
-| 🟣 **Claude** (default) | `make login` → `/login` | Claude Pro/Max subscription | Third-party harness usage billed per token as extra usage |
-| 🟢 **ChatGPT (Codex)** | `make login` → `/login` | ChatGPT Plus/Pro subscription | — |
-| ⚫ **GitHub Copilot** | `make login` → `/login` | GitHub Copilot subscription | — |
+| 🟣 **Claude** (default) | Settings → Sign in | Claude Pro/Max subscription | Third-party harness usage billed per token as extra usage |
+| 🟢 **ChatGPT (Codex)** | Settings → Sign in | ChatGPT Plus/Pro subscription | — |
+| ⚫ **GitHub Copilot** | Settings → Sign in | GitHub Copilot subscription | — |
 | 🔵 **OpenRouter** | API key | remote | Bring your own model. Set in Settings — no login |
-| 🟠 **oMLX** | base URL | local, Apple Silicon | Optional. Set base URL in Settings — no login |
+| 🟠 **Local / self-hosted** | base URL | wherever you run it | Any OpenAI-compatible server: oMLX, vLLM, LM Studio. Optional. Set base URL in Settings — no login |
 
-> `make login` is a one-time interactive step for the subscription providers. It opens
-> pi against the Radulf agent dir (`data/pi-agent/`); `/login` is typed inside pi.
+> A one-time step per subscription provider, from **Settings → Providers & keys**, or
+> from a terminal with `make login`. Full detail in [`PROVIDERS.md`](docs/PROVIDERS.md).
 
 ### Disk limits ([spec 14](specs/14-sandboxing.md))
 
@@ -267,7 +276,7 @@ stateDiagram-v2
         Eval: 🔎 Evaluate
         Plan --> Loop
         Loop --> Eval
-        Eval --> Loop: revise (feedback = next task)
+        Eval --> Plan: revise (re-plan with feedback)
     }
 
     InProgress --> InReview: evaluator approves
@@ -285,10 +294,10 @@ stateDiagram-v2
    running its targeted check each iteration. The repo _is_ the memory between fresh-context runs.
 3. **🔎 Evaluate** — the **sole whole-card verifier**. It independently inspects the loop's
    diff and runs every acceptance criterion, then either sends concrete feedback back to
-   the loop (`revise` → becomes the loop's next task) or clears the change (`approve`).
+   the planner (`revise` → re-plans on top of the branch) or clears the change (`approve`).
    A bounded revision limit escalates to you if it stalls.
 4. **📋 Review** — the evaluator-cleared diff waits in **In Review** with diff + transcript.
-   Approve to merge into **Done**; reject with feedback to send it back.
+   Approve to merge into **Done**; reject with feedback to send it back to the planner.
 
 **States at a glance:**
 
@@ -370,17 +379,19 @@ Each role has a **provider** picker (anthropic, chatgpt, copilot, omlx, or openr
 **model** picker, and a **reasoning-level** picker (pi's thinking level — default **Medium**
 — applied across every provider).
 
-- The **oMLX base URL** defaults to `http://127.0.0.1:8000`.
+- The **local server base URL** defaults to `http://127.0.0.1:8000`. A URL that already
+  ends in `/v1` works too.
 - Set an **OpenRouter API key** in Settings to use OpenRouter models.
 - Every provider runs through the one [pi coding agent](https://github.com/earendil-works/pi)
   harness (SDK mode); the provider only determines auth — anthropic, chatgpt, and copilot
   use the subscription credentials from `make login`, openrouter your API key, and omlx
-  your local server.
+  your own OpenAI-compatible server.
 
 > [!IMPORTANT]
-> If you pick the **oMLX** provider, ensure oMLX is running with at least one
-> tool-capable model and reachable at the configured base URL (default
-> `http://127.0.0.1:8000`) **before** starting a loop.
+> If you pick the **local** provider, ensure your server is running with at least
+> one tool-capable model and reachable at the configured base URL (default
+> `http://127.0.0.1:8000`) **before** starting a loop. On vLLM that means serving
+> with `--enable-auto-tool-choice` and the `--tool-call-parser` for your model.
 
 ---
 
@@ -429,11 +440,14 @@ sequenceDiagram
   there's no server-side session store. The kill switch for a leaked cookie is **rotating
   the secret** — delete `data/auth-secret` and restart; a fresh secret invalidates every
   outstanding cookie at once.
-- **Cross-origin requests:** Mutating requests are accepted only from localhost origins and,
-  when set, the hostname in `RADULF_ALLOWED_ORIGIN` (e.g. `RADULF_ALLOWED_ORIGIN=radulf.example.com`).
-  Set it when deploying behind a public hostname. This check runs **whether or not auth is
-  enabled** — the no-auth default is exactly when a page you merely visit must not be able to
-  drive your local instance. Clients that send no `Origin` at all (curl, scripts) are unaffected.
+- **Cross-origin requests:** Local mutating requests are accepted only from the exact loopback
+  host and port the request was addressed to. Non-loopback deployments must set the full public
+  origin in `RADULF_ALLOWED_ORIGIN`, such as `RADULF_ALLOWED_ORIGIN=https://radulf.example.com`.
+  Another `localhost` port does not count: browsers treat
+  every localhost port as one site for cookies, so a page on any other local dev server would
+  otherwise be able to drive the board. This check runs **whether or not auth is enabled** — the
+  no-auth default is exactly when a page you merely visit must not be able to drive your local
+  instance. Clients that send no `Origin` at all are unaffected.
 - **Provider credentials:** API keys are write-only over HTTP. `GET /api/settings` returns
   `••••••••` for any key that is set, and sending that marker back leaves the stored value
   alone, so the settings form round-trips without the key ever reaching the browser.
@@ -459,10 +473,13 @@ these same targets.
 | `make dev` | 🔥 Start the Next.js dev server with hot reload |
 | `make build` | 📦 Build the application for production |
 | `make start` | 🚀 Start the production server (run `build` first) |
+| `make worker` | ⚙️ Run a worker-only process (orchestrator, no HTTP) against this checkout — builds `dist/worker.mjs` first |
+| `make build-worker` | 📦 Bundle the worker entry point `src/worker.ts` into `dist/worker.mjs` |
+| `make check-split` | 🔀 Boot two web-only and a worker-only process against a temp data dir, drive a card through the web API, and assert events and live transcripts fan out across processes (runs `make build` first) |
 | `make lint` | 🧹 Run ESLint across the codebase |
 | `make test` | 🧪 Run unit, component, route, and lifecycle integration tests |
 | `make typecheck` | 🔍 Type-check without emitting files |
-| `make check` | ✅ Run tests, lint, type-checking, and a production build (the CI gate) |
+| `make check` | ✅ Run tests, lint, type-checking, a production build, and the split-process check (the CI gate) |
 | `make db-generate` | 🗂️ Generate a migration from schema changes |
 | `make db-migrate` | ⬆️ Apply pending migrations |
 | `make db-studio` | 🔎 Open Drizzle Studio |
@@ -495,7 +512,7 @@ supersedes an earlier one, and
 | Directory | Contents |
 |-----------|----------|
 | `src/app` | Next.js App Router routes and UI components |
-| `src/server` | Orchestrator, runners, and provider integrations |
+| `src/server` | Orchestrator, runners, and provider integrations (mapped in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) |
 | `src/db` | Drizzle schema definitions |
 | `drizzle` | Generated SQL migration files |
 | `docs` | The guides served by the in-app Docs tab |

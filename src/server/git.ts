@@ -1,20 +1,95 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
-import { WORKTREES_DIR } from "@/db";
+import { and, eq, isNull } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import { db, now, worktrees, WORKTREES_DIR } from "@/db";
+import { ClientError } from "./clientError";
+import { execBounded } from "./exec";
+import { realpathBestEffort } from "./sandbox/pathGuard";
 
-const execFileAsync = promisify(execFile);
 const MAX_BUFFER = 64 * 1024 * 1024;
+
+// Generous for any local git operation this codebase performs (worktree
+// add/remove, merge, diff, branch list) — none of these touch a remote.
+const GIT_TIMEOUT_MS = 30_000;
+// Spec 15's push is the one exception, and 30s is the wrong bound for it: it
+// crosses a network, on a link this process does not control, pushing a branch
+// whose size it does not know. Long enough for a slow uplink, still bounded —
+// the orchestrator runs one card at a time globally, so a wedged git freezes
+// everything.
+const GIT_REMOTE_TIMEOUT_MS = 10 * 60_000;
+
+type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
+
+// Every git call in this module runs unsandboxed, as the server user, and
+// most of them run inside a worktree the agent has just been writing to. Git
+// executes hooks from `core.hooksPath` — which a repo may set to a RELATIVE
+// path (husky writes `core.hooksPath = .husky/_` into the shared config), and
+// git resolves that against the worktree root, so the agent's own worktree
+// supplies the script the host's `git commit` then runs. `core.fsmonitor`
+// names a command `git status` runs on every invocation. Pinning both here,
+// at highest precedence, means no host-side git ever executes anything a
+// repo or a worktree can name. The cost: the operator's own hooks do not run
+// on Radulf's merge commits either. The reviewed diff is the gate for those.
+const HOST_GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+
+/** Remove Git's reusable message path before every trusted host commit. */
+function clearCommitMessagePath(cwd: string): void {
+  const marker = path.join(cwd, ".git");
+  const stat = fs.lstatSync(marker);
+  let gitDir: string;
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    gitDir = fs.realpathSync.native(marker);
+  } else if (stat.isFile() && !stat.isSymbolicLink()) {
+    const pointer = fs.readFileSync(marker, "utf8");
+    const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
+    if (!match) throw new Error(`invalid gitdir pointer: ${marker}`);
+    gitDir = realpathBestEffort(path.resolve(cwd, match[1]));
+  } else {
+    throw new Error(`unsafe git metadata path: ${marker}`);
+  }
+  // Unlinking removes symlinks and hardlink directory entries without
+  // touching their targets. Git then creates a fresh regular file.
+  fs.rmSync(path.join(gitDir, "COMMIT_EDITMSG"), { force: true });
+}
+
+/** Run `git -C cwd ...args` under `execBounded`'s two-signal timeout,
+ * rejecting on any failure with the child's output attached to the error. */
+async function execGit(
+  cwd: string,
+  args: string[],
+  options: ExecGitOptions = {}
+): Promise<{ stdout: string; stderr: string }> {
+  if (args[0] === "commit") clearCommitMessagePath(cwd);
+  const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
+  const { err, stdout, stderr, timedOut } = await execBounded("git", ["-C", cwd, ...HOST_GIT_CONFIG, ...args], {
+    timeoutMs,
+    maxBuffer: MAX_BUFFER,
+    ...(options.env ? { env: options.env } : {}),
+  });
+  if (!err) return { stdout, stderr };
+  if (!timedOut) throw Object.assign(err, { stdout, stderr });
+  // Make the failure actionable instead of an opaque "Command failed" —
+  // surfaced both via the thrown Error's message (git()) and via `out`
+  // (tryGit(), which never looks at err.message).
+  const msg = `git ${args.join(" ")} timed out after ${timeoutMs}ms`;
+  err.message = msg;
+  throw Object.assign(err, { stdout, stderr: stderr ? `${stderr}\n${msg}` : msg });
+}
 
 /** Run git, throwing on a non-zero exit. Async so a slow or large git
  * operation never blocks the server event loop (and with it the SSE stream). */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
-    encoding: "utf8",
-    maxBuffer: MAX_BUFFER,
-  });
+  const { stdout } = await execGit(cwd, args);
   return stdout.trim();
+}
+
+/** Run git without trimming stdout. Security-sensitive machine formats such
+ * as `--porcelain=v1 -z` use leading spaces and NUL record separators that
+ * must survive exactly as Git emitted them. */
+export async function gitRaw(cwd: string, ...args: string[]): Promise<string> {
+  const { stdout } = await execGit(cwd, args);
+  return stdout;
 }
 
 export async function tryGit(
@@ -22,10 +97,7 @@ export async function tryGit(
   ...args: string[]
 ): Promise<{ ok: boolean; out: string }> {
   try {
-    const { stdout, stderr } = await execFileAsync("git", ["-C", cwd, ...args], {
-      encoding: "utf8",
-      maxBuffer: MAX_BUFFER,
-    });
+    const { stdout, stderr } = await execGit(cwd, args);
     return { ok: true, out: (stdout + stderr).trim() };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
@@ -35,10 +107,18 @@ export async function tryGit(
 
 /** List local branch names; returns [] when the path is not a git repo. */
 export async function listBranches(repoPath: string): Promise<string[]> {
-  if (!(await isGitRepo(repoPath))) return [];
   const { ok, out } = await tryGit(repoPath, "branch", "--format=%(refname:short)");
   if (!ok || !out) return [];
   return out.split("\n").filter(Boolean);
+}
+
+/** `ralph/` is the namespace Radulf writes itself: card run branches and
+ * improvement-run feature branches (spec 19). A card must never be based on
+ * one. A run branch is checked out in a worktree Radulf owns, so the merge on
+ * approval cannot check it out, and once its card is gone the branch is an
+ * orphan that looks like any other branch in the picker. */
+export function isRalphBranch(name: string): boolean {
+  return name.startsWith("ralph/");
 }
 
 /** Ask Git to validate the exact branch shorthand. Unlike hand-written
@@ -55,6 +135,43 @@ export async function currentBranch(repoPath: string, fallback: string): Promise
   return out;
 }
 
+/** The shared git dir a checkout at `cwd` reports, canonical, or null. */
+async function commonDirOf(cwd: string): Promise<string | null> {
+  const { ok, out } = await tryGit(cwd, "rev-parse", "--git-common-dir");
+  if (!ok || !out) return null;
+  return realpathBestEffort(path.isAbsolute(out) ? out : path.resolve(cwd, out));
+}
+
+/**
+ * Null when `worktreePath` still shares `repoPath`'s git dir and has `branch`
+ * checked out; otherwise why nothing must be committed there. Every
+ * orchestrator commit is meant for the run's own `ralph/` branch, and nothing
+ * else keeps the worktree on it: an agent that runs `git checkout <base>`
+ * inside the worktree routes every commit after it onto the base branch,
+ * where the run-end integrity check then reads Radulf's own work as
+ * tampering (`integrity.ts`).
+ *
+ * The git-dir check comes first because a linked worktree's `.git` is a file
+ * naming its gitdir, and a rewritten pointer hands every host-side git call
+ * here an agent-populated config. Both sandbox layers deny that write; this
+ * is the backstop for a run with the sandbox off, and it turns the failure
+ * into a named reason rather than a commit into the wrong repository.
+ */
+export async function offRunBranchReason(
+  worktreePath: string,
+  branch: string,
+  repoPath: string,
+): Promise<string | null> {
+  const [expected, actual] = await Promise.all([commonDirOf(repoPath), commonDirOf(worktreePath)]);
+  if (expected === null || actual !== expected) {
+    return `worktree no longer shares the repository's git dir: ${actual ?? "unreadable"}, expected ${expected ?? "unreadable"}`;
+  }
+  const { ok, out } = await tryGit(worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD");
+  const current = ok && out ? out : null;
+  if (current === branch) return null;
+  return `worktree left its run branch: on ${current ?? "a detached HEAD"}, expected ${branch}`;
+}
+
 export async function isGitRepo(dir: string): Promise<boolean> {
   return fs.existsSync(dir) && (await tryGit(dir, "rev-parse", "--git-dir")).ok;
 }
@@ -67,7 +184,26 @@ export async function hasCommits(dir: string): Promise<boolean> {
   return (await tryGit(dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")).ok;
 }
 
-export function slugify(s: string): string {
+/** The repo-registration check: `dir` must be a git repository with at
+ * least one commit, otherwise a ClientError the API returns verbatim. */
+export async function assertUsableRepo(dir: string): Promise<void> {
+  if (!(await isGitRepo(dir))) throw new ClientError(`${dir} is not a git repository`);
+  // An unborn HEAD has no ref to branch a worktree from — reject here rather
+  // than let every task on this repo die at `git worktree add`.
+  if (!(await hasCommits(dir))) {
+    throw new ClientError(`${dir} has no commits yet — make an initial commit before adding it`);
+  }
+}
+
+/** ClientError unless `name` is a local branch of the repo; `label` names
+ * the field in the message ("baseBranch does not exist in the repository"). */
+export async function assertBranchExists(repoPath: string, name: string, label: string): Promise<void> {
+  if (!(await listBranches(repoPath)).includes(name)) {
+    throw new ClientError(`${label} does not exist in the repository`);
+  }
+}
+
+function slugify(s: string): string {
   return (
     s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "card"
   );
@@ -99,6 +235,26 @@ export async function createWorktree(
   return { worktreePath, branch };
 }
 
+/** Record a freshly created worktree's `worktrees` row. `worktrees.runId` is
+ * a real foreign key, so callers must insert the owning `runs` row first —
+ * this is why it's split out of `createWorktree` rather than done there,
+ * where the run doesn't exist yet. */
+export function recordWorktree(repoId: string, runId: string, path: string, branch: string): void {
+  db.insert(worktrees)
+    .values({ id: nanoid(), repoId, runId, path, branch, createdAt: now() })
+    .run();
+}
+
+/** Stamp the `worktrees` row for `worktreePath` as removed. Idempotent — a
+ * row already marked removed (or with no matching row at all) is a no-op,
+ * shared by both `removeWorktree` and the retention sweep's orphan GC. */
+export function markWorktreeRemoved(worktreePath: string): void {
+  db.update(worktrees)
+    .set({ removedAt: now() })
+    .where(and(eq(worktrees.path, worktreePath), isNull(worktrees.removedAt)))
+    .run();
+}
+
 export async function removeWorktree(
   repoPath: string,
   worktreePath: string,
@@ -108,6 +264,7 @@ export async function removeWorktree(
   await tryGit(repoPath, "worktree", "prune");
   await tryGit(repoPath, "branch", "-D", branch);
   fs.rmSync(worktreePath, { recursive: true, force: true });
+  markWorktreeRemoved(worktreePath);
 }
 
 // Flags shared by every review-facing diff invocation. `--no-ext-diff` and
@@ -124,56 +281,54 @@ export async function removeWorktree(
 const REVIEW_DIFF_FLAGS = [
   "-c",
   "core.excludesFile=/dev/null",
+  // Keep a non-ASCII path readable and, more to the point, PARSEABLE: git
+  // C-quotes the whole `diff --git` header when a path has a byte it will not
+  // print raw, and the review page prefix-matches those paths to decide
+  // whether to raise its sandbox/self-modifying banners. A header it cannot
+  // parse is a banner that does not fire, which is the same class of problem
+  // as the textconv and `-diff` hijacks the flags below shut down. This does
+  // not cover a `"`, a `\` or a control character in a path — git quotes
+  // those regardless — so `diffHeaderPath` unquotes on the client as well.
+  "-c",
+  "core.quotePath=false",
   "diff",
   "--no-ext-diff",
   "--no-textconv",
   "--text",
 ] as const;
 
+/** The review diff: merge-base of `defaultBranch` and HEAD up to HEAD, under
+ * REVIEW_DIFF_FLAGS, with `.ralph` excluded. `flags` go to `git diff`. */
+async function reviewDiff(
+  worktreePath: string,
+  defaultBranch: string,
+  ...flags: string[]
+): Promise<string> {
+  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
+  return git(
+    worktreePath,
+    ...REVIEW_DIFF_FLAGS,
+    ...flags,
+    base,
+    "HEAD",
+    "--",
+    ".",
+    ":(exclude).ralph"
+  );
+}
+
 export async function worktreeDiff(
   worktreePath: string,
   defaultBranch: string
 ): Promise<string> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  return git(worktreePath, ...REVIEW_DIFF_FLAGS, base, "HEAD", "--", ".", ":(exclude).ralph");
+  return reviewDiff(worktreePath, defaultBranch);
 }
 
 export async function worktreeDiffStat(
   worktreePath: string,
   defaultBranch: string
 ): Promise<string> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  return git(
-    worktreePath,
-    ...REVIEW_DIFF_FLAGS,
-    "--shortstat",
-    base,
-    "HEAD",
-    "--",
-    ".",
-    ":(exclude).ralph"
-  );
-}
-
-/** Paths changed between the merge-base and HEAD, same scope as
- * `worktreeDiff` (`.ralph` excluded) — used to flag sensitive-path and
- * ignore-file changes in the review UI without re-parsing the diff text. */
-export async function worktreeChangedPaths(
-  worktreePath: string,
-  defaultBranch: string
-): Promise<string[]> {
-  const base = await git(worktreePath, "merge-base", defaultBranch, "HEAD");
-  const out = await git(
-    worktreePath,
-    ...REVIEW_DIFF_FLAGS,
-    "--name-only",
-    base,
-    "HEAD",
-    "--",
-    ".",
-    ":(exclude).ralph"
-  );
-  return out ? out.split("\n").filter(Boolean) : [];
+  return reviewDiff(worktreePath, defaultBranch, "--shortstat");
 }
 
 /** Return true when the worktree has uncommitted changes (git status --porcelain is non-empty). */
@@ -183,15 +338,43 @@ export async function worktreeIsDirty(worktreePath: string): Promise<boolean> {
   return ok && out.trim().length > 0;
 }
 
+/** Drop `.ralph/` from the index and, once git has let go of it, from disk.
+ * Returns the `git rm` result. `mergeBranch` and `stripRalphForDelivery` have
+ * to agree on exactly this (see the latter's docstring), so both call here. */
+async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }> {
+  const removed = await tryGit(cwd, "rm", "-r", "-f", "-q", "--ignore-unmatch", ".ralph");
+  if (removed.ok) fs.rmSync(path.join(cwd, ".ralph"), { recursive: true, force: true });
+  return removed;
+}
+
 /** Merge the ralph branch into the repo's base branch. Always restores the
  * checkout the user's repo was on before the merge — merging must never
- * leave their working copy switched to the base branch. */
+ * leave their working copy switched to the base branch.
+ *
+ * This operates on repoPath — the ONE shared parent working tree and index,
+ * not a per-card worktree — so two merges against the same repo must never
+ * interleave: one's `--no-commit` merge can be clobbered by the other's
+ * `status --porcelain` still reading clean before the first commits. There is
+ * no in-process lock here; callers must hold the repo lease from
+ * `src/server/repoLeases.ts` (spec 25 decision 6), which serializes deliveries
+ * per repo across every web and worker process.
+ *
+ * `onCommitted`, if given, fires the instant the merge commit's oid is known
+ * — see the comment at the call site for why it exists and what it does not
+ * cover. */
 export async function mergeBranch(
   repoPath: string,
   baseBranch: string,
   branch: string,
-  message: string
-): Promise<{ ok: boolean; mergeCommit?: string; error?: string; conflict?: boolean }> {
+  message: string,
+  onCommitted?: (mergeCommit: string) => void
+): Promise<{
+  ok: boolean;
+  mergeCommit?: string;
+  error?: string;
+  conflict?: boolean;
+  alreadyMerged?: boolean;
+}> {
   const original = await git(repoPath, "rev-parse", "--abbrev-ref", "HEAD");
   const restore = async () => {
     // A detached HEAD ("HEAD") has no branch to restore.
@@ -199,6 +382,45 @@ export async function mergeBranch(
       await tryGit(repoPath, "checkout", original);
     }
   };
+  // A delivery worker can die between `merge --no-commit` and `commit` below,
+  // leaving the shared parent checkout with MERGE_HEAD set. The next attempt
+  // must not run `checkout`/`status` on top of that half-finished merge. If
+  // MERGE_HEAD is this very run branch, it is Radulf's own abandoned merge —
+  // abort it and start over. Anything else is someone else's merge, which we
+  // refuse to touch.
+  const inProgress = await tryGit(repoPath, "rev-parse", "-q", "--verify", "MERGE_HEAD");
+  if (inProgress.ok) {
+    const sha = inProgress.out.trim();
+    const branchSha = (await tryGit(repoPath, "rev-parse", branch)).out.trim();
+    if (sha === branchSha) {
+      await tryGit(repoPath, "merge", "--abort");
+    } else {
+      return {
+        ok: false,
+        error: `a merge started outside Radulf is in progress in ${repoPath} (MERGE_HEAD ${sha}) — finish or abort it there (git merge --continue / git merge --abort) before retrying`,
+      };
+    }
+  }
+  // The run branch is already contained in base: the dead worker committed the
+  // merge but died before the DB write recorded it. Nothing to merge and no ref
+  // moves now, so `onCommitted` is deliberately not fired and no checkout
+  // happens. Report the merge commit that landed it (the oldest merge commit on
+  // the ancestry path from the branch to base), falling back to the base tip.
+  if ((await tryGit(repoPath, "merge-base", "--is-ancestor", branch, baseBranch)).ok) {
+    const merges = await tryGit(
+      repoPath,
+      "rev-list",
+      "--reverse",
+      "--ancestry-path",
+      "--merges",
+      `${branch}..${baseBranch}`
+    );
+    const mergeCommit =
+      merges.ok && merges.out.trim()
+        ? merges.out.trim().split("\n")[0]
+        : await git(repoPath, "rev-parse", baseBranch);
+    return { ok: true, mergeCommit, alreadyMerged: true };
+  }
   if (original !== baseBranch) {
     const co = await tryGit(repoPath, "checkout", baseBranch);
     if (!co.ok) return { ok: false, error: `cannot checkout ${baseBranch}: ${co.out}` };
@@ -206,7 +428,10 @@ export async function mergeBranch(
   const dirty = await git(repoPath, "status", "--porcelain");
   if (dirty) {
     await restore();
-    return { ok: false, error: "target checkout has uncommitted changes" };
+    return {
+      ok: false,
+      error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
+    };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before
   // committing — the reviewed diff excludes it, so the merge must too.
@@ -220,8 +445,7 @@ export async function mergeBranch(
     // tell a conflict apart from an unrecoverable failure.
     return { ok: false, conflict: true, error: `merge conflict — rebase needed: ${merge.out}` };
   }
-  await tryGit(repoPath, "rm", "-r", "-f", "-q", "--ignore-unmatch", ".ralph");
-  fs.rmSync(path.join(repoPath, ".ralph"), { recursive: true, force: true });
+  await removeRalphDir(repoPath);
   const commit = await tryGit(repoPath, "commit", "-m", message);
   if (!commit.ok) {
     await tryGit(repoPath, "merge", "--abort");
@@ -230,6 +454,17 @@ export async function mergeBranch(
     return { ok: false, error: `merge commit failed: ${commit.out}` };
   }
   const mergeCommit = await git(repoPath, "rev-parse", "HEAD");
+  // Fire before `restore()`'s checkout, not after: the base ref already moved
+  // at the `commit` above, and `restore()` can be a slow checkout on a large
+  // repo. Every tick it takes is a tick where another card's stale baseline
+  // still thinks the old oid is current (spec 20's recordRefWrite). This
+  // narrows that window but cannot close it alone — the ref moved back at
+  // `commit`, before we could have read its new oid here. What closes it is
+  // the per-repo lease the caller holds around all of this: the run-end check
+  // in integrity.ts waits for that lease to be released before judging an
+  // unexplained ref move, by which point the write is recorded. git.ts stays
+  // free of integrity.ts; the caller supplies what to do with the oid.
+  onCommitted?.(mergeCommit);
   await restore();
   return { ok: true, mergeCommit };
 }
@@ -254,4 +489,110 @@ export async function mergeBaseIntoWorktree(
   const conflicted = /conflict/i.test(res.out);
   if (!conflicted) await tryGit(worktreePath, "merge", "--abort");
   return { ok: false, conflicted, out: res.out };
+}
+
+// ─── Spec 15: remote delivery ────────────────────────────────────────────────
+//
+// Everything below is the ONLY part of this module that touches a remote, and
+// it runs exclusively host-side from the review path, after a human (or an
+// explicit auto-approve grant) has released the diff. No agent can reach it:
+// there is no tool binding for any of it, `git push` stays blocked inside the
+// sandbox by spec 14's egress proxy and socket policy, and `~/.config/gh`
+// stays on 14's deny list. That is a permanent property, not a phase-one one.
+
+/** The remote a card's branch is pushed to. Not configurable — a repo with a
+ * differently-named remote is out of scope rather than silently guessed at. */
+const PR_REMOTE = "origin";
+
+/** Does this repo have an `origin` to push to? Most registered repos are
+ * local-only, so PR delivery is offered per repo, not globally. */
+export async function hasRemote(repoPath: string): Promise<boolean> {
+  const { ok, out } = await tryGit(repoPath, "remote", "get-url", PR_REMOTE);
+  return ok && out.trim().length > 0;
+}
+
+/** Env for every operation that touches a remote: refuse to prompt for a
+ * credential on a terminal that is not there, so a helper that would have
+ * blocked fails loudly instead. Same intent for the SSH path, which reads a
+ * passphrase from /dev/tty and so would not be stopped by a closed stdin.
+ * Only when the operator has not set their own command, in which case theirs
+ * wins. */
+function remoteEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
+  return env;
+}
+
+/**
+ * `git clone url dest` with the operator's own credentials (spec 21). Host-side
+ * only, from the repo-registration path: no agent can reach it, and the
+ * sandbox keeps blocking clone and fetch inside a run exactly as it blocks
+ * push. `dest` must not exist yet; `cwd` is where git runs, since `-C` needs
+ * a directory that does.
+ */
+export async function cloneRemote(
+  url: string,
+  dest: string,
+  cwd: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await execGit(cwd, ["clone", "--", url, dest], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env: remoteEnv() });
+    return { ok: true };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    const out = ((err.stdout ?? "") + (err.stderr ?? "")).trim();
+    return { ok: false, error: out || err.message || "git clone failed" };
+  }
+}
+
+/**
+ * Drop `.ralph/` from the branch and commit that removal.
+ *
+ * Every review surface excludes `.ralph` (`worktreeDiff` and `worktreeDiffStat`
+ * both pass `:(exclude).ralph`) and `mergeBranch` strips
+ * it before committing, so the plan artifacts, loop memory, and evaluator
+ * verdict are deliberately not part of what a human approves. A push has to
+ * honour the same exclusion or PR delivery would publish to a remote exactly
+ * the content the local path takes care to leave behind.
+ *
+ * Safe to run twice: `--ignore-unmatch` no-ops when `.ralph` is already gone,
+ * and with nothing staged there is no commit to make. Callers must run it
+ * *after* any base-branch merge, so a hand-back to the loop never sees a
+ * worktree whose memory has been stripped.
+ */
+export async function stripRalphForDelivery(
+  worktreePath: string,
+  message: string
+): Promise<{ ok: boolean; out: string }> {
+  const removed = await removeRalphDir(worktreePath);
+  if (!removed.ok) return removed;
+  const staged = await tryGit(worktreePath, "diff", "--cached", "--quiet");
+  // `--quiet` exits non-zero when there *is* something staged.
+  if (staged.ok) return { ok: true, out: "" };
+  return tryGit(worktreePath, "commit", "-m", message);
+}
+
+/**
+ * Push the card's branch to `origin`, setting upstream.
+ *
+ * Never forced. A rejected non-fast-forward means someone else moved the
+ * branch on the remote, and resolving that automatically is exactly the kind
+ * of guess this codebase does not make — it surfaces as an error the operator
+ * acts on.
+ */
+export async function pushBranch(
+  worktreePath: string,
+  branch: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await execGit(worktreePath, ["push", "--set-upstream", PR_REMOTE, branch], {
+      timeoutMs: GIT_REMOTE_TIMEOUT_MS,
+      env: remoteEnv(),
+    });
+    return { ok: true };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    const out = ((err.stdout ?? "") + (err.stderr ?? "")).trim();
+    return { ok: false, error: out || err.message || "git push failed" };
+  }
 }

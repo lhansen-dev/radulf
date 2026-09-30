@@ -10,6 +10,8 @@ import {
   type Repo,
 } from "./api";
 import { refreshTargetsForEvent } from "./eventRefresh";
+import { ATTENTION_STATUSES } from "@/shared/cardStatus";
+import { parsePayload } from "@/shared/eventPayload";
 import { notificationsAvailable, playAlertSound, showCardNotification } from "./notify";
 
 export type ImprovementRunAlert = {
@@ -26,6 +28,8 @@ export function useWorkData() {
   const [loading, setLoading] = useState(true);
   const [streamConnected, setStreamConnected] = useState(true);
   const [autoMode, setAutoMode] = useState(true);
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [openPr, setOpenPr] = useState(false);
   const [improvementRuns, setImprovementRuns] = useState<ImprovementRun[]>([]);
   const [improvementAlert, setImprovementAlert] = useState<ImprovementRunAlert | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
@@ -41,7 +45,7 @@ export function useWorkData() {
         if (
           previous &&
           previous !== card.status &&
-          ["review", "plan_review", "needs_attention"].includes(card.status)
+          ATTENTION_STATUSES.includes(card.status)
         ) {
           if (notifyPrefs.current.notifications) {
             showCardNotification("Task needs you", card.title);
@@ -74,11 +78,15 @@ export function useWorkData() {
   const refetchSettings = useCallback(() => {
     api<{
       autoMode: boolean;
+      autoApprove: boolean;
+      openPr: boolean;
       notificationsEnabled: boolean;
       soundEnabled: boolean;
     }>("/api/settings")
       .then((settings) => {
         setAutoMode(settings.autoMode);
+        setAutoApprove(settings.autoApprove);
+        setOpenPr(settings.openPr);
         notifyPrefs.current = {
           notifications: settings.notificationsEnabled,
           sound: settings.soundEnabled,
@@ -101,34 +109,31 @@ export function useWorkData() {
 
   useEffect(refetch, [refetch]);
   const eventTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasDisconnected = useRef(false);
   useEventStream((event) => {
     if (event.type === "improvement.completed") {
-      try {
-        const payload = JSON.parse(event.payload ?? "{}") as {
-          featureBranch?: string;
-          tasksSucceeded?: number;
-          status?: ImprovementRun["status"];
+      const payload = parsePayload(event.payload) as {
+        featureBranch?: string;
+        tasksSucceeded?: number;
+        status?: ImprovementRun["status"];
+      };
+      if (payload.featureBranch && payload.status) {
+        const alert: ImprovementRunAlert = {
+          featureBranch: payload.featureBranch,
+          tasksSucceeded: payload.tasksSucceeded ?? 0,
+          status: payload.status,
         };
-        if (payload.featureBranch && payload.status) {
-          const alert: ImprovementRunAlert = {
-            featureBranch: payload.featureBranch,
-            tasksSucceeded: payload.tasksSucceeded ?? 0,
-            status: payload.status,
-          };
-          const title =
-            alert.status === "failed" ? "Improvement run failed" :
-            alert.status === "stopped" ? "Improvement run stopped" :
-            "Improvement run finished";
-          const body = `${alert.tasksSucceeded} task${alert.tasksSucceeded === 1 ? "" : "s"} landed on ${alert.featureBranch}`;
-          if (notifyPrefs.current.notifications && notificationsAvailable()) {
-            showCardNotification(title, body);
-          } else {
-            setImprovementAlert(alert);
-          }
-          if (notifyPrefs.current.sound) playAlertSound();
+        const title =
+          alert.status === "failed" ? "Improvement run failed" :
+          alert.status === "stopped" ? "Improvement run stopped" :
+          "Improvement run finished";
+        const body = `${alert.tasksSucceeded} task${alert.tasksSucceeded === 1 ? "" : "s"} landed on ${alert.featureBranch}`;
+        if (notifyPrefs.current.notifications && notificationsAvailable()) {
+          showCardNotification(title, body);
+        } else {
+          setImprovementAlert(alert);
         }
-      } catch {
-        // ignore malformed payload
+        if (notifyPrefs.current.sound) playAlertSound();
       }
     }
     const targets = refreshTargetsForEvent(event.type);
@@ -138,13 +143,22 @@ export function useWorkData() {
     }
     if (targets.includes("repos")) refetchRepos();
     if (targets.includes("improvementRuns")) refetchImprovementRuns();
-  }, setStreamConnected);
+  }, (connected) => {
+    setStreamConnected(connected);
+    if (!connected) {
+      wasDisconnected.current = true;
+      return;
+    }
+    // The stream doesn't replay events missed while it was down, so a genuine
+    // reconnect refetches; the first open after mount is covered by the
+    // initial load.
+    if (wasDisconnected.current) {
+      wasDisconnected.current = false;
+      refetch();
+    }
+  });
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCards((current) => [...current]);
-      checkHealth();
-    }, 30_000);
     const offline = () => setStreamConnected(false);
     const online = () => {
       setStreamConnected(true);
@@ -153,12 +167,11 @@ export function useWorkData() {
     window.addEventListener("offline", offline);
     window.addEventListener("online", online);
     return () => {
-      clearInterval(interval);
       if (eventTimer.current) clearTimeout(eventTimer.current);
       window.removeEventListener("offline", offline);
       window.removeEventListener("online", online);
     };
-  }, [checkHealth, refetch]);
+  }, [refetch]);
 
   return {
     cards,
@@ -170,12 +183,17 @@ export function useWorkData() {
     streamConnected,
     autoMode,
     setAutoMode,
+    autoApprove,
+    setAutoApprove,
+    openPr,
+    setOpenPr,
     improvementRuns,
     improvementAlert,
     dismissImprovementAlert: () => setImprovementAlert(null),
     restartRequired,
     restarting,
     setRestarting,
-    refetch,
+    refetchCards,
+    refetchImprovementRuns,
   };
 }

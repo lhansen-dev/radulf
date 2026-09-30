@@ -13,7 +13,7 @@ import path from "node:path";
  * real enforcement under load is verification checklist #9.
  */
 
-export const CGROUP_ROOT = "/sys/fs/cgroup";
+const CGROUP_ROOT = "/sys/fs/cgroup";
 
 export type CgroupPlan = {
   dir: string;
@@ -37,6 +37,7 @@ export function cgroupPlanForRun(runId: string, root: string = CGROUP_ROOT): Cgr
 
 export type RunCgroup = {
   dir: string;
+  procsFile: string;
   /** Shell line each bash invocation runs to join the cgroup. */
   joinLine: string;
 };
@@ -48,6 +49,12 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
   const plan = cgroupPlanForRun(runId, root);
   try {
     fs.mkdirSync(plan.dir, { recursive: true });
+    const procsFile = path.join(plan.dir, "cgroup.procs");
+    const requiredLimits = new Set(["memory.max", "memory.swap.max", "pids.max"]);
+    const requiredFiles = [...requiredLimits, "cgroup.kill"];
+    if (!fs.existsSync(procsFile) || requiredFiles.some((file) => !fs.existsSync(path.join(plan.dir, file)))) {
+      return null;
+    }
     // Controllers must be enabled on the parent before limits apply.
     try {
       fs.writeFileSync(
@@ -58,18 +65,38 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
       // Parent may already delegate them; individual writes below decide.
     }
     for (const [file, value] of plan.writes) {
+      const controlFile = path.join(plan.dir, file);
+      if (!fs.existsSync(controlFile) && !requiredLimits.has(file)) continue;
       try {
-        fs.writeFileSync(path.join(plan.dir, file), value);
+        fs.writeFileSync(controlFile, value);
+        if (fs.readFileSync(controlFile, "utf8").trim() !== value) throw new Error("cgroup limit mismatch");
       } catch {
-        // A missing controller (e.g. io) must not lose memory/pids limits.
+        if (requiredLimits.has(file)) return null;
+        // A missing optional io controller must not lose memory/pids limits.
       }
     }
     return {
       dir: plan.dir,
-      joinLine: `echo "$$" > '${plan.dir}/cgroup.procs' 2>/dev/null || true`,
+      procsFile,
+      joinLine: `echo "$$" > '${procsFile}' 2>/dev/null || exit $?`,
     };
   } catch {
     return null;
+  }
+}
+
+/** Atomically kill every process in a verified run cgroup. Unlike process
+ * groups this also catches descendants that created a new session. */
+export function killRunCgroupProcesses(dir: string): void {
+  fs.writeFileSync(path.join(dir, "cgroup.kill"), "1");
+}
+
+/** True only when the kernel reports no remaining member processes. */
+export function runCgroupEmpty(dir: string): boolean {
+  try {
+    return fs.readFileSync(path.join(dir, "cgroup.procs"), "utf8").trim() === "";
+  } catch {
+    return false;
   }
 }
 
@@ -77,7 +104,7 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
 export function killRunCgroup(dir: string): void {
   try {
     // cgroup.kill (Linux 5.14+) SIGKILLs the whole subtree atomically.
-    fs.writeFileSync(path.join(dir, "cgroup.kill"), "1");
+    killRunCgroupProcesses(dir);
   } catch {
     // Best-effort; the pgid reap already ran.
   }

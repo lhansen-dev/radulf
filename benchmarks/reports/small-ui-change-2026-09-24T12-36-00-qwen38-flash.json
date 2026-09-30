@@ -1,0 +1,201 @@
+{
+  "meta": {
+    "fixture": "small-ui-change",
+    "seeded": true,
+    "baselineSha": "ab96529aff8511baecc7b3fe67de287f2b9e4329",
+    "baseUrl": "http://localhost:3000",
+    "repo": "E9qA-iPVfpdwSJlg_oWVS",
+    "provider": "omlx",
+    "model": "Qwen/Qwen3.8-Flash-Next-FP8",
+    "plannerModel": "claude-fable-5-1",
+    "numRuns": 1,
+    "maxIterations": "8",
+    "timeoutMinutes": "30",
+    "autoReview": true,
+    "timestamp": "2026-09-24T16:46:36.182Z"
+  },
+  "perRun": [
+    {
+      "run": 1,
+      "cardId": "cUZ77sASwG5JBujWsy1yz",
+      "runId": "RuEXZUg1h4TmkrfNlcsG6",
+      "runCount": 3,
+      "status": "review",
+      "reviewOutcome": "approved",
+      "totalWallTimeMs": 205629,
+      "iterationCount": 2,
+      "totalModelTurns": 29,
+      "p50IterationTimeMs": 22056,
+      "p90IterationTimeMs": 25249,
+      "iterationWallTimesMs": [
+        22056,
+        25249
+      ],
+      "sumPromptTokens": 20308,
+      "sumCachedInputTokens": 181479,
+      "sumCompletionTokens": 15264,
+      "sumReasoningTokens": 1099,
+      "sumCostUsd": 0.9334397499999999,
+      "costByKind": {
+        "evaluate": 0.5743514999999999,
+        "loop": 0,
+        "plan": 0.35908825
+      },
+      "criteriaPass": true,
+      "criteriaResults": [
+        {
+          "command": "node --test",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "TAP version 13\n# Subtest: escapeHtml escapes markup characters\nok 1 - escapeHtml escapes markup characters\n  ---\n  duration_ms: 0.828385\n  type: 'test'\n  ...\n# Subtest: renderItem shows the title and a status class\nok 2 - renderItem shows the title and a status class\n  ---\n  duration_ms: 0.154099\n  type: 'test'\n  ...\n# Subtest: renderItem escapes untrusted titles\nok 3 - renderItem escapes untrusted titles\n  ---\n  duration_ms: 0.104296\n  type: 'test'\n  ...\n# Subtest: renderItem shows a high-priority badge after the title\nok 4 - renderItem shows a high-priority badge after the title\n  ---\n  duration_ms: 0.063699\n  type: 'test'\n  ...\n# Subtest: renderItem omits the badge for non-high priorities\nok 5 - renderItem omits the badge for non-high priorities\n  ---\n  duration_ms: 0.055214\n  type: 'test'\n  ...\n# Subtest: renderList shows the item count\nok 6 - renderList shows the item count\n  ---\n  duration_ms: 0.092834\n  type: 'test'\n  ...\n# Subtest: renderList shows the number of high-priority items\nok 7 - renderList shows the number of high-priority items\n  ---\n  duration_ms: 0.063489\n  type: 'test'\n  ...\n# Subtest: renderPage wraps the list in a document\nok 8 - renderPage wraps the list in a document\n  ---\n  duration_ms: 0.095209\n  type: 'test'\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 8\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 39.851139\n",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {renderItem}=require('./src/render.js');const h=renderItem({id:1,title:'t',status:'open',priority:'high'});if(!h.includes('badge-high'))process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {renderItem}=require('./src/render.js');const h=renderItem({id:1,title:'t',status:'open',priority:'normal'});if(h.includes('badge'))process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {renderList}=require('./src/render.js');const h=renderList([{id:1,title:'a',status:'open',priority:'high'},{id:2,title:'b',status:'open',priority:'normal'}]);const m=h.match(/high-count[^>]*>([^<]*)/);if(!m||!/\\b1\\b/.test(m[1]))process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {renderList}=require('./src/render.js');const h=renderList([{id:1,title:'a',status:'open',priority:'normal'}]);const m=h.match(/high-count[^>]*>([^<]*)/);if(!m||!/\\b0\\b/.test(m[1]))process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const t=require('fs').readFileSync('test/render.test.js','utf8');if(!/badge/.test(t))process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const c=require('crypto'),f=require('fs');const h=p=>c.createHash('sha256').update(f.readFileSync(p)).digest('hex');if(h('src/server.js')!=='2e0f27ff18ccea3a6a1c879bf2602850af672aa1987c26a9556862765c0b1a3a'||h('data.json')!=='cac7284ff6b60c96b88e4bdd7bf11c37a74317bc8ca94e19f147e75a6e54fa84')process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      ],
+      "diffStat": ".ralph/DONE                |  8 ++++++++\n .ralph/EVALUATION-NOTES.md | 18 ++++++++++++++++++\n .ralph/EVALUATION.md       | 33 ++++++++++++++++++++++++++++++++\n .ralph/PROMPT.md           | 47 ++++++++++++++++++++++++++++++++++++++++++++++\n .ralph/SUMMARY.md          |  1 +\n src/render.js              | 12 ++++++++++--\n test/render.test.js        | 31 ++++++++++++++++++++++++++++++\n 7 files changed, 148 insertions(+), 2 deletions(-)",
+      "diffCorrectness": true,
+      "worktreePath": "/var/lib/radulf/worktrees/show-a-priority-badge-on-the-task-board-PsavL2KNOWmhoKGp8ouTT"
+    }
+  ],
+  "aggregated": {
+    "totalWallTimeMs": {
+      "count": 1,
+      "min": 205629,
+      "max": 205629,
+      "median": 205629,
+      "p50": 205629,
+      "p90": 205629,
+      "mean": 205629
+    },
+    "iterationCount": {
+      "count": 1,
+      "min": 2,
+      "max": 2,
+      "median": 2,
+      "p50": 2,
+      "p90": 2,
+      "mean": 2
+    },
+    "totalModelTurns": {
+      "count": 1,
+      "min": 29,
+      "max": 29,
+      "median": 29,
+      "p50": 29,
+      "p90": 29,
+      "mean": 29
+    },
+    "p50IterationTimeMs": {
+      "count": 1,
+      "min": 22056,
+      "max": 22056,
+      "median": 22056,
+      "p50": 22056,
+      "p90": 22056,
+      "mean": 22056
+    },
+    "p90IterationTimeMs": {
+      "count": 1,
+      "min": 25249,
+      "max": 25249,
+      "median": 25249,
+      "p50": 25249,
+      "p90": 25249,
+      "mean": 25249
+    },
+    "sumPromptTokens": {
+      "count": 1,
+      "min": 20308,
+      "max": 20308,
+      "median": 20308,
+      "p50": 20308,
+      "p90": 20308,
+      "mean": 20308
+    },
+    "sumCachedInputTokens": {
+      "count": 1,
+      "min": 181479,
+      "max": 181479,
+      "median": 181479,
+      "p50": 181479,
+      "p90": 181479,
+      "mean": 181479
+    },
+    "sumCompletionTokens": {
+      "count": 1,
+      "min": 15264,
+      "max": 15264,
+      "median": 15264,
+      "p50": 15264,
+      "p90": 15264,
+      "mean": 15264
+    },
+    "sumReasoningTokens": {
+      "count": 1,
+      "min": 1099,
+      "max": 1099,
+      "median": 1099,
+      "p50": 1099,
+      "p90": 1099,
+      "mean": 1099
+    },
+    "sumCostUsd": {
+      "count": 1,
+      "min": 0.9334397499999999,
+      "max": 0.9334397499999999,
+      "median": 0.9334397499999999,
+      "p50": 0.9334397499999999,
+      "p90": 0.9334397499999999,
+      "mean": 0.9334397499999999
+    },
+    "criteriaPassRate": 1,
+    "diffCorrectnessRate": 1,
+    "criteriaPasses": [
+      true
+    ],
+    "diffCorrectnesses": [
+      true
+    ]
+  }
+}

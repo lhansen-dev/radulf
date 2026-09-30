@@ -6,15 +6,24 @@ and keep the existing checks green.
 
 ## Getting set up
 
-Requirements: macOS (Apple Silicon or Intel) and Node 22+.
+Requirements: macOS (Apple Silicon or Intel) and Node 22, as pinned in
+[`.nvmrc`](.nvmrc) and used by CI.
 
 ```bash
 git clone https://github.com/lhansen-dev/radulf.git
 cd radulf
+nvm use            # or otherwise match .nvmrc, see the note below
 make install
 make login         # opens pi — type /login to authenticate a provider
 make dev           # http://localhost:3000
 ```
+
+Match the pinned version rather than merely satisfying it. Node 24 ships npm
+11, which writes a lockfile npm 10 cannot install: `npm ci` fails with
+`Missing: @esbuild/... from lock file` even though the entries are present,
+because the two record nested and optional dependencies differently. CI runs
+the pinned version, so a lockfile generated on a newer Node will pass locally
+and fail there.
 
 All common tasks are driven through the [`Makefile`](Makefile) — run `make` to
 see the full list. It is the source of truth; CI and the release workflow call
@@ -81,6 +90,29 @@ git switch beta && git merge main   # carry the version bump back
 `main`, which is what keeps the branch honest. `make release` refuses to tag a
 stable version from anywhere but `main`, or a prerelease from anywhere but `beta`.
 
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
+
+```
+<type>(<optional scope>): <subject>
+```
+
+`feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore` — see
+the table in [`AGENTS.md`](AGENTS.md#commit-messages) for which is which, plus
+the footer conventions agents use. The subject is imperative and lowercase
+(`fix: reject repos with no commits`), the first line stays under 72
+characters, and the reasoning goes in the body.
+
+Two things worth knowing before your first PR:
+
+- A breaking change takes a `!` before the colon (`feat(db)!: …`) and a
+  `BREAKING CHANGE:` footer. That footer is what surfaces it in the release
+  notes when `beta` is promoted to `main`.
+- When a commit implements a spec, name it — `feat: deliver an approved diff as
+  a GitHub pull request (spec 15)`. The spec itself lands first, as its own
+  `docs:` commit.
+
 ## Before you open a PR
 
 Run the full gate locally — this is exactly what CI runs on every push and PR:
@@ -98,6 +130,25 @@ Individual pieces, if you want faster feedback:
 | `make typecheck` | `tsc --noEmit` |
 | `make build` | Production build |
 
+`make build` — and so `make check` and `make check-split`, which depend on it
+— needs a real `node_modules` directory in the checkout you run it from. In a
+second checkout (`git worktree add`, how a card's worktree is made) that
+directory does not exist until you run `make install` inside it. Linking it to
+the main checkout's copy instead looks like a cheap shortcut and fails late:
+Turbopack roots the project at the worktree and rejects any symlink that
+escapes it — `Symlink [project]/node_modules is invalid, it points out of the
+filesystem root` — while tests, lint and type-checking never notice, so only
+the build breaks. Both `make build` and `make check` therefore look at the
+directory before doing any work and stop at once, naming `make install`,
+rather than dying after a full test pass. Every worktree installs its own
+dependencies for that reason (spec 20).
+
+To watch a change work end to end without spending tokens, run the app with
+the scripted **mock provider** (`RADULF_MOCK_LLM=1`): the full pipeline runs in
+seconds, with every tool call executed for real and only the model's decisions
+canned. See
+[Providers](docs/PROVIDERS.md#testing-without-a-model-the-mock-provider).
+
 ## Guidelines
 
 - **Keep the diff focused.** One logical change per PR; unrelated cleanups in
@@ -111,8 +162,9 @@ Individual pieces, if you want faster feedback:
   old one rather than leaving both behind a flag. Fail loudly over silently
   falling back.
 - **Read the design docs first** for anything non-trivial. Start with
-  [How it works](docs/HOW_IT_WORKS.md) for the current shape of the pipeline,
-  then [`specs/`](specs/00-overview.md) for the architecture and data model —
+  [Architecture](docs/ARCHITECTURE.md) for where things live in the tree, and
+  [How it works](docs/HOW_IT_WORKS.md) for the shape of the pipeline. Reach for
+  [`specs/`](specs/00-overview.md) when you want the *why* behind a decision —
   checking [Design history](docs/DESIGN_HISTORY.md) first, since several specs
   are superseded and describe designs that no longer ship.
 
@@ -120,3 +172,11 @@ Individual pieces, if you want faster feedback:
 
 Open a [GitHub issue](https://github.com/lhansen-dev/radulf/issues). For security
 issues, follow [SECURITY.md](SECURITY.md) instead of filing a public issue.
+
+To turn an idea into a ticket in your local Radulf backlog, use
+`/create-card <rough idea>` in Claude Code, or `$create-card <rough idea>` in
+Codex. The repo's [create-card skill](.claude/skills/create-card/SKILL.md) asks
+follow-up questions, suggests options, and creates a card with scope and
+acceptance criteria once the work is clear. It leaves the card in Backlog for
+you to queue. The skill lives in `.claude/skills/create-card`, with a symlink in
+`.agents/skills` for Codex discovery.

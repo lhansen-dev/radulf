@@ -19,6 +19,8 @@
 
 # production
 /build
+# worker bundle (make build-worker)
+/dist
 
 # misc
 .DS_Store
@@ -41,14 +43,30 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# radulf runtime data. worktrees/, plans/ and runtmp/ are siblings of data/ by
-# design (spec 14: the sandbox denies data/ with no carve-out), so each needs its
-# own entry — with the defaults they are created in the repo root.
+# radulf runtime data. worktrees/, plans/, runtmp/ and repos/ are siblings of
+# data/ by design (spec 14: the sandbox denies data/ with no carve-out), so each
+# needs its own entry — with the defaults they are created in the repo root.
 /data
 /worktrees
 /plans
 /runtmp
+/repos
 
-# benchmark reports (local evidence, not source)
-/benchmarks/reports/
 .DS_Store
+
+# local investigation/planning notes — not user-facing docs
+/PLAN.md
+
+# Impeccable design tooling. Shared config and the DESIGN.md sidecar are tracked;
+# per-developer and per-session state is not.
+.impeccable/config.local.json
+.impeccable/live/sessions/
+.impeccable/live/inject-journal.json
+.impeccable/live/roots.json
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/critique/
+.impeccable/build/
+
+# Per-host compose tweaks (DNS, ports, user); docs/DOCKER.md explains when.
+/compose.override.yaml

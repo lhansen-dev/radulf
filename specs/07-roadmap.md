@@ -34,20 +34,25 @@ itself (the backlog below becomes cards).
 
 1. ~~**PM pass** — the ✨ Propose improvements button.~~ — **shipped**, then
    superseded by the self-driving **Improvement Run** (06).
-2. **Provider preflight** — health-check + model check (e.g. oMLX up and
-   serving the model) before a loop starts.
-3. **Metrics** — token/latency per iteration, run-history views.
-4. **Scheduling** — crons for queue-draining and Improvement Runs, opt-in (06).
+2. ~~**Provider preflight** — health-check + model check (e.g. oMLX up and
+   serving the model) before a loop starts.~~ **shipped** as
+   `preflightProvider` on 09's seam.
+3. ~~**Metrics** — token/latency per iteration, run-history views.~~
+   **shipped**: per-run tokens, iterations and history via `/api/analytics`.
+4. ~~**Scheduling** — crons for queue-draining and Improvement Runs, opt-in (06).~~
+   — **shipped** as [22-scheduled-work.md](22-scheduled-work.md).
 5. **Hosting & auth** — expose at `radulf.example.com` with
    single-password login (08); cluster manifests managed via GitOps.
-6. **Polish** — transcript search, better stall heuristics, card
-   export/import, packaging under launchd.
-7. **Deferred bets** — pluggable runners (Ollama), GitHub PR mode.
+6. **Polish** — ~~transcript search~~ **shipped**, better stall heuristics,
+   ~~card export/import~~ **shipped**, packaging under launchd.
+7. **Deferred bets** — pluggable runners (Ollama), ~~GitHub PR mode~~ —
+   **shipped** as [15-github-pr-delivery.md](15-github-pr-delivery.md).
    - ~~Codex CLI harness for a ChatGPT-subscription provider~~ — **shipped** as
      the third adapter on 09's seam (see `specs/09-multi-harness.md`).
-8. **Mobile-first workspace** — replace horizontal status lanes with the
+8. ~~**Mobile-first workspace** — replace horizontal status lanes with the
    attention-ordered Work feed, responsive shell, and touch/keyboard actions
-   specified in [10-mobile-first-ui.md](10-mobile-first-ui.md).
+   specified in [10-mobile-first-ui.md](10-mobile-first-ui.md).~~ **shipped** as
+   [10-mobile-first-ui.md](10-mobile-first-ui.md).
 
 ## Risks to watch
 

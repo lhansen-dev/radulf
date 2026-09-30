@@ -31,17 +31,45 @@ describe("isDocPath", () => {
 });
 
 describe("changedPaths", () => {
-  it("extracts paths from porcelain status, taking rename destinations", () => {
+  it("extracts paths from NUL-delimited porcelain, taking both rename identities", () => {
     const porcelain = [
       " M specs/14-sandboxing.md",
       "?? docs/new.md",
-      "R  docs/old.md -> docs/renamed.md",
+      "R  docs/renamed.md",
+      "docs/old.md",
       "",
-    ].join("\n");
+    ].join("\0");
     expect(changedPaths(porcelain)).toEqual([
       "specs/14-sandboxing.md",
       "docs/new.md",
       "docs/renamed.md",
+      "docs/old.md",
     ]);
+  });
+
+  it("does not confuse a rename source containing the display arrow for its destination", () => {
+    expect(changedPaths("R  src/server/auth.ts\0old -> docs/cover.md\0")).toEqual([
+      "src/server/auth.ts",
+      "old -> docs/cover.md",
+    ]);
+  });
+
+  it("retains a rename source so moving code into docs is not authorized", () => {
+    expect(changedPaths("R  docs/auth.md\0src/server/auth.ts\0")).toEqual([
+      "docs/auth.md",
+      "src/server/auth.ts",
+    ]);
+  });
+
+  it("preserves every byte spelling Git emits for unusual paths", () => {
+    const paths = [
+      " docs/leading space.md",
+      'docs/a "quote".md',
+      String.raw`docs/a\backslash.md`,
+      "docs/a\tcontrol.md",
+      "docs/café.md",
+    ];
+    const porcelain = paths.map((path) => `?? ${path}\0`).join("");
+    expect(changedPaths(porcelain)).toEqual(paths);
   });
 });

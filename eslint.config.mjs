@@ -12,7 +12,13 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Runtime data: agent worktrees, transcripts, SQLite.
+    // Worker bundle emitted by `make build-worker`.
+    "dist/**",
+    // Runtime directories: agent worktrees, plans, scratch space, and
+    // transcripts/SQLite under data/ (which also holds legacy worktrees).
+    "worktrees/**",
+    "plans/**",
+    "runtmp/**",
     "data/**",
     // Benchmark fixture seeds are standalone CommonJS apps, and the runner
     // is a dependency-free Node script — neither is part of the Next app.

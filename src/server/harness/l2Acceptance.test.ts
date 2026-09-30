@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -26,6 +27,9 @@ fs.mkdirSync(path.join(wt, ".ralph"), { recursive: true });
 fs.mkdirSync(evil, { recursive: true });
 fs.mkdirSync(path.join(home, ".ssh"), { recursive: true });
 fs.writeFileSync(path.join(wt, "src", "app.ts"), "export const x = 1;\n");
+// A linked worktree's `.git` is a pointer FILE, not a directory.
+const gitPointer = "gitdir: /repo/.git/worktrees/wt";
+fs.writeFileSync(path.join(wt, ".git"), gitPointer);
 fs.writeFileSync(path.join(evil, "loot.ts"), "stolen");
 const secret = path.join(tmp, "secret.env");
 fs.writeFileSync(secret, "API_KEY=supersecret");
@@ -40,7 +44,7 @@ afterAll(() => {
 });
 
 // Build the guarded tools exactly as createRalphSession does for a role.
-function toolFor(role: AgentRole, name: string): ToolDefinition {
+function toolFor(role: AgentRole | undefined, name: string): ToolDefinition {
   const { readRoots, writeRoots } = pathRootsForRole(role, wt);
   const t = createGuardedFsTools(wt, readRoots, writeRoots).find((d) => d.name === name);
   if (!t) throw new Error(`no guarded tool ${name}`);
@@ -50,6 +54,44 @@ function toolFor(role: AgentRole, name: string): ToolDefinition {
 const run = (t: ToolDefinition, params: unknown) =>
   t.execute("id", params as never, undefined, undefined, {} as never);
 const BOUNDARY = /path escapes this run's boundary/;
+const DENIED = /which this role may never write to/;
+
+it("wraps exactly pi's six file tools, keeping their built-in names", () => {
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  expect(createGuardedFsTools(wt, readRoots, writeRoots).map((t) => t.name).sort()).toEqual([
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "read",
+    "write",
+  ]);
+});
+
+it("quiesces sandbox processes before resolving and delegating a path", async () => {
+  const target = path.join(wt, "quiesce-link");
+  fs.symlinkSync(path.join(wt, "src", "app.ts"), target);
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  const tool = createGuardedFsTools(wt, readRoots, writeRoots, async () => {
+    fs.unlinkSync(target);
+    fs.symlinkSync(secret, target);
+    return [];
+  }).find((definition) => definition.name === "read");
+  if (!tool) throw new Error("no guarded read tool");
+  try {
+    await expect(run(tool, { path: target })).rejects.toThrow(BOUNDARY);
+  } finally {
+    fs.rmSync(target, { force: true });
+  }
+});
+
+it("fails closed when process-group reaping cannot quiesce a run", async () => {
+  const { readRoots, writeRoots } = pathRootsForRole("loop", wt);
+  const tool = createGuardedFsTools(wt, readRoots, writeRoots, async () => [4242])
+    .find((definition) => definition.name === "read");
+  if (!tool) throw new Error("no guarded read tool");
+  await expect(run(tool, { path: "src/app.ts" })).rejects.toThrow(/surviving process groups/);
+});
 
 describe("L2 acceptance — planner (read checkout, write .ralph only, no bash)", () => {
   it("allows reading source anywhere in the checkout", async () => {
@@ -80,6 +122,33 @@ describe("L2 acceptance — planner (read checkout, write .ralph only, no bash)"
       run(toolFor("planner", "read"), { path: "~/.ssh/id_ed25519" }),
     ).rejects.toThrow(BOUNDARY);
   });
+  it("blocks SDK alternate spellings for outside reads and writes", async () => {
+    const alternatePaths = [`@${secret}`, pathToFileURL(secret).href];
+    for (const alternatePath of alternatePaths) {
+      await expect(run(toolFor("planner", "read"), { path: alternatePath })).rejects.toThrow(BOUNDARY);
+      await expect(
+        run(toolFor("planner", "write"), { path: alternatePath, content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+    }
+  });
+
+  it("keeps its write root pinned when .ralph is replaced", async () => {
+    const { readRoots, writeRoots } = pathRootsForRole("planner", wt);
+    const writeTool = createGuardedFsTools(wt, readRoots, writeRoots).find((d) => d.name === "write");
+    if (!writeTool) throw new Error("no guarded write tool");
+    const original = path.join(wt, ".ralph-original");
+    fs.renameSync(path.join(wt, ".ralph"), original);
+    fs.symlinkSync(evil, path.join(wt, ".ralph"));
+    try {
+      await expect(
+        run(writeTool, { path: ".ralph/escaped.md", content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+      expect(fs.existsSync(path.join(evil, "escaped.md"))).toBe(false);
+    } finally {
+      fs.unlinkSync(path.join(wt, ".ralph"));
+      fs.renameSync(original, path.join(wt, ".ralph"));
+    }
+  });
 });
 
 describe.each(["loop", "evaluator"] as const)(
@@ -96,15 +165,38 @@ describe.each(["loop", "evaluator"] as const)(
         }),
       ).resolves.toBeDefined();
     });
-    it("blocks a write into the prefix-sharing -evil sibling (segment-safe)", async () => {
+    it("blocks writes and edits into the prefix-sharing -evil sibling (segment-safe)", async () => {
       await expect(
         run(toolFor(role, "write"), { path: "../wt-evil/loot.ts", content: "pwn" }),
+      ).rejects.toThrow(BOUNDARY);
+      await expect(
+        run(toolFor(role, "edit"), {
+          path: path.join(evil, "loot.ts"),
+          edits: [{ oldText: "stolen", newText: "pwn" }],
+        }),
       ).rejects.toThrow(BOUNDARY);
       expect(fs.readFileSync(path.join(evil, "loot.ts"), "utf8")).toBe("stolen");
     });
     it("blocks reads outside the worktree and through the planted symlink", async () => {
       await expect(run(toolFor(role, "read"), { path: secret })).rejects.toThrow(BOUNDARY);
       await expect(run(toolFor(role, "read"), { path: "escape-link" })).rejects.toThrow(BOUNDARY);
+    });
+    it("blocks rewriting the worktree's .git pointer, though the worktree is the write root", async () => {
+      await expect(
+        run(toolFor(role, "write"), { path: ".git", content: "gitdir: /tmp/agent-owned" }),
+      ).rejects.toThrow(DENIED);
+      await expect(
+        run(toolFor(role, "edit"), {
+          path: ".git",
+          edits: [{ oldText: "/repo/.git", newText: "/tmp/agent-owned" }],
+        }),
+      ).rejects.toThrow(DENIED);
+      await expect(
+        run(toolFor(role, "write"), { path: ".git/config", content: "[core]\n\tfsmonitor = x" }),
+      ).rejects.toThrow(DENIED);
+      expect(fs.readFileSync(path.join(wt, ".git"), "utf8")).toBe(gitPointer);
+      // Reading it stays allowed: the pointer is not a secret.
+      await expect(run(toolFor(role, "read"), { path: ".git" })).resolves.toBeDefined();
     });
     it("blocks grep/find rooted outside the worktree, allows the default (cwd)", async () => {
       await expect(run(toolFor(role, "grep"), { pattern: "KEY", path: tmp })).rejects.toThrow(BOUNDARY);
@@ -113,6 +205,29 @@ describe.each(["loop", "evaluator"] as const)(
     });
   },
 );
+
+describe("L2 acceptance — read-only session (scoping, proposer: read the checkout, write nothing)", () => {
+  it("allows reading, grepping, and listing inside the checkout", async () => {
+    await expect(run(toolFor(undefined, "read"), { path: "src/app.ts" })).resolves.toBeDefined();
+    await expect(run(toolFor(undefined, "grep"), { pattern: "x", path: "src" })).resolves.toBeDefined();
+    await expect(run(toolFor(undefined, "ls"), {})).resolves.toBeDefined();
+  });
+  it("blocks reading an outside path, a symlink to it, and ~/.ssh keys", async () => {
+    await expect(run(toolFor(undefined, "read"), { path: secret })).rejects.toThrow(BOUNDARY);
+    await expect(run(toolFor(undefined, "read"), { path: "escape-link" })).rejects.toThrow(BOUNDARY);
+    await expect(run(toolFor(undefined, "read"), { path: "~/.ssh/id_ed25519" })).rejects.toThrow(BOUNDARY);
+    await expect(run(toolFor(undefined, "grep"), { pattern: "KEY", path: tmp })).rejects.toThrow(BOUNDARY);
+  });
+  it("blocks every write, even inside the checkout (no write root at all)", async () => {
+    await expect(
+      run(toolFor(undefined, "write"), { path: "src/app.ts", content: "pwn" }),
+    ).rejects.toThrow(BOUNDARY);
+    await expect(
+      run(toolFor(undefined, "edit"), { path: "src/app.ts", edits: [{ oldText: "1", newText: "2" }] }),
+    ).rejects.toThrow(BOUNDARY);
+    expect(fs.readFileSync(path.join(wt, "src", "app.ts"), "utf8")).toContain("const x = 1");
+  });
+});
 
 it("the outside secret is never mutated by any blocked write across the whole run", () => {
   expect(fs.readFileSync(secret, "utf8")).toBe("API_KEY=supersecret");

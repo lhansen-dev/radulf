@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import ReviewPage from "./page";
 
 vi.mock("next/link", () => ({
@@ -20,8 +20,18 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: () => {} }),
 }));
 
+/** jsdom has no EventSource, and the page subscribes to the event stream for
+ * live updates — same stand-in the card detail page's test uses. */
+class MockEventSource {
+  onopen: (() => void) | null = null;
+  onerror: ((e: Event) => void) | null = null;
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  close() {}
+}
+
 beforeEach(() => {
   cleanup();
+  globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
 
   const mockFetch = vi.fn((url: string) => {
     if (url === "/api/cards/c1") {
@@ -101,6 +111,28 @@ describe("ReviewPage", () => {
     expect(screen.getByText(/Evaluator approved this change/)).toBeTruthy();
     expect(screen.getByText("All acceptance criteria passed.")).toBeTruthy();
   });
+
+  it("shows why an abandon failed instead of dropping the rejection", async () => {
+    const baseFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/cards/c1/abandon") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "worktree is locked" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("confirm", () => true);
+
+    render(<ReviewPage />);
+    fireEvent.click(await screen.findByText("Abandon task"));
+
+    expect(await screen.findByText("worktree is locked")).toBeTruthy();
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("ReviewPage — Phase 4 diff hardening banners", () => {
@@ -150,6 +182,28 @@ describe("ReviewPage — Phase 4 diff hardening banners", () => {
     render(<ReviewPage />);
     expect(await screen.findByText(/Touches sandbox \/ security-critical code/)).toBeTruthy();
     expect(screen.getByText(/self-modifying \/ load-bearing diff/i)).toBeTruthy();
+  });
+
+  it("shows an ordinary edit to a path containing ` b/` as one file, not a rename", async () => {
+    mockDiff(
+      "diff --git a/docs/x b/y.md b/docs/x b/y.md\nindex 111..222 100644\n--- a/docs/x b/y.md\n+++ b/docs/x b/y.md\n" +
+        "@@ -1 +1 @@\n-old\n+new\n",
+    );
+    render(<ReviewPage />);
+    expect((await screen.findAllByText("docs/x b/y.md")).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/→/)).toBeNull();
+  });
+
+  it("takes a rename's identities from its rename lines when the header reads as symmetric", async () => {
+    // Renaming `x b/src/server/sandbox/p.ts b/x` to `src/server/sandbox/p.ts`
+    // yields a header that also reads as an edit of `x b/src/server/sandbox/p.ts`,
+    // which raises no banner.
+    mockDiff(
+      "diff --git a/x b/src/server/sandbox/p.ts b/x b/src/server/sandbox/p.ts\n" +
+        "similarity index 100%\nrename from x b/src/server/sandbox/p.ts b/x\nrename to src/server/sandbox/p.ts\n",
+    );
+    render(<ReviewPage />);
+    expect(await screen.findByText(/Touches sandbox \/ security-critical code/)).toBeTruthy();
   });
 
   it("flags a .gitattributes change", async () => {

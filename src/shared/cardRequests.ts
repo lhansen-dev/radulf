@@ -8,6 +8,14 @@ export type CreateCardRequest = {
   maxIterations: string | number;
   timeoutMinutes: string | number;
   reviewPlanBeforeImplementation: boolean;
+  grillMe: boolean;
+  scopingAuthorsPlan: boolean;
   autoApprove: boolean;
+  openPr: boolean;
   baseBranch: string | null;
+  /** Spec 30: per-card plan critic override; null/undefined defers to settings. */
+  planCritic?: boolean | null;
+  criticModel?: string | null;
+  /** The Jira issue this card mirrors, as an issue key like `DEV-123`. */
+  jiraKey?: string | null;
 };

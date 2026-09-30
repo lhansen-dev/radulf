@@ -1,43 +1,41 @@
 import { describe, expect, it } from "vitest";
 import { parseCreateCard, parseUpdateCard } from "./cardValidation";
+import { optionalInteger, record, rejectUnknownKeys, requiredInteger } from "./requestValidation";
 import { REDACTED, SETTING_DEFAULTS, redactSettings, validateSettingsPatch } from "./settings";
+import { testSettings } from "@/testUtils/testSettings";
 
 describe("redactSettings", () => {
-  const secrets = ["omlxApiKey", "openrouterApiKey", "braveApiKey"] as const;
+  const secrets = ["omlxApiKey", "omlxHeaders", "openrouterApiKey", "braveApiKey", "jiraApiToken"] as const;
 
   it("replaces every stored provider credential with the redaction marker", () => {
-    const redacted = redactSettings({
-      ...SETTING_DEFAULTS,
+    const redacted = redactSettings(testSettings({
       omlxApiKey: "omlx-secret",
+      omlxHeaders: "kong-api-key: header-secret",
       openrouterApiKey: "sk-or-v1-secret",
       braveApiKey: "brave-secret",
-    });
+      jiraApiToken: "jira-secret",
+    }));
 
     for (const key of secrets) expect(redacted[key]).toBe(REDACTED);
     // Not merely masked in place — no fragment of the real value survives.
     const serialized = JSON.stringify(redacted);
-    for (const secret of ["omlx-secret", "sk-or-v1-secret", "brave-secret"]) {
+    for (const secret of ["omlx-secret", "header-secret", "sk-or-v1-secret", "brave-secret", "jira-secret"]) {
       expect(serialized).not.toContain(secret);
     }
   });
 
-  it("distinguishes an unset credential from a set one", () => {
-    const redacted = redactSettings({ ...SETTING_DEFAULTS, openrouterApiKey: "" });
-    expect(redacted.openrouterApiKey).toBe("");
-    expect(redacted.braveApiKey).toBe("");
-  });
-
-  it("leaves non-secret settings untouched", () => {
-    const input = { ...SETTING_DEFAULTS, omlxBaseUrl: "http://127.0.0.1:9999", theme: "nord" };
+  it("keeps unset credentials empty, leaves non-secret settings alone, and never mutates its input", () => {
+    const input = testSettings({
+      openrouterApiKey: "",
+      braveApiKey: "brave-secret",
+      omlxBaseUrl: "http://127.0.0.1:9999",
+      theme: "nord",
+    });
     const redacted = redactSettings(input);
+    expect(redacted.openrouterApiKey).toBe("");
     expect(redacted.omlxBaseUrl).toBe("http://127.0.0.1:9999");
     expect(redacted.theme).toBe("nord");
     expect(redacted.sandboxEnabled).toBe(true);
-  });
-
-  it("does not mutate its input", () => {
-    const input = { ...SETTING_DEFAULTS, braveApiKey: "brave-secret" };
-    redactSettings(input);
     expect(input.braveApiKey).toBe("brave-secret");
   });
 
@@ -53,14 +51,11 @@ describe("redactSettings", () => {
 });
 
 describe("validateSettingsPatch", () => {
-  it("enables auto-mode by default", () => {
+  it("defaults auto-mode on and the sandbox to strict isolation (spec 14 — the one escape hatch)", () => {
     expect(SETTING_DEFAULTS.autoMode).toBe(true);
-  });
-
-  it("defaults the sandbox on (spec 14 — the one escape hatch)", () => {
     expect(SETTING_DEFAULTS.sandboxEnabled).toBe(true);
     expect(SETTING_DEFAULTS.sandboxNetworkAllowlist).toBe("");
-    // Go/TLS trustd carve-out is opt-in — strict isolation by default.
+    // The Go/TLS trustd carve-out is opt-in.
     expect(SETTING_DEFAULTS.sandboxWeakerIsolationForGoTls).toBe(false);
   });
 
@@ -70,11 +65,15 @@ describe("validateSettingsPatch", () => {
         autoMode: false,
         plannerProvider: "chatgpt",
         evaluatorProvider: "openrouter",
+        plannerTimeoutMinutes: 45,
         defaultMaxIterations: 100,
+        evaluatorTimeoutMinutes: 15,
         stallTimeoutSeconds: 30,
         theme: "nord",
         loopReasoningLevel: "high",
         omlxBaseUrl: "http://127.0.0.1:8000",
+        omlxHeaders: "kong-api-key: abc123\n",
+        omlxContextWindows: "Qwen/Qwen3-8B: 131072\n",
         plannerPromptTemplate: "Plan {{TITLE}}",
         sandboxEnabled: false,
         sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -84,11 +83,15 @@ describe("validateSettingsPatch", () => {
       autoMode: false,
       plannerProvider: "chatgpt",
       evaluatorProvider: "openrouter",
+      plannerTimeoutMinutes: 45,
       defaultMaxIterations: 100,
+      evaluatorTimeoutMinutes: 15,
       stallTimeoutSeconds: 30,
       theme: "nord",
       loopReasoningLevel: "high",
       omlxBaseUrl: "http://127.0.0.1:8000",
+      omlxHeaders: "kong-api-key: abc123\n",
+      omlxContextWindows: "Qwen/Qwen3-8B: 131072\n",
       plannerPromptTemplate: "Plan {{TITLE}}",
       sandboxEnabled: false,
       sandboxNetworkAllowlist: "docs.example.com\nregistry.example.org",
@@ -101,15 +104,41 @@ describe("validateSettingsPatch", () => {
     [{ sandboxEnabled: "off" }, /boolean/],
     [{ sandboxNetworkAllowlist: 42 }, /must be a string/],
     [{ defaultTimeoutMinutes: -1 }, /integer between/],
+    [{ plannerTimeoutMinutes: 0 }, /integer between/],
+    [{ evaluatorTimeoutMinutes: 10_081 }, /integer between/],
     [{ plannerProvider: "unknown" }, /known provider/],
     [{ theme: "matrix" }, /known theme/],
     [{ evaluatorReasoningLevel: "extreme" }, /evaluatorReasoningLevel must be one of/],
     [{ omlxBaseUrl: "file:///tmp/model" }, /http or https/],
+    [{ omlxHeaders: "kong-api-key abc123" }, /omlxHeaders: line 1 must look like "Name: value"/],
+    [{ omlxHeaders: 42 }, /omlxHeaders must be a string/],
+    [{ omlxContextWindows: "Qwen/Qwen3-8B 131072" }, /omlxContextWindows: line 1 must look like "model-id: tokens"/],
+    [{ omlxContextWindows: 131072 }, /omlxContextWindows must be a string/],
     [{ evaluatorPromptTemplate: 42 }, /must be a string/],
     [{ improvePromptTemplate: "x".repeat(100_001) }, /at most 100000 characters/],
     [{ madeUpSetting: true }, /unknown setting/],
   ])("rejects invalid settings %#", (value, expected) => {
     expect(() => validateSettingsPatch(value)).toThrow(expected);
+  });
+});
+
+describe("request validation primitives", () => {
+  it("names the body and the key in its errors", () => {
+    expect(() => record([], "cleanup body")).toThrow("cleanup body must be an object");
+    expect(record({ a: 1 }, "body")).toEqual({ a: 1 });
+    expect(() => rejectUnknownKeys({ x: 1 }, new Set(["a"]))).toThrow("unknown field: x");
+    expect(() => rejectUnknownKeys({ x: 1 }, new Set(["a"]), "card field")).toThrow("unknown card field: x");
+  });
+
+  it("requires an integer in range, coercing numeric strings", () => {
+    expect(requiredInteger("30", "budgetMinutes", 10_080)).toBe(30);
+    for (const value of [undefined, null, "", 0, 1.5, 10_081, "x"]) {
+      expect(() => requiredInteger(value, "budgetMinutes", 10_080)).toThrow(
+        "budgetMinutes must be an integer between 1 and 10080",
+      );
+    }
+    for (const value of [undefined, null, ""]) expect(optionalInteger(value, "f", 10)).toBeNull();
+    expect(optionalInteger("7", "f", 10)).toBe(7);
   });
 });
 
@@ -139,7 +168,13 @@ describe("card request validation", () => {
       evaluatorModel: "judge",
       reviewPlanBeforeImplementation: true,
       autoApprove: false,
+      openPr: false,
+      grillMe: false,
+      scopingAuthorsPlan: false,
+      planCritic: undefined,
+      criticModel: null,
       baseBranch: "feature/base",
+      jiraKey: null,
     });
   });
 
@@ -148,6 +183,7 @@ describe("card request validation", () => {
     [{ repoId: "r", title: "T", timeoutMinutes: "Infinity" }, /timeoutMinutes/],
     [{ repoId: "r", title: "T", reviewPlanBeforeImplementation: "true" }, /boolean/],
     [{ repoId: "r", title: "T", autoApprove: "yes" }, /autoApprove/],
+    [{ repoId: "r", title: "T", openPr: "yes" }, /openPr/],
     [{ repoId: "r", title: "T", loopModel: 42 }, /loopModel/],
     [{ repoId: "r", title: "T", evaluatorModel: 42 }, /evaluatorModel/],
     [{ repoId: "r", title: "T", surprise: true }, /unknown card field/],
@@ -163,5 +199,27 @@ describe("card request validation", () => {
       maxIterations: null,
       loopModel: null,
     });
+  });
+});
+
+describe("jiraBaseUrl", () => {
+  it("accepts blank (import disabled) and a site URL, and rejects anything else", () => {
+    expect(validateSettingsPatch({ jiraBaseUrl: "" })).toEqual({ jiraBaseUrl: "" });
+    expect(validateSettingsPatch({ jiraBaseUrl: "https://example.atlassian.net" })).toEqual({
+      jiraBaseUrl: "https://example.atlassian.net",
+    });
+    expect(() => validateSettingsPatch({ jiraBaseUrl: "example.atlassian.net" })).toThrow(/must be a URL/);
+    expect(() => validateSettingsPatch({ jiraBaseUrl: "ftp://example.atlassian.net" })).toThrow(/http or https/);
+  });
+});
+
+describe("jiraCommentOnDone", () => {
+  it("is opt-in: the default writes nothing to Jira", () => {
+    expect(SETTING_DEFAULTS.jiraCommentOnDone).toBe(false);
+  });
+
+  it("accepts a boolean and rejects anything else", () => {
+    expect(validateSettingsPatch({ jiraCommentOnDone: true })).toEqual({ jiraCommentOnDone: true });
+    expect(() => validateSettingsPatch({ jiraCommentOnDone: "yes" })).toThrow(/must be a boolean/);
   });
 });

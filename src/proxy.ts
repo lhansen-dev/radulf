@@ -1,8 +1,8 @@
 /**
  * Request proxy — gates every route behind a signed session cookie.
  *
- * When RADULF_AUTH_PASSWORD_HASH is unset, the proxy is a strict no-op so
- * the unauthenticated local-development behavior is preserved.
+ * When RADULF_AUTH_PASSWORD_HASH is unset, loopback requests pass without a
+ * session. Foreign Host headers are rejected to block DNS rebinding.
  *
  * Uses only Web Crypto (no fs, no bcrypt) — the HMAC secret is read from
  * process.env.RADULF_AUTH_SECRET, populated at boot by ensureAuthSecret().
@@ -15,6 +15,8 @@ import {
   verifySession,
   SESSION_COOKIE,
   isAllowedOrigin,
+  isAllowedUnauthenticatedHost,
+  requestHost,
 } from "@/server/session";
 
 // Match everything except Next.js internals and static assets.
@@ -41,18 +43,22 @@ export async function proxy(request: NextRequest) {
   //
   // Non-browser clients (curl, scripts) send no Origin at all and are
   // unaffected: isAllowedOrigin(null) is true. Only a foreign Origin is
-  // rejected, and only browsers attach one.
+  // rejected, and only browsers attach one. "Foreign" means anything but the
+  // loopback host and port this request was addressed to, or the full
+  // RADULF_ALLOWED_ORIGIN:
+  // another localhost port must not count, since browsers treat every localhost port
+  // as one site for cookies.
   if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
     const origin = request.headers.get("origin");
-    if (!isAllowedOrigin(origin)) {
-      return new NextResponse(JSON.stringify({ error: "Forbidden" }), {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      });
+    if (!isAllowedOrigin(origin, requestHost(request))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
   }
 
   if (!authEnabled()) {
+    if (!isAllowedUnauthenticatedHost(requestHost(request))) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
     return NextResponse.next();
   }
 
@@ -60,15 +66,18 @@ export async function proxy(request: NextRequest) {
   if (pathname === "/login" || pathname === "/api/auth/login") {
     return NextResponse.next();
   }
+  // The liveness check answers a container HEALTHCHECK and a reverse proxy's
+  // probe, neither of which has a session. It reveals nothing but that the
+  // process is up and whether a restart is pending.
+  if (pathname === "/api/health" && request.method === "GET") {
+    return NextResponse.next();
+  }
 
   const sessionValue = request.cookies.get(SESSION_COOKIE)?.value;
   const valid = sessionValue ? await verifySession(sessionValue) : false;
   if (!valid) {
     if (pathname.startsWith("/api/")) {
-      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     return NextResponse.redirect(new URL("/login", request.url));
   }

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import {
@@ -13,12 +12,20 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import type { ProviderId } from "../providers";
+import { DATA_DIR } from "@/db";
+import { privateDir } from "@/db/privateFs";
+import { contextWindowFor, listLocalModels, parseHeaderLines, v1Root } from "../localEndpoint";
+import type { ProviderId, ProviderModel } from "../providers";
 import type { RunSandboxContext } from "../sandbox/context";
-import { createSandboxedBashOperations } from "../sandbox/srt";
+import {
+  createSandboxedBashOperations,
+  createSerializedBashOperations,
+} from "../sandbox/srt";
 import { getSettings, type Settings } from "../settings";
 import { createGuardedFsTools } from "./guardedTools";
+import { DEFAULT_MOCK_SCENARIO, mockProviderConfig } from "./mock";
 import { agentEnv, type TranscriptEvent } from "./types";
+import { rateLimitExtension } from "./rateLimitExtension";
 import { createWebSearchTool } from "./webSearch";
 
 /**
@@ -55,8 +62,9 @@ function toThinkingLevel(level: string): ThinkingLevel {
 
 /**
  * Radulf provider id → pi provider id. pi calls the ChatGPT subscription
- * `openai-codex` and the Copilot subscription `github-copilot`; oMLX is a custom
- * provider we register at runtime; the rest match by name.
+ * `openai-codex` and the Copilot subscription `github-copilot`; the self-hosted
+ * endpoint and the scripted mock are custom providers we register at runtime;
+ * the rest match by name.
  */
 const PI_PROVIDER: Record<ProviderId, string> = {
   anthropic: "anthropic",
@@ -64,15 +72,12 @@ const PI_PROVIDER: Record<ProviderId, string> = {
   copilot: "github-copilot",
   omlx: "omlx",
   openrouter: "openrouter",
+  mock: "mock",
 };
 
 // ---------------------------------------------------------------------------
 // Persistent, Radulf-owned pi agent dir (spec 13)
 // ---------------------------------------------------------------------------
-
-function radulfDataDir(): string {
-  return process.env.RADULF_DATA_DIR ?? path.join(process.cwd(), "data");
-}
 
 /**
  * One Radulf-owned pi agent dir, shared by every run. Holds `auth.json` (the
@@ -84,7 +89,20 @@ function radulfDataDir(): string {
  * enforced by the session options, not by an empty dir.
  */
 export function piAgentDir(): string {
-  return path.join(radulfDataDir(), "pi-agent");
+  return path.join(DATA_DIR, "pi-agent");
+}
+
+/**
+ * The one message for "this subscription has no credential in Radulf's own pi
+ * agent dir". Radulf deliberately ignores the user's personal `~/.pi/agent`
+ * (see piAgentDir), so a `pi` that logs in fine from a terminal still leaves
+ * this dir empty — the message has to name the dir, or the mismatch is
+ * invisible from the settings page.
+ */
+function notLoggedInError(provider: ProviderId): Error {
+  return new Error(
+    `not logged in to ${provider} — run \`make login\` and type /login in pi to establish the subscription (agent dir: ${piAgentDir()})`,
+  );
 }
 
 /**
@@ -96,13 +114,65 @@ let runtimePromise: Promise<ModelRuntime> | undefined;
 export function getModelRuntime(): Promise<ModelRuntime> {
   if (!runtimePromise) {
     const dir = piAgentDir();
-    fs.mkdirSync(dir, { recursive: true });
+    privateDir(dir);
     runtimePromise = ModelRuntime.create({
       authPath: path.join(dir, "auth.json"),
       modelsPath: path.join(dir, "models.json"),
+      // Without this the SDK refreshes catalogs from disk only, so Radulf's
+      // model list is frozen at whatever static catalog the installed pi
+      // package was built with, plus whatever a `pi` CLI run happened to
+      // leave in models-store.json. New provider models would then never
+      // appear without a `make login`. The fetch is etag-conditional and the
+      // SDK rate-limits it to once per REMOTE_CATALOG_REFRESH_INTERVAL_MS
+      // (4h), so this costs one 304 a few times a day.
+      allowModelNetwork: true,
+      // A slow or unreachable pi.dev must not hold up the first model call —
+      // on timeout the SDK keeps the on-disk catalog.
+      modelRefreshTimeoutMs: CATALOG_REFRESH_TIMEOUT_MS,
     });
   }
   return runtimePromise;
+}
+
+/** Cap on the pi.dev catalog fetch, at startup and per refresh. */
+const CATALOG_REFRESH_TIMEOUT_MS = 5_000;
+
+/**
+ * Re-sync one provider's catalog before listing it. The runtime is a
+ * process-wide singleton (auth has to persist across runs), so without this it
+ * reads models-store.json exactly once, at construction: a `make login` that
+ * pulls a newer catalog mid-session stays invisible until Radulf restarts.
+ * `refresh` re-reads the store when its file revision changed and only hits
+ * the network past the SDK's own 4h window, so the common case is local.
+ *
+ * Best-effort by design — a refresh failure leaves the previously loaded
+ * catalog in place, which is strictly better than failing the picker.
+ */
+async function refreshProviderCatalog(
+  runtime: ModelRuntime,
+  piProviderId: string,
+  force = false,
+): Promise<void> {
+  try {
+    await runtime.refresh({
+      providers: [piProviderId],
+      allowNetwork: true,
+      // `force` skips the SDK's 4h freshness window and re-fetches now. Only
+      // the operator's explicit "Load models" sets it — a model that shipped
+      // an hour ago is otherwise invisible until the window rolls over, and
+      // clicking a button that silently does nothing is worse than waiting.
+      force,
+      signal: AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS),
+    });
+  } catch {
+    // Stale catalog beats no catalog.
+  }
+}
+
+/** Resync `piProviderId`'s catalog, then look the model up again. */
+async function refreshCatalogAndGetModel(runtime: ModelRuntime, piProviderId: string, model: string) {
+  await refreshProviderCatalog(runtime, piProviderId);
+  return runtime.getModel(piProviderId, model);
 }
 
 /** Reset the runtime singleton — test seam only. */
@@ -111,18 +181,30 @@ export function resetModelRuntime(): void {
 }
 
 /**
- * The oMLX custom-provider block. Shape from spec 12 (`anthropic-messages`
- * matches spec 09's @ai-sdk/anthropic choice; `openai-completions` is the
- * documented fallback if /v1/messages doesn't slot cleanly). Registered on the
- * runtime per run rather than written to disk, so a per-card model id resolves
- * without rewriting models.json.
+ * The custom-provider block for the self-hosted endpoint behind the `omlx`
+ * provider id. Registered on the runtime per run rather than written to disk,
+ * so a per-card model id resolves without rewriting models.json.
+ *
+ * `openai-completions`, not spec 12's `anthropic-messages` (spec 16). Spec 12
+ * picked the Anthropic wire format to match spec 09's @ai-sdk/anthropic choice
+ * and named this one as the fallback "if /v1/messages doesn't slot cleanly";
+ * for any server other than oMLX itself there is no /v1/messages to slot into.
+ * vLLM serves /v1/chat/completions only.
  */
-export function omlxProviderConfig(model: string, s: Settings) {
+export function omlxProviderConfig(model: string, s: Settings, contextWindow?: number) {
+  // Conservative when the server reports nothing: the number only has to be no
+  // larger than the truth for compaction to fire in time.
+  const window = contextWindow ?? 32_768;
   return {
-    name: "oMLX",
-    baseUrl: s.omlxBaseUrl,
+    name: "Local",
+    baseUrl: v1Root(s.omlxBaseUrl),
     apiKey: s.omlxApiKey || "omlx",
-    api: "anthropic-messages" as const,
+    api: "openai-completions" as const,
+    // Sent on every request; a header named Authorization wins over the
+    // bearer token pi derives from apiKey.
+    headers: Object.fromEntries(
+      Object.entries(parseHeaderLines(s.omlxHeaders)).map(([name, value]) => [name, piLiteral(value)]),
+    ),
     models: [
       {
         id: model,
@@ -130,10 +212,50 @@ export function omlxProviderConfig(model: string, s: Settings) {
         reasoning: false,
         input: ["text" as const],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200_000,
-        maxTokens: 8_192,
+        contextWindow: window,
+        // A server's context budget covers prompt *and* completion, so an
+        // output cap near the window is unsatisfiable once a loop's context
+        // has grown. Quarter of the window, capped where it used to sit.
+        maxTokens: Math.min(8_192, Math.max(1_024, Math.floor(window / 4))),
       },
     ],
+  };
+}
+
+/**
+ * pi reads a provider header value as a config reference: `$NAME` is an
+ * environment variable and a leading `!` runs a shell command. A header pasted
+ * into Settings is a literal, so escape it the way pi documents: `$$` for `$`,
+ * `$!` for `!`.
+ */
+function piLiteral(value: string): string {
+  return value.replace(/\$/g, "$$$$").replace(/^!/, "$!");
+}
+
+/** The OpenRouter endpoint pi's installed `openai-completions` API expects. */
+const OPENROUTER_COMPLETIONS_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * Keep a refreshed OpenRouter catalog entry on the one API the installed pi
+ * can send to OpenRouter.
+ *
+ * pi.dev's remote catalog now lists OpenRouter's Anthropic models as
+ * `anthropic-messages` at `https://openrouter.ai/api`, which pi ≥ 0.85 can
+ * dispatch. The pinned 0.84 OpenRouter provider implements only
+ * `openai-completions` and ignores `model.api`, so it sent OpenAI-shaped
+ * requests to `https://openrouter.ai/api/chat/completions` and every run failed
+ * with OpenRouter's HTML 404 page. Re-shape those entries to match pi 0.84's
+ * bundled catalog for the same models. Remove this once pi is upgraded.
+ */
+function openRouterServableModel<M extends { id: string; api: string; baseUrl: string; compat?: unknown }>(
+  m: M,
+): M {
+  if (m.api !== "anthropic-messages") return m;
+  return {
+    ...m,
+    api: "openai-completions",
+    baseUrl: OPENROUTER_COMPLETIONS_BASE_URL,
+    compat: { thinkingFormat: "openrouter", cacheControlFormat: "anthropic" },
   };
 }
 
@@ -145,8 +267,11 @@ export function omlxProviderConfig(model: string, s: Settings) {
  *   default, wrong for both).
  * - `anthropic`/`chatgpt`/`copilot` treat a blank model as "the subscription
  *   default" — the same latitude `claude -p` / `codex exec` had.
+ * - `mock` treats a blank model as its happy-path scenario.
+ *
+ * Exported as a test seam; runs reach it through `createRalphSession`.
  */
-async function resolveModel(
+export async function resolveModel(
   runtime: ModelRuntime,
   provider: ProviderId,
   model: string,
@@ -161,26 +286,56 @@ async function resolveModel(
       );
     }
     await runtime.setRuntimeApiKey("openrouter", s.openrouterApiKey);
-    const m = runtime.getModel(pid, model);
+    // The settings picker lists OpenRouter's live API, but runs resolve against
+    // pi's catalog. pi only fetches a provider's catalog when it holds a
+    // credential, and the key above is registered per run rather than at
+    // startup, so the startup refresh never updates OpenRouter's — a model
+    // added since is selectable yet missing here. Resync once (key now set)
+    // before calling it unserved, as for the subscription providers below.
+    const m = runtime.getModel(pid, model) ?? (await refreshCatalogAndGetModel(runtime, pid, model));
     if (!m) throw new Error(`OpenRouter does not serve model "${model}"`);
-    return m;
+    return openRouterServableModel(m);
   }
 
   if (provider === "omlx") {
     if (!model) {
       throw new Error(
-        "no model selected for the oMLX provider — the pi harness needs an explicit model id; pick one in Settings before running",
+        "no model selected for the local provider: the pi harness needs an explicit model id, so pick one in Settings before running",
       );
     }
-    runtime.registerProvider("omlx", omlxProviderConfig(model, s));
+    // Ask the server what it is actually serving. The context window is a
+    // per-deployment number (vLLM's --max-model-len), so it cannot be a
+    // constant here, and a wrong one surfaces as a 400 deep into a loop. A
+    // server that reports none gets the operator's per-model entry from
+    // Settings, when there is one.
+    const served = await listLocalModels(s.omlxBaseUrl, s.omlxApiKey, parseHeaderLines(s.omlxHeaders));
+    const meta = served.find((x) => x.id === model);
+    if (!meta) {
+      throw new Error(
+        `the local endpoint does not serve model "${model}" (serving: ${served.map((x) => x.id).join(", ") || "nothing"})`,
+      );
+    }
+    runtime.registerProvider("omlx", omlxProviderConfig(model, s, contextWindowFor(model, s, meta.contextWindow)));
     const m = runtime.getModel(pid, model);
-    if (!m) throw new Error(`oMLX does not serve model "${model}"`);
+    if (!m) throw new Error(`the local endpoint does not serve model "${model}"`);
+    return m;
+  }
+
+  // The scripted mock (./mock.ts): the model id names a scenario; blank runs
+  // the happy path.
+  if (provider === "mock") {
+    runtime.registerProvider("mock", mockProviderConfig());
+    const m = runtime.getModel(pid, model || DEFAULT_MOCK_SCENARIO);
+    if (!m) throw new Error(`the mock provider has no scenario "${model}"`);
     return m;
   }
 
   // anthropic / chatgpt / copilot: subscription auth lives in the Radulf agent dir.
   if (model) {
-    const m = runtime.getModel(pid, model);
+    // A miss is usually a stale catalog — the settings picker can offer a
+    // model this long-lived runtime loaded before it existed. Resync once
+    // (throttled, usually a local read) before calling it unserved.
+    const m = runtime.getModel(pid, model) ?? (await refreshCatalogAndGetModel(runtime, pid, model));
     if (!m) throw new Error(`${provider} does not serve model "${model}"`);
     return m;
   }
@@ -188,9 +343,8 @@ async function resolveModel(
   // authenticated models for the provider; the first is pi's default.
   const available = await runtime.getAvailable(pid);
   if (available.length === 0) {
-    throw new Error(
-      `no ${provider} models available — run \`make login\` and type /login in pi to establish the subscription (agent dir: ${piAgentDir()})`,
-    );
+    if (!(await runtime.checkAuth(pid))) throw notLoggedInError(provider);
+    throw new Error(`no ${provider} models available for the authenticated subscription`);
   }
   return available[0];
 }
@@ -203,14 +357,15 @@ async function resolveModel(
  * Normalize one pi SDK event object into transcript events.
  *
  * Field mapping is pinned against the SDK's emitted types (packages/ai):
- * `message_end` carries `message: AssistantMessage` (content parts, usage,
- * stopReason); `auto_retry_end` carries `success`/`finalError`. Streaming
- * deltas and lifecycle framing are dropped deliberately — their content is
- * fully duplicated by `message_end`. Everything unrecognized is preserved as
- * `t:"raw"` with a stringified event so nothing is lost.
+ * `message_end` carries `message: AssistantMessage` (content parts — `text`,
+ * `thinking`, and `toolCall` — plus usage and stopReason); `auto_retry_end`
+ * carries `success`/`finalError`. Streaming deltas and lifecycle framing are
+ * dropped deliberately — their content is fully duplicated by `message_end`.
+ * Everything unrecognized is preserved as `t:"raw"` carrying the event object
+ * so nothing is lost.
  */
 export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
-  const raw = (): TranscriptEvent[] => [{ t: "raw", line: JSON.stringify(evt) }];
+  const raw = (): TranscriptEvent[] => [{ t: "raw", event: evt }];
 
   if (evt.type === "message_end") {
     const message = evt.message as unknown as Record<string, unknown> | undefined;
@@ -223,6 +378,14 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
       if (p.type === "text") {
         const text = String(p.text ?? "");
         if (text) events.push({ t: "text", role: "assistant", content: text });
+      } else if (p.type === "thinking") {
+        // A redacted block carries no text — keep it anyway, so the transcript
+        // still shows that the turn reasoned rather than silently skipping it.
+        const thinking = String(p.thinking ?? "");
+        const redacted = p.redacted === true;
+        if (thinking || redacted) {
+          events.push({ t: "reasoning", content: thinking, ...(redacted ? { redacted: true } : {}) });
+        }
       } else if (p.type === "toolCall") {
         events.push({ t: "tool", name: String(p.name ?? ""), input: p.arguments });
       }
@@ -273,6 +436,12 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
     return events;
   }
 
+  // pi retried a failed request and it went through: the error its message_end
+  // already reported is resolved, so the run must not end failed because of it.
+  if (evt.type === "auto_retry_end" && evt.success === true) {
+    return [...raw(), { t: "result", exit: "completed" }];
+  }
+
   if (evt.type === "auto_retry_end" && evt.success === false) {
     return [
       {
@@ -309,11 +478,11 @@ export function piNormalize(evt: AgentSessionEvent): TranscriptEvent[] {
 /**
  * Pipeline role (spec 14): containment is per-role as well as per-run, so the
  * two dangerous primitives — arbitrary command execution and network egress —
- * never sit in the same role. The planner can reach the web but cannot spawn
- * a process; the loop and evaluator can spawn processes but hold no network
- * primitive outside L1's proxy.
+ * never sit in the same role. The planner and the plan critic can reach the
+ * web but cannot spawn a process; the loop and evaluator can spawn processes
+ * but hold no network primitive outside L1's proxy.
  */
-export type AgentRole = "planner" | "loop" | "evaluator";
+export type AgentRole = "planner" | "critic" | "loop" | "evaluator";
 
 /**
  * The built-in tool list for a session (spec 14 role capability split).
@@ -324,7 +493,7 @@ export type AgentRole = "planner" | "loop" | "evaluator";
  * | loop      | ✓    | ✗          | full set                       |
  * | evaluator | ✓    | ✗          | full set                       |
  *
- * `readOnly` (planner chat, improvement proposer — human-interactive, outside the pipeline
+ * `readOnly` (scoping, improvement proposer — human-interactive, outside the pipeline
  * roles) keeps the read-only browse set plus web_search. With no role and not
  * readOnly the loop set applies — never web_search by default.
  */
@@ -334,6 +503,13 @@ export function toolsForRole(role: AgentRole | undefined, readOnly: boolean): st
     // write/edit are bound but L2-guarded to the run's plan dir (Phase 3);
     // no bash — a planner needing command execution is being manipulated.
     return ["read", "grep", "find", "ls", "write", "edit", "web_search"];
+  }
+  if (role === "critic") {
+    // Spec 30 decision 5: the planner's set less `edit` — the critic writes
+    // exactly one file, its verdict, and never changes an existing one. The
+    // difference is also what lets a provider that sees only the bound tool
+    // set (the scripted mock) tell the two roles apart.
+    return ["read", "grep", "find", "ls", "write", "web_search"];
   }
   return ["read", "bash", "edit", "write", "grep", "find", "ls"];
 }
@@ -345,8 +521,10 @@ export function toolsForRole(role: AgentRole | undefined, readOnly: boolean): st
  * | Role      | Read roots      | Write roots        |
  * |-----------|-----------------|--------------------|
  * | planner   | repo checkout   | `<worktree>/.ralph`|
+ * | critic    | worktree        | `<worktree>/.ralph`|
  * | loop      | worktree        | worktree           |
  * | evaluator | worktree        | worktree           |
+ * | (none)    | cwd             | nothing            |
  *
  * `cwd` is the worktree (the repo checkout, for the planner). The planner may
  * read the whole checkout but write only its `.ralph/` artifacts — it cannot
@@ -355,12 +533,18 @@ export function toolsForRole(role: AgentRole | undefined, readOnly: boolean): st
  * planningService and the loop consume them; the write root is that subtree.)
  * The net doc/`.ralph`-only constraint on the evaluator is enforced by the
  * post-run integrity check (Phase 2a), not L2.
+ *
+ * No role is the read-only sessions (scoping, improvement proposer). They run
+ * against a real checkout, not a worktree, and hold `web_search` — so an
+ * unguarded `read` there was host-wide read and egress in one session, the
+ * pairing the role split exists to prevent. Confined to their cwd, no writes.
  */
 export function pathRootsForRole(
-  role: AgentRole,
+  role: AgentRole | undefined,
   cwd: string,
 ): { readRoots: string[]; writeRoots: string[] } {
-  if (role === "planner") {
+  if (role === undefined) return { readRoots: [cwd], writeRoots: [] };
+  if (role === "planner" || role === "critic") {
     return { readRoots: [cwd], writeRoots: [path.join(cwd, ".ralph")] };
   }
   return { readRoots: [cwd], writeRoots: [cwd] };
@@ -448,8 +632,14 @@ export async function createRalphSession(
     spawnHook: (ctx) => ({ ...ctx, env: runContext?.env ?? agentEnv() }),
     operations:
       shouldSandboxBash(opts.role, runContext?.srtConfig) && runContext?.srtConfig
-        ? createSandboxedBashOperations(runContext.srtConfig)
-        : undefined,
+          ? createSandboxedBashOperations(runContext.srtConfig, {
+            tmpdir: runContext.tmpdir,
+            runExclusive: runContext.runExclusive,
+            tracker: runContext,
+          })
+        : runContext
+          ? createSerializedBashOperations(runContext.runExclusive, runContext)
+          : undefined,
   }) as unknown as ToolDefinition;
 
   // Web search (Brave) — pi has no web tool and extensions are disabled, so
@@ -469,6 +659,8 @@ export async function createRalphSession(
     noThemes: true,
     noContextFiles: true,
     systemPromptOverride: () => RALPH_SYSTEM_PROMPT,
+    // Rate-limit telemetry: a passive header reader, see rateLimitExtension.
+    extensionFactories: [rateLimitExtension(opts.provider)],
   });
   await resourceLoader.reload();
 
@@ -478,16 +670,20 @@ export async function createRalphSession(
   const customTools: ToolDefinition[] = [];
   if (tools.includes("bash")) customTools.push(scrubbedBash);
   if (tools.includes("web_search")) customTools.push(webSearch);
-  // Layer 2 path containment (spec 14 Phase 3): for the pipeline roles, the
-  // in-process file tools are replaced by guard-then-delegate wrappers bound
-  // to the role's roots. Human-interactive sessions (chat, improvement proposer — no role)
-  // keep pi's unguarded built-ins. Guarded tools override the built-ins by
-  // name, so only the ones the role's tool set names take effect.
-  if (opts.role) {
-    const { readRoots, writeRoots } = pathRootsForRole(opts.role, opts.cwd);
-    for (const guarded of createGuardedFsTools(opts.cwd, readRoots, writeRoots)) {
-      if (tools.includes(guarded.name)) customTools.push(guarded);
-    }
+  // Layer 2 path containment (spec 14 Phase 3): the in-process file tools are
+  // replaced by guard-then-delegate wrappers bound to the session's roots —
+  // the role's for a pipeline role, the cwd alone for a read-only session
+  // (see pathRootsForRole). Guarded tools override the built-ins by name, so
+  // only the ones the session's tool set names take effect.
+  const { readRoots, writeRoots } = pathRootsForRole(opts.role, opts.cwd);
+  for (const guarded of createGuardedFsTools(
+    opts.cwd,
+    readRoots,
+    writeRoots,
+    runContext?.reap,
+    runContext?.runExclusive,
+  )) {
+    if (tools.includes(guarded.name)) customTools.push(guarded);
   }
 
   const { session } = await createAgentSession({
@@ -516,12 +712,25 @@ export function harnessPackageVersion(): string {
  */
 export async function listAuthedModels(
   provider: ProviderId,
-): Promise<{ value: string; displayName: string; description: string }[]> {
+  opts: { force?: boolean } = {},
+): Promise<ProviderModel[]> {
   const runtime = await getModelRuntime();
-  const models = await runtime.getAvailable(PI_PROVIDER[provider]);
+  const pid = PI_PROVIDER[provider];
+  await refreshProviderCatalog(runtime, pid, opts.force);
+  // getAvailable() returns [] for BOTH "no credential" and "authenticated but
+  // the plan serves nothing", which left the picker reporting a cheerful
+  // "0 models" for a provider that was simply never logged in. checkAuth()
+  // separates them: undefined means no usable credential for this provider.
+  if (!(await runtime.checkAuth(pid))) throw notLoggedInError(provider);
+  const models = await runtime.getAvailable(pid);
+  // pi's model catalog already prices in USD per 1M tokens (its cost rates
+  // are applied directly against raw token counts elsewhere), so these pass
+  // straight through with no unit conversion.
   return models.map((m) => ({
     value: m.id,
     displayName: m.name || m.id,
     description: "",
+    ...(Number.isFinite(m.cost?.input) ? { costPerMillionInput: m.cost.input } : {}),
+    ...(Number.isFinite(m.cost?.output) ? { costPerMillionOutput: m.cost.output } : {}),
   }));
 }

@@ -1,0 +1,435 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-22T00:08:00Z",
+  "title": "Design System: Radulf",
+  "extensions": {
+    "colorMeta": {
+      "watchfire-amber": {
+        "role": "primary",
+        "displayName": "Watchfire Amber",
+        "canonical": "var(--accent)",
+        "tonalRamp": [
+          "oklch(18% 0.085 84)",
+          "oklch(28% 0.085 84)",
+          "oklch(40% 0.136 84)",
+          "oklch(52% 0.170 84)",
+          "oklch(64% 0.170 84)",
+          "oklch(76% 0.170 84)",
+          "oklch(86% 0.136 84)",
+          "oklch(95% 0.085 84)"
+        ]
+      },
+      "watchfire-ember": {
+        "role": "primary",
+        "displayName": "Watchfire Ember",
+        "canonical": "var(--accent-strong)",
+        "tonalRamp": [
+          "oklch(18% 0.085 58)",
+          "oklch(28% 0.085 58)",
+          "oklch(40% 0.136 58)",
+          "oklch(52% 0.170 58)",
+          "oklch(64% 0.170 58)",
+          "oklch(76% 0.170 58)",
+          "oklch(86% 0.136 58)",
+          "oklch(95% 0.085 58)"
+        ]
+      },
+      "on-amber": {
+        "role": "primary",
+        "displayName": "On Amber",
+        "canonical": "var(--on-accent)",
+        "tonalRamp": [
+          "oklch(18% 0.005 250)",
+          "oklch(28% 0.005 250)",
+          "oklch(40% 0.008 250)",
+          "oklch(52% 0.010 250)",
+          "oklch(64% 0.010 250)",
+          "oklch(76% 0.010 250)",
+          "oklch(86% 0.008 250)",
+          "oklch(95% 0.005 250)"
+        ]
+      },
+      "night-black": {
+        "role": "neutral",
+        "displayName": "Night Black",
+        "canonical": "var(--background)",
+        "tonalRamp": [
+          "oklch(18% 0.006 250)",
+          "oklch(28% 0.006 250)",
+          "oklch(40% 0.010 250)",
+          "oklch(52% 0.012 250)",
+          "oklch(64% 0.012 250)",
+          "oklch(76% 0.012 250)",
+          "oklch(86% 0.010 250)",
+          "oklch(95% 0.006 250)"
+        ]
+      },
+      "night-surface": {
+        "role": "neutral",
+        "displayName": "Night Surface",
+        "canonical": "var(--surface)",
+        "tonalRamp": [
+          "oklch(18% 0.006 240)",
+          "oklch(28% 0.006 240)",
+          "oklch(40% 0.010 240)",
+          "oklch(52% 0.012 240)",
+          "oklch(64% 0.012 240)",
+          "oklch(76% 0.012 240)",
+          "oklch(86% 0.010 240)",
+          "oklch(95% 0.006 240)"
+        ]
+      },
+      "moon-gray": {
+        "role": "neutral",
+        "displayName": "Moon Gray",
+        "canonical": "var(--foreground)",
+        "tonalRamp": [
+          "oklch(18% 0.006 250)",
+          "oklch(28% 0.006 250)",
+          "oklch(40% 0.010 250)",
+          "oklch(52% 0.012 250)",
+          "oklch(64% 0.012 250)",
+          "oklch(76% 0.012 250)",
+          "oklch(86% 0.010 250)",
+          "oklch(95% 0.006 250)"
+        ]
+      },
+      "review-violet": {
+        "role": "status",
+        "displayName": "Review Violet",
+        "canonical": "Tailwind v4 violet-300",
+        "tonalRamp": [
+          "oklch(18% 0.055 293)",
+          "oklch(28% 0.055 293)",
+          "oklch(40% 0.088 293)",
+          "oklch(52% 0.110 293)",
+          "oklch(64% 0.110 293)",
+          "oklch(76% 0.110 293)",
+          "oklch(86% 0.088 293)",
+          "oklch(95% 0.055 293)"
+        ]
+      },
+      "plan-cyan": {
+        "role": "status",
+        "displayName": "Plan Cyan",
+        "canonical": "Tailwind v4 cyan-300",
+        "tonalRamp": [
+          "oklch(18% 0.060 207)",
+          "oklch(28% 0.060 207)",
+          "oklch(40% 0.096 207)",
+          "oklch(52% 0.120 207)",
+          "oklch(64% 0.120 207)",
+          "oklch(76% 0.120 207)",
+          "oklch(86% 0.096 207)",
+          "oklch(95% 0.060 207)"
+        ]
+      },
+      "paused-sky": {
+        "role": "status",
+        "displayName": "Paused Sky",
+        "canonical": "Tailwind v4 sky-300",
+        "tonalRamp": [
+          "oklch(18% 0.055 230)",
+          "oklch(28% 0.055 230)",
+          "oklch(40% 0.088 230)",
+          "oklch(52% 0.110 230)",
+          "oklch(64% 0.110 230)",
+          "oklch(76% 0.110 230)",
+          "oklch(86% 0.088 230)",
+          "oklch(95% 0.055 230)"
+        ]
+      },
+      "attention-red": {
+        "role": "status",
+        "displayName": "Attention Red",
+        "canonical": "Tailwind v4 red-300",
+        "tonalRamp": [
+          "oklch(18% 0.060 20)",
+          "oklch(28% 0.060 20)",
+          "oklch(40% 0.096 20)",
+          "oklch(52% 0.120 20)",
+          "oklch(64% 0.120 20)",
+          "oklch(76% 0.120 20)",
+          "oklch(86% 0.096 20)",
+          "oklch(95% 0.060 20)"
+        ]
+      },
+      "success-green": {
+        "role": "status",
+        "displayName": "Success Green",
+        "canonical": "Tailwind v4 green-300",
+        "tonalRamp": [
+          "oklch(18% 0.075 154)",
+          "oklch(28% 0.075 154)",
+          "oklch(40% 0.120 154)",
+          "oklch(52% 0.150 154)",
+          "oklch(64% 0.150 154)",
+          "oklch(76% 0.150 154)",
+          "oklch(86% 0.120 154)",
+          "oklch(95% 0.075 154)"
+        ]
+      },
+      "approve-green": {
+        "role": "status",
+        "displayName": "Approve Green",
+        "canonical": "Tailwind v4 green-700",
+        "tonalRamp": [
+          "oklch(18% 0.075 150)",
+          "oklch(28% 0.075 150)",
+          "oklch(40% 0.120 150)",
+          "oklch(52% 0.150 150)",
+          "oklch(64% 0.150 150)",
+          "oklch(76% 0.150 150)",
+          "oklch(86% 0.120 150)",
+          "oklch(95% 0.075 150)"
+        ]
+      },
+      "queued-slate": {
+        "role": "status",
+        "displayName": "Queued Slate",
+        "canonical": "Tailwind v4 slate-300",
+        "tonalRamp": [
+          "oklch(18% 0.011 253)",
+          "oklch(28% 0.011 253)",
+          "oklch(40% 0.018 253)",
+          "oklch(52% 0.022 253)",
+          "oklch(64% 0.022 253)",
+          "oklch(76% 0.022 253)",
+          "oklch(86% 0.018 253)",
+          "oklch(95% 0.011 253)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page title on Work and Settings, always under an eyebrow."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Task, review, and dialog titles; settings section headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "The working size for buttons, inputs, menus, and descriptions."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase tracked eyebrows and section headers at 0.75rem or smaller."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Diffs, transcripts, and inline code in Geist Mono."
+      }
+    },
+    "shadows": [
+      {
+        "name": "floating-dialog",
+        "value": "0 25px 50px -12px rgb(0 0 0 / 0.25)",
+        "purpose": "Dialogs and the largest overflow menus, over a rgb(0 0 0 / 0.7) scrim."
+      },
+      {
+        "name": "floating-menu",
+        "value": "0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)",
+        "purpose": "Smaller overflow menus such as review options."
+      },
+      {
+        "name": "floating-button",
+        "value": "0 8px 30px rgb(0 0 0 / 0.45)",
+        "purpose": "The mobile New Task button only."
+      },
+      {
+        "name": "toggle-knob",
+        "value": "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
+        "purpose": "The switch thumb."
+      }
+    ],
+    "motion": [
+      {
+        "name": "transition-colors",
+        "value": "color, background-color, border-color 150ms cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Default hover and active state transitions."
+      },
+      {
+        "name": "transition-transform",
+        "value": "transform 150ms cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "The switch knob sliding."
+      },
+      {
+        "name": "pulse",
+        "value": "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+        "purpose": "Loading skeleton only, always paired with an sr-only label."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "Every animation and transition collapses under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one filled amber action per view. Hover brightens Ember to Amber.",
+      "html": "<button class=\"ds-btn-primary\">+ New task</button>",
+      "css": ".ds-btn-primary { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); min-height: 44px; padding: 0 16px; border: 0; border-radius: 8px; background: var(--accent-strong); color: var(--on-accent); font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: background-color 150ms cubic-bezier(0.4,0,0.2,1); } .ds-btn-primary:hover { background: var(--accent); } .ds-btn-primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; } .ds-btn-primary:disabled { opacity: 0.4; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Tonal Moon Gray fill for Details, Continue, and Reject with feedback.",
+      "html": "<button class=\"ds-btn-secondary\">Details</button>",
+      "css": ".ds-btn-secondary { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--foreground) 10%, transparent); color: color-mix(in srgb, var(--foreground) 80%, transparent); font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: background-color 150ms cubic-bezier(0.4,0,0.2,1); } .ds-btn-secondary:hover { background: color-mix(in srgb, var(--foreground) 15%, transparent); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; } .ds-btn-secondary:disabled { opacity: 0.4; }"
+    },
+    {
+      "name": "Approve Button",
+      "kind": "button",
+      "refersTo": "button-approve",
+      "description": "The only filled green, in the fixed review action bar.",
+      "html": "<button class=\"ds-btn-approve\">✓ Approve &amp; merge</button>",
+      "css": ".ds-btn-approve { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); min-height: 44px; padding: 8px 16px; border: 0; border-radius: 4px; background: #15803d; color: var(--foreground); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background-color 150ms cubic-bezier(0.4,0,0.2,1); } .ds-btn-approve:hover { background: #16a34a; } .ds-btn-approve:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; } .ds-btn-approve:disabled { opacity: 0.4; }"
+    },
+    {
+      "name": "View Chip",
+      "kind": "chip",
+      "refersTo": "chip-view",
+      "description": "Pill filter with a tabular count; active is amber-bordered on a 12% amber fill.",
+      "html": "<div class=\"ds-chips\"><button class=\"ds-chip ds-chip-active\" aria-current=\"page\">Overview <span>3</span></button><button class=\"ds-chip\">Needs you <span>1</span></button><button class=\"ds-chip\">Queue <span>2</span></button></div>",
+      "css": ".ds-chips { display: flex; gap: 8px; } .ds-chip { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent); background: color-mix(in srgb, var(--foreground) 3%, transparent); color: color-mix(in srgb, var(--foreground) 55%, transparent); font-size: 0.875rem; white-space: nowrap; cursor: pointer; } .ds-chip span { margin-left: 4px; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--foreground) 40%, transparent); } .ds-chip:hover { color: var(--foreground); } .ds-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; } .ds-chip-active { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); color: #fde68a; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Settings field on Night Black with a hairline border that turns amber on focus.",
+      "html": "<label class=\"ds-field\">Alert webhook URL<input class=\"ds-input\" placeholder=\"https://ntfy.sh/your-topic\" /><span class=\"ds-help\">Fires when a card sits in Needs Attention too long.</span></label>",
+      "css": ".ds-field { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); display: block; font-size: 0.875rem; color: color-mix(in srgb, var(--foreground) 70%, transparent); } .ds-input { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); display: block; width: 100%; box-sizing: border-box; margin-top: 8px; min-height: 44px; padding: 8px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--foreground) 15%, transparent); background: var(--background); color: var(--foreground); font-size: 0.875rem; transition: border-color 150ms cubic-bezier(0.4,0,0.2,1); } .ds-input::placeholder { color: color-mix(in srgb, var(--foreground) 35%, transparent); } .ds-input:hover { border-color: color-mix(in srgb, var(--foreground) 25%, transparent); } .ds-input:focus { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 3px; } .ds-help { display: block; margin-top: 4px; font-size: 0.75rem; color: color-mix(in srgb, var(--foreground) 40%, transparent); }"
+    },
+    {
+      "name": "Rail Nav Link",
+      "kind": "nav",
+      "refersTo": "nav-rail-link",
+      "description": "Icon-over-label destination in the 88px desktop rail; active is amber on a 9% amber fill.",
+      "html": "<nav class=\"ds-rail\" aria-label=\"Primary navigation\"><a class=\"ds-rail-link ds-rail-link-active\" href=\"#\" aria-current=\"page\"><span aria-hidden=\"true\">▤</span>Work</a><a class=\"ds-rail-link\" href=\"#\"><span aria-hidden=\"true\">◫</span>Activity</a><a class=\"ds-rail-link\" href=\"#\"><span aria-hidden=\"true\">⚙</span>Settings</a></nav>",
+      "css": ".ds-rail { display: flex; flex-direction: column; gap: 4px; width: 72px; padding: 8px; background: var(--surface); border-right: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent); } .ds-rail-link { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-height: 52px; border-radius: 9px; color: color-mix(in srgb, var(--foreground) 50%, transparent); font-size: 0.68rem; text-decoration: none; } .ds-rail-link span { font-size: 1.125rem; line-height: 1; } .ds-rail-link:hover { color: var(--foreground); } .ds-rail-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; } .ds-rail-link-active { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); }"
+    },
+    {
+      "name": "Task Row",
+      "kind": "custom",
+      "refersTo": "card-section",
+      "description": "The signature list row: status glyph, title and amber detail, one action, hairline dividers.",
+      "html": "<section class=\"ds-section\"><h2 class=\"ds-eyebrow ds-tone-active\">Active now <span>1</span></h2><div class=\"ds-rows\"><div class=\"ds-row\"><span class=\"ds-mark ds-tone-active\" aria-hidden=\"true\">●</span><div class=\"ds-row-body\"><div class=\"ds-row-head\"><a class=\"ds-row-title\" href=\"#\">Import a Jira issue into a new task <span class=\"ds-row-repo\">radulf</span></a><span class=\"ds-row-detail\">Iteration 3/12 · 4m elapsed</span><button class=\"ds-row-action\">Details</button></div><p class=\"ds-row-desc\">Paste a DEV key or link, fetch summary and description, and prefill the card draft.</p></div></div><div class=\"ds-row\"><span class=\"ds-mark ds-tone-review\" aria-hidden=\"true\">◆</span><div class=\"ds-row-body\"><div class=\"ds-row-head\"><a class=\"ds-row-title\" href=\"#\">Refuse ralph/* branches as a base</a><button class=\"ds-row-action ds-row-action-review\">Review</button></div><p class=\"ds-row-desc\">Diff ready</p></div></div></div></section>",
+      "css": ".ds-section { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); color: var(--foreground); } .ds-eyebrow { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; } .ds-eyebrow span { color: color-mix(in srgb, var(--foreground) 35%, transparent); } .ds-tone-active { color: var(--accent); } .ds-tone-review { color: #c4b5fd; } .ds-rows { border-top: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent); } .ds-row { display: flex; gap: 12px; padding: 14px 0; border-top: 1px solid rgb(255 255 255 / 0.07); } .ds-row:first-child { border-top: 0; } .ds-row:hover { background: color-mix(in srgb, var(--foreground) 2.5%, transparent); } .ds-mark { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-top: 4px; flex: none; font-size: 0.875rem; font-weight: 700; } .ds-row-body { min-width: 0; flex: 1; } .ds-row-head { display: flex; align-items: flex-start; gap: 8px; } .ds-row-title { flex: 1; min-width: 0; font-size: 0.95rem; font-weight: 500; line-height: 1.25rem; color: color-mix(in srgb, var(--foreground) 90%, transparent); text-decoration: none; } .ds-row-title:hover { text-decoration: underline; } .ds-row-repo { margin-left: 4px; font-size: 0.75rem; color: var(--accent); } .ds-row-detail { flex: none; font-size: 0.75rem; font-variant-numeric: tabular-nums; color: var(--accent); } .ds-row-action { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); flex: none; min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--foreground) 10%, transparent); color: color-mix(in srgb, var(--foreground) 80%, transparent); font-size: 0.875rem; font-weight: 600; cursor: pointer; } .ds-row-action:hover { background: color-mix(in srgb, var(--foreground) 15%, transparent); } .ds-row-action-review { background: rgb(139 92 246 / 0.15); color: #ddd6fe; font-weight: 500; } .ds-row-desc { margin: 4px 0 0; font-size: 0.75rem; line-height: 1.25rem; color: color-mix(in srgb, var(--foreground) 48%, transparent); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }"
+    },
+    {
+      "name": "Status Pill",
+      "kind": "chip",
+      "refersTo": "chip-view",
+      "description": "On or off indicator with a filled or hollow glyph; on is an Ember border over a dark amber ground.",
+      "html": "<span class=\"ds-pill ds-pill-on\"><span aria-hidden=\"true\">●</span>Auto Mode: On</span> <span class=\"ds-pill\"><span aria-hidden=\"true\">○</span>Sandbox: Off</span>",
+      "css": ".ds-pill { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent); color: color-mix(in srgb, var(--foreground) 40%, transparent); font-size: 0.75rem; } .ds-pill-on { border-color: color-mix(in srgb, var(--accent-strong) 50%, transparent); background: rgb(69 26 3 / 0.3); color: var(--accent); }"
+    },
+    {
+      "name": "Automation Banner",
+      "kind": "custom",
+      "refersTo": "card-section",
+      "description": "One-line status strip under the page title with an 8px dot.",
+      "html": "<div class=\"ds-banner\"><span class=\"ds-dot\" aria-hidden=\"true\"></span>Auto Mode is on · Todo tasks run automatically</div>",
+      "css": ".ds-banner { font-family: var(--font-geist-sans, Geist, system-ui, sans-serif); display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--foreground) 7%, transparent); background: color-mix(in srgb, var(--foreground) 2.5%, transparent); color: color-mix(in srgb, var(--foreground) 55%, transparent); font-size: 0.75rem; } .ds-dot { width: 8px; height: 8px; flex: none; border-radius: 999px; background: #4ade80; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Night Watch",
+    "overview": "Radulf is a dark, quiet console where the wolf works while you rest. The surfaces are near-black and calm, the text is a cool moon gray at graded opacities, and one warm light, Watchfire Amber, stays lit on whatever is live or whatever needs you. Nothing else glows. The interface is calm and vigilant: low visual noise at rest, but a task that needs a decision is unmistakable from across the room.\n\nThe system is warm-dark and precise. Numbers are tabular, progress is stated in iterations and elapsed time, and status is always a glyph plus a colored word, never a bare spinner. It is understated and confident: no gradients, no glow, no marketing energy. Brand lives in small, exact details: the amber `R` mark in the rail, the tracked uppercase eyebrow above a page title, the hairline that separates one task row from the next.\n\nThe whole world is built from five CSS variables, background, surface, foreground, accent, and accent-strong, and every neutral is the foreground color at a fixed alpha. That is what lets the same interface wear ten user-selectable themes. Default dark is the canonical home. The other nine are re-skins that must keep working, not targets to design for.",
+    "keyCharacteristics": [
+      "Near-black tonal surfaces separated by hairline borders, not shadows",
+      "One amber accent for live state and the single primary action per view",
+      "Semantic status tones on small marks and pills only, never as lane backgrounds",
+      "Geist for the interface, Geist Mono for diffs, transcripts, and code",
+      "Dense, vertical, list-first layout that reads the same on a phone and a desktop",
+      "Every control at least 44px tall, keyboard and screen reader operable"
+    ],
+    "rules": [
+      {
+        "name": "The One Lamp Rule",
+        "body": "Watchfire Amber marks what is live and the single primary action on a view. One filled amber button per screen. Amber never decorates.",
+        "section": "colors"
+      },
+      {
+        "name": "The Alpha Neutral Rule",
+        "body": "Every neutral surface, border, divider, and secondary text is Moon Gray at a fixed alpha. No new gray hex is ever introduced. This is what makes ten themes work from five variables.",
+        "section": "colors"
+      },
+      {
+        "name": "The Small Mark Rule",
+        "body": "Status color lives on a glyph, a pill, a section eyebrow, or a row action fill at 15%. It is never a full-width background or a lane identity.",
+        "section": "colors"
+      },
+      {
+        "name": "The Eyebrow Rule",
+        "body": "Uppercase and letter-spacing belong only to eyebrows and section headers at `0.75rem` or smaller. Titles are never uppercase.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Number Rule",
+        "body": "Iterations, counts, durations, and timestamps are set with `tabular-nums` so live values do not jitter.",
+        "section": "typography"
+      },
+      {
+        "name": "The 44 Rule",
+        "body": "Every button, link, select, input, and summary is at least `44px` tall, enforced globally in CSS. Drag and hover may enhance, never gate.",
+        "section": "layout"
+      },
+      {
+        "name": "The One Direction Rule",
+        "body": "The primary surface scrolls vertically. The row is the unit. Kanban lanes are not drawn.",
+        "section": "layout"
+      },
+      {
+        "name": "The Floating Layer Rule",
+        "body": "A shadow means the element floats above the page: dialog, menu, floating button. Rows, cards, banners, and inputs never cast one.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Labelled Pulse Rule",
+        "body": "Any pulsing or animated live state carries a non-animated text label. A spinner alone never appears.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do build every color from the five theme variables and Moon Gray at alpha, so all ten themes keep working.",
+      "Do use one Watchfire Ember filled button per view and let it brighten to Watchfire Amber on hover.",
+      "Do separate rows with hairlines at 7% to 10% and give containers a `12px` radius with a hairline border.",
+      "Do keep uppercase and tracking to eyebrows and section headers at `0.75rem` or smaller.",
+      "Do show state as glyph, tone, and word together, with `tabular-nums` on every live number.",
+      "Do give every control a `44px` hit area and a visible amber focus ring, and pair every pulse with an `sr-only` label.",
+      "Do put shadows only on the dialog, menus, and the floating New Task button.",
+      "Do write Work, task, and queue in labels, never Board or column."
+    ],
+    "donts": [
+      "Don't introduce a new gray hex, a gradient, a glow, or a colored full-width lane background.",
+      "Don't add hard-coded Tailwind palette tones beyond the existing status set. Those tones are dark-tuned and are the known weak point on light themes.",
+      "Don't put a shadow, a heavy border, or a card treatment on task rows.",
+      "Don't use Watchfire Amber as decoration or on more than one filled control per view.",
+      "Don't rely on hover or drag as the only path to an action.",
+      "Don't replace a status word with a spinner or an icon alone."
+    ]
+  }
+}

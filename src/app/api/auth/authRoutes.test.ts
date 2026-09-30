@@ -17,18 +17,33 @@ import { POST as logout } from "./logout/route";
 const PASSWORD = "correct horse battery staple";
 const SECRET = "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
 
-function loginRequest(password: string, url = "http://localhost/api/auth/login") {
+function loginRequest(
+  password: string,
+  url = "http://localhost/api/auth/login",
+  headers: Record<string, string> = {},
+) {
   return new Request(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify({ password }),
   });
+}
+
+// bcryptjs slices its async compare over the REAL setImmediate it captured at
+// load, which fake timers neither replace nor advance. A login's failure stall
+// is scheduled only after the compare resolves, so let those macrotasks run
+// before advancing the fake clock, or the stall is created after the advance
+// and the response never settles.
+const realSetImmediate = setImmediate;
+async function settle(ms: number) {
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => realSetImmediate(resolve));
+  await vi.advanceTimersByTimeAsync(ms);
 }
 
 async function failedLogin(password = "wrong") {
   const response = login(loginRequest(password));
   // Enough to clear the escalating shared-bucket stall (capped at 15s).
-  await vi.advanceTimersByTimeAsync(20_000);
+  await settle(20_000);
   return response;
 }
 
@@ -81,7 +96,7 @@ describe("authentication routes", () => {
     // would slide attempts out of the 60s failure window before the 6th.
     const attempt = async (ip: string) => {
       const response = login(from(ip));
-      await vi.advanceTimersByTimeAsync(BASE_FAILURE_DELAY_MS);
+      await settle(BASE_FAILURE_DELAY_MS);
       return response;
     };
 
@@ -118,8 +133,104 @@ describe("authentication routes", () => {
     for (let i = 0; i < 8; i++) expect((await failedLogin()).status).toBe(401);
 
     const success = login(loginRequest(PASSWORD));
-    await vi.advanceTimersByTimeAsync(20_000);
+    await settle(20_000);
     expect((await success).status).toBe(307);
+  });
+
+  it("caps concurrent password checks instead of letting a flood pin the CPU", async () => {
+    // Nine at once: eight are checked (and stalled as failures), the ninth is
+    // refused before any bcrypt work with a 503 and no stall. The compare is
+    // async, so the eight in flight yield to the loop while they run.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+
+    const attempts = Array.from({ length: 9 }, () => login(loginRequest("wrong")));
+    await settle(20_000);
+    const statuses = (await Promise.all(attempts)).map((r) => r.status).sort();
+    expect(statuses).toEqual([401, 401, 401, 401, 401, 401, 401, 401, 503]);
+
+    // The slots are released: the right password gets in afterwards.
+    const success = login(loginRequest(PASSWORD));
+    await settle(20_000);
+    expect((await success).status).toBe(307);
+  });
+
+  it("frees password-check slots before the shared bucket's escalated stall", async () => {
+    // Eight bad guesses in flight with the shared delay at its 15s cap must not
+    // hold every slot for 15s: the operator's password is admitted once the
+    // flat baseline delay has passed, not 503'd for the whole stall.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+    for (let i = 0; i < 10; i++) recordLoginFailure(loginClientKey(loginRequest("x")));
+
+    const guesses = Array.from({ length: 8 }, () => login(loginRequest("wrong")));
+    await settle(BASE_FAILURE_DELAY_MS);
+
+    const success = login(loginRequest(PASSWORD));
+    await settle(0);
+    expect((await success).status).toBe(307);
+
+    await settle(20_000);
+    expect((await Promise.all(guesses)).map((r) => r.status)).toEqual(Array(8).fill(401));
+  });
+
+  it("rejects a declared oversized login body before parsing it", async () => {
+    const response = await login(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "20000" },
+        body: JSON.stringify({ password: PASSWORD }),
+      }),
+    );
+    expect(response.status).toBe(413);
+  });
+
+  it("rejects an oversized login body without a content-length header", async () => {
+    const response = await login(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `padding=${"x".repeat(20_000)}&password=${PASSWORD}`,
+      }),
+    );
+    expect(response.status).toBe(413);
+  });
+
+  it("times out a slow login body before it occupies a password-check slot", async () => {
+    vi.useFakeTimers();
+    const body = new ReadableStream<Uint8Array>({ start() {} });
+    const request = new Request("http://localhost/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const response = login(request);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect((await response).status).toBe(408);
+  });
+
+  it("does not let slow request bodies consume password-check slots", async () => {
+    vi.useFakeTimers();
+    const stalled = Array.from({ length: 8 }, () => {
+      const body = new ReadableStream<Uint8Array>({ start() {} });
+      return login(
+        new Request("http://localhost/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body,
+          duplex: "half",
+        } as RequestInit & { duplex: "half" }),
+      );
+    });
+
+    const success = login(loginRequest(PASSWORD));
+    await settle(20_000);
+
+    expect((await success).status).toBe(307);
+    expect((await Promise.all(stalled)).map((response) => response.status)).toEqual(
+      Array(8).fill(408),
+    );
   });
 
   it("sets a signed HttpOnly session cookie with transport security matching the request", async () => {
@@ -132,6 +243,30 @@ describe("authentication routes", () => {
 
     const httpsResponse = await login(loginRequest(PASSWORD, "https://radulf.example/api/auth/login"));
     expect(httpsResponse.headers.get("set-cookie")).toContain("Secure");
+  });
+
+  it("marks the cookie Secure behind a TLS proxy that speaks plain HTTP to the app", async () => {
+    // What a reverse proxy produces: the app is bound to plain HTTP, so
+    // request.url says http, while the browser used https.
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example";
+    try {
+      const viaOrigin = await login(
+        loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
+          origin: "https://radulf.example",
+        }),
+      );
+      expect(viaOrigin.headers.get("set-cookie")).toContain("Secure");
+    } finally {
+      delete process.env.RADULF_ALLOWED_ORIGIN;
+    }
+
+    // A caller that sends no Origin at all leaves the forwarded scheme.
+    const viaForwarded = await login(
+      loginRequest(PASSWORD, "http://radulf.example/api/auth/login", {
+        "x-forwarded-proto": "https",
+      }),
+    );
+    expect(viaForwarded.headers.get("set-cookie")).toContain("Secure");
   });
 
   it("uses forwarded addresses only through an explicitly trusted proxy header", () => {
@@ -201,6 +336,25 @@ describe("authentication routes", () => {
     expect(read.headers.get("x-middleware-next")).toBe("1");
   });
 
+  it("rejects a foreign Host header when auth is disabled", async () => {
+    delete process.env.RADULF_AUTH_PASSWORD_HASH;
+    const response = await proxy(
+      new NextRequest("http://127.0.0.1:3000/api/cards", {
+        method: "GET",
+        headers: { host: "attacker.example:3000" },
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("lets the liveness check through without a session, so a container HEALTHCHECK works with auth on", async () => {
+    const health = await proxy(new NextRequest("http://localhost:3000/api/health", { method: "GET" }));
+    expect(health.headers.get("x-middleware-next")).toBe("1");
+    // Only the liveness GET: every other unauthenticated API call is still refused.
+    const cards = await proxy(new NextRequest("http://localhost:3000/api/cards", { method: "GET" }));
+    expect(cards.status).toBe(401);
+  });
+
   it("origin-checks the login route itself, so a session cannot be forced", async () => {
     const forbidden = await proxy(
       new NextRequest("http://localhost:3000/api/auth/login", {
@@ -212,7 +366,7 @@ describe("authentication routes", () => {
   });
 
   it("enforces API sessions and rejects cross-origin mutations", async () => {
-    process.env.RADULF_ALLOWED_ORIGIN = "radulf.example.com";
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example.com";
     try {
       const unauthorized = await proxy(
         new NextRequest("https://radulf.example.com/api/cards", { method: "GET" }),

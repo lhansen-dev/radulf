@@ -5,6 +5,8 @@ import {
   signSession,
   verifySession,
   isAllowedOrigin,
+  isAllowedUnauthenticatedHost,
+  redirectBase,
 } from "./session";
 
 const TEST_SECRET = "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
@@ -14,78 +16,127 @@ beforeAll(() => {
 });
 
 describe("authEnabled", () => {
-  it("returns false when RADULF_AUTH_PASSWORD_HASH is unset", () => {
+  it("is on exactly when RADULF_AUTH_PASSWORD_HASH is set", () => {
     delete process.env.RADULF_AUTH_PASSWORD_HASH;
     expect(authEnabled()).toBe(false);
-  });
-
-  it("returns true when RADULF_AUTH_PASSWORD_HASH is set", () => {
     process.env.RADULF_AUTH_PASSWORD_HASH = "$2a$12$abc123";
-    expect(authEnabled()).toBe(true);
-    delete process.env.RADULF_AUTH_PASSWORD_HASH;
+    try {
+      expect(authEnabled()).toBe(true);
+    } finally {
+      delete process.env.RADULF_AUTH_PASSWORD_HASH;
+    }
   });
 });
 
 describe("signSession / verifySession", () => {
-  it("sign→verify roundtrip returns true", async () => {
+  it("verifies a signed, unexpired session", async () => {
+    expect(await verifySession(await signSession(Date.now() + SESSION_MAX_AGE_MS))).toBe(true);
+  });
+
+  it("rejects a tampered, expired, or malformed cookie", async () => {
+    const cookie = await signSession(Date.now() + SESSION_MAX_AGE_MS);
+    for (const bad of ["9" + cookie.slice(1), await signSession(Date.now() - 1000), "", "no-dot", "123.456.abc"]) {
+      expect(await verifySession(bad)).toBe(false);
+    }
+  });
+
+  // Regression: these reach the base64 decode, where the expired and
+  // past-dated cases above return first. `atob` throws on a stray character,
+  // and verifySession runs inside the proxy on EVERY request — so throwing
+  // here turned any garbage cookie into a 500 on every route rather than a
+  // redirect to /login, unauthenticated and trivially reachable.
+  it("rejects, rather than throws on, a signature that is not valid base64", async () => {
     const future = Date.now() + SESSION_MAX_AGE_MS;
-    const cookie = await signSession(future);
-    expect(await verifySession(cookie)).toBe(true);
-  });
-
-  it("a tampered value verifies false", async () => {
-    const future = Date.now() + SESSION_MAX_AGE_MS;
-    const cookie = await signSession(future);
-    // Tamper: modify the first digit of the timestamp
-    const tampered = "9" + cookie.slice(1);
-    expect(await verifySession(tampered)).toBe(false);
-  });
-
-  it("an expired timestamp verifies false", async () => {
-    const past = Date.now() - 1000; // 1 second ago
-    const cookie = await signSession(past);
-    expect(await verifySession(cookie)).toBe(false);
-  });
-
-  it("a malformed cookie value verifies false", async () => {
-    expect(await verifySession("")).toBe(false);
-    expect(await verifySession("no-dot")).toBe(false);
-    expect(await verifySession("123.456.abc")).toBe(false);
+    for (const signature of ["not-valid-base64!!", "!!!!", "%%%%", "a b c", "\u0000"]) {
+      await expect(verifySession(`${future}.${signature}`)).resolves.toBe(false);
+    }
   });
 });
 
 describe("isAllowedOrigin", () => {
-  it("accepts localhost origins", () => {
-    expect(isAllowedOrigin("http://localhost:3000")).toBe(true);
-    expect(isAllowedOrigin("http://localhost")).toBe(true);
-    expect(isAllowedOrigin("https://localhost:3000")).toBe(true);
-    expect(isAllowedOrigin("http://127.0.0.1:3000")).toBe(true);
-    expect(isAllowedOrigin("http://127.0.0.1")).toBe(true);
+  it("accepts only the request's own host and port, or no Origin at all", () => {
+    for (const origin of [null, "http://localhost:3000", "https://localhost:3000"]) {
+      expect(isAllowedOrigin(origin, "localhost:3000")).toBe(true);
+    }
+    expect(isAllowedOrigin("http://127.0.0.1:3000", "127.0.0.1:3000")).toBe(true);
+    expect(isAllowedOrigin("http://localhost", "localhost")).toBe(true);
+    for (const origin of ["https://evil.com", "http://192.168.1.1", "https://radulf.example.com", "not-a-url"]) {
+      expect(isAllowedOrigin(origin, "localhost:3000")).toBe(false);
+    }
   });
 
-  it("accepts the host named by RADULF_ALLOWED_ORIGIN", () => {
-    process.env.RADULF_ALLOWED_ORIGIN = "radulf.example.com";
+  it("rejects another localhost port: browsers treat every localhost port as one site", () => {
+    // A page on any other local dev server gets the session cookie under
+    // SameSite=Lax and needs no preflight for a text/plain POST — so the
+    // Origin check is the only thing standing between it and the board.
+    expect(isAllowedOrigin("http://localhost:8080", "localhost:3000")).toBe(false);
+    expect(isAllowedOrigin("http://localhost", "localhost:3000")).toBe(false);
+    expect(isAllowedOrigin("http://127.0.0.1:3000", "localhost:3000")).toBe(false);
+  });
+
+  it("does not trust a matching non-loopback Host header", () => {
+    expect(isAllowedOrigin("https://attacker.example", "attacker.example")).toBe(false);
+  });
+
+  it("accepts only the full origin named by RADULF_ALLOWED_ORIGIN", () => {
+    process.env.RADULF_ALLOWED_ORIGIN = "https://radulf.example.com";
     try {
-      expect(isAllowedOrigin("https://radulf.example.com")).toBe(true);
-      expect(isAllowedOrigin("https://radulf.example.com:443")).toBe(true);
-      expect(isAllowedOrigin("https://radulf.example.evil.com")).toBe(false);
+      expect(isAllowedOrigin("https://radulf.example.com", "127.0.0.1:3000")).toBe(true);
+      expect(isAllowedOrigin("https://radulf.example.com:443", "127.0.0.1:3000")).toBe(true);
+      expect(isAllowedOrigin("http://radulf.example.com", "127.0.0.1:3000")).toBe(false);
+      expect(isAllowedOrigin("https://radulf.example.com:8443", "127.0.0.1:3000")).toBe(false);
+      expect(isAllowedOrigin("https://radulf.example.evil.com", "127.0.0.1:3000")).toBe(false);
+    } finally {
+      delete process.env.RADULF_ALLOWED_ORIGIN;
+    }
+  });
+});
+
+describe("isAllowedUnauthenticatedHost", () => {
+  it("accepts exact loopback hosts and rejects DNS rebinding hosts", () => {
+    for (const host of ["localhost", "localhost:3000", "127.0.0.1:3000", "[::1]:3000"]) {
+      expect(isAllowedUnauthenticatedHost(host)).toBe(true);
+    }
+    for (const host of ["attacker.example:3000", "localhost.attacker.example", "192.168.1.20:3000", "not a host/"]) {
+      expect(isAllowedUnauthenticatedHost(host)).toBe(false);
+    }
+  });
+});
+
+describe("redirectBase", () => {
+  const req = (origin: string | null) =>
+    new Request("http://0.0.0.0:3000/api/auth/login", {
+      method: "POST",
+      headers: origin ? { origin } : {},
+    });
+
+  it("redirects to the origin the browser actually used, not the bind address", () => {
+    process.env.RADULF_ALLOWED_ORIGIN = "http://192.168.100.68:3000";
+    try {
+      const base = redirectBase(req("http://192.168.100.68:3000"));
+      expect(new URL("/", base).href).toBe("http://192.168.100.68:3000/");
     } finally {
       delete process.env.RADULF_ALLOWED_ORIGIN;
     }
   });
 
-  it("rejects non-localhost origins when RADULF_ALLOWED_ORIGIN is unset", () => {
-    expect(isAllowedOrigin("https://evil.com")).toBe(false);
-    expect(isAllowedOrigin("https://example.com")).toBe(false);
-    expect(isAllowedOrigin("http://192.168.1.1")).toBe(false);
-    expect(isAllowedOrigin("https://radulf.example.com")).toBe(false);
+  it("accepts the origin matching the Host the browser addressed", () => {
+    const request = new Request("http://0.0.0.0:3000/api/auth/login", {
+      method: "POST",
+      headers: { origin: "http://localhost:3000", host: "localhost:3000" },
+    });
+    expect(new URL("/", redirectBase(request)).href).toBe("http://localhost:3000/");
+    // A localhost origin on a different port is not this site.
+    expect(redirectBase(req("http://localhost:3000"))).toBe("http://0.0.0.0:3000/api/auth/login");
   });
 
-  it("returns true for null origin (same-origin request)", () => {
-    expect(isAllowedOrigin(null)).toBe(true);
+  it("falls back to request.url when no Origin is sent (curl, scripts)", () => {
+    expect(redirectBase(req(null))).toBe("http://0.0.0.0:3000/api/auth/login");
   });
 
-  it("returns false for an unparseable origin", () => {
-    expect(isAllowedOrigin("not-a-url")).toBe(false);
+  it("ignores a foreign Origin rather than redirecting to it", () => {
+    expect(redirectBase(req("https://evil.example.com"))).toBe(
+      "http://0.0.0.0:3000/api/auth/login",
+    );
   });
 });

@@ -12,9 +12,10 @@ than restates, the two other documents:
 Read those for the *why*. This document is the *what* and *where*.
 
 > **Scope:** macOS is the supported, release-verified platform (Seatbelt via
-> `sandbox-exec`). The Linux path (bubblewrap + seccomp) is implemented and
-> unit-tested but best-effort / not release-verified. Everything below is true
-> on macOS; Linux-specific notes are called out.
+> `sandbox-exec`). Linux (including WSL2) is best-effort: the sandbox has a
+> Linux implementation (bubblewrap + seccomp, unit-tested), but it is not
+> release-verified. Everything below is true on macOS; Linux-specific notes are
+> called out.
 
 ---
 
@@ -64,12 +65,11 @@ It returns a `RunSandboxContext`:
 | `root` | The run-private scratch root `<data-parent>/runtmp/<runId>/` (contains `tmp/`, `cache/`). |
 | `tmpdir` | Run-private `$TMPDIR` (`root/tmp`) — created at start, deleted at end. |
 | `cacheRoot` | Run-private package-manager cache root (`root/cache`) the host user never consumes. |
-| `pgidFile` | Where each bash invocation records its process-group id — **inside `tmpdir`** so the in-sandbox write is permitted (see [reaping](#process-group-reaping)). |
 | `env` | The allowlist agent env (`agentEnv(...)`). |
-| `commandPrefix` | Preamble prepended to every agent bash command (ulimits, pgid record, cgroup join on Linux). |
+| `commandPrefix` | Preamble prepended to every agent bash command with ulimits and the Linux cgroup join. |
 | `srtConfig` | This run's L1 filesystem + network policy — **present only when `sandboxEnabled`** and a `cwd` was passed. Its *absence* is the explicit signal "do not L1-wrap this run." |
 | `diskLimitMechanism` | The real disk bound in force, stamped on the run row. |
-| `reap()` / `cleanup()` | Kill recorded process groups; then tear down cgroup + delete `root`. |
+| `reap()` / `cleanup()` | Kill parent-recorded process groups, sweep the Linux cgroup, then tear down the cgroup and delete `root`. |
 
 The context is threaded to the harness via `RunHarnessOpts.runContext` and
 consumed in `createRalphSession` / `spawnHook` (`src/server/harness/pi.ts`).
@@ -85,19 +85,54 @@ Every bash subprocess of a bash-holding role (loop, evaluator) is wrapped in
 
 **Wrap point.** Not `spawnHook` (which is synchronous) but pi's own
 `operations.exec` extension point — `createSandboxedBashOperations(runConfig)`
-srt-wraps each command (`wrapBashCommand`) before delegating to pi's local
-shell exec. `shouldSandboxBash(role, srtConfig)` routes only loop/evaluator
-through it; the planner has no bash, so L1 never applies to it.
+srt-wraps each command and runs it (`runSandboxedCommand`), delegating the
+wrapped string to pi's local shell exec. `shouldSandboxBash(role, srtConfig)`
+routes only loop/evaluator through it; the planner has no bash, so L1 never
+applies to it.
 
 **Session vs. per-call config — the load-bearing quirk.**
 `SandboxManager.initialize()` runs **once** at server boot with a maximally
 restrictive floor (`denyRead: [$HOME]`, `allowedDomains: []`). Filesystem policy
 *is* rebuilt per call from `wrapWithSandbox`'s `customConfig`, but **network
 policy is not** — the egress proxy filters against the *session-level* config.
-So `wrapBashCommand` calls `SandboxManager.updateConfig(runConfig)` immediately
-before `wrapWithSandbox`. This is safe **only because Radulf's pipeline is
-strictly serial** (one card at a time, spec 02); it is documented as a hard
-invariant a future concurrency change must not break.
+So `runSandboxedCommand` calls `SandboxManager.updateConfig(runConfig)`
+immediately before `wrapWithSandbox`. The pipeline is **not** strictly serial:
+cards in different repos have always run at the same time, and spec 20 allows
+more than one card per repo. What keeps this safe is narrower than a serial
+pipeline, in two parts:
+
+- The wrap-and-`updateConfig` window is serialized by a promise-chain mutex,
+  so two calls can never interleave those two steps.
+- A runtime check refuses a call whose network-policy slice differs from the
+  one already in force, rather than letting it silently clobber the other
+  run's allowlist. The claim is held from before the wrap until **after the
+  command has finished running**, because that is when the egress proxy
+  actually consults the session config. Commands that agree on network policy
+  still run concurrently — only the wrap step is one at a time — so an
+  `npm install` in one repo does not block another repo's bash.
+
+**`TMPDIR` inside the sandbox.** srt overrides `TMPDIR` in every wrapped
+command (default `/tmp/claude`, honouring `CLAUDE_CODE_TMPDIR` in the *server
+process* at wrap time). `/tmp/claude` does not exist in the container image, so
+`runSandboxedCommand` sets `CLAUDE_CODE_TMPDIR` to the run's private `tmpdir`
+inside the same serialized window (and restores it before releasing the turn),
+making the sandboxed `TMPDIR` the spec 14 run-private directory.
+
+**Running Radulf's own test suite inside the sandbox.** A sandbox cannot be
+started from inside a sandbox, so the tests that need a real srt runtime (the
+preflight and real-runtime rows in `src/server/sandbox/srt.test.ts`, and the
+sandbox-on Phase 18.1 test in `src/server/evaluationService.test.ts`) skip
+themselves when `SANDBOX_RUNTIME=1` — the variable srt exports into every
+wrapped command — via the shared predicate in
+`src/testUtils/insideRadulfSandbox.ts`. On a plain host nothing is skipped.
+Leave `TMPDIR` as the sandbox sets it; every test takes scratch space from
+`os.tmpdir()`.
+
+Today nothing trips that check, because network policy comes from global
+settings with nothing per-card or per-role in it. **Making network policy
+genuinely per-run is what must not be done casually**: it would turn that
+check from dead code into a hard failure, and needs a per-run sandbox session
+instead.
 
 ### Filesystem policy (`buildFilesystemConfig`)
 
@@ -106,18 +141,24 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 | Access | Paths |
 |--------|-------|
 | **write allow** | the worktree; the run's `$TMPDIR`; the run's cache root; the parent repo's shared `.git` (resolved via `git rev-parse --git-common-dir`, so a linked worktree's pointer file isn't mistaken for it) |
-| **write deny** | `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir |
-| **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH`; three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
-| **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, plus a backstop credential denylist |
+| **write deny** | every sibling registered repository; `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir. `<git>/refs`, `<git>/packed-refs`, `<git>/HEAD`, `<git>/worktrees/*/HEAD` — every ref and checkout pointer, so agent git cannot commit, move a branch, or check the worktree out onto another branch. The orchestrator makes every commit from the host. |
+| **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH` (each entry, plus its parent unless that parent is inside `$HOME` or a Radulf root — `~/.cargo/bin` stays readable, `~/.cargo` does not); three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
+| **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, the configured repository browser root, every registered repository root, `/repos` when mounted, plus a backstop credential denylist |
 
 **Backstop credential denylist** (`credentialBackstopDenylist`) is unioned into
 `denyRead` on every run even though `$HOME` is already denied: `~/.ssh`,
 `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`,
 `~/.docker/config.json`, `~/.kube`, `~/.config/gcloud`, `~/.cargo/credentials`,
-`~/.gnupg`, and the macOS keychain/browser/cookie paths. It is defense in depth
+`~/.cargo/credentials.toml`, `~/.local/share/keyrings`, `~/.gnupg`, and the
+macOS keychain/browser/cookie paths. It is defense in depth
 — if a future re-allow widens by mistake, the obvious targets stay closed. The
 excluded re-allows (`~/.pyenv`, `~/.cargo/credentials`, `~/Library/Caches`) are
 deliberate; adding one back requires a rationale in the spec.
+
+On Linux, the exact `apply-seccomp` executable resolved by srt is also
+read-allowed. It runs inside bubblewrap, so denying `$HOME` otherwise hides
+the sandbox's own helper when Radulf is installed there. This exemption opens
+only the executable, not its parent directory or Radulf's application data.
 
 **`dropRootsThatWouldReopen` — the total-bypass guard.** `PATH`-derived read
 roots are untrusted input: a shallow entry like `/bin` has `dirname` `/`, which
@@ -175,7 +216,10 @@ srt cannot reach the pi tools that run *inside* the server process. The same
   `<worktree>-evil` is not inside `<worktree>`).
 - **Wrappers:** `createGuardedFsTools` in
   [`src/server/harness/guardedTools.ts`](../src/server/harness/guardedTools.ts) —
-  guard, then delegate to pi's built-in tool definition (never reimplement).
+  reap every recorded run process group, guard, then delegate to pi's built-in
+  tool definition. Bash and all in-process file tools share a per-run serial
+  lock, so no model-controlled process can swap a symlink after the guard but
+  before the delegate opens it.
 - **Per-role roots** (`pathRootsForRole` in `pi.ts`):
 
   | Role | Read roots | Write roots |
@@ -183,13 +227,21 @@ srt cannot reach the pi tools that run *inside* the server process. The same
   | Planner | repo checkout (worktree) | `<worktree>/.ralph` only |
   | Loop | worktree | worktree |
   | Evaluator | worktree | worktree (net changes constrained to docs + `.ralph/` by the post-run integrity check, not L2) |
+  | Scoping, improvement proposer (no role) | the checkout they run against | none |
 
-Mutating tools are root-only with no exceptions (not even `.git` — commits go
-via bash under L1). Read-side tools are root-only too; the escape hatch for
+Mutating tools are root-only, and `<worktree>/.git` is carved out of every
+write root: in a linked worktree it is the file naming the gitdir, and a
+rewritten pointer would hand every host-side git call an agent-populated
+config (L1 denies the same path to bash). Commits go via the orchestrator,
+never the agent. Read-side tools are root-only too; the escape hatch for
 legitimate outside reads is bash, where the kernel decides. The planner has no
 bash and therefore no escape hatch — correct, since a planner needing outside
 reads is being manipulated. Its containment is L2 + L3 only, acceptable because
-it cannot spawn a process that would escape a JS-level guard.
+it cannot spawn a process that would escape a JS-level guard. The read-only
+sessions are the same shape with no write root at all: they hold `web_search`,
+so an unguarded `read` there would be host-wide read and egress in one session.
+Residual: scoping runs against the operator's real checkout, so untracked files
+in it (a `.env`, say) are readable and reach the model provider.
 
 ---
 
@@ -254,16 +306,26 @@ and a constant `AGENT_GIT_IDENTITY` (needed because the global config is
     is below the shared `APFSContainerSize`.
 - **`diskLimitMechanism`** on the run row records the real bound: `cgroup`
   (Linux), `apfs-quota` (macOS quota volume), or `watchdog` (macOS default).
+- **Docker:** the checked-in Compose worker has whole-container ceilings of
+  12 GiB memory and 4096 processes. Per-run cgroups remain unavailable inside
+  the unprivileged worker container.
 
 ### Process-group reaping
 
-srt wraps a *command*; anything backgrounded inside one (`nohup ./thing &`)
-outlives it. The command preamble records each detached shell's pgid into
-`pgidFile` (which **must** live inside an `allowWrite` root — the run's
-`$TMPDIR` — or the in-sandbox write is denied and reaping is inert). At run end
-`ctx.reap()` kills each recorded group and verifies it is empty **before** the
-integrity check and merge — a surviving process could otherwise plant hooks
-after a check that already passed.
+srt wraps a *command*; anything backgrounded inside one can outlive it. The
+trusted parent records every detached shell process group immediately after
+spawn. The ledger stays in server memory and cannot be erased by agent code.
+Before every in-process file tool, after every gate command, and at run end,
+`ctx.reap()` kills each recorded group. On Linux it also sweeps and verifies
+the run cgroup, which catches descendants that created a new session. The
+Linux sandbox PID namespace provides the same lifecycle boundary when a
+delegated cgroup is unavailable. A protected run without either boundary
+fails closed before any privileged file tool, repository mutation, or
+artifact write after command execution. This applies to protected runs only.
+Disabling sandboxing retains the documented loss of containment.
+Gate reaping happens before trusted code writes `GATE.md`. Run-end reaping
+happens before the integrity check and merge. A surviving process could
+otherwise swap a checked path or plant hooks after a completed check.
 
 ### Repo integrity check
 
@@ -274,6 +336,26 @@ before merge** in `approveClaimedRun`, however long the card sat in In Review.
 The pre-merge check is the load-bearing one; a violation halts the card to Needs
 Attention with the diff of what moved.
 
+The run-end ref comparison skips everything under `refs/heads/ralph/`, which is
+the namespace Radulf writes itself: card run branches and improvement-run
+feature branches. Every worktree shares one `.git`, so without that a sibling
+card's ordinary commit shows up as tampering in this run's snapshot and throws
+away a finished run (spec 19). Base branches, `main` and tags are still
+compared, as are hooks and `.git/config`. A change confined to remote-tracking
+refs (`refs/remotes/**`, outside `ralph/`) is recorded as a
+`repo.integrity_warning` event on the run and shown on the card timeline instead
+of failing the run: a `git fetch` or `git push` in the registered checkout moves
+those refs and is not tampering (spec 19 amendment, 2026-09-25).
+
+If delivery is blocked by `.git/config changed`, the card offers **Review Git
+config**. It shows the current file; the baseline stores only a hash, so the
+original contents cannot be shown as a diff. After verifying the configuration,
+choose **Accept config and retry merge** to approve that exact version for this
+run and retry delivery. A changed configuration or a newer run requires a fresh
+review. Approval preserves the hook and ref baselines and records only config
+hashes in the activity history, never the file contents. Other cards still
+require their own approval.
+
 ### Install-script gate
 
 After an install, the orchestrator enumerates every `preinstall`/`install`/
@@ -281,8 +363,12 @@ After an install, the orchestrator enumerates every `preinstall`/`install`/
 trusting the env or command string, since CLI flags override env) and diffs it
 against a per-repo `approvedInstallScripts` list keyed on `{name, version,
 scriptHash}`. Anything unapproved halts the run to Needs Attention with the
-verbatim script body; approval runs `npm rebuild` per package and **resumes the
-paused run in place** (not a requeue). See
+verbatim script body; approval runs `npm rebuild` per package **inside the
+run's sandbox** (the approved script bodies are what the human read; the
+worktree's `.npmrc` and the rest of the tree are agent-authored and get no more
+trust at approval than during the iteration) and **resumes the paused run in
+place** (not a requeue). A native build that fetches Node headers needs
+`nodejs.org` in `sandboxNetworkAllowlist`. See
 [`installGate.ts`](../src/server/installGate.ts). This is a supply-chain
 *awareness* control, not a containment one — and not a model-visible prompt.
 
@@ -295,13 +381,15 @@ Three roles, each the narrowest tool set for its job (`toolsForRole` in
 
 | Role | bash | `web_search` | filesystem |
 |------|------|--------------|------------|
-| 🧭 Planner | ✗ | ✓ (only role) | repo checkout read-only; `<worktree>/.ralph/` write-only |
+| 🧭 Planner | ✗ | ✓ | repo checkout read-only; `<worktree>/.ralph/` write-only |
 | 🔁 Loop | ✓ | ✗ | worktree read-write |
 | 🔎 Evaluator | ✓ | ✗ | worktree read-write; net changes outside `.ralph/` limited to the doc allowlist by the post-run integrity check |
+| 💬 Scoping, improvement proposer | ✗ | ✓ | the checkout they run against, read-only |
 
 The split is the point: the planner can reach the network but not execute
 commands; the loop can execute commands but reach the network only through the
-L1 registry allowlist. Neither holds both halves of an exfiltration chain.
+L1 registry allowlist. Neither holds both halves of an exfiltration chain. The
+read-only sessions sit on the planner's side of it, with the same L2 confinement.
 `web_search` ([`webSearch.ts`](../src/server/harness/webSearch.ts)) is query-only
 (no agent-supplied URL), ≤ 256 chars, ≤ 8 calls per planner run, every query in
 the transcript. The summarizer role was dropped; the evaluator absorbed its
@@ -333,11 +421,21 @@ The human diff review is the last gate, so it is treated as a security control
 
 There is **no** automatic "sandbox unavailable, run unsandboxed" fallback.
 
+In the compose deployment ([Running in Docker](DOCKER.md)) only the `worker`
+container carries the sandbox and the `security_opt` relaxations it needs
+(`seccomp`, `apparmor`, `systempaths` unconfined). The web container runs no
+sandbox and no agent: it serves HTTP under Docker's default profiles, so there
+is nothing there to contain and the preflight below never runs in it.
+
 - **Startup preflight** (`sandboxPreflight` in `srt.ts`, run once at boot in
-  [`src/instrumentation.ts`](../src/instrumentation.ts)): platform support, srt's
+  [`src/server/boot.ts`](../src/server/boot.ts) (worker role only)): platform support, srt's
   dependency check, and (Linux) the Ubuntu 24.04+ AppArmor
   `kernel.apparmor_restrict_unprivileged_userns` gate — each with a specific
   remediation message. Cached via `initializeSandboxRuntimeOnce`.
+- After initialization, a timed sandboxed `true` command verifies that the
+  runtime can actually start under the run filesystem policy. A missing or
+  hidden helper therefore fails startup before an agent spends tokens retrying
+  commands that cannot execute.
 - Before its first iteration, a run with `sandboxEnabled` awaits that cached
   result; if not `ok`, the run fails and the card moves to Needs Attention with
   the verbatim error — never proceeds unsandboxed.
@@ -410,7 +508,7 @@ only via the human-facing `/api/settings` route. The disk-limit env vars
 | Repo integrity check | `src/server/integrity.ts` |
 | Install-script gate | `src/server/installGate.ts` |
 | Run lifecycle (watchdog, reaping, integrity, gate) | `src/server/orchestrator.ts` |
-| Startup preflight | `src/instrumentation.ts` |
+| Startup preflight | `src/server/boot.ts` |
 | Settings store | `src/server/settings.ts` |
 | Review-surface: Unicode | `src/shared/diffSafety.ts` |
 | Review-surface: sensitive paths | `src/app/review/[id]/sensitivePaths.ts` |

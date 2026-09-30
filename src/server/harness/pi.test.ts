@@ -2,12 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { omlxProviderConfig, pathRootsForRole, piNormalize, shouldSandboxBash, toolsForRole } from "./pi";
-import { SETTING_DEFAULTS, type Settings } from "../settings";
-
-/** A minimal settings object for testing — never touches the db. */
-function testSettings(overrides: Partial<Settings> = {}): Settings {
-  return { ...SETTING_DEFAULTS, ...overrides } as Settings;
-}
+import { testSettings } from "@/testUtils/testSettings";
 
 /** piNormalize takes SDK event objects; cast arbitrary shapes for the tests. */
 function norm(evt: unknown) {
@@ -15,114 +10,104 @@ function norm(evt: unknown) {
 }
 
 describe("toolsForRole — role capability split (spec 14 Phase 2b)", () => {
-  it("binds web_search to the planner ONLY, and never bash", () => {
+  // The invariant: no role ever holds both bash and web_search.
+  it.each([
+    ["loop", false],
+    ["evaluator", false],
+    // No role and not readOnly defaults to the loop set.
+    [undefined, false],
+  ] as const)("gives %s bash but never web_search", (role, readOnly) => {
+    const tools = toolsForRole(role, readOnly);
+    expect(tools).toContain("bash");
+    expect(tools).not.toContain("web_search");
+  });
+
+  it("gives the planner and readOnly sessions web_search but never bash", () => {
     const planner = toolsForRole("planner", false);
     expect(planner).toContain("web_search");
     expect(planner).not.toContain("bash");
-    // write/edit are bound (L2-guarded to the plan dir in Phase 3).
-    expect(planner).toEqual(
-      expect.arrayContaining(["read", "grep", "find", "ls", "write", "edit"]),
-    );
-  });
+    // write/edit are bound, L2-guarded to the plan dir.
+    expect(planner).toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "write", "edit"]));
 
-  it("gives the loop bash but never web_search", () => {
-    const loop = toolsForRole("loop", false);
-    expect(loop).toContain("bash");
-    expect(loop).not.toContain("web_search");
-  });
-
-  it("gives the evaluator bash but never web_search", () => {
-    const evaluator = toolsForRole("evaluator", false);
-    expect(evaluator).toContain("bash");
-    expect(evaluator).not.toContain("web_search");
-  });
-
-  it("never lets a bash-holding role also hold web_search (the invariant)", () => {
-    for (const role of ["loop", "evaluator"] as const) {
-      const tools = toolsForRole(role, false);
-      const hasBash = tools.includes("bash");
-      const hasWeb = tools.includes("web_search");
-      expect(hasBash && hasWeb).toBe(false);
-    }
-  });
-
-  it("readOnly (chat / improvement proposer) gets browse tools + web_search but no bash or write", () => {
+    // readOnly = chat / improvement proposer: browse tools only.
     const ro = toolsForRole(undefined, true);
     expect(ro).toContain("web_search");
-    expect(ro).not.toContain("bash");
-    expect(ro).not.toContain("write");
-    expect(ro).not.toContain("edit");
+    for (const tool of ["bash", "write", "edit"]) expect(ro).not.toContain(tool);
   });
 
-  it("defaults to the loop set (bash, no web_search) with no role and not readOnly", () => {
-    const dflt = toolsForRole(undefined, false);
-    expect(dflt).toContain("bash");
-    expect(dflt).not.toContain("web_search");
+  it("gives the critic the planner's set less edit, so the two are told apart by their tools", () => {
+    const critic = toolsForRole("critic", false);
+    expect(critic).toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "write", "web_search"]));
+    for (const tool of ["bash", "edit"]) expect(critic).not.toContain(tool);
   });
 });
 
 describe("pathRootsForRole — L2 roots (spec 14 Phase 3)", () => {
-  const wt = "/tmp/wt";
-
-  it("gives the planner the whole checkout to read but only .ralph to write", () => {
-    expect(pathRootsForRole("planner", wt)).toEqual({
-      readRoots: [wt],
-      writeRoots: [path.join(wt, ".ralph")],
-    });
-  });
-
-  it("gives the loop the worktree for both read and write", () => {
-    expect(pathRootsForRole("loop", wt)).toEqual({
-      readRoots: [wt],
-      writeRoots: [wt],
-    });
-  });
-
-  it("gives the evaluator the worktree for both read and write", () => {
-    expect(pathRootsForRole("evaluator", wt)).toEqual({
-      readRoots: [wt],
-      writeRoots: [wt],
-    });
+  it("lets the planner write only .ralph, and the loop/evaluator the whole worktree", () => {
+    const wt = "/tmp/wt";
+    expect(pathRootsForRole("planner", wt)).toEqual({ readRoots: [wt], writeRoots: [path.join(wt, ".ralph")] });
+    expect(pathRootsForRole("critic", wt)).toEqual({ readRoots: [wt], writeRoots: [path.join(wt, ".ralph")] });
+    expect(pathRootsForRole("loop", wt)).toEqual({ readRoots: [wt], writeRoots: [wt] });
+    expect(pathRootsForRole("evaluator", wt)).toEqual({ readRoots: [wt], writeRoots: [wt] });
+    // Read-only sessions (scoping, proposer): the checkout they were pointed
+    // at, and nothing writable — they hold web_search, so an unguarded read
+    // would be exfiltration's other half.
+    expect(pathRootsForRole(undefined, wt)).toEqual({ readRoots: [wt], writeRoots: [] });
   });
 });
 
 describe("shouldSandboxBash — L1 routing (spec 14 Phase 6)", () => {
   const config = {} as const; // any defined value stands in for a resolved srtConfig
 
-  it("sandboxes the loop and evaluator when srtConfig resolved", () => {
-    expect(shouldSandboxBash("loop", config)).toBe(true);
-    expect(shouldSandboxBash("evaluator", config)).toBe(true);
-  });
-
-  it("never sandboxes the planner — it holds no bash tool at all", () => {
-    expect(shouldSandboxBash("planner", config)).toBe(false);
-  });
-
-  it("never sandboxes a non-pipeline session (no role — chat, improvement proposer)", () => {
-    expect(shouldSandboxBash(undefined, config)).toBe(false);
-  });
-
-  it("does not sandbox a bash-holding role when srtConfig is absent (sandboxEnabled off)", () => {
-    expect(shouldSandboxBash("loop", undefined)).toBe(false);
-    expect(shouldSandboxBash("evaluator", undefined)).toBe(false);
+  it.each([
+    ["loop", config, true],
+    ["evaluator", config, true],
+    // The planner holds no bash tool at all.
+    ["planner", config, false],
+    // A non-pipeline session (chat, improvement proposer).
+    [undefined, config, false],
+    // sandboxEnabled off: no srtConfig resolved.
+    ["loop", undefined, false],
+    ["evaluator", undefined, false],
+  ] as const)("routes role %s with config %j → %s", (role, cfg, expected) => {
+    expect(shouldSandboxBash(role, cfg)).toBe(expected);
   });
 });
 
 describe("omlxProviderConfig", () => {
-  it("builds the omlx provider with baseUrl, anthropic-messages api, apiKey fallback, and the model", () => {
-    const s = testSettings({ omlxBaseUrl: "http://localhost:8000", omlxApiKey: "" });
-    const config = omlxProviderConfig("some-model", s);
+  it("builds the local provider with a /v1 baseUrl, the OpenAI wire format, and the model, falling back on the api key", () => {
+    const config = omlxProviderConfig("some-model", testSettings({ omlxBaseUrl: "http://localhost:8000", omlxApiKey: "" }));
 
-    expect(config.baseUrl).toBe("http://localhost:8000");
-    expect(config.api).toBe("anthropic-messages");
-    expect(config.apiKey).toBe("omlx"); // fallback
+    expect(config.baseUrl).toBe("http://localhost:8000/v1");
+    expect(config.api).toBe("openai-completions");
+    expect(config.apiKey).toBe("omlx");
     expect(config.models[0].id).toBe("some-model");
     expect(config.models[0].name).toBe("some-model");
+    expect(omlxProviderConfig("m", testSettings({ omlxApiKey: "secret" })).apiKey).toBe("secret");
   });
 
-  it("uses the configured oMLX api key when present", () => {
-    const s = testSettings({ omlxApiKey: "secret" });
-    expect(omlxProviderConfig("m", s).apiKey).toBe("secret");
+  it("takes the served context window and keeps the output cap under it", () => {
+    const s = testSettings({ omlxBaseUrl: "http://localhost:8000" });
+    expect(omlxProviderConfig("m", s, 65_536).models[0].contextWindow).toBe(65_536);
+    expect(omlxProviderConfig("m", s, 65_536).models[0].maxTokens).toBe(8_192);
+    // A small window must not carry an output cap it cannot satisfy.
+    expect(omlxProviderConfig("m", s, 8_192).models[0].maxTokens).toBe(2_048);
+  });
+
+  it("falls back to a window no larger than any plausible server", () => {
+    const s = testSettings({ omlxBaseUrl: "http://localhost:8000" });
+    expect(omlxProviderConfig("m", s).models[0].contextWindow).toBe(32_768);
+  });
+
+  it("passes extra headers through, escaped so pi sends them literally", () => {
+    // pi reads `$NAME` as an env reference and a leading `!` as a shell
+    // command; a pasted value must survive that as-is.
+    const config = omlxProviderConfig(
+      "m",
+      testSettings({ omlxHeaders: "kong-api-key: abc$123\nX-Note: !literal" }),
+    );
+    expect(config.headers).toEqual({ "kong-api-key": "abc$$123", "X-Note": "$!literal" });
+    expect(omlxProviderConfig("m", testSettings()).headers).toEqual({});
   });
 });
 
@@ -179,7 +164,7 @@ describe("piNormalize", () => {
     ]);
   });
 
-  it("skips empty text blocks and thinking blocks", () => {
+  it("keeps thinking blocks (even redacted, textless ones) but drops empty text and empty thinking", () => {
     const evt = {
       type: "message_end",
       message: {
@@ -187,12 +172,18 @@ describe("piNormalize", () => {
         content: [
           { type: "thinking", thinking: "hmm" },
           { type: "text", text: "" },
+          { type: "thinking", thinking: "" },
+          { type: "thinking", thinking: "", thinkingSignature: "enc", redacted: true },
         ],
         usage: { input: 10, output: 2 },
         stopReason: "stop",
       },
     };
-    expect(norm(evt)).toEqual([{ t: "usage", inputTokens: 10, outputTokens: 2 }]);
+    expect(norm(evt)).toEqual([
+      { t: "reasoning", content: "hmm" },
+      { t: "reasoning", content: "", redacted: true },
+      { t: "usage", inputTokens: 10, outputTokens: 2 },
+    ]);
   });
 
   it("maps message_end with stopReason error to result:failed", () => {
@@ -217,7 +208,7 @@ describe("piNormalize", () => {
       type: "message_end",
       message: { role: "toolResult", toolCallId: "tc_1", content: [] },
     };
-    expect(norm(evt)).toEqual([{ t: "raw", line: JSON.stringify(evt) }]);
+    expect(norm(evt)).toEqual([{ t: "raw", event: evt }]);
   });
 
   it("maps a failed auto_retry_end to result:failed", () => {
@@ -225,9 +216,12 @@ describe("piNormalize", () => {
     expect(norm(evt)).toEqual([{ t: "result", exit: "failed", detail: "429 rate limited" }]);
   });
 
-  it("ignores a successful auto_retry_end (falls through to raw)", () => {
+  it("keeps a successful auto_retry_end as raw and marks the retry completed", () => {
     const evt = { type: "auto_retry_end", success: true, attempt: 1 };
-    expect(norm(evt)).toEqual([{ t: "raw", line: JSON.stringify(evt) }]);
+    expect(norm(evt)).toEqual([
+      { t: "raw", event: evt },
+      { t: "result", exit: "completed" },
+    ]);
   });
 
   it("preserves tool_execution_end and unknown events as raw", () => {
@@ -238,9 +232,9 @@ describe("piNormalize", () => {
       result: "ok",
       isError: false,
     };
-    expect(norm(end)).toEqual([{ t: "raw", line: JSON.stringify(end) }]);
+    expect(norm(end)).toEqual([{ t: "raw", event: end }]);
 
     const unknown = { type: "queue_update", steering: [], followUp: [] };
-    expect(norm(unknown)).toEqual([{ t: "raw", line: JSON.stringify(unknown) }]);
+    expect(norm(unknown)).toEqual([{ t: "raw", event: unknown }]);
   });
 });

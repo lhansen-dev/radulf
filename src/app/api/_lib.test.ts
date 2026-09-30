@@ -14,6 +14,29 @@ describe("API error handling", () => {
     expect(await response.json()).toEqual({ error: "invalid value" });
   });
 
+  it("honors a ClientError from another module instance of the class", async () => {
+    // What the orchestrator singleton throws: same shape, different class
+    // object, so `instanceof` is false. Concealing this behind a 500 is what
+    // made POST /api/reviews unreadable.
+    class ForeignClientError extends Error {
+      constructor(
+        message: string,
+        readonly status = 400,
+      ) {
+        super(message);
+        this.name = "ClientError";
+      }
+    }
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await handle(() => {
+      throw new ForeignClientError("reviews require a completed loop run");
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "reviews require a completed loop run" });
+    expect(logged).not.toHaveBeenCalled();
+  });
+
   it("maps malformed JSON syntax to a safe 400", async () => {
     const response = await handle(() => {
       throw new SyntaxError("secret parser details");

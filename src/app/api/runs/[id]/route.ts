@@ -4,14 +4,13 @@ import { db, runs, iterations, TRANSCRIPTS_DIR } from "@/db";
 import { json, err, handle } from "../../_lib";
 import { readTranscriptChunk } from "@/server/transcript";
 
-export const dynamic = "force-dynamic";
-
 type Ctx = { params: Promise<{ id: string }> };
 
 /**
  * GET /api/runs/[id]            → run + iteration rows
  * GET /api/runs/[id]?iteration=N → parsed transcript lines for iteration N
- *                                  (N ignored for plan runs — returns plan.jsonl)
+ *                                  (N ignored for plan, evaluate and critique runs —
+ *                                  returns plan.jsonl / evaluate.jsonl / critique.jsonl)
  */
 export async function GET(req: Request, { params }: Ctx) {
   return handle(async () => {
@@ -35,6 +34,7 @@ export async function GET(req: Request, { params }: Ctx) {
     const singleFile: Partial<Record<typeof run.kind, string>> = {
       plan: "plan.jsonl",
       evaluate: "evaluate.jsonl",
+      critique: "critique.jsonl",
     };
     const iteration = Number(iterParam);
     if (!singleFile[run.kind] && (!Number.isInteger(iteration) || iteration < 1)) {

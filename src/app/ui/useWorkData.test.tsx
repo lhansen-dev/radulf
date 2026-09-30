@@ -118,3 +118,31 @@ describe("useWorkData improvement-run completion alert", () => {
     expect(result.current.improvementAlert).toBeNull();
   });
 });
+
+describe("useWorkData stream reconnect", () => {
+  it("refetches cards after the event stream reconnects, but not on the first open", async () => {
+    let cardStatus = "looping";
+    const fetchMock = vi.fn((url: string) =>
+      url === "/api/cards"
+        ? jsonResponse([{ id: "c1", title: "Card", status: cardStatus }])
+        : mockFetchFor(url)
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const cardFetches = () => fetchMock.mock.calls.filter(([url]) => url === "/api/cards").length;
+
+    const { result } = renderHook(() => useWorkData());
+    await waitFor(() => expect(result.current.cards[0]?.status).toBe("looping"));
+    const es = MockEventSource.instances[0];
+    act(() => es.onopen?.());
+    expect(cardFetches()).toBe(1);
+
+    act(() => es.onerror?.(new Event("error")));
+    expect(result.current.streamConnected).toBe(false);
+    cardStatus = "review";
+    act(() => es.onopen?.());
+
+    await waitFor(() => expect(result.current.cards[0]?.status).toBe("review"));
+    expect(result.current.streamConnected).toBe(true);
+    expect(cardFetches()).toBe(2);
+  });
+});

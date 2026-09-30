@@ -93,6 +93,9 @@ export function agentEnv(ctx?: AgentEnvContext): NodeJS.ProcessEnv {
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_ASKPASS = "/bin/false";
   env.GIT_SSH_COMMAND = "/bin/false";
+  // Read-only inspection must never opportunistically refresh the index.
+  // Required locks still work for host-side Git, which does not use this env.
+  env.GIT_OPTIONAL_LOCKS = "0";
   Object.assign(env, AGENT_GIT_IDENTITY);
 
   if (ctx?.extra) Object.assign(env, ctx.extra);
@@ -138,4 +141,25 @@ export type TranscriptEvent =
        * so the usage-event count stands. */
       numTurns?: number;
     }
+  | {
+      /**
+       * A reasoning/thinking block from the model. Pi carries these as
+       * `thinking` content parts on the assistant message, alongside `text`
+       * parts — dropping them loses the model's visible chain of thought,
+       * which is often the only explanation of *why* a turn ran the tools it
+       * did. `redacted` marks a block whose text the provider withheld: the
+       * turn reasoned, but the content is unavailable.
+       */
+      t: "reasoning";
+      content: string;
+      redacted?: boolean;
+    }
+  /**
+   * A pi SDK event the normalizer doesn't map, kept whole so nothing is lost.
+   * The object itself, not a pre-serialized string: the transcript writer
+   * JSON-encodes the line once, and `tool_execution_end` carries the full
+   * tool output.
+   */
+  | { t: "raw"; event: unknown }
+  /** A transcript line the reader could not parse as a tagged event. */
   | { t: "raw"; line: string };

@@ -31,6 +31,9 @@ target, so the user can point the app at itself to improve it.
 | [12-pi-harness.md](12-pi-harness.md) | Adds pi as a fourth loop harness and the proxied-provider default (amends 09/11) |
 | [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md) | One harness — pi in SDK mode — for every provider, subscriptions included (supersedes 09's premise, re-amends decisions 4/7) |
 | [14-sandboxing.md](14-sandboxing.md) | Kernel-enforced containment (srt sandbox + tool path guards + layout hygiene) for the skip-permissions loop (re-amends decision 7, hardens 13's Security) |
+| [15-github-pr-delivery.md](15-github-pr-delivery.md) | Push + open a GitHub PR as a second delivery target for an approved diff, replacing the local merge (amends decision 6) |
+| [16-local-provider-wire-format.md](16-local-provider-wire-format.md) | The local provider is any OpenAI-compatible server, registered over `openai-completions` (amends 12) |
+| [17-task-scoping.md](17-task-scoping.md) | A repo-aware scoping session that sharpens a card before planning, closes the planner's questions loop, and can propose a split (extends 04, adds a fourth role to decision 3) |
 
 ## Locked decisions
 
@@ -45,6 +48,11 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
    Re-amended 2026-07-17 by [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md):
    the client holding the subscription token is now pi (SDK mode), not
    `claude -p`. Frontier-on-subscription stands; only the client changed.
+   Amended 2026-09-20 by [17-task-scoping.md](17-task-scoping.md): a fourth
+   role, scoping, sits alongside planner, loop and evaluator with its own
+   provider, model and reasoning level. It is interactive and read-only, and
+   its thread is part of the card the planner receives; the planning agent
+   itself is unchanged.
 4. **Loop agent** — one harness for every provider: **pi in SDK mode**.
    Re-amended 2026-07-17 by [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md)
    (previously, per [09-multi-harness.md](09-multi-harness.md): claude-code for
@@ -53,14 +61,27 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
    use through pi (billed per token), and ChatGPT was never restricted. All four
    providers (anthropic/chatgpt subscriptions, OpenRouter, local oMLX) run
    in-process through the pi SDK; the CLI harnesses are retired. oMLX remains
-   optional, not required (amended 2026-07-11).
+   optional, not required (amended 2026-07-11). Amended 2026-09-19 by
+   [16-local-provider-wire-format.md](16-local-provider-wire-format.md): the
+   local slot is any OpenAI-compatible server (oMLX, vLLM, LM Studio), spoken to
+   over `openai-completions`. The harness is untouched.
 5. **Concurrency** — one ticket in the pipeline at a time. A single card runs
    the planner, loop, or evaluator at any moment; the next card starts only once
    that slot frees. Local models own the machine's unified memory, so the queue
-   is always serial — there are no parallel loops or planners.
+   is always serial — there are no parallel loops or planners. Amended
+   2026-09-21 by [20-concurrent-cards.md](20-concurrent-cards.md): the slot is a
+   per-repo cap (`maxConcurrentCards`, default 1) rather than a constant, held
+   at 1 whenever the loop provider is local, which is where this decision's
+   stated reason actually applies. One card is still one agent with one
+   checklist; nothing splits a card across agents.
 6. **Review** — in-app diff review. Loops work in per-card git worktrees on
    per-card branches; the In Review column shows diff + transcript with
-   Approve-merge / Reject-with-feedback actions.
+   Approve-merge / Reject-with-feedback actions. Amended 2026-09-02 by
+   [15-github-pr-delivery.md](15-github-pr-delivery.md): approval has a second
+   delivery target, per card or workspace-wide — push the branch to `origin`
+   and open a pull request *instead of* merging locally. In-app review remains
+   where the diff is judged; only what approval writes to changes. Radulf never
+   merges the pull request it opens, so decision 8 is untouched.
 7. **Permissions** — the classic Ralph skip-permissions posture. Re-amended
    2026-07-17 by [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md): pi
    has no permission system, so the posture is structural — worktree cwd +

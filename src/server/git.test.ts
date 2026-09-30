@@ -1,118 +1,171 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import {
   createWorktree,
+  git as hostGit,
   hasCommits,
+  isRalphBranch,
   isValidBranchName,
   listBranches,
+  mergeBranch,
+  offRunBranchReason,
   worktreeIsDirty,
   worktreeDiff,
   worktreeDiffStat,
-  worktreeChangedPaths,
 } from "./git";
 
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
-}
-
-describe("listBranches", () => {
-  let tmpDir: string;
-
-  beforeAll(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-git-test-"));
-    // Init a git repo
-    git(tmpDir, "init");
-    // Set user config so commits work
-    git(tmpDir, "config", "user.email", "test@test.com");
-    git(tmpDir, "config", "user.name", "Test");
-    // Create initial commit (creates default branch, typically "master" or "main")
-    fs.writeFileSync(path.join(tmpDir, "README.md"), "# test");
-    git(tmpDir, "add", ".");
-    git(tmpDir, "commit", "-m", "initial");
-    // Create a second branch
-    git(tmpDir, "branch", "feature-x");
-  });
-
-  afterAll(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("returns the default branch and the extra branch", async () => {
-    const branches = await listBranches(tmpDir);
-    expect(branches).toContain("feature-x");
-    // Should contain either "main" or "master" depending on git config
-    const hasDefault = branches.includes("main") || branches.includes("master");
-    expect(hasDefault).toBe(true);
-    expect(branches.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("returns [] for a non-git directory", async () => {
-    const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
-    try {
-      const branches = await listBranches(nonGitDir);
-      expect(branches).toEqual([]);
-    } finally {
-      fs.rmSync(nonGitDir, { recursive: true, force: true });
-    }
-  });
-
-  it("returns [] for a non-existent path", async () => {
-    const branches = await listBranches("/tmp/nonexistent-ralph-test-path-12345");
-    expect(branches).toEqual([]);
-  });
-});
-
-describe("repos with no commits", () => {
+describe("repository inspection", () => {
+  let repo: string;
   let emptyRepo: string;
-  let committedRepo: string;
+  let nonGitDir: string;
+  const missingPath = path.join(os.tmpdir(), "nonexistent-ralph-test-path-12345");
 
   beforeAll(() => {
+    repo = initScratchRepo("ralph-git-test-");
+    git(repo, "branch", "feature-x");
     emptyRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-empty-repo-"));
     git(emptyRepo, "init");
-    committedRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-committed-repo-"));
-    git(committedRepo, "init");
-    git(committedRepo, "config", "user.email", "test@test.com");
-    git(committedRepo, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(committedRepo, "README.md"), "# test");
-    git(committedRepo, "add", ".");
-    git(committedRepo, "commit", "-m", "initial");
+    nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
   });
 
   afterAll(() => {
-    fs.rmSync(emptyRepo, { recursive: true, force: true });
-    fs.rmSync(committedRepo, { recursive: true, force: true });
+    for (const d of [repo, emptyRepo, nonGitDir]) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it("hasCommits is false for a freshly init-ed repo", async () => {
+  it("listBranches returns every branch, or [] outside a git repo", async () => {
+    const branches = await listBranches(repo);
+    expect(branches).toContain("feature-x");
+    expect(branches.includes("main") || branches.includes("master")).toBe(true);
+    expect(await listBranches(nonGitDir)).toEqual([]);
+    expect(await listBranches(missingPath)).toEqual([]);
+  });
+
+  it("hasCommits is true only for a repo with at least one commit", async () => {
+    expect(await hasCommits(repo)).toBe(true);
     expect(await hasCommits(emptyRepo)).toBe(false);
+    expect(await hasCommits(nonGitDir)).toBe(false);
   });
 
-  it("hasCommits is true once a commit exists", async () => {
-    expect(await hasCommits(committedRepo)).toBe(true);
+  it("createWorktree names an empty repo or missing base branch instead of a raw git error", async () => {
+    await expect(createWorktree(emptyRepo, "main", "My task", "run1")).rejects.toThrow(
+      /has no commits yet/,
+    );
+    await expect(createWorktree(repo, "nope", "My task", "run2")).rejects.toThrow(
+      /base branch "nope" does not exist/,
+    );
   });
 
-  it("hasCommits is false for a non-git directory", async () => {
-    const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
+  it("offRunBranchReason is null on the run branch, and names where the worktree went otherwise", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-offbranch-wt-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-1");
     try {
-      expect(await hasCommits(nonGitDir)).toBe(false);
+      expect(await offRunBranchReason(wt, "ralph/run-1", repo)).toBeNull();
+      // The incident shape: the agent checks out a branch nothing else has.
+      git(wt, "checkout", "-q", "feature-x");
+      expect(await offRunBranchReason(wt, "ralph/run-1", repo)).toBe(
+        "worktree left its run branch: on feature-x, expected ralph/run-1",
+      );
+      git(wt, "checkout", "-q", "--detach");
+      expect(await offRunBranchReason(wt, "ralph/run-1", repo)).toBe(
+        "worktree left its run branch: on a detached HEAD, expected ralph/run-1",
+      );
     } finally {
-      fs.rmSync(nonGitDir, { recursive: true, force: true });
+      git(repo, "worktree", "remove", "--force", wt);
     }
   });
 
-  it("createWorktree names the empty repo instead of failing on an invalid reference", async () => {
-    await expect(createWorktree(emptyRepo, "main", "My task", "run1")).rejects.toThrow(
-      /has no commits yet/
-    );
+  it("offRunBranchReason names a worktree whose .git pointer no longer leads to the repository", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-gitdir-wt-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-2");
+    const pointer = path.join(wt, ".git");
+    const original = fs.readFileSync(pointer, "utf8");
+    try {
+      expect(await offRunBranchReason(wt, "ralph/run-2", repo)).toBeNull();
+      // The escape shape: an agent-populated gitdir inside the worktree,
+      // wired up as this checkout's metadata by rewriting the pointer file.
+      const fake = path.join(wt, ".agent-gitdir");
+      git(wt, "init", "-q", fake);
+      execFileSync("git", ["--git-dir", path.join(fake, ".git"), "config", "core.worktree", wt]);
+      fs.writeFileSync(pointer, `gitdir: ${path.join(fake, ".git")}\n`);
+      const reason = await offRunBranchReason(wt, "ralph/run-2", repo);
+      expect(reason).toMatch(/^worktree no longer shares the repository's git dir: /);
+      expect(reason).toContain(fs.realpathSync(path.join(repo, ".git")));
+    } finally {
+      fs.writeFileSync(pointer, original);
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-2");
+    }
   });
 
-  it("createWorktree reports a missing base branch on a repo that does have commits", async () => {
-    await expect(createWorktree(committedRepo, "nope", "My task", "run2")).rejects.toThrow(
-      /base branch "nope" does not exist/
-    );
+  it("host-side git runs neither hooks nor fsmonitor, even from a relative hooksPath", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-hooks-wt-${process.pid}`);
+    const marker = path.join(os.tmpdir(), `ralph-hook-ran-${process.pid}`);
+    fs.rmSync(marker, { force: true });
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-hooks");
+    try {
+      // husky's shape: a relative hooksPath in the shared config, which git
+      // resolves against the worktree root — so the agent's worktree supplies
+      // the script that the orchestrator's own commit would otherwise run.
+      const script = `#!/bin/sh\ntouch '${marker}'\n`;
+      fs.mkdirSync(path.join(wt, ".hooks"), { recursive: true });
+      fs.writeFileSync(path.join(wt, ".hooks", "pre-commit"), script, { mode: 0o755 });
+      fs.writeFileSync(path.join(wt, ".hooks", "fsmon"), script, { mode: 0o755 });
+      git(repo, "config", "core.hooksPath", ".hooks");
+      git(repo, "config", "core.fsmonitor", path.join(wt, ".hooks", "fsmon"));
+      fs.writeFileSync(path.join(wt, "change.txt"), "x");
+
+      expect(await worktreeIsDirty(wt)).toBe(true); // git status: fsmonitor's trigger
+      await hostGit(wt, "add", "-A");
+      await hostGit(wt, "commit", "-m", "host commit"); // pre-commit's trigger
+
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      git(repo, "config", "--unset", "core.hooksPath");
+      git(repo, "config", "--unset", "core.fsmonitor");
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-hooks");
+      fs.rmSync(marker, { force: true });
+    }
+  });
+
+  it("host commits replace a planted COMMIT_EDITMSG link without touching its target", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-message-wt-${process.pid}`);
+    const target = path.join(os.tmpdir(), `ralph-message-target-${process.pid}`);
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-message");
+    fs.writeFileSync(target, "preserve me");
+    try {
+      const gitDir = git(wt, "rev-parse", "--absolute-git-dir");
+      const messagePath = path.join(gitDir, "COMMIT_EDITMSG");
+      fs.rmSync(messagePath, { force: true });
+      fs.symlinkSync(target, messagePath);
+      fs.writeFileSync(path.join(wt, "change.txt"), "x");
+      await hostGit(wt, "add", "-A");
+      await hostGit(wt, "commit", "-m", "safe host commit");
+
+      expect(fs.readFileSync(target, "utf8")).toBe("preserve me");
+      expect(fs.lstatSync(messagePath).isSymbolicLink()).toBe(false);
+    } finally {
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-message");
+      fs.rmSync(target, { force: true });
+    }
+  });
+
+  it("worktreeIsDirty sees untracked and modified files, and is false for a missing path", async () => {
+    expect(await worktreeIsDirty(repo)).toBe(false);
+    expect(await worktreeIsDirty(missingPath)).toBe(false);
+
+    fs.writeFileSync(path.join(repo, "newfile.txt"), "hello");
+    expect(await worktreeIsDirty(repo)).toBe(true);
+    fs.rmSync(path.join(repo, "newfile.txt"));
+
+    fs.writeFileSync(path.join(repo, "README.md"), "modified");
+    expect(await worktreeIsDirty(repo)).toBe(true);
+    git(repo, "checkout", "--", "README.md");
   });
 });
 
@@ -126,45 +179,17 @@ describe("isValidBranchName", () => {
   });
 });
 
-describe("worktreeIsDirty", () => {
-  let tmpDir: string;
-
-  beforeAll(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-dirty-test-"));
-    git(tmpDir, "init");
-    git(tmpDir, "config", "user.email", "test@test.com");
-    git(tmpDir, "config", "user.name", "Test");
-    fs.writeFileSync(path.join(tmpDir, "README.md"), "# test");
-    git(tmpDir, "add", ".");
-    git(tmpDir, "commit", "-m", "initial");
+describe("isRalphBranch", () => {
+  it.each(["ralph/fix-the-thing-abc123", "ralph/improve-1753500000000"])('claims "%s"', (name) => {
+    expect(isRalphBranch(name)).toBe(true);
   });
 
-  afterAll(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("returns false for a clean worktree", async () => {
-    expect(await worktreeIsDirty(tmpDir)).toBe(false);
-  });
-
-  it("returns true when an untracked file exists", async () => {
-    fs.writeFileSync(path.join(tmpDir, "newfile.txt"), "hello");
-    expect(await worktreeIsDirty(tmpDir)).toBe(true);
-    fs.rmSync(path.join(tmpDir, "newfile.txt"));
-  });
-
-  it("returns true when a tracked file is modified", async () => {
-    fs.writeFileSync(path.join(tmpDir, "README.md"), "modified");
-    expect(await worktreeIsDirty(tmpDir)).toBe(true);
-    git(tmpDir, "checkout", "--", "README.md");
-  });
-
-  it("returns false for a non-existent path", async () => {
-    expect(await worktreeIsDirty("/tmp/nonexistent-ralph-test-path-12345")).toBe(false);
+  it.each(["main", "feature/ralph", "ralph", "ralph-notes"])('leaves "%s" alone', (name) => {
+    expect(isRalphBranch(name)).toBe(false);
   });
 });
 
-describe("review diff generation (worktreeDiff / worktreeDiffStat / worktreeChangedPaths)", () => {
+describe("review diff generation (worktreeDiff / worktreeDiffStat)", () => {
   let tmpDir: string;
   let defaultBranch: string;
 
@@ -196,15 +221,16 @@ describe("review diff generation (worktreeDiff / worktreeDiffStat / worktreeChan
     expect(stat).toMatch(/1 file changed/);
   });
 
-  it("lists changed paths, excluding .ralph", async () => {
+  it("excludes .ralph from the diff and the stat", async () => {
     fs.mkdirSync(path.join(tmpDir, ".ralph"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, ".ralph", "SUMMARY.md"), "loop notes");
     git(tmpDir, "add", "-A");
     git(tmpDir, "commit", "-m", "loop artifacts");
 
-    const paths = await worktreeChangedPaths(tmpDir, defaultBranch);
-    expect(paths).toContain("README.md");
-    expect(paths.some((p) => p.startsWith(".ralph/"))).toBe(false);
+    const diff = await worktreeDiff(tmpDir, defaultBranch);
+    expect(diff).toContain("README.md");
+    expect(diff).not.toContain("loop notes");
+    expect(await worktreeDiffStat(tmpDir, defaultBranch)).toMatch(/1 file changed/);
   });
 
   it("--text defeats a .gitattributes `-diff` entry that would otherwise hide content as binary", async () => {
@@ -241,5 +267,279 @@ describe("review diff generation (worktreeDiff / worktreeDiffStat / worktreeChan
     expect(diff).toContain("+line3");
 
     git(tmpDir, "config", "--unset", "diff.evil.textconv");
+  });
+
+  it("core.quotePath=false keeps a non-ASCII path readable in the diff --git header", async () => {
+    // The review page prefix-matches these paths to decide whether to raise
+    // its sandbox/self-modifying banners, so a C-quoted header is a banner
+    // that never fires. See diffHeader.ts.
+    fs.mkdirSync(path.join(tmpDir, "src", "server", "sandbox"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "server", "sandbox", "café.ts"), "export {};\n");
+    git(tmpDir, "add", "-A");
+    git(tmpDir, "commit", "-m", "add a non-ascii path under the sandbox dir");
+
+    // Sanity check: git's default really does quote it.
+    const unhardened = execFileSync(
+      "git",
+      ["-C", tmpDir, "diff", defaultBranch, "HEAD", "--", "src/"],
+      { encoding: "utf8" },
+    );
+    expect(unhardened).toContain(String.raw`"a/src/server/sandbox/caf\303\251.ts"`);
+
+    const diff = await worktreeDiff(tmpDir, defaultBranch);
+    expect(diff).toContain("diff --git a/src/server/sandbox/café.ts b/src/server/sandbox/café.ts");
+    expect(diff).not.toContain(String.raw`caf\303\251`);
+  });
+});
+
+describe("mergeBranch concurrency (spec 20: different cards, same repo)", () => {
+  let tmpDir: string;
+  let defaultBranch: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-concurrency-"));
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@test.com");
+    git(tmpDir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "initial");
+    defaultBranch = execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    // Two feature branches touching different files, as two different cards'
+    // run branches would — nothing here should conflict on content.
+    git(tmpDir, "checkout", "-b", "ralph/card-a");
+    fs.writeFileSync(path.join(tmpDir, "a.txt"), "a\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "card a change");
+    git(tmpDir, "checkout", defaultBranch);
+
+    git(tmpDir, "checkout", "-b", "ralph/card-b");
+    fs.writeFileSync(path.join(tmpDir, "b.txt"), "b\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "card b change");
+    git(tmpDir, "checkout", defaultBranch);
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("two cards' merges against the same shared repo checkout don't clobber each other", async () => {
+    // mergeBranch no longer carries an in-process lock: serializing merges
+    // against the same repo is the repo lease's job (src/server/repoLeases.ts,
+    // spec 25 decision 6), so callers run them one after another. Run the two
+    // sequentially here the way a lease holder would, and check that each
+    // lands cleanly on the shared checkout.
+    const resultA = await mergeBranch(tmpDir, defaultBranch, "ralph/card-a", "ralph: merge card a");
+    const resultB = await mergeBranch(tmpDir, defaultBranch, "ralph/card-b", "ralph: merge card b");
+
+    expect(resultA.ok).toBe(true);
+    expect(resultB.ok).toBe(true);
+    expect(resultA.mergeCommit).not.toBe(resultB.mergeCommit);
+
+    // Both changes landed, and each merge produced its own commit — the
+    // interleaved-index failure mode either drops one card's diff or merges
+    // both under one commit message.
+    expect(fs.existsSync(path.join(tmpDir, "a.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "b.txt"))).toBe(true);
+    const log = execFileSync("git", ["-C", tmpDir, "log", "--oneline", defaultBranch], {
+      encoding: "utf8",
+    });
+    expect(log).toContain("ralph: merge card a");
+    expect(log).toContain("ralph: merge card b");
+
+    expect(await hasCommits(tmpDir)).toBe(true);
+    expect(execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim()).toBe(defaultBranch);
+  });
+});
+
+describe("mergeBranch recovery (half-finished merge in the parent checkout)", () => {
+  let dir: string;
+  let defaultBranch: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-recovery-"));
+    git(dir, "init");
+    git(dir, "config", "user.email", "test@test.com");
+    git(dir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(dir, "README.md"), "base\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "initial");
+    defaultBranch = git(dir, "rev-parse", "--abbrev-ref", "HEAD");
+
+    git(dir, "checkout", "-b", "ralph/x");
+    fs.writeFileSync(path.join(dir, "x.txt"), "x\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "x change");
+    git(dir, "checkout", defaultBranch);
+
+    git(dir, "checkout", "-b", "other");
+    fs.writeFileSync(path.join(dir, "other.txt"), "other\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "other change");
+    git(dir, "checkout", defaultBranch);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("aborts Radulf's own abandoned merge of the run branch and redoes it", async () => {
+    // A dead worker left `merge --no-commit ralph/x` half-done in the parent.
+    git(dir, "merge", "--no-ff", "--no-commit", "ralph/x");
+    expect(git(dir, "rev-parse", "MERGE_HEAD")).toBe(git(dir, "rev-parse", "ralph/x"));
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+    expect(result.ok).toBe(true);
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+    expect(git(dir, "rev-parse", "--abbrev-ref", "HEAD")).toBe(defaultBranch);
+    expect(git(dir, "log", "--oneline")).toContain("ralph: merge x");
+    expect(fs.existsSync(path.join(dir, "x.txt"))).toBe(true);
+  });
+
+  it("refuses a foreign in-progress merge by name and leaves it untouched", async () => {
+    git(dir, "merge", "--no-ff", "--no-commit", "other");
+    try {
+      const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain(dir);
+      expect(result.error).toContain("outside Radulf");
+      // The foreign merge is exactly as we found it.
+      expect(git(dir, "rev-parse", "MERGE_HEAD")).toBe(git(dir, "rev-parse", "other"));
+      expect(git(dir, "status", "--porcelain")).not.toBe("");
+    } finally {
+      git(dir, "merge", "--abort");
+    }
+  });
+
+  it("recognises a merge that already landed and records it as alreadyMerged", async () => {
+    // A dead worker committed the merge but died before the DB write.
+    git(dir, "merge", "--no-ff", "-m", "ralph: merge x", "ralph/x");
+    const merged = git(dir, "rev-parse", "HEAD");
+    // Base moved on afterwards; the merge commit is no longer the tip.
+    fs.writeFileSync(path.join(dir, "after.txt"), "after\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "after");
+    const tip = git(dir, "rev-parse", "HEAD");
+    const count = git(dir, "rev-list", "--count", "HEAD");
+
+    let called = false;
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x again", () => {
+      called = true;
+    });
+
+    expect(result).toEqual({ ok: true, mergeCommit: merged, alreadyMerged: true });
+    expect(called).toBe(false);
+    expect(git(dir, "rev-parse", "HEAD")).toBe(tip);
+    expect(git(dir, "rev-list", "--count", "HEAD")).toBe(count);
+  });
+
+  it("names the dirty checkout and tells the operator how to recover, without starting a merge", async () => {
+    fs.writeFileSync(path.join(dir, "scratch.txt"), "wip\n");
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(dir);
+    expect(result.error).toContain("uncommitted changes");
+    expect(result.error).toContain("Retry merge");
+    // No merge was started.
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+  });
+});
+
+describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window)", () => {
+  let tmpDir: string;
+  let defaultBranch: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-callback-"));
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@test.com");
+    git(tmpDir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "initial");
+    defaultBranch = execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    git(tmpDir, "checkout", "-b", "ralph/card-c");
+    fs.writeFileSync(path.join(tmpDir, "c.txt"), "c\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "card c change");
+
+    // Leave the repo's checkout on a third branch — not the base, not the run
+    // branch — so mergeBranch's restore() has somewhere real to return to,
+    // and "still on the base branch" at callback time is a meaningful check.
+    git(tmpDir, "checkout", "-b", "operator-branch", defaultBranch);
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const headBranch = () =>
+    execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+  it("fires after the commit but before the post-merge checkout restore", async () => {
+    let branchAtCallback: string | undefined;
+
+    const result = await mergeBranch(
+      tmpDir,
+      defaultBranch,
+      "ralph/card-c",
+      "ralph: merge card c",
+      () => {
+        branchAtCallback = headBranch();
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    // mergeBranch commits, then calls onCommitted, then restores the
+    // operator's original checkout — at callback time HEAD is still on the
+    // base branch, not yet moved back to operator-branch.
+    expect(branchAtCallback).toBe(defaultBranch);
+    // By the time mergeBranch resolves, the checkout has been restored.
+    expect(headBranch()).toBe("operator-branch");
+  });
+
+  it("does not fire on a conflicted merge", async () => {
+    git(tmpDir, "checkout", "-b", "ralph/card-conflict", defaultBranch);
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "conflicting change\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "conflicting change");
+    git(tmpDir, "checkout", "operator-branch");
+
+    // Diverge the base branch on the same file so the merge conflicts.
+    git(tmpDir, "checkout", defaultBranch);
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "base changed differently\n");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "diverge base");
+    git(tmpDir, "checkout", "operator-branch");
+
+    let called = false;
+    const result = await mergeBranch(
+      tmpDir,
+      defaultBranch,
+      "ralph/card-conflict",
+      "ralph: merge conflicting card",
+      () => {
+        called = true;
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe(true);
+    expect(called).toBe(false);
   });
 });

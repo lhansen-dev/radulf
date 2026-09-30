@@ -10,19 +10,23 @@
  *
  * Module layout:
  *
- *   0. Plan state        (planStatePath)
+ *   0. Plan state        (planStatePath, readPlanState)
  *   1. Prompt helpers    (taskInjectionBlock, buildLoopPrompt)
  *   2. Message helpers   (deterministicCommitMessage)
- *   3. Signal I/O        (iterationDonePath, readIterationDone)
+ *   3. Signal I/O        (ralphDirPath, readFileIfExists, removeRalphFiles,
+ *                         iterationDonePath, readIterationDone, doneFilePath)
  *   4. Progress helpers  (buildProgressState)
  *   5. Iteration flow    (performIterationBookkeeping)
  *   6. Done flow         (performDoneBookkeeping)
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DATA_DIR } from "@/db";
 import { firstUnchecked, markChecked } from "./checklist";
 import { tryGit } from "./git";
+import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
 
 // ---------------------------------------------------------------------------
 // 0. Plan state
@@ -36,14 +40,12 @@ import { tryGit } from "./git";
  * prompt. The orchestrator alone reads and ticks this file.
  */
 export function planStatePath(cardId: string): string {
-  if (process.env.RADULF_DATA_DIR) {
-    return path.join(
-      /* turbopackIgnore: true */ process.env.RADULF_DATA_DIR,
-      "plans",
-      `${cardId}.md`,
-    );
-  }
-  return path.join(process.cwd(), "data", "plans", `${cardId}.md`);
+  return path.join(DATA_DIR, "plans", `${cardId}.md`);
+}
+
+/** The card's private PLAN.md, or null when none is on disk. */
+export function readPlanState(cardId: string): string | null {
+  return readFileIfExists(planStatePath(cardId)) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +82,13 @@ export function taskInjectionBlock(planMd: string): string {
     "no task list to consult and no checklist to update; do not look for one.",
     "The orchestrator tracks completion. Run only the targeted check named in",
     "your assigned task.",
+    "",
+    "If the task cannot be done for a reason outside your control — credentials,",
+    "network access, or a logged-in session you do not have, a decision only the",
+    "operator can make, a prerequisite that does not exist — do NOT write",
+    "`.ralph/ITERATION_DONE`. Write the concrete blocker and what the operator",
+    "must supply into `.ralph/BLOCKED` and stop. Never invent evidence or mark",
+    "the task complete.",
     "",
     "---",
   ].join("\n");
@@ -120,8 +129,118 @@ export function deterministicCommitMessage(taskNumber: number, summary: string):
 // 3. Signal I/O
 // ---------------------------------------------------------------------------
 
+/** The worktree's `.ralph/` directory, where every signal file lives. */
+export function ralphDirPath(worktreePath: string): string {
+  return path.join(/* turbopackIgnore: true */ worktreePath, ".ralph");
+}
+
+/** The file's contents, or `""` when it does not exist. */
+export function readFileIfExists(filePath: string): string {
+  let fd: number | undefined;
+  try {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ filePath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) return "";
+    fd = fs.openSync(
+      /* turbopackIgnore: true */ filePath,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.size > 4 * 1024 * 1024) return "";
+    return fs.readFileSync(fd, "utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function safeRalphDir(ralphDir: string): boolean {
+  try {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ ralphDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    return isInsideOrEqual(realpathBestEffort(ralphDir), realpathBestEffort(path.dirname(ralphDir)));
+  } catch {
+    return false;
+  }
+}
+
+/** Create or validate the real worktree-local artifact directory. */
+export function ensureRalphDir(worktreePath: string): string {
+  const dir = ralphDirPath(worktreePath);
+  try {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`unsafe .ralph path in ${worktreePath}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    fs.mkdirSync(/* turbopackIgnore: true */ dir, { mode: 0o700 });
+  }
+  if (!safeRalphDir(dir)) throw new Error(`unsafe .ralph path in ${worktreePath}`);
+  fs.chmodSync(/* turbopackIgnore: true */ dir, 0o700);
+  return realpathBestEffort(dir);
+}
+
+/** Read one regular artifact without following file or directory symlinks. */
+export function readRalphArtifact(worktreePath: string, name: string): string {
+  const dir = ralphDirPath(worktreePath);
+  if (path.basename(name) !== name || !safeRalphDir(dir)) return "";
+  return readFileIfExists(path.join(/* turbopackIgnore: true */ dir, name));
+}
+
+/** Atomically replace one host-owned artifact without following a planted link. */
+export function writeRalphArtifact(worktreePath: string, name: string, content: string): void {
+  if (path.basename(name) !== name) throw new Error(`invalid .ralph artifact name: ${name}`);
+  const dir = ensureRalphDir(worktreePath);
+  const target = path.join(/* turbopackIgnore: true */ dir, name);
+  const temporary = path.join(dir, `.host-${process.pid}-${crypto.randomUUID()}`);
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(
+      /* turbopackIgnore: true */ temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    fs.writeFileSync(fd, content, "utf8");
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(/* turbopackIgnore: true */ temporary, target);
+    fs.chmodSync(/* turbopackIgnore: true */ target, 0o600);
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    fs.rmSync(/* turbopackIgnore: true */ temporary, { force: true });
+  }
+}
+
+/** Remove the named `.ralph/` files; missing ones are not an error. */
+export function removeRalphFiles(worktreePath: string, names: readonly string[]): void {
+  const dir = ralphDirPath(worktreePath);
+  if (!safeRalphDir(dir)) {
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ dir, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink()) fs.rmSync(/* turbopackIgnore: true */ dir, { force: true });
+    return;
+  }
+  for (const name of names) {
+    fs.rmSync(path.join(/* turbopackIgnore: true */ dir, name), { force: true });
+  }
+}
+
+/** Small models write DONE.md as often as DONE — accept both. */
+export const DONE_FILE_NAMES = ["DONE", "DONE.md"] as const;
+
+/** The DONE signal file present in `ralphDir`, or null when there is none. */
+export function doneFilePath(ralphDir: string): string | null {
+  if (!safeRalphDir(ralphDir)) return null;
+  for (const name of DONE_FILE_NAMES) {
+    const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
+    const stat = fs.lstatSync(/* turbopackIgnore: true */ p, { throwIfNoEntry: false });
+    if (stat?.isFile() && !stat.isSymbolicLink()) return p;
+  }
+  return null;
+}
+
 /** Return the path to `.ralph/ITERATION_DONE` within `ralphDir`. */
-export function iterationDonePath(ralphDir: string): string {
+function iterationDonePath(ralphDir: string): string {
   return path.join(/* turbopackIgnore: true */ ralphDir, "ITERATION_DONE");
 }
 
@@ -132,13 +251,9 @@ export function iterationDonePath(ralphDir: string): string {
  * empty (after trimming).
  */
 export function readIterationDone(ralphDir: string): string | null {
-  const p = iterationDonePath(ralphDir);
-  try {
-    const content = fs.readFileSync(/* turbopackIgnore: true */ p, "utf8").trim();
-    return content || null;
-  } catch {
-    return null;
-  }
+  if (!safeRalphDir(ralphDir)) return null;
+  const content = readFileIfExists(iterationDonePath(ralphDir)).trim();
+  return content || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,20 +262,53 @@ export function readIterationDone(ralphDir: string): string | null {
 
 /**
  * Build a progress-state string for stall detection: the `HEAD` commit hash,
- * any `git status --porcelain` output (non-empty = worktree is dirty), and
- * the current private-plan checklist.  Dirty state counts as progress so an
- * uncommitted useful edit is not mislabeled as "no activity".
+ * any `git status --porcelain` output (non-empty = worktree is dirty) plus a
+ * hash of the dirty content, and the current private-plan checklist.  Dirty
+ * state counts as progress so an uncommitted useful edit is not mislabeled as
+ * "no activity" — and the content hash matters because porcelain lists only
+ * paths: once a file is modified, further edits to it leave the status
+ * output byte-identical.
+ *
+ * Pass `state` when the caller has already captured HEAD and status at this
+ * same boundary, so the two git reads are spawned once rather than twice.
  */
 export async function buildProgressState(
   worktreePath: string,
   planPath: string,
+  state?: PreIterationState,
 ): Promise<string> {
-  const head = (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
-  const checklist = fs.existsSync(/* turbopackIgnore: true */ planPath)
-    ? fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8")
-    : "";
-  const dirty = (await tryGit(worktreePath, "status", "--porcelain")).out;
+  const { head, status } = state ?? (await captureIterationState(worktreePath));
+  const checklist = readFileIfExists(planPath);
+  const dirty = status ? `${status}\n${await dirtyContentHash(worktreePath)}` : "";
   return `${head}\n${dirty}\n${checklist}`;
+}
+
+/**
+ * Hash of every uncommitted change: the tracked diff against HEAD (staged and
+ * unstaged alike) plus the path and bytes of each untracked, non-ignored file.
+ */
+async function dirtyContentHash(worktreePath: string): Promise<string> {
+  const hash = crypto.createHash("sha256");
+  const [diff, untracked] = await Promise.all([
+    tryGit(worktreePath, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
+    tryGit(worktreePath, "ls-files", "--others", "--exclude-standard", "-z"),
+  ]);
+  hash.update(diff.out);
+  for (const rel of untracked.out.split("\0").filter(Boolean)) {
+    const abs = path.join(/* turbopackIgnore: true */ worktreePath, rel);
+    hash.update(`\0${rel}\0`);
+    try {
+      const stat = fs.lstatSync(/* turbopackIgnore: true */ abs);
+      hash.update(
+        stat.isSymbolicLink()
+          ? fs.readlinkSync(/* turbopackIgnore: true */ abs)
+          : fs.readFileSync(/* turbopackIgnore: true */ abs),
+      );
+    } catch {
+      // Removed between the listing and the read — the path alone still counts.
+    }
+  }
+  return hash.digest("hex");
 }
 
 /** Snapshot of the worktree taken just before a loop iteration runs. */
@@ -173,25 +321,52 @@ export type PreIterationState = {
 export async function captureIterationState(
   worktreePath: string,
 ): Promise<PreIterationState> {
-  return {
-    head: (await tryGit(worktreePath, "rev-parse", "HEAD")).out,
-    status: (await tryGit(worktreePath, "status", "--porcelain")).out,
-  };
+  const [head, status] = await Promise.all([
+    tryGit(worktreePath, "rev-parse", "HEAD"),
+    tryGit(worktreePath, "status", "--porcelain"),
+  ]);
+  return { head: head.out, status: status.out };
 }
 
 /** The ITERATION_DONE signal itself must not count as a work product. */
 function statusWithoutSignal(status: string): string {
   return status
     .split("\n")
-    .filter((line) => line.trim() && !line.includes("ITERATION_DONE"))
+    .filter((line) => {
+      if (!line.trim()) return false;
+      // Porcelain format is "XY <path>", or "XY <old> -> <new>" for a
+      // rename — a two-character status field, a space, then the path
+      // (the destination path for a rename). Compare that path's own file
+      // name, not a substring of the whole line, so a file whose name
+      // merely CONTAINS "ITERATION_DONE" (e.g. a doc or a test fixture)
+      // still counts as work — only the signal file itself is dropped. An
+      // exotic/quoted path simply won't match, which is the safe
+      // direction: it counts as work rather than being silently dropped.
+      const filePath = line.slice(3);
+      const destPath = filePath.includes(" -> ")
+        ? filePath.slice(filePath.lastIndexOf(" -> ") + " -> ".length)
+        : filePath;
+      return path.posix.basename(destPath) !== "ITERATION_DONE";
+    })
     .join("\n");
 }
 
 /**
- * Whether the iteration changed anything beyond writing the signal file:
- * a new HEAD (the agent committed) or any status delta other than
- * `.ralph/ITERATION_DONE`. Guards against phantom completions — tasks
- * marked done whose edits were never applied.
+ * Whether there is work to credit for this iteration's `ITERATION_DONE`:
+ * a new HEAD (the agent committed), or any uncommitted change other than
+ * `.ralph/ITERATION_DONE` — whether it appeared during this iteration or was
+ * already sitting in the worktree when it started. Guards against phantom
+ * completions — tasks marked done whose edits were never applied.
+ *
+ * Pre-existing changes count because every other writer to a loop worktree
+ * (planner, evaluator, this bookkeeping) commits its own output, so anything
+ * uncommitted is loop-agent work not yet accounted for — typically edits from
+ * an iteration that failed or timed out before signalling, or from an earlier
+ * run of the same card. The checklist only advances on a commit, so that work
+ * always belongs to the task still unchecked. Comparing only this iteration's
+ * delta instead used to wedge the loop: an agent that found the task already
+ * done had nothing left to change, so every completion was a phantom until the
+ * run stalled, and every retry reused the same dirty worktree.
  */
 export async function hasIterationWorkProduct(
   worktreePath: string,
@@ -200,7 +375,8 @@ export async function hasIterationWorkProduct(
   const current = await captureIterationState(worktreePath);
   return (
     current.head !== pre.head ||
-    statusWithoutSignal(current.status) !== statusWithoutSignal(pre.status)
+    statusWithoutSignal(pre.status) !== "" ||
+    statusWithoutSignal(current.status) !== ""
   );
 }
 
@@ -220,8 +396,9 @@ export async function hasIterationWorkProduct(
  *   - `git add -A && git commit` with a deterministic message
  *   - return `{ advanced: true, isLast, taskNumber, summary }`
  *
- * When `opts.pre` is provided and the iteration produced no work product
- * (no new HEAD, no status delta beyond the signal file), the completion is
+ * When `opts.pre` is provided and there is no work product (no new HEAD and
+ * no uncommitted change beyond the signal file — see
+ * `hasIterationWorkProduct`), the completion is
  * a phantom: the signal is removed, the checklist is NOT advanced, and
  * `{ advanced: false, phantom: true, ... }` is returned so the caller can
  * surface it — the unchanged worktree then feeds normal stall detection.
@@ -310,21 +487,12 @@ export async function performDoneBookkeeping(opts: {
 }): Promise<{ taskNumber: number; summary: string } | null> {
   const { ralphDir, worktreePath, planPath } = opts;
 
-  // Find DONE or DONE.md
-  let donePath: string | null = null;
-  for (const name of ["DONE", "DONE.md"]) {
-    const p = path.join(/* turbopackIgnore: true */ ralphDir, name);
-    if (fs.existsSync(/* turbopackIgnore: true */ p)) {
-      donePath = p;
-      break;
-    }
-  }
-
+  const donePath = doneFilePath(ralphDir);
   if (donePath === null) {
     return null;
   }
 
-  const content = fs.readFileSync(/* turbopackIgnore: true */ donePath, "utf8").trim();
+  const content = readFileIfExists(donePath).trim();
   // First line is the TLDR summary.
   const firstNewline = content.indexOf("\n");
   const summary = firstNewline === -1 ? content : content.slice(0, firstNewline);

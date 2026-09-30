@@ -4,14 +4,31 @@ import { db, cards, repos, runs, now } from "@/db";
 import { getSettings } from "@/server/settings";
 import { modelTag } from "@/server/modelTag";
 import { getOrchestrator } from "@/server/orchestrator";
-import { listBranches } from "@/server/git";
-import { currentTaskFromFile } from "@/server/currentTask";
-import { planStatePath } from "@/server/bookkeeping";
+import { getRepo } from "@/server/repos";
+import { assertBranchExists, isRalphBranch } from "@/server/git";
+import { readPlanState } from "@/server/bookkeeping";
+import { firstUnchecked } from "@/server/checklist";
 import { parseCreateCard } from "@/server/cardValidation";
 import { emitEvent } from "@/server/events";
 import { json, err, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
+/**
+ * Where a looping card is in its checklist (upstream issue 34). The board used
+ * to show the task's text alone, which answers "what is it doing" but not "how
+ * much is left" — the card page has carried both per iteration since plan
+ * versions landed, and a board watching several repos is where the question
+ * actually gets asked. `left` counts the current task, which is not finished.
+ */
+function currentTask(cardId: string) {
+  const task = firstUnchecked(readPlanState(cardId) ?? "");
+  if (!task) return null;
+  return {
+    number: task.taskNumber,
+    count: task.taskCount,
+    left: task.taskCount - task.taskNumber + 1,
+    text: task.item.text,
+  };
+}
 
 /** Board payload: every card plus what its column badge needs. */
 export async function GET() {
@@ -45,22 +62,18 @@ export async function GET() {
             iterationsDone: latestRun.iterationsDone,
             exitReason: latestRun.exitReason,
             startedAt: latestRun.startedAt,
-            currentTask: card.status === "looping"
-              ? currentTaskFromFile(planStatePath(card.id))
-              : null,
+            currentTask: card.status === "looping" ? currentTask(card.id) : null,
           }
         : null,
       maxIterationsResolved: card.maxIterations ?? settings.defaultMaxIterations,
-      // Effective planner model: per-card override, else the global setting.
+      // Effective model per role: per-card override, else the global setting.
       // Empty means "provider default" (e.g. the Claude subscription default).
-      plannerModelResolved: modelTag(settings.plannerProvider, card.plannerModel || settings.plannerModel || null),
-      // Effective loop (Ralpher) model: per-card override, else the global setting.
-      // Empty means "provider default" (e.g. the Claude subscription default).
-      loopModelResolved: modelTag(settings.loopProvider, card.loopModel || settings.loopModel || null),
-      // Effective evaluator model: per-card override, else the global setting.
-      // Empty means "provider default" (e.g. the Claude subscription default).
-      evaluatorModelResolved: modelTag(settings.evaluatorProvider, card.evaluatorModel || settings.evaluatorModel || null),
-      summary: card.summary,
+      ...Object.fromEntries(
+        (["planner", "loop", "evaluator"] as const).map((role) => [
+          `${role}ModelResolved`,
+          modelTag(settings[`${role}Provider`], card[`${role}Model`] || settings[`${role}Model`] || null),
+        ]),
+      ),
     };
   });
   return json(out);
@@ -69,11 +82,12 @@ export async function GET() {
 export async function POST(req: Request) {
   return handle(async () => {
     const body = parseCreateCard(await req.json());
-    const repo = db.select().from(repos).where(eq(repos.id, body.repoId)).get();
+    const repo = getRepo(body.repoId);
     if (!repo) return err("repoId does not exist");
-    if (body.baseBranch && !(await listBranches(repo.path)).includes(body.baseBranch)) {
-      return err("baseBranch does not exist in the repository");
+    if (body.baseBranch && isRalphBranch(body.baseBranch)) {
+      return err("baseBranch cannot be one of Radulf's own ralph/* branches");
     }
+    if (body.baseBranch) await assertBranchExists(repo.path, body.baseBranch, "baseBranch");
 
     const maxPos =
       db
@@ -96,9 +110,15 @@ export async function POST(req: Request) {
         plannerModel: body.plannerModel,
         loopModel: body.loopModel,
         evaluatorModel: body.evaluatorModel,
-        reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation === true ? 1 : 0,
-        autoApprove: body.autoApprove === true ? 1 : 0,
+        planCritic: body.planCritic == null ? null : body.planCritic ? 1 : 0,
+        criticModel: body.criticModel ?? null,
+        reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation ? 1 : 0,
+        grillMe: body.grillMe ? 1 : 0,
+        scopingAuthorsPlan: body.scopingAuthorsPlan ? 1 : 0,
+        autoApprove: body.autoApprove ? 1 : 0,
+        openPr: body.openPr ? 1 : 0,
         baseBranch: body.baseBranch,
+        jiraKey: body.jiraKey ?? null,
         createdAt: now(),
         updatedAt: now(),
       })

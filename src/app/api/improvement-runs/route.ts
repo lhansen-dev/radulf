@@ -2,8 +2,6 @@ import { createImprovementRun, listImprovementRuns } from "@/server/improvementR
 import { parseCreateImprovementRun } from "@/server/improvementRunValidation";
 import { json, handle } from "../_lib";
 
-export const dynamic = "force-dynamic";
-
 /** Active + recent improvement runs, for the board. */
 export async function GET() {
   return json({ runs: listImprovementRuns() });

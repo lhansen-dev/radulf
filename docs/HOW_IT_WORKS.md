@@ -9,19 +9,83 @@ three agents. This page is the map.
    you write        ┌──────────────── the pipeline ────────────────┐        you judge
                     │                                              │
   Backlog ──▶ Todo ─┼─▶ Plan ──▶ Loop ──▶ Evaluate ──▶ ...         ─┼─▶ In Review ──▶ Done
-                    │             ▲          │                     │
-                    │             └──────────┘                     │
-                    │           revise: feedback becomes           │
-                    │           the loop's next task               │
+                    │    ▲                   │                     │
+                    │    └───────────────────┘                     │
+                    │    revise: re-plan with the                  │
+                    │    evaluator's feedback                      │
                     └──────────────────────────────────────────────┘
                                        │
                                        └──▶ Needs Attention (stuck, capped, or errored)
 ```
 
-**1 · Plan.** The planner reads the card and the repo, then writes plan
-artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop to run, and
-a `CRITERIA.md` holding the acceptance criteria. This is a single invocation,
-and the card shows you the plan when it lands.
+**Scope it first, if the card is rough.** Every card carries a scoping thread
+on its Task tab. An assistant that reads the card's repository, with no way to
+change it, asks the questions a plan needs answered and can draft the scoped
+task itself: a title and description for you to edit and apply. The planner
+receives the whole thread, so decisions reached there shape the plan instead of
+being retyped into the description. **Create and scope** in the New task dialog
+takes a rough ask straight to that thread. Scoping is a role of its own in
+Settings, separate from the planner, because you wait on every turn.
+
+The thread can end three ways. **Draft the scoped task** rewrites this one
+card. **Propose a breakdown** comes back with two or more tasks in the order
+they should be done and a recommended run mode, for you to edit, reorder, drop
+or add to; queueing them makes this card an epic (below). **Grill me while scoping**, on
+card creation or edit, makes the questioning relentless rather than a few
+questions a turn: the assistant maps the card as a design tree and asks every
+question it can at once, each with a recommended answer, until nothing is left
+assumed. **Let scoping write the plan** goes further and lets the session write
+`PLAN.md`, `PROMPT.md` and `CRITERIA.md` itself, skipping the planner
+entirely — worth it when the planner is the weakest model you have configured.
+Tick **Review plan before implementation** alongside it to read the result
+before anything runs.
+
+**Epics.** A card broken down this way stays as the epic: it keeps its thread
+and description, never runs itself, and its page lists the tasks under it with
+their status, a progress bar, **Start all** and **Pause all**. The tasks are
+ordinary cards that inherit the epic's settings and may each target another
+repository. The epic's **run mode** decides how the queue treats them: **in
+order** starts a task only once every task before it is done, **in
+parallel** lets them all be eligible at once, and **as a graph** starts each
+task once the tasks it was marked as depending on are done or abandoned — all
+bounded by **Concurrent cards per repo** in Settings. In graph mode the
+breakdown editor shows a **Depends on** picker per task, the breakdown
+proposal suggests dependencies, a cycle is refused when you queue, and the
+Work feed says what each waiting task is waiting on. **Start now** on a task
+always starts it, order or dependencies notwithstanding.
+The epic reads as done when its tasks are. **Create and break down** in the
+New task dialog creates the card and asks for the breakdown straight away, and
+a Jira issue with child issues offers those children as the tasks, ticked, with
+a run mode, before the card exists.
+
+**Jira Done comment.** A card imported from Jira keeps the issue key: the card
+page shows it as a link to the issue, and `PATCH /api/cards/{id}` with `jiraKey`
+sets or clears it on any card. With **Comment on Jira when a card is done** on
+under **Settings → Repositories → Jira** (`jiraCommentOnDone`, off by default),
+Radulf posts exactly one plain-text comment on that issue when the card reaches
+Done — what became of the work, merged into the base branch at a short sha or
+the pull request URL, plus the card link (`RADULF_PUBLIC_BASE_URL`, or the card
+id when that is unset). An epic's parent comments once when it closes, and its
+pieces comment on their own keys. There is one attempt with a ~10 second
+timeout, a failure never blocks the card, and the outcome appears on the card
+timeline as `jira.commented` or `jira.comment_failed`. This is the only write
+Radulf makes to Jira.
+
+**1 · Plan.** The planner reads the card, its scoping thread, and the repo, then
+writes plan artifacts into the worktree: a `PLAN.md`, a `PROMPT.md` for the loop
+to run, and a `CRITERIA.md` holding the acceptance criteria. This is a single
+invocation, and the card shows you the plan when it lands. A card the planner
+finds too vague to plan gets questions instead of a guess: they land in the
+scoping thread and the card goes to Needs Attention. Answer them there and
+**Plan again**.
+
+When the **plan critic** is on — by default for the tasks of a breakdown, and
+for any card via its **Plan critic** setting — a read-only second model reads
+the plan against the card, its thread and the specs it names before anything
+runs. An approve sends the card on as usual; a revise sends the plan back to
+the planner with the critic's feedback, at most twice, after which the card
+goes to plan review for a person to decide. Its verdicts show in the card's
+events.
 
 **2 · Loop.** The loop agent implements one task at a time inside a per-card
 `git worktree`, running its targeted check each iteration. Every iteration is a
@@ -29,15 +93,19 @@ fresh context — the agent remembers nothing from the previous pass. The repo i
 the memory: the plan, the progress notes, and the code already written are all
 on disk. When the loop believes it is finished it writes a `DONE` signal, which
 is trusted only as far as "start the evaluator" — it never sends a card to you
-directly.
+directly. A task it cannot do at all, because it needs credentials, a live
+service, or a decision that is yours, it reports as a blocker instead of faking:
+the card comes back to you with the blocker in its scoping thread, and **Plan
+again** re-plans around it.
 
 **3 · Evaluate.** The evaluator is the sole whole-card verifier, and it is
 deliberately not the agent that did the work. It independently inspects the diff
 and runs every acceptance criterion, then returns one of two verdicts:
 
-- **revise** — concrete feedback, which becomes the loop's next assigned task.
-  The card goes back to step 2. This can happen twice; a third would escalate
-  the card to you instead of burning more budget.
+- **revise** — concrete feedback, which goes back to the planner. The card
+  returns to step 1: the planner writes a new plan on top of the work already on
+  the branch, and the loop and evaluator run again. This can happen twice; a
+  third would escalate the card to you instead of burning more budget.
 - **approve** — the change is cleared and the card moves to In Review. On
   approve the evaluator also writes the card summary and refreshes any
   documentation the change made stale.
@@ -46,16 +114,62 @@ The evaluator may only write its own verdict file and documentation. If source
 files or Git history change during evaluation the verdict is rejected outright,
 so the judge provably cannot edit the implementation it just judged.
 
+A repository can declare a **gate command** under Settings → Connected
+repositories, `make check` for instance. Radulf runs it in the worktree, under
+the run's sandbox, once the loop has signalled DONE and its branch has
+been synced with the base (see *When the loop says it is done*), and hands the
+evaluator the exit code and the end of the output in `.ralph/GATE.md`. A
+failing gate goes back to the loop as a repair task before any evaluation
+starts; the judge reads the build and test result instead of spending its
+budget producing it, and a retry of the evaluator reuses the result rather than
+running the gate again. **Gate timeout** under Evaluation caps it. Specs 27 and
+29 record the decisions.
+
 **4 · Review.** The diff waits for you in **In Review** with the transcript
 alongside it. Approve merges the branch into the repo's default branch and moves
-the card to Done. Reject takes your feedback, appends it to the plan, and sends
-the card back for another pass.
+the card to Done. Reject sends the card back to the planner with your feedback:
+it writes a new plan on top of the work already on the branch, and the card
+goes through the loop and the evaluator again.
 
-## The three agent roles
+**Where the approved diff goes.** By default, approving merges the branch into
+the local base branch. Turn on **Open pull requests** — per card in the New Task
+dialog, or workspace-wide from the Work page's `•••` menu — and approving
+instead pushes the branch to `origin` and opens a pull request against the base,
+leaving the local base branch untouched. It is one or the other, never both.
+
+This needs the GitHub CLI (`gh`) installed and already authenticated: run
+`gh auth login` in your terminal. Provider logins moved into Settings (spec
+23) but this one did not, because Radulf drives `gh` as a foreign binary whose
+login has no interface to drive, only output to read. The option is unavailable, with the reason shown, when `gh` is missing,
+`gh` is logged out, or the repo has no `origin`. Before pushing, Radulf merges
+the base branch in (a conflict goes back to the loop exactly as it would for a
+local merge) and strips `.ralph/`, so the pull request contains what you
+reviewed and not the loop's own working notes. Radulf never merges the pull
+request it opens.
+
+**Skipping step 4.** Auto-approve makes an evaluator `approve` merge straight
+through, with no human in the path. It can be granted two ways: per card, from
+the New Task dialog, or workspace-wide, from the **Auto-approve** toggle in the
+Work page's `•••` menu. Either one is enough; the card's own flag holds even
+when the workspace toggle is off. The workspace toggle is read at the moment the
+evaluator returns its verdict, so turning it on applies to work already in
+flight — but not to cards already sitting in In Review, which have passed that
+point and stay there waiting for you. Two things are never skipped: a
+`critical` finding always forces human review, and a card that exhausts the
+evaluator's revision limit is always escalated to you. Pre-merge repo-integrity
+and merge-conflict checks run either way.
+
+If auto-approve and pull-request delivery are both on, the pull request is opened
+as a **draft** — nobody looked at the diff, and the draft says so. A pull request
+Radulf opens as ready-for-review is one a human approved.
+
+## The five agent roles
 
 | Role | Job |
 |------|-----|
-| **Planner** | Turns a card into a plan, a loop prompt, and acceptance criteria. |
+| **Scoping** | Talks a rough card through with you, reading the repo read-only, and drafts the scoped task. Interactive; runs only when you ask. |
+| **Planner** | Turns a card and its scoping thread into a plan, a loop prompt, and acceptance criteria. |
+| **Plan critic** | Reads the finished plan against the card, its thread and the specs it names, read-only, and returns `approve` or `revise` with feedback before the loop starts (spec 30). On by default for breakdown pieces. |
 | **Loop** | Implements one task at a time against the worktree, running its targeted check each iteration. |
 | **Evaluator** | The sole whole-card verifier. Runs every criterion, inspects the diff, returns `approve` or `revise`, and on approve writes the summary and refreshes stale docs. |
 
@@ -73,24 +187,103 @@ on the Settings page. See [Providers and models](PROVIDERS.md).
 | **Todo** | The ordered execution queue. Auto Mode pulls from here. | You |
 | **In Progress** | Planning, looping, or evaluating — including revision cycles. | You start it; the orchestrator works it |
 | **In Review** | An evaluator-cleared diff is waiting on your judgment. | Orchestrator |
-| **Needs Attention** | Stalled, capped, errored, or merge-conflicted. | Orchestrator |
+| **Needs Attention** | Stalled, capped, errored, merge-conflicted, or waiting on your answers to the planner's questions. | Orchestrator |
 | **Done** | Approved and merged. | Orchestrator, on your approval |
 
 The orchestrator moves cards on its own as it works them. The transitions that
 need a human are: Backlog → Todo (you schedule it), Needs Attention → In
 Progress (you fix and restart), and the review verdict itself.
 
-## One card at a time
+Because Needs Attention waits on you, Radulf says so rather than waiting
+quietly. A card that sits there longer than **Waiting-too-long alert** (Settings
+→ Notifications, 15 minutes by default) raises a `card.attention_stale` event,
+once per arrival. Set an **Alert webhook URL** there and the same thing is
+POSTed as JSON, which is the only alerting that reaches you without a browser
+tab open — ntfy, a Slack incoming hook, a Discord webhook and a handler of your
+own all take it unchanged.
 
-A single card occupies the planner, loop, or evaluator at any given moment, and
-the next card starts only once that slot frees. There is no parallelism setting.
-This is deliberate rather than a limitation waiting to be lifted: local models
-want the whole machine's unified memory, so the queue is always serial. Cards
-waiting for the slot show a "queued" sub-state.
+Two things Radulf will tell you there rather than let you discover by repeating
+them:
+
+- **A request the provider rejected.** An unsupported model, or a client too
+  old to drive one, fails the same way every time, so the card carries the
+  provider's own message and offers no retry for that step. Change the model
+  under *Edit model overrides* and restart.
+- **A stage that keeps failing the same way.** Three failures in a row for one
+  role on one provider and model says something about the pairing rather than
+  about luck, and the card says which role and which model. Retry stays
+  available — it is a reading, not a block.
+
+A retry of the planner or the evaluator also knows what the attempt before it
+did. Its prompt carries how that attempt ended, the model's last words, the
+commands it ran with the end of each output, and for the evaluator the running
+notes it kept in `.ralph/EVALUATION-NOTES.md`. Both stages are told their
+budget and asked to have their result on disk well before it runs out, and a
+complete verdict or plan left on disk when the watchdog fires is used rather
+than thrown away. Spec 26 records the decision.
+
+## How many cards run at once
+
+By default, one. A single card occupies the planner, loop, or evaluator, and
+the next card starts only once that slot frees. Cards waiting for a slot show a
+"queued" sub-state. Different repos have always run at the same time; the cap
+is per repo.
+
+**Concurrent cards per repo** in Settings raises that, up to 8. Raise it when
+the cards are independent, which is the common case: two cards editing the same
+file will merge-conflict, and the loser is handed back to its own loop to
+rebase. The setting is held at 1 while the loop provider is local, because a
+local model wants the whole machine's unified memory, which is the actual
+reason the queue was serial to begin with.
 
 While a card is looping you can **pause** it — the current iteration finishes
 and then the card waits — and **continue** it later, optionally after changing
-its per-card model overrides so that resumed iterations run differently.
+its per-card model overrides so that resumed iterations run differently. A
+paused run is recorded as paused, not completed, so stopping work yourself
+never counts for or against the success rate in Activity.
+
+## When the loop says it is done
+
+DONE is the loop agent's own claim, and an evaluation is the most expensive
+thing the pipeline does, so Radulf checks the cheap part first. Any shell
+commands your acceptance criteria wrote in backticks are run in the worktree,
+and a command that exits non-zero buys the loop one more iteration to fix what
+it found before the evaluator is started.
+
+Only failures count. A criterion can carry a judgment a shell cannot make
+("returns at least 3 wrapper scripts"), so passing proves nothing and the
+evaluator still decides. Only check-shaped commands run — `test`, `grep`,
+`find`, `ls` and their kin — and anything else in backticks is left alone. The
+repair pass happens at most once per run, because a criterion can be written so
+that it can never pass.
+
+The same commands are also run the other way round, before the loop exists. Once
+the planner finishes, its check commands are run against the worktree nobody has
+touched yet, and one that already exits the way its criterion wants cannot show
+that this card's work got done — it would report the same thing had the loop
+changed nothing. Those commands are listed in an `acceptance.precheck` event on
+the card's timeline, and the plan goes back to the planner once, sharing the plan
+critic's two-revision cap so the two cannot ping-pong a card. A plan that comes
+back with such a check still in it ships as written: the card proceeds, and if
+that check fails after DONE the failure is reported on the timeline but buys no
+repair iteration — the loop would spend its one repair pass making a tautology
+pass. Checks under a `## Regression` heading in `CRITERIA.md` are skipped by the
+pre-check, since of course they pass now, and are probed after DONE like every
+other criterion. None of this moves the asymmetry: a zero exit still proves
+nothing. Spec 31 records the decision.
+
+Once those checks pass, the orchestrator merges the base branch into the
+worktree, so the evaluator judges the code that will actually land. A clean
+merge becomes a merge commit on the run branch; a conflict becomes one more task
+for the loop, naming the conflicted files, and the loop's next completion signal
+lets the orchestrator finish the merge commit. The loop agent never runs git
+itself, and the base branch is only read, once any approval merge in flight for
+the repository has finished. Then, if the repository has a gate command, the
+gate runs; a non-zero exit is another task quoting the end of its output.
+Evaluation starts only once the branch is synced and the gate passes (or the
+repository has none). A run gets at most two such sync-or-gate rounds; a third
+conflict or gate failure ends the run with the reason on the card. Spec 29
+records the decision.
 
 ## Where the work happens
 
@@ -113,5 +306,11 @@ Worktrees are created and removed by the orchestrator only, never by an agent.
 Your registered checkout is written exactly once per card — the `--no-ff` merge
 on approval — and that merge is unsandboxed, trusted server code that re-verifies
 repo integrity immediately before it runs.
+
+The `ralph/` branch namespace is Radulf's own, and the New Task branch picker
+never offers one of those branches as a base: a run branch is checked out in
+its worktree, so the merge on approval could not check it out. Removing a
+repository in Settings removes its cards' worktrees and run branches along with
+their records, so nothing of the kind is left behind to pick.
 
 For what constrains the agents while they work, see [Sandboxing](SANDBOXING.md).

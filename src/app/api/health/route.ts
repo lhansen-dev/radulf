@@ -1,7 +1,6 @@
 import { migrationsPending } from "@/db";
+import { activeRoles } from "@/server/roles";
 import { json } from "../_lib";
-
-export const dynamic = "force-dynamic";
 
 export async function GET() {
   let restartRequired = false;
@@ -10,5 +9,10 @@ export async function GET() {
   } catch {
     // stay a liveness check even if the DB or journal is unreadable
   }
-  return json({ ok: true, name: "radulf", restartRequired });
+  return json({
+    ok: true,
+    name: "radulf",
+    restartRequired,
+    roles: [...activeRoles()],
+  });
 }

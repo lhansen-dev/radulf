@@ -1,7 +1,16 @@
 version: 2
+
+# Dependency PRs open against `beta`, not `main`. Under the stable-main /
+# beta-integration model, `main` only receives a merge from `beta` at release
+# time, so a PR based on `main` is based on a tree nothing is developed against
+# — its CI runs against stale code and its lockfile conflicts on the way in.
+#
+# Note: Dependabot reads this file from the repository's DEFAULT branch (main).
+# Changing it on `beta` alone has no effect until `beta` is merged to `main`.
 updates:
   - package-ecosystem: npm
     directory: "/"
+    target-branch: "beta"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -15,5 +24,6 @@ updates:
 
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: "beta"
     schedule:
       interval: weekly

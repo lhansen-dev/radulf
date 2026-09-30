@@ -1,23 +1,29 @@
 import fs from "node:fs";
 import { asc, desc, eq, inArray } from "drizzle-orm";
-import { db, cards, plans, runs, iterations, reviews, events, repos } from "@/db";
+import { db, cards, plans, runs, iterations, reviews, events } from "@/db";
 import { now } from "@/db";
 import { planStatePath } from "@/server/bookkeeping";
+import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
+import { getCard, requireCard } from "@/server/cards";
+import { listChildren } from "@/server/epics";
+import { getOrchestrator } from "@/server/orchestrator";
+import { getRepo, requireRepo } from "@/server/repos";
 import { groupBy } from "@/server/queryGrouping";
-import { removeRunTranscripts } from "@/server/retention";
+import { removeCardArtifacts } from "@/server/retention";
+import { listScopingMessages, scopingTurnInFlight } from "@/server/scoping";
+import { getSettings } from "@/server/settings";
+import { RUNNING_STATUSES } from "@/shared/cardStatus";
 import { json, err, handle } from "../../_lib";
-
-export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 /** Full card detail: plans, runs (+iterations), reviews, recent events. */
 export async function GET(_req: Request, { params }: Ctx) {
   const { id } = await params;
-  const card = db.select().from(cards).where(eq(cards.id, id)).get();
+  const card = getCard(id);
   if (!card) return err("card not found", 404);
-  const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+  const repo = getRepo(card.repoId);
   const cardPlans = db
     .select()
     .from(plans)
@@ -59,7 +65,41 @@ export async function GET(_req: Request, { params }: Ctx) {
     .limit(100)
     .all()
     .reverse();
-  return json({ card, repo, plans: cardPlans, runs: cardRuns, events: cardEvents });
+  // Effective provider+model per role: card override, else the global setting —
+  // same resolution the harness itself applies (planningService/orchestrator/
+  // evaluationService), so the overview shows what will actually run next.
+  // Reasoning level has no per-card override and isn't persisted per run
+  // (runHarness reads it straight off settings at call time), so this is
+  // always the current global value, not necessarily what an old run used.
+  const settings = getSettings();
+  // Where the card's Jira issue lives, when it has one and Jira is configured.
+  const jiraBase = settings.jiraBaseUrl.trim().replace(/\/+$/, "");
+  const models = Object.fromEntries(
+    (["planner", "loop", "evaluator", "critic"] as const).map((role) => [role, {
+      provider: settings[`${role}Provider`],
+      model: card[`${role}Model`] || settings[`${role}Model`] || null,
+      reasoningLevel: settings[`${role}ReasoningLevel`],
+    }]),
+  );
+  // The orchestrator-private checklist the loop is ticking off — the latest
+  // plan version as it stands right now, which its plan row can't show.
+  const planPath = planStatePath(id);
+  let livePlan: { planMd: string; done: number; total: number } | null = null;
+  if (cardPlans.length > 0 && fs.existsSync(/* turbopackIgnore: true */ planPath)) {
+    const planMd = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
+    const items = parseChecklist(planMd)?.items ?? [];
+    livePlan = { planMd, done: items.filter((item) => item.checked).length, total: items.length };
+  }
+  // Spec 24: the epic this card is a piece of, and the pieces it has.
+  const parent = card.parentCardId ? getCard(card.parentCardId) : undefined;
+  return json({
+    card, repo, plans: cardPlans, livePlan, runs: cardRuns, events: cardEvents, models,
+    scoping: listScopingMessages(id),
+    scopingTurn: scopingTurnInFlight(id),
+    children: listChildren(id),
+    parent: parent ? { id: parent.id, title: parent.title, runMode: parent.runMode } : null,
+    jiraUrl: card.jiraKey && jiraBase ? `${jiraBase}/browse/${encodeURIComponent(card.jiraKey)}` : null,
+  });
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
@@ -77,28 +117,21 @@ export async function PATCH(req: Request, { params }: Ctx) {
 export async function DELETE(_req: Request, { params }: Ctx) {
   return handle(async () => {
     const { id } = await params;
-    const card = db.select().from(cards).where(eq(cards.id, id)).get();
-    if (!card) return err("card not found", 404);
-    if (["planning", "looping", "evaluating"].includes(card.status))
+    const card = requireCard(id);
+    if (RUNNING_STATUSES.includes(card.status))
       return err("cannot delete a card with an active run — pull it back to Backlog first");
     // Clean up any leftover worktree before the rows cascade away.
-    const { getOrchestrator } = await import("@/server/orchestrator");
-    const run = getOrchestrator().latestWorktreeRun(id);
-    if (run) {
-      const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
-      if (repo) {
-        const { removeWorktree } = await import("@/server/git");
-        await removeWorktree(repo.path, run.worktreePath, run.branch);
-      }
-    }
     const runIds = db
       .select({ id: runs.id })
       .from(runs)
       .where(eq(runs.cardId, id))
       .all()
       .map((item) => item.id);
-    removeRunTranscripts(runIds);
-    fs.rmSync(/* turbopackIgnore: true */ planStatePath(id), { force: true });
+    await removeCardArtifacts(requireRepo(card.repoId).path, {
+      cardId: id,
+      worktreeRun: getOrchestrator().latestWorktreeRun(id),
+      runIds,
+    });
     db.delete(events).where(eq(events.cardId, id)).run();
     db.delete(cards).where(eq(cards.id, id)).run();
     return json({ ok: true });

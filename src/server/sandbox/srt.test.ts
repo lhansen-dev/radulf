@@ -3,16 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import {
   buildFilesystemConfig,
   buildNetworkConfig,
   buildRunSandboxConfig,
   createSandboxedBashOperations,
+  createTrackedBashOperations,
   credentialBackstopDenylist,
   dropRootsThatWouldReopen,
-  gitWorktreeConfigDenies,
   initializeSandboxRuntimeOnce,
   parseNetworkAllowlist,
   resetSandboxRuntimeForTests,
@@ -21,14 +22,17 @@ import {
   systemReadRoots,
   toolchainHomeReAllows,
   toolchainReadRootsFromPath,
-  wrapBashCommand,
+  runSandboxedCommand,
 } from "./srt";
+import { insideRadulfSandbox } from "@/testUtils/insideRadulfSandbox";
 
 const execFileAsync = promisify(execFile);
 
 function git(dir: string, ...args: string[]) {
   return execFileAsync("git", ["-C", dir, ...args], { encoding: "utf8" });
 }
+
+const describeOnHost = describe.skipIf(insideRadulfSandbox);
 
 describe("credentialBackstopDenylist", () => {
   it("expands every entry under $HOME, including .ssh and .aws", () => {
@@ -38,7 +42,57 @@ describe("credentialBackstopDenylist", () => {
     expect(list).toContain(path.join(home, ".aws"));
     expect(list).toContain(path.join(home, ".npmrc"));
     expect(list).toContain(path.join(home, ".cargo", "credentials"));
+    // cargo's current spelling, and the desktop keyring store under ~/.local/share.
+    expect(list).toContain(path.join(home, ".cargo", "credentials.toml"));
+    expect(list).toContain(path.join(home, ".local", "share", "keyrings"));
     expect(list.every((p) => p.startsWith(home))).toBe(true);
+  });
+});
+
+describe("createTrackedBashOperations", () => {
+  const exec = (command: string, timeout?: number) => {
+    const chunks: Buffer[] = [];
+    const pgids: number[] = [];
+    const ops = createTrackedBashOperations({
+      markCommandStarted: () => undefined,
+      trackProcessGroup: (pgid) => pgids.push(pgid),
+    });
+    const result = ops.exec(command, os.tmpdir(), { onData: (d) => chunks.push(d), timeout });
+    return { result, output: () => Buffer.concat(chunks).toString(), pgids };
+  };
+
+  it("keeps output a descendant writes just after the shell exits", async () => {
+    // `exit` can fire before the pipes are drained; resolving there and
+    // destroying them used to drop the tail.
+    const run = exec("(sleep 0.03; echo late) & echo early");
+    expect((await run.result).exitCode).toBe(0);
+    expect(run.output()).toBe("early\nlate\n");
+  });
+
+  it("does not wait on a quiet background process that inherited the pipes", async () => {
+    const run = exec("sleep 30 & echo started");
+    const startedAt = Date.now();
+    try {
+      expect((await run.result).exitCode).toBe(0);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(run.output()).toBe("started\n");
+    } finally {
+      for (const pgid of run.pgids) {
+        try {
+          process.kill(-pgid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  });
+
+  it("rejects a zero timeout before running the command", async () => {
+    const marker = path.join(os.tmpdir(), `radulf-timeout-zero-${process.pid}`);
+    const run = exec(`touch ${marker}`, 0);
+    await expect(run.result).rejects.toThrow(/Invalid timeout/);
+    expect(run.pgids).toEqual([]);
+    expect(fs.existsSync(marker)).toBe(false);
   });
 });
 
@@ -51,16 +105,26 @@ describe("systemReadRoots", () => {
 });
 
 describe("toolchainReadRootsFromPath", () => {
-  it("includes each PATH entry and its parent directory", () => {
-    const roots = toolchainReadRootsFromPath("/usr/local/bin:/opt/homebrew/bin");
-    expect(roots).toContain("/usr/local/bin");
-    expect(roots).toContain("/usr/local");
-    expect(roots).toContain("/opt/homebrew/bin");
-    expect(roots).toContain("/opt/homebrew");
+  it("includes each PATH entry and its parent directory, ignoring empty segments", () => {
+    const roots = toolchainReadRootsFromPath("/usr/local/bin::/opt/homebrew/bin");
+    expect(roots).toEqual(
+      expect.arrayContaining(["/usr/local/bin", "/usr/local", "/opt/homebrew/bin", "/opt/homebrew"]),
+    );
+    expect(roots).not.toContain("");
   });
 
-  it("ignores empty PATH segments", () => {
-    expect(toolchainReadRootsFromPath("/usr/bin::/bin")).not.toContain("");
+  it("keeps a PATH entry under a protected root but not its parent", () => {
+    // `~/.cargo/bin` must stay readable for cargo to run at all, but its
+    // parent `~/.cargo` holds credentials.toml — a recursive re-allow there
+    // would beat the $HOME deny.
+    const roots = toolchainReadRootsFromPath("/home/u/.cargo/bin:/home/u/.local/share/pnpm:/usr/bin", [
+      "/home/u",
+    ]);
+    expect(roots).toEqual(
+      expect.arrayContaining(["/home/u/.cargo/bin", "/home/u/.local/share/pnpm", "/usr/bin", "/usr"]),
+    );
+    expect(roots).not.toContain("/home/u/.cargo");
+    expect(roots).not.toContain("/home/u/.local/share");
   });
 });
 
@@ -76,13 +140,13 @@ describe("toolchainHomeReAllows", () => {
 });
 
 describe("parseNetworkAllowlist / buildNetworkConfig", () => {
-  it("always includes registry.npmjs.org even with an empty setting", () => {
+  it("always includes registry.npmjs.org, then extra domains trimmed, deduped, blank lines dropped", () => {
     expect(parseNetworkAllowlist("")).toEqual(["registry.npmjs.org"]);
-  });
-
-  it("adds extra domains, trims whitespace, dedupes, and drops blank lines", () => {
-    const parsed = parseNetworkAllowlist("pypi.org\n  \nregistry.npmjs.org\ngithub.com\n");
-    expect(parsed).toEqual(["registry.npmjs.org", "pypi.org", "github.com"]);
+    expect(parseNetworkAllowlist("pypi.org\n  \nregistry.npmjs.org\ngithub.com\n")).toEqual([
+      "registry.npmjs.org",
+      "pypi.org",
+      "github.com",
+    ]);
   });
 
   it("buildNetworkConfig sets an empty deniedDomains and the parsed allowlist", () => {
@@ -93,119 +157,156 @@ describe("parseNetworkAllowlist / buildNetworkConfig", () => {
 });
 
 describe("buildRunSandboxConfig — Go/TLS trustd carve-out (opt-in)", () => {
-  const base = {
-    worktree: "/tmp/wt",
-    gitCommonDir: "/tmp/wt/.git",
-    tmpdir: "/tmp/wt/.tmp",
-    cacheRoot: "/tmp/wt/.cache",
-    networkAllowlistText: "",
-  };
-  it("omits enableWeakerNetworkIsolation by default (srt's strict default)", () => {
+  it("sets enableWeakerNetworkIsolation only when opted in (srt's strict default otherwise)", () => {
+    const base = {
+      worktree: "/tmp/wt",
+      gitCommonDir: "/tmp/wt/.git",
+      tmpdir: "/tmp/wt/.tmp",
+      cacheRoot: "/tmp/wt/.cache",
+      networkAllowlistText: "",
+    };
     expect(buildRunSandboxConfig(base).enableWeakerNetworkIsolation).toBeUndefined();
     expect(
-      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: false })
-        .enableWeakerNetworkIsolation,
+      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: false }).enableWeakerNetworkIsolation,
     ).toBeUndefined();
-  });
-  it("sets enableWeakerNetworkIsolation only when opted in (allows trustd for Go TLS)", () => {
     expect(
-      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: true })
-        .enableWeakerNetworkIsolation,
+      buildRunSandboxConfig({ ...base, weakerIsolationForGoTls: true }).enableWeakerNetworkIsolation,
     ).toBe(true);
   });
 });
 
 describe("buildFilesystemConfig", () => {
-  it("denies $HOME wholesale and re-allows only this run's worktree", () => {
-    const cfg = buildFilesystemConfig({
-      worktree: "/data/worktrees/run-1",
-      gitCommonDir: "/data/repo/.git",
-      tmpdir: "/data/runtmp/run-1/tmp",
-      cacheRoot: "/data/runtmp/run-1/cache",
-    });
+  // No such repo on disk, so there are no per-worktree configs to enumerate.
+  const cfg = buildFilesystemConfig({
+    worktree: "/data/worktrees/run-1",
+    gitCommonDir: "/data/repo/.git",
+    tmpdir: "/data/runtmp/run-1/tmp",
+    cacheRoot: "/data/runtmp/run-1/cache",
+  });
+
+  it("denies $HOME wholesale and re-allows writes only to this run's own paths", () => {
     expect(cfg.denyRead).toContain(os.homedir());
     expect(cfg.allowRead).toContain("/data/worktrees/run-1");
     expect(cfg.allowWrite).toEqual([
       "/data/worktrees/run-1",
       "/data/runtmp/run-1/tmp",
       "/data/runtmp/run-1/cache",
+    ]);
+  });
+
+  it("allows only the cgroup membership file when a verified cgroup exists", () => {
+    const withCgroup = buildFilesystemConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/data/repo/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      cgroupProcsFile: "/sys/fs/cgroup/radulf/run-1/cgroup.procs",
+    });
+    expect(withCgroup.allowWrite).toContain("/sys/fs/cgroup/radulf/run-1/cgroup.procs");
+    expect(withCgroup.allowWrite).not.toContain("/sys/fs/cgroup/radulf/run-1");
+  });
+
+  it("write-denies the entire shared Git directory", () => {
+    expect(cfg.denyWrite).toEqual([
+      "/data/worktrees/run-1/.git",
       "/data/repo/.git",
     ]);
   });
 
-  it("carves the hook/config vectors out of the git-write allow", () => {
-    const cfg = buildFilesystemConfig({
+  it("read-denies every repository root and re-allows only active Git metadata", () => {
+    const isolated = buildFilesystemConfig({
       worktree: "/data/worktrees/run-1",
-      gitCommonDir: "/data/repo/.git",
-      tmpdir: "/tmp/t",
-      cacheRoot: "/tmp/c",
+      gitCommonDir: "/repos/active/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      repositoryRoots: ["/repos", "/repos/active", "/repos/sibling"],
     });
-    // No such repo on disk, so there are no per-worktree configs to enumerate.
-    // The `*` pattern is macOS-only — see gitWorktreeConfigDenies.
-    expect(cfg.denyWrite).toEqual([
-      "/data/repo/.git/hooks",
-      "/data/repo/.git/config",
-      ...(process.platform === "darwin" ? ["/data/repo/.git/worktrees/*/config"] : []),
-    ]);
+    expect(isolated.denyRead).toEqual(expect.arrayContaining([
+      "/repos",
+      "/repos/active",
+      "/repos/sibling",
+    ]));
+    expect(isolated.allowRead).toContain("/repos/active/.git");
+    expect(isolated.allowRead).not.toContain("/repos");
+    expect(isolated.denyWrite).toEqual(expect.arrayContaining([
+      "/repos",
+      "/repos/active",
+      "/repos/sibling",
+    ]));
   });
 
-  it("includes the credential backstop denylist even though $HOME is already denied", () => {
+  it("write-denies only repository roots that do not contain the worktree", () => {
     const cfg = buildFilesystemConfig({
-      worktree: "/w",
-      gitCommonDir: "/w/.git",
-      tmpdir: "/tmp/t",
-      cacheRoot: "/tmp/c",
+      worktree: "/browse/worktrees/run-1",
+      gitCommonDir: "/browse/active/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      repositoryRoots: ["/browse", "/browse/worktrees/run-1", "/browse/worktrees/run-1-evil"],
     });
+    expect(cfg.denyWrite).not.toContain("/browse");
+    expect(cfg.denyWrite).not.toContain("/browse/worktrees/run-1");
+    expect(cfg.denyWrite).toContain("/browse/worktrees/run-1-evil");
+  });
+
+  it("keeps the credential backstop, including gh's store, even though $HOME is already denied", () => {
+    // Spec 15 gave the HOST process the operator's GitHub credential to push
+    // and open PRs. The agent must gain nothing from that: this fails if a
+    // broken host-side push is ever "fixed" by loosening the sandbox instead.
     expect(cfg.denyRead).toContain(path.join(os.homedir(), ".ssh"));
+    expect(cfg.denyRead).toContain(path.join(os.homedir(), ".config/gh"));
   });
 
   it("regression: never lets a PATH-derived root (e.g. /bin's parent, '/') re-open $HOME", () => {
-    // Every Unix PATH realistically contains /bin or /sbin — their dirname
-    // is "/", which a naive toolchain-root allow-list would include and
-    // which, under srt's recursive subpath matching, silently re-opens
-    // everything (found live in this repo's own test PATH — see
-    // dropRootsThatWouldReopen). Uses the real process.env.PATH
-    // deliberately, so this keeps failing on whatever machine runs it if
-    // the guard ever regresses.
-    const cfg = buildFilesystemConfig({
-      worktree: "/data/worktrees/run-1",
-      gitCommonDir: "/data/repo/.git",
-      tmpdir: "/tmp/t",
-      cacheRoot: "/tmp/c",
-    });
+    // Every Unix PATH realistically contains /bin or /sbin — their dirname is
+    // "/", which under srt's recursive subpath matching silently re-opens
+    // everything (see dropRootsThatWouldReopen). Uses the real
+    // process.env.PATH deliberately, so this keeps failing on whatever machine
+    // runs it if the guard ever regresses.
     expect(cfg.allowRead).not.toContain("/");
     const home = os.homedir();
     for (const root of cfg.allowRead ?? []) {
       expect(home === root || home.startsWith(root.endsWith("/") ? root : root + "/")).toBe(false);
     }
   });
+
+  it("regression: a PATH entry under $HOME does not re-open its parent", () => {
+    // Found on a real developer host: `~/.cargo/bin` and `~/.local/share/pnpm`
+    // on PATH made `~/.cargo` and `~/.local/share` recursive allow-read roots,
+    // and srt lets an allow inside a broader deny win — so credentials.toml
+    // and the keyring store were readable despite the $HOME deny.
+    const home = os.homedir();
+    vi.stubEnv("PATH", `${path.join(home, ".cargo", "bin")}:${path.join(home, ".local", "share", "pnpm")}:/usr/bin`);
+    try {
+      const withHomePath = buildFilesystemConfig({
+        worktree: "/data/worktrees/run-1",
+        gitCommonDir: "/data/repo/.git",
+        tmpdir: "/data/runtmp/run-1/tmp",
+        cacheRoot: "/data/runtmp/run-1/cache",
+      });
+      expect(withHomePath.allowRead).toContain(path.join(home, ".cargo", "bin"));
+      expect(withHomePath.allowRead).toContain(path.join(home, ".local", "share", "pnpm"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".cargo"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".local", "share"));
+      expect(withHomePath.allowRead).not.toContain(path.join(home, ".local"));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe("dropRootsThatWouldReopen", () => {
-  it("drops '/' unconditionally", () => {
-    expect(dropRootsThatWouldReopen(["/", "/tmp/x"], ["/Users/x"])).toEqual(["/tmp/x"]);
-  });
-
-  it("drops a candidate that IS a protected root", () => {
-    expect(dropRootsThatWouldReopen(["/Users/x", "/tmp/y"], ["/Users/x"])).toEqual(["/tmp/y"]);
-  });
-
-  it("drops a candidate that is a proper ANCESTOR of a protected root", () => {
-    expect(dropRootsThatWouldReopen(["/Users", "/tmp/y"], ["/Users/x"])).toEqual(["/tmp/y"]);
-  });
-
-  it("keeps a candidate that is a DESCENDANT of a protected root (the intended narrow re-allow case)", () => {
-    expect(dropRootsThatWouldReopen(["/Users/x/.nvm"], ["/Users/x"])).toEqual(["/Users/x/.nvm"]);
-  });
-
-  it("keeps a candidate unrelated to any protected root", () => {
-    expect(dropRootsThatWouldReopen(["/usr/local"], ["/Users/x"])).toEqual(["/usr/local"]);
-  });
-
-  it("does not false-positive on a sibling with a shared string prefix (no trailing slash confusion)", () => {
+  it.each([
+    ["'/' unconditionally", ["/", "/tmp/x"], ["/tmp/x"]],
+    ["a candidate that IS a protected root", ["/Users/x", "/tmp/y"], ["/tmp/y"]],
+    ["a proper ANCESTOR of a protected root", ["/Users", "/tmp/y"], ["/tmp/y"]],
+    // The intended narrow re-allow case.
+    ["nothing for a DESCENDANT of a protected root", ["/Users/x/.nvm"], ["/Users/x/.nvm"]],
+    ["nothing for an unrelated root", ["/usr/local"], ["/usr/local"]],
     // "/Users/x-evil" is NOT inside "/Users/x" — a naive startsWith without
-    // the trailing separator would wrongly treat it as a descendant/ancestor.
-    expect(dropRootsThatWouldReopen(["/Users/x-evil"], ["/Users/x"])).toEqual(["/Users/x-evil"]);
+    // the trailing separator would wrongly treat it as related.
+    ["nothing for a sibling sharing a string prefix", ["/Users/x-evil"], ["/Users/x-evil"]],
+  ])("drops %s", (_label, candidates, expected) => {
+    expect(dropRootsThatWouldReopen(candidates, ["/Users/x"])).toEqual(expected);
   });
 });
 
@@ -226,77 +327,34 @@ describe("resolveGitCommonDir", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("resolves the main repo's .git dir for an ordinary (non-worktree) checkout", () => {
-    expect(resolveGitCommonDir(tmpDir)).toBe(path.join(tmpDir, ".git"));
+  it("resolves the main repo's .git dir for an ordinary (non-worktree) checkout", async () => {
+    expect(await resolveGitCommonDir(tmpDir)).toBe(path.join(tmpDir, ".git"));
   });
 
   it("resolves the SHARED .git dir for a linked worktree, not the worktree's own pointer file", async () => {
-    const worktreePath = path.join(tmpDir, "..", "radulf-srt-git-wt");
-    await git(tmpDir, "worktree", "add", worktreePath, "-b", "feature");
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-git-wt-"));
     try {
+      await git(tmpDir, "worktree", "add", worktreePath, "-b", "feature");
       // realpath: on macOS os.tmpdir() is a /var symlink into /private/var,
       // and `git rev-parse` resolves through it — compare canonical paths.
-      expect(resolveGitCommonDir(worktreePath)).toBe(fs.realpathSync(path.join(tmpDir, ".git")));
+      expect(await resolveGitCommonDir(worktreePath)).toBe(fs.realpathSync(path.join(tmpDir, ".git")));
     } finally {
       await git(tmpDir, "worktree", "remove", "--force", worktreePath).catch(() => {});
+      fs.rmSync(worktreePath, { recursive: true, force: true });
     }
   });
 
-  it("throws for a directory that is not a git repo at all (fail loud, no silent fallback)", () => {
+  it("throws for a directory that is not a git repo at all (fail loud, no silent fallback)", async () => {
     const notGit = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-notgit-"));
     try {
-      expect(() => resolveGitCommonDir(notGit)).toThrow();
+      await expect(resolveGitCommonDir(notGit)).rejects.toThrow();
     } finally {
       fs.rmSync(notGit, { recursive: true, force: true });
     }
   });
 });
 
-describe("gitWorktreeConfigDenies", () => {
-  let repoDir: string;
-  let gitCommonDir: string;
-  let worktreePath: string;
-
-  beforeAll(async () => {
-    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wtdeny-"));
-    await git(repoDir, "init");
-    await git(repoDir, "config", "user.email", "t@t.com");
-    await git(repoDir, "config", "user.name", "T");
-    fs.writeFileSync(path.join(repoDir, "f"), "x");
-    await git(repoDir, "add", ".");
-    await git(repoDir, "commit", "-m", "init");
-    gitCommonDir = resolveGitCommonDir(repoDir);
-    worktreePath = path.join(repoDir, "..", "radulf-srt-wtdeny-wt");
-    await git(repoDir, "worktree", "add", worktreePath, "-b", "wtdeny");
-  });
-
-  afterAll(async () => {
-    await git(repoDir, "worktree", "remove", "--force", worktreePath).catch(() => {});
-    fs.rmSync(repoDir, { recursive: true, force: true });
-    fs.rmSync(worktreePath, { recursive: true, force: true });
-  });
-
-  it("names the config of every registered linked worktree as a concrete path", () => {
-    // Concrete, not a `*` pattern: bwrap has no pattern support, so the
-    // pattern form protected nothing on Linux.
-    const denies = gitWorktreeConfigDenies(gitCommonDir);
-    expect(denies).toContain(
-      path.join(gitCommonDir, "worktrees", path.basename(worktreePath), "config"),
-    );
-    expect(denies.every((p) => path.isAbsolute(p) && !p.includes("*"))).toBe(true);
-  });
-
-  it("returns nothing for a repo with no linked worktrees, rather than throwing", () => {
-    const bare = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-nowt-"));
-    try {
-      expect(gitWorktreeConfigDenies(path.join(bare, ".git"))).toEqual([]);
-    } finally {
-      fs.rmSync(bare, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)", () => {
+describeOnHost("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)", () => {
   it("reports this platform as supported", () => {
     // This suite only runs in this repo's dev/CI environment (macOS or
     // Linux); srt itself gates unsupported platforms structurally.
@@ -313,16 +371,45 @@ describe("sandboxPreflight / initializeSandboxRuntimeOnce (real srt, no mocks)",
     expect(first.ok).toBe(true);
     expect(second).toBe(first); // same cached promise resolution, not re-run
   });
+
+  it("fails preflight when dependencies exist but a wrapped command cannot start", async () => {
+    resetSandboxRuntimeForTests();
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandbox").mockResolvedValue(
+      "echo 'apply-seccomp: No such file or directory' >&2; exit 127",
+    );
+    try {
+      const result = await initializeSandboxRuntimeOnce();
+      expect(result.ok).toBe(false);
+      expect(result.errors.join("\n")).toContain("sandbox startup failed");
+      expect(result.errors.join("\n")).toContain("apply-seccomp: No such file or directory");
+      expect(await initializeSandboxRuntimeOnce()).toBe(result);
+      expect(wrap).toHaveBeenCalledTimes(1);
+    } finally {
+      wrap.mockRestore();
+      resetSandboxRuntimeForTests();
+    }
+  });
 });
 
-describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed process)", () => {
+describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandboxed process)", () => {
   let worktree: string;
   let outside: string;
+  let gitCommonDir: string;
+
+  // What a real linked worktree always carries by the time a run config is
+  // built: `.git` as a pointer FILE. It is on the write-deny list, and bwrap
+  // stubs a missing deny path with a read-only placeholder that outlives the
+  // command, so it has to exist before the first sandboxed command runs.
+  const gitPointer = "gitdir: /repo/.git/worktrees/wt\n";
 
   beforeAll(async () => {
     await initializeSandboxRuntimeOnce();
     worktree = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-"));
     outside = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-outside-"));
+    gitCommonDir = path.join(outside, "git-common");
+    fs.mkdirSync(gitCommonDir);
+    fs.writeFileSync(path.join(outside, "sibling-secret.txt"), "sibling secret");
+    fs.writeFileSync(path.join(worktree, ".git"), gitPointer);
   });
 
   afterAll(() => {
@@ -333,21 +420,212 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
   function config() {
     return buildRunSandboxConfig({
       worktree,
-      gitCommonDir: worktree,
+      gitCommonDir,
       tmpdir: worktree,
       cacheRoot: worktree,
+      repositoryRoots: [outside],
       networkAllowlistText: "",
     });
   }
 
-  it("wrapBashCommand allows a write inside the worktree and denies one outside it", async () => {
-    const ok = await wrapBashCommand(`echo hi > ${worktree}/ok.txt`, config());
-    await execFileAsync("/bin/sh", ["-c", ok]);
+  it.skipIf(process.platform !== "linux")("runs with a minimal PATH without exposing the helper's parent directory", async () => {
+    // make normally puts node_modules/.bin on PATH, incidentally reopening
+    // node_modules. A production server need not have that PATH entry.
+    vi.stubEnv("PATH", "/usr/bin:/bin");
+    try {
+      const cfg = config();
+      const helper = getApplySeccompBinaryPath()!;
+      expect(cfg.filesystem.allowRead).toContain(helper);
+      expect(cfg.filesystem.allowRead).not.toContain(path.dirname(helper));
+      const ops = createSandboxedBashOperations(cfg);
+      const chunks: Buffer[] = [];
+      const result = await ops.exec("printf sandbox-started", worktree, {
+        onData: (data) => chunks.push(data),
+      });
+      expect(Buffer.concat(chunks).toString()).toBe("sandbox-started");
+      expect(result.exitCode).toBe(0);
+
+      // Under a home-directory install, removing just the exemption reproduces
+      // the original failure before the requested command can execute.
+      if (helper.startsWith(os.homedir() + path.sep)) {
+        cfg.filesystem.allowRead = cfg.filesystem.allowRead!.filter((root) => root !== helper);
+        const brokenChunks: Buffer[] = [];
+        const broken = await createSandboxedBashOperations(cfg).exec("printf unreachable", worktree, {
+          onData: (data) => brokenChunks.push(data),
+        });
+        expect(broken.exitCode).not.toBe(0);
+        expect(Buffer.concat(brokenChunks).toString()).toContain("apply-seccomp");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  const sh = (cmd: string) =>
+    runSandboxedCommand(cmd, config(), (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]));
+
+  it("allows a worktree write and prevents a host write outside it", async () => {
+    await sh(`echo hi > ${worktree}/ok.txt`);
     expect(fs.existsSync(path.join(worktree, "ok.txt"))).toBe(true);
 
-    const denied = await wrapBashCommand(`echo hi > ${outside}/bad.txt`, config());
-    await expect(execFileAsync("/bin/sh", ["-c", denied])).rejects.toThrow();
+    // A Linux denyRead may present an ephemeral masked directory where the
+    // shell reports success. The security property is that no write reaches
+    // the sibling host repository. Other platforms may reject the command.
+    await sh(`echo hi > ${outside}/bad.txt`).catch(() => undefined);
     expect(fs.existsSync(path.join(outside, "bad.txt"))).toBe(false);
+  });
+
+  it("denies reads from a sibling repository while retaining active Git metadata reads", async () => {
+    await expect(sh(`cat ${path.join(outside, "sibling-secret.txt")}`)).rejects.toThrow();
+    await expect(sh(`ls ${gitCommonDir}`)).resolves.toBeDefined();
+  });
+
+  it("runSandboxedCommand denies rewriting the worktree's .git pointer file, though the worktree is writable", async () => {
+    // A linked worktree's `.git` is a file naming its gitdir. Repointing it at
+    // an agent-populated gitdir would make every host-side git call in the
+    // worktree run that gitdir's fsmonitor and hooks (reproduced pre-fix).
+    const pointer = path.join(worktree, ".git");
+
+    await expect(sh(`echo 'gitdir: ${worktree}/agent-owned' > ${pointer}`)).rejects.toThrow();
+    expect(fs.readFileSync(pointer, "utf8")).toBe(gitPointer);
+
+    // Reads stay open: agent git has to follow the pointer.
+    const { stdout } = await sh(`cat ${pointer}`);
+    expect(stdout).toBe(gitPointer);
+  });
+
+  it("serializes, rather than rejects, concurrent calls whose configs differ only in filesystem paths", async () => {
+    // Phase 10 made one-loop-per-repo concurrency the normal steady state.
+    // Two DIFFERENT repos' concurrent runs always get distinct filesystem
+    // config (own worktree/tmpdir/cacheRoot) but the SAME network policy
+    // (derived from the same global settings) — this is the exact shape
+    // 19.1 fixes. Building two separate config objects here (not one shared
+    // reference) matters: a whole-config comparison bug like 19.1's would
+    // treat these as "different" purely because of the filesystem paths and
+    // wrongly throw, even though a reference-equal object would short-circuit
+    // any comparison, buggy or not, and never catch that class of bug.
+    const worktreeA = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-a-"));
+    const worktreeB = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-srt-wt-b-"));
+    const gitCommonA = path.join(worktreeA, ".git-common");
+    const gitCommonB = path.join(worktreeB, ".git-common");
+    fs.mkdirSync(gitCommonA);
+    fs.mkdirSync(gitCommonB);
+    try {
+      const cfgA = buildRunSandboxConfig({
+        worktree: worktreeA,
+        gitCommonDir: gitCommonA,
+        tmpdir: worktreeA,
+        cacheRoot: worktreeA,
+        networkAllowlistText: "",
+      });
+      const cfgB = buildRunSandboxConfig({
+        worktree: worktreeB,
+        gitCommonDir: gitCommonB,
+        tmpdir: worktreeB,
+        cacheRoot: worktreeB,
+        networkAllowlistText: "",
+      });
+      // Sanity check that this test is actually exercising two distinct
+      // config objects (different filesystem slice), not accidentally back
+      // to the old shared-reference shape.
+      expect(cfgA).not.toBe(cfgB);
+      expect(cfgA.filesystem).not.toEqual(cfgB.filesystem);
+      expect(cfgA.network).toEqual(cfgB.network);
+
+      const events: string[] = [];
+      const origUpdateConfig = SandboxManager.updateConfig.bind(SandboxManager);
+      const origWrap = SandboxManager.wrapWithSandbox.bind(SandboxManager);
+      const updateConfigSpy = vi.spyOn(SandboxManager, "updateConfig").mockImplementation((cfg) => {
+        events.push("updateConfig");
+        return origUpdateConfig(cfg);
+      });
+      const wrapSpy = vi
+        .spyOn(SandboxManager, "wrapWithSandbox")
+        .mockImplementation(async (...args: Parameters<typeof SandboxManager.wrapWithSandbox>) => {
+          const result = await origWrap(...args);
+          events.push("wrapWithSandbox-done");
+          return result;
+        });
+      try {
+        const [first, second] = await Promise.all([
+          runSandboxedCommand(`echo hi > ${worktreeA}/concurrent-first.txt`, cfgA, async (w) => {
+            events.push("exec-a");
+            return w;
+          }),
+          runSandboxedCommand(`echo hi > ${worktreeB}/concurrent-second.txt`, cfgB, async (w) => {
+            events.push("exec-b");
+            return w;
+          }),
+        ]);
+        expect(first).toEqual(expect.any(String));
+        expect(second).toEqual(expect.any(String));
+        // Each call's updateConfig is immediately followed by ITS OWN
+        // wrapWithSandbox completion before the other call's updateConfig
+        // ever runs — proves the two calls' wrap-and-updateConfig steps never
+        // interleave, even though neither call was rejected. The executions
+        // are NOT serialized against each other: two repos agreeing on
+        // network policy must not queue behind each other's commands.
+        expect(events.filter((e) => e !== "exec-a" && e !== "exec-b")).toEqual([
+          "updateConfig",
+          "wrapWithSandbox-done",
+          "updateConfig",
+          "wrapWithSandbox-done",
+        ]);
+        expect(events).toContain("exec-a");
+        expect(events).toContain("exec-b");
+      } finally {
+        updateConfigSpy.mockRestore();
+        wrapSpy.mockRestore();
+      }
+    } finally {
+      fs.rmSync(worktreeA, { recursive: true, force: true });
+      fs.rmSync(worktreeB, { recursive: true, force: true });
+    }
+  });
+
+  it("hard-throws when two concurrent calls carry different network configs", async () => {
+    const cfgA = config();
+    const cfgB = {
+      ...cfgA,
+      network: { ...cfgA.network, allowedDomains: [...cfgA.network.allowedDomains, "example.com"] },
+    };
+    // Fired without awaiting: runSandboxedCommand runs synchronously up to
+    // its first `await`, so cfgA's call has already claimed the policy by
+    // the time cfgB's call's synchronous guard check runs — no mocking
+    // needed to observe the race.
+    const first = sh(`echo hi > ${worktree}/concurrent-diff-a.txt`);
+    await expect(
+      runSandboxedCommand(`echo hi > ${worktree}/concurrent-diff-b.txt`, cfgB, async (w) => w),
+    ).rejects.toThrow(/DIFFERENT network policy/);
+    await first;
+  });
+
+  it("holds the policy for as long as the command runs, not just its wrap", async () => {
+    // The claim used to be released when wrapWithSandbox returned, so a
+    // command that had been wrapped and was still running counted for
+    // nothing: a second run with a different allowlist sailed past the guard
+    // and called updateConfig(), and the first run's whole execution — which
+    // is where all of its network traffic is — was filtered against the
+    // second run's policy.
+    const cfgA = config();
+    const cfgB = {
+      ...cfgA,
+      network: { ...cfgA.network, allowedDomains: [...cfgA.network.allowedDomains, "example.com"] },
+    };
+    const wrapped = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const running = runSandboxedCommand(`echo hi`, cfgA, async () => {
+      wrapped.resolve();
+      await release.promise;
+    });
+    await wrapped.promise; // past the wrap, inside the execution
+
+    await expect(
+      runSandboxedCommand(`echo hi`, cfgB, async (w) => w),
+    ).rejects.toThrow(/DIFFERENT network policy/);
+
+    release.resolve();
+    await running;
   });
 
   it("createSandboxedBashOperations.exec runs the command sandboxed via pi's own local exec", async () => {
@@ -371,15 +649,13 @@ describe("wrapBashCommand / createSandboxedBashOperations (real sandboxed proces
  * doesn't have) — but every row exercised here is a genuine, unmocked
  * check of the mechanism the table names.
  */
-describe("acceptance-test table — individual rows verified directly (spec 14 §Acceptance tests)", () => {
-  /** Seed contents of the per-worktree git config the deny must preserve. */
-  const WT_CONFIG = "# pre-existing\n";
+describeOnHost("acceptance-test table — individual rows verified directly (spec 14 §Acceptance tests)", () => {
   let worktree: string;
   let repoDir: string;
   let gitCommonDir: string;
 
   async function run(cmd: string) {
-    const wrapped = await wrapBashCommand(
+    return runSandboxedCommand(
       cmd,
       buildRunSandboxConfig({
         worktree,
@@ -388,8 +664,8 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
         cacheRoot: worktree,
         networkAllowlistText: "",
       }),
+      (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]),
     );
-    return execFileAsync("/bin/sh", ["-c", wrapped]);
   }
 
   beforeAll(async () => {
@@ -401,15 +677,12 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
     fs.writeFileSync(path.join(repoDir, "f"), "x");
     await git(repoDir, "add", ".");
     await git(repoDir, "commit", "-m", "init");
-    worktree = path.join(repoDir, "..", "radulf-accept-wt");
+    worktree = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-accept-wt-"));
     await git(repoDir, "worktree", "add", worktree, "-b", "accept-feature");
-    gitCommonDir = resolveGitCommonDir(worktree);
-    // Seed the per-worktree config BEFORE the first sandboxed run. For a deny
-    // path that doesn't exist yet, srt has bwrap create a read-only mount
-    // point for it on the host and only unlinks it in a process-exit handler —
-    // so once any run() has happened, this file is no longer writable from the
-    // test process either.
-    fs.writeFileSync(path.join(gitCommonDir, "worktrees", path.basename(worktree), "config"), WT_CONFIG);
+    // A branch nothing has checked out: the one shape of `git checkout` that
+    // git itself would not refuse inside a linked worktree.
+    await git(repoDir, "branch", "accept-other");
+    gitCommonDir = await resolveGitCommonDir(worktree);
   });
 
   afterAll(async () => {
@@ -469,7 +742,7 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
     // updateConfig() time, never against wrapWithSandbox's per-call
     // customConfig.network (confirmed by reading srt's own
     // filterNetworkRequest, which closes over the session-level `config`
-    // variable, not an argument). `wrapBashCommand` now calls
+    // variable, not an argument). `runSandboxedCommand` now calls
     // `SandboxManager.updateConfig()` before wrapping — this proves the
     // default allowlist actually reaches the real npm registry end to end.
     const result = await run(
@@ -496,21 +769,90 @@ describe("acceptance-test table — individual rows verified directly (spec 14 �
     expect(fs.readFileSync(path.join(gitCommonDir, "config"), "utf8")).toBe(before);
   });
 
-  it("write `<repo>/.git/worktrees/<name>/config` — L1 write deny (per-worktree carve-out)", async () => {
-    // Seeded in beforeAll. Denied on Linux only because the carve-out names
-    // this config as a concrete path: a `*` pattern is inert under bwrap.
-    const wtConfig = path.join(gitCommonDir, "worktrees", path.basename(worktree), "config");
-    await expect(run(`echo evil >> ${wtConfig}`)).rejects.toThrow();
-    expect(fs.readFileSync(wtConfig, "utf8")).toBe(WT_CONFIG);
+  it("cannot plant COMMIT_EDITMSG as a symlink for the next host commit", async () => {
+    const hostFile = path.join(repoDir, "host-file");
+    fs.writeFileSync(hostFile, "preserve me");
+    const commitMessage = path.join(
+      gitCommonDir,
+      "worktrees",
+      path.basename(worktree),
+      "COMMIT_EDITMSG",
+    );
+    await expect(run(`ln -s ${hostFile} ${commitMessage}`)).rejects.toThrow();
+    expect(fs.lstatSync(commitMessage, { throwIfNoEntry: false })).toBeUndefined();
+    expect(fs.readFileSync(hostFile, "utf8")).toBe("preserve me");
+  });
+
+  it("allows ordinary read-only Git inspection", async () => {
+    await expect(run(`GIT_OPTIONAL_LOCKS=0 git -C ${worktree} status --short`)).resolves.toBeDefined();
+    await expect(run(`GIT_OPTIONAL_LOCKS=0 git -C ${worktree} diff --stat`)).resolves.toBeDefined();
+  });
+
+  it("`git checkout` onto another branch inside the worktree — L1 write deny of the worktree's HEAD", async () => {
+    await expect(run(`git -C ${worktree} checkout -q accept-other`)).rejects.toThrow();
+    expect((await git(worktree, "symbolic-ref", "--short", "HEAD")).stdout.trim()).toBe("accept-feature");
+    // Git rolls its lock back on the failed rename; a stale one would block the host's next commit.
+    expect(fs.existsSync(path.join(gitCommonDir, "worktrees", path.basename(worktree), "HEAD.lock"))).toBe(false);
+  });
+
+  it("`git tag` inside the worktree — L1 write deny of the shared refs/", async () => {
+    await expect(run(`git -C ${worktree} tag accept-evil`)).rejects.toThrow();
+    expect(fs.existsSync(path.join(gitCommonDir, "refs", "tags", "accept-evil"))).toBe(false);
   });
 
   it("connect to /var/run/docker.sock — L1 socket policy (Unix sockets denied by default)", async () => {
     if (!fs.existsSync("/var/run/docker.sock")) return; // not every dev host has Docker installed
     await expect(run(`nc -G 3 -w 3 -U /var/run/docker.sock </dev/null`)).rejects.toThrow();
   });
+});
 
-  it("ordinary write inside the worktree still works (sandbox isn't fail-closed on everything)", async () => {
-    await run(`echo hi > ${worktree}/ok.txt`);
-    expect(fs.existsSync(path.join(worktree, "ok.txt"))).toBe(true);
+describe("runSandboxedCommand sets CLAUDE_CODE_TMPDIR for the wrap", () => {
+  // No real sandbox needed: srt reads process.env.CLAUDE_CODE_TMPDIR on the
+  // wrap path (sandbox-utils.js generateProxyEnvVars), so what matters is
+  // the value in force while wrapWithSandbox runs, and that it is restored.
+  const cfg = () =>
+    buildRunSandboxConfig({
+      worktree: "/data/worktrees/run-1",
+      gitCommonDir: "/data/repo/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      networkAllowlistText: "",
+    });
+
+  async function wrapAndObserve(): Promise<string | undefined> {
+    let seen: string | undefined;
+    const update = vi.spyOn(SandboxManager, "updateConfig").mockImplementation(() => {});
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandbox").mockImplementation(async (cmd) => {
+      seen = process.env.CLAUDE_CODE_TMPDIR;
+      return cmd;
+    });
+    try {
+      await runSandboxedCommand("true", cfg(), async (w) => w, { tmpdir: "/data/runtmp/run-1/tmp" });
+    } finally {
+      update.mockRestore();
+      wrap.mockRestore();
+    }
+    return seen;
+  }
+
+  it("publishes the run tmpdir during the wrap and unsets it afterwards when previously unset", async () => {
+    vi.stubEnv("CLAUDE_CODE_TMPDIR", undefined);
+    try {
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBeUndefined();
+      expect(await wrapAndObserve()).toBe("/data/runtmp/run-1/tmp");
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("publishes the run tmpdir during the wrap and restores a previously-set value afterwards", async () => {
+    vi.stubEnv("CLAUDE_CODE_TMPDIR", "/elsewhere");
+    try {
+      expect(await wrapAndObserve()).toBe("/data/runtmp/run-1/tmp");
+      expect(process.env.CLAUDE_CODE_TMPDIR).toBe("/elsewhere");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

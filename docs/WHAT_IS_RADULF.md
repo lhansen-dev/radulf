@@ -5,7 +5,7 @@ Radulf is a local-first agent loop that turns a task into a reviewable diff.
 You describe a coding task against a Git repo on your machine. Radulf's agents
 take it from there: one plans the work, one implements it inside an isolated copy
 of your repo, and one checks the result against acceptance criteria — sending
-concrete failures back through the loop until they hold. What comes back to you
+concrete failures back to the planner until they hold. What comes back to you
 is a diff. You approve it, and Radulf merges.
 
 ```
@@ -26,7 +26,7 @@ The loop is self-driving by degrees, and you pick the degree:
 - **Auto Mode** (on by default) claims the next queued task as soon as a loop
   slot frees, so the queue drains without you pressing Start.
 - The **evaluator** is the machine gate before you see anything. It runs the
-  acceptance criteria and returns concrete failures to the loop; you only get
+  acceptance criteria and returns concrete failures to the planner; you only get
   handed work it already believes is done.
 - **[Improvement Runs](IMPROVEMENT_RUNS.md)** close the last gap. Radulf proposes
   its own next improvement to a repo, drives it end to end on auto-approve, and
@@ -76,7 +76,7 @@ you can mix providers per role.
               │                                    ├─ ChatGPT / Codex     (subscription)
     Loop     ─┼──────▶   pi SDK (in-process)  ─────┼─ GitHub Copilot      (subscription)
               │                                    ├─ OpenRouter          (API key)
-    Evaluator─┘                                    └─ oMLX                (local)
+    Evaluator─┘                                    └─ Local / self-hosted (OpenAI API)
 ```
 
 **It can work on itself.** Radulf's own repo is a valid target, so you can point
@@ -88,12 +88,24 @@ approval — that never changes.
 Radulf is a single-user tool. There are no accounts, no multi-tenancy, and by
 default no network exposure beyond `localhost` (though you can
 [put it behind a password](AUTHENTICATION.md) if you want to reach it from
-elsewhere). It runs one card at a time — there is no parallelism setting,
-because local models want the whole machine's memory.
+elsewhere). It runs one card at a time per repository by default, which you
+can raise in Settings; on a local model it stays serial however you set it,
+because a local model wants the whole machine's memory.
 
-It does not integrate with GitHub. The merge target is a local branch; pushing
-is your business. And it does not merge anything on its own, ever, without you
-saying so.
+Its GitHub integration is one thing and no more: once you have approved a diff,
+Radulf can push that branch and open a pull request for it instead of merging it
+locally. That was deliberately absent for a long time, on the grounds that
+approving a merge is the trust boundary and a tool that opened pull requests
+would move that boundary onto a remote. What changed is not the boundary but
+where it sits — the push happens *after* the same approval that authorizes a
+merge, so the pull request is a delivery format, not a way for work to arrive
+unvetted. It requires the GitHub CLI, already logged in; Radulf has no GitHub
+login of its own. And Radulf never merges the pull request it opens — that is
+still a person's decision, on GitHub.
+
+Nothing else about GitHub is integrated: no issue sync, no reading review
+comments back into a card, no other forge. And it does not merge anything on its
+own, ever, without you saying so.
 
 ## Where to go next
 

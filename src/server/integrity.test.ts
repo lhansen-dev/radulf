@@ -1,35 +1,29 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { git, initScratchRepo } from "@/testUtils/gitRepo";
 
 // integrity.ts resolves its baseline dir from DATA_DIR at import time.
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-integrity-"));
 process.env.RADULF_DATA_DIR = path.join(testDataDir, "data");
+const { db, refWrites, repoLeases } = await import("@/db");
+const { acquireRepoLease, releaseRepoLease } = await import("./repoLeases");
 const {
   snapshotRepoIntegrity,
   checkRepoIntegrity,
+  inspectRepoIntegrity,
   saveBaseline,
   loadBaseline,
   removeBaseline,
+  recordRefWrite,
 } = await import("./integrity");
-
-function git(dir: string, ...args: string[]) {
-  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
-}
 
 const RUN_BRANCH = "ralph/test-card-run1";
 let repo: string;
 
 beforeAll(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-integrity-repo-"));
-  git(repo, "init", "-b", "main");
-  git(repo, "config", "user.email", "t@t.t");
-  git(repo, "config", "user.name", "T");
-  fs.writeFileSync(path.join(repo, "README.md"), "# repo");
-  git(repo, "add", ".");
-  git(repo, "commit", "-m", "initial");
+  repo = initScratchRepo("radulf-integrity-repo-");
   git(repo, "branch", RUN_BRANCH);
 });
 
@@ -122,6 +116,215 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
     }
   });
 
+  it("ignores sibling ralph/* refs, which Radulf moves itself (spec 19)", async () => {
+    const sibling = "refs/heads/ralph/other-card-run2";
+    const finished = "refs/heads/ralph/finished-card-run3";
+    git(repo, "update-ref", sibling, "HEAD");
+    git(repo, "update-ref", finished, "HEAD");
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    // Every worktree shares one .git, so this run's snapshot picks up what
+    // the rest of the server did meanwhile: a second card's loop committing,
+    // an improvement run cutting its feature branch, and a finished card's
+    // worktree cleanup dropping its branch. commit-tree rather than commit,
+    // so `main` stays put and only the ralph/ refs move.
+    const tree = git(repo, "rev-parse", "HEAD^{tree}");
+    const oid = git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "sibling card's iteration");
+    git(repo, "update-ref", sibling, oid);
+    git(repo, "update-ref", "refs/heads/ralph/improve-1789947998164", oid);
+    git(repo, "update-ref", "-d", finished);
+    try {
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual([]);
+    } finally {
+      git(repo, "update-ref", "-d", sibling);
+      git(repo, "update-ref", "-d", "refs/heads/ralph/improve-1789947998164");
+    }
+  });
+
+  it("still catches a ref planted outside the ralph/ namespace", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    git(repo, "update-ref", "refs/heads/attacker", "HEAD");
+    try {
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual(["ref appeared: refs/heads/attacker"]);
+    } finally {
+      git(repo, "update-ref", "-d", "refs/heads/attacker");
+    }
+  });
+
+  it("ignores the remote-tracking ref a PR push creates (spec 20)", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    // `git push --set-upstream origin ralph/<branch>` writes this locally.
+    git(repo, "update-ref", "refs/remotes/origin/ralph/pushed-card-run4", "HEAD");
+    git(repo, "update-ref", "refs/remotes/origin/someone-elses-branch", "HEAD");
+    try {
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual([]);
+      // A fetch or a push elsewhere in the checkout is not tampering, so it
+      // warns instead of failing the run (card 2026-09-25) — and only for the
+      // ref outside our namespace.
+      expect(
+        await inspectRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual({
+        violations: [],
+        warnings: ["ref appeared: refs/remotes/origin/someone-elses-branch"],
+      });
+    } finally {
+      git(repo, "update-ref", "-d", "refs/remotes/origin/ralph/pushed-card-run4");
+      git(repo, "update-ref", "-d", "refs/remotes/origin/someone-elses-branch");
+    }
+  });
+
+  it("warns about a moved and a newly fetched remote-tracking ref (card 2026-09-25)", async () => {
+    const beta = "refs/remotes/origin/beta";
+    const incoming = "refs/remotes/origin/new-branch";
+    // A commit on a throwaway line of history for the ref to move to, so no
+    // local branch or `main` has to move with it.
+    const tree = git(repo, "rev-parse", "HEAD^{tree}");
+    const fetched = git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "fetched from origin");
+    git(repo, "update-ref", beta, "HEAD");
+    try {
+      const baseline = (await snapshotRepoIntegrity(repo))!;
+      // A `git fetch` in the user's checkout advances one ref and reveals another.
+      git(repo, "update-ref", beta, fetched);
+      git(repo, "update-ref", incoming, "HEAD");
+      const { violations, warnings } = await inspectRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(violations).toEqual([]);
+      expect(warnings).toHaveLength(2);
+      expect(
+        warnings.some((w) => /^ref moved: refs\/remotes\/origin\/beta \(/.test(w)),
+      ).toBe(true);
+      expect(warnings).toContain("ref appeared: refs/remotes/origin/new-branch");
+    } finally {
+      git(repo, "update-ref", "-d", beta);
+      git(repo, "update-ref", "-d", incoming);
+    }
+  });
+
+  it("warns about a remote-tracking ref pruned since the baseline (card 2026-09-25)", async () => {
+    const gone = "refs/remotes/origin/gone";
+    git(repo, "update-ref", gone, "HEAD");
+    try {
+      const baseline = (await snapshotRepoIntegrity(repo))!;
+      // `git fetch --prune` after the branch was deleted on the remote.
+      git(repo, "update-ref", "-d", gone);
+      const { violations, warnings } = await inspectRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(violations).toEqual([]);
+      expect(warnings).toEqual(["ref deleted: refs/remotes/origin/gone"]);
+    } finally {
+      git(repo, "update-ref", "-d", gone);
+    }
+  });
+
+  it("still fails on a moved local branch nobody recorded writing", async () => {
+    const beta = "refs/heads/beta";
+    git(repo, "update-ref", beta, "HEAD");
+    try {
+      const baseline = (await snapshotRepoIntegrity(repo))!;
+      const tree = git(repo, "rev-parse", "HEAD^{tree}");
+      const moved = git(repo, "commit-tree", tree, "-p", "HEAD", "-m", "someone else's commit");
+      git(repo, "update-ref", beta, moved);
+      const { violations, warnings } = await inspectRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatch(/^ref moved: refs\/heads\/beta /);
+      expect(warnings).toEqual([]);
+    } finally {
+      git(repo, "update-ref", "-d", beta);
+    }
+  });
+
+  it("takes Radulf's own base-branch move off a live run's baseline (spec 20)", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    expect(baseline.capturedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    try {
+      // Another card's approved merge moves the base branch under this run.
+      fs.writeFileSync(path.join(repo, "merged.txt"), "x");
+      git(repo, "add", ".");
+      git(repo, "commit", "-m", "ralph: merge another card");
+      const head = git(repo, "rev-parse", "HEAD");
+
+      // Unrecorded it reads as tampering, which is the point of still
+      // checking the base branch at all (spec 19).
+      const before = await checkRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      expect(before).toHaveLength(1);
+      expect(before[0]).toMatch(/^ref moved: refs\/heads\/main /);
+
+      // A write recorded for a different repo must not excuse this one.
+      recordRefWrite("/not/this/repo", "refs/heads/main", head, null);
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toHaveLength(1);
+
+      // A write that predates the baseline cannot explain a move seen after
+      // it: the ref was already at the baseline oid when the run started.
+      db.insert(refWrites)
+        .values({
+          repoPath: repo,
+          ref: "refs/heads/main",
+          sha: head,
+          workerId: "w0",
+          writtenAt: "2000-01-01T00:00:00.000Z",
+        })
+        .run();
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toHaveLength(1);
+
+      // Recorded against this repo since the baseline, the run stops
+      // reporting our own merge, from any process, not just the one that
+      // took the baseline.
+      recordRefWrite(repo, "refs/heads/main", head, "w1");
+      expect(
+        await checkRepoIntegrity(repo, baseline, { runBranch: RUN_BRANCH, checkRefs: true }),
+      ).toEqual([]);
+    } finally {
+      db.delete(refWrites).run();
+      git(repo, "reset", "--hard", "HEAD~1");
+    }
+  });
+
+  it("waits for the repo lease holder before judging a moved ref (spec 25 decision 6)", async () => {
+    const baseline = (await snapshotRepoIntegrity(repo))!;
+    try {
+      // A worker mid-merge: `git commit` has already moved main…
+      fs.writeFileSync(path.join(repo, "leased.txt"), "x");
+      git(repo, "add", ".");
+      git(repo, "commit", "-m", "ralph: merge under lease");
+      const head = git(repo, "rev-parse", "HEAD");
+      // …but it still holds the repo lease and has not recorded the write yet.
+      expect(acquireRepoLease(repo, "w-merge", 60)).toBe(true);
+
+      const pending = checkRepoIntegrity(repo, baseline, {
+        runBranch: RUN_BRANCH,
+        checkRefs: true,
+      });
+      setTimeout(() => {
+        recordRefWrite(repo, "refs/heads/main", head, "w-merge");
+        releaseRepoLease(repo, "w-merge");
+      }, 150);
+      expect(await pending).toEqual([]);
+    } finally {
+      db.delete(refWrites).run();
+      db.delete(repoLeases).run();
+      git(repo, "reset", "--hard", "HEAD~1");
+    }
+  });
+
   it("catches a hook planted AFTER a clean run-end check, at the pre-merge re-check", async () => {
     const baseline = (await snapshotRepoIntegrity(repo))!;
     // Run-end check passes…
@@ -143,6 +346,10 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
   it("persists baselines per run for the pre-merge re-check", async () => {
     const baseline = (await snapshotRepoIntegrity(repo))!;
     saveBaseline("run-abc", baseline);
+    expect(fs.statSync(path.join(testDataDir, "data", "integrity")).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(testDataDir, "data", "integrity", "run-abc.json")).mode & 0o777).toBe(
+      0o600,
+    );
     expect(loadBaseline("run-abc")).toEqual(baseline);
     removeBaseline("run-abc");
     expect(loadBaseline("run-abc")).toBeNull();

@@ -1,8 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { DATA_DIR } from "@/db";
+import { and, asc, eq, gte } from "drizzle-orm";
+import { DATA_DIR, db, now, refWrites } from "@/db";
+import { privateDir, tighten } from "@/db/privateFs";
 import { tryGit } from "./git";
+import { leaseHolder } from "./repoLeases";
 
 /**
  * Parent-repo integrity check (spec 14 L3). A worktree shares the parent
@@ -24,10 +27,29 @@ export type RepoIntegrityBaseline = {
   configHash: string;
   /** refname → object id, from for-each-ref. */
   refs: Record<string, string>;
+  /** ISO timestamp taken BEFORE the refs were read, so a `ref_writes` row
+   * written while the snapshot was in progress still counts as "since".
+   * Missing on baselines persisted before spec 25 — read as "". */
+  capturedAt: string;
 };
 
 function sha256(data: string | Buffer): string {
   return crypto.createHash("sha256").update(data).digest("hex");
+}
+
+/** Read the exact bytes being approved; never include config contents in events. */
+export async function readRepoConfig(repoPath: string) {
+  const commonDir = await gitCommonDir(repoPath);
+  if (!commonDir) throw new Error("repository is no longer usable");
+  try {
+    const bytes = fs.readFileSync(path.join(commonDir, "config"));
+    return { content: bytes.toString("utf8"), configHash: sha256(bytes) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { content: null, configHash: "" };
+    }
+    throw error;
+  }
 }
 
 /** Resolve the shared .git dir; null when the path is not a usable repo. */
@@ -58,6 +80,20 @@ function snapshotHooks(hooksDir: string): Record<string, string> {
   return hooks;
 }
 
+/** The hook and config half of a baseline: what the pre-merge check re-reads
+ * on its own, refs aside. */
+function snapshotHooksAndConfig(
+  commonDir: string,
+): Pick<RepoIntegrityBaseline, "hooks" | "configHash"> {
+  let configHash = "";
+  try {
+    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
+  } catch {
+    // No config file — "" stands in, on both sides of the comparison.
+  }
+  return { hooks: snapshotHooks(path.join(commonDir, "hooks")), configHash };
+}
+
 async function snapshotRefs(repoPath: string): Promise<Record<string, string>> {
   const { ok, out } = await tryGit(
     repoPath,
@@ -81,38 +117,55 @@ export async function snapshotRepoIntegrity(
 ): Promise<RepoIntegrityBaseline | null> {
   const commonDir = await gitCommonDir(repoPath);
   if (commonDir === null) return null;
-  let configHash = "";
-  try {
-    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
-  } catch {
-    // No config file — "" is the baseline.
-  }
-  return {
-    hooks: snapshotHooks(path.join(commonDir, "hooks")),
-    configHash,
-    refs: await snapshotRefs(repoPath),
-  };
+  const capturedAt = new Date().toISOString();
+  return { ...snapshotHooksAndConfig(commonDir), refs: await snapshotRefs(repoPath), capturedAt };
+}
+
+/**
+ * Refs Radulf writes on its own behalf, by name. Local branches under
+ * `ralph/`: a card's run branch (`ralph/<slug>-<runId>`, `git.ts`) and an
+ * improvement run's feature branch (`ralph/improve-<ts>`,
+ * `improvementRuns.ts`). Plus their remote-tracking counterparts, which spec
+ * 15 delivery creates when it pushes a branch to open a pull request (spec
+ * 20). Nothing else in the server writes a ref by name.
+ */
+function isManagedRef(ref: string): boolean {
+  return ref.startsWith("refs/heads/ralph/") || /^refs\/remotes\/[^/]+\/ralph\//.test(ref);
 }
 
 /**
  * Compare the repo against a baseline. Returns human-readable violations —
- * empty means intact. `runBranch` (e.g. "ralph/slug-runid") is the one ref
- * the run may legitimately move or create; with `checkRefs: false` only the
- * hook/config portion runs (the pre-merge check, where the base branch and
- * other refs may have moved legitimately since run end).
+ * empty means intact. `runBranch` (e.g. "ralph/slug-runid") is the run's own
+ * branch; with `checkRefs: false` only the hook/config portion runs (the
+ * pre-merge check, where the base branch and other refs may have moved
+ * legitimately since run end).
+ *
+ * Spec 19: the refs portion skips the whole `refs/heads/ralph/` namespace,
+ * not just `runBranch`. Every worktree shares one `.git`, so a sibling card's
+ * commit, a worktree cleanup and an improvement run's new branch all land in
+ * this run's ref snapshot, where they read as tampering even though Radulf
+ * wrote them itself. Base branches, `main` and tags outside that namespace are
+ * still compared; remote-tracking refs (`refs/remotes/**`) outside `ralph/` are
+ * returned as warnings instead of violations, because a `git fetch` or `git
+ * push` in the registered checkout moves them and that is not tampering (card
+ * 2026-09-25). Hooks and `.git/config` are untouched by this.
  */
-export async function checkRepoIntegrity(
+export async function inspectRepoIntegrity(
   repoPath: string,
   baseline: RepoIntegrityBaseline,
   opts: { runBranch: string; checkRefs: boolean },
-): Promise<string[]> {
+): Promise<{ violations: string[]; warnings: string[] }> {
   const violations: string[] = [];
+  const warnings: string[] = [];
   const commonDir = await gitCommonDir(repoPath);
   if (commonDir === null) {
-    return [`repo at ${repoPath} is no longer a usable git repository`];
+    return {
+      violations: [`repo at ${repoPath} is no longer a usable git repository`],
+      warnings: [],
+    };
   }
 
-  const hooksNow = snapshotHooks(path.join(commonDir, "hooks"));
+  const { hooks: hooksNow, configHash } = snapshotHooksAndConfig(commonDir);
   for (const [name, hash] of Object.entries(hooksNow)) {
     if (!(name in baseline.hooks)) violations.push(`hook appeared: .git/hooks/${name}`);
     else if (baseline.hooks[name] !== hash) violations.push(`hook changed: .git/hooks/${name}`);
@@ -121,30 +174,91 @@ export async function checkRepoIntegrity(
     if (!(name in hooksNow)) violations.push(`hook removed: .git/hooks/${name}`);
   }
 
-  let configHash = "";
-  try {
-    configHash = sha256(fs.readFileSync(path.join(commonDir, "config")));
-  } catch {
-    // Missing now — compares against baseline "" below.
-  }
   if (configHash !== baseline.configHash) violations.push(".git/config changed");
 
   if (opts.checkRefs) {
     const allowed = `refs/heads/${opts.runBranch}`;
+    const managed = (ref: string) => ref === allowed || isManagedRef(ref);
     const refsNow = await snapshotRefs(repoPath);
-    for (const [ref, oid] of Object.entries(refsNow)) {
-      if (ref === allowed) continue;
-      if (!(ref in baseline.refs)) violations.push(`ref appeared: ${ref}`);
-      else if (baseline.refs[ref] !== oid) {
-        violations.push(`ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`);
+    // Spec 25 decision 6: refs Radulf moved itself since the baseline was
+    // taken (a delivery worker's approved merge on the base branch) are not
+    // tampering, provided the ref now sits exactly where we left it.
+    const since = baseline.capturedAt ?? "";
+    const compareRefs = (
+      written: Map<string, string>,
+    ): { violations: string[]; warnings: string[] } => {
+      const found: string[] = [];
+      const noticed: string[] = [];
+      // A remote-tracking ref is the local shadow of whatever is on the
+      // remote: a `git fetch` or `git push` in the registered checkout moves
+      // it, and neither is tampering (card 2026-09-25). Report it, never fail
+      // the run on it.
+      const remote = (ref: string) => ref.startsWith("refs/remotes/");
+      for (const [ref, oid] of Object.entries(refsNow)) {
+        if (managed(ref)) continue;
+        if (written.get(ref) === oid) continue;
+        const message = !(ref in baseline.refs)
+          ? `ref appeared: ${ref}`
+          : baseline.refs[ref] !== oid
+            ? `ref moved: ${ref} (${baseline.refs[ref].slice(0, 12)} → ${oid.slice(0, 12)})`
+            : null;
+        if (message === null) continue;
+        if (remote(ref)) noticed.push(message);
+        else found.push(message);
       }
+      for (const ref of Object.keys(baseline.refs)) {
+        if (managed(ref) || ref in refsNow) continue;
+        const message = `ref deleted: ${ref}`;
+        if (remote(ref)) noticed.push(message);
+        else found.push(message);
+      }
+      return { violations: found, warnings: noticed };
+    };
+
+    let refDiff = compareRefs(refWritesSince(repoPath, since));
+    if (
+      refDiff.violations.some(
+        (v) => v.startsWith("ref moved:") || v.startsWith("ref appeared:"),
+      )
+    ) {
+      // A delivery worker's `mergeBranch` moves the base branch at `git
+      // commit` and only afterwards records the write (`recordRefWrite`), but
+      // it holds the per-repo lease from before any git work until after that
+      // record lands. Reading refs inside that sliver sees a moved ref with no
+      // `ref_writes` row yet. Wait for the lease to be released, then re-read
+      // the record against the SAME ref snapshot: once the lease is free every
+      // ref write Radulf made is recorded, so a moved ref still unexplained
+      // after that is real tampering. With no lease held this returns at once.
+      await waitForRepoLeaseRelease(repoPath, LEASE_SETTLE_MS);
+      refDiff = compareRefs(refWritesSince(repoPath, since));
     }
-    for (const ref of Object.keys(baseline.refs)) {
-      if (ref !== allowed && !(ref in refsNow)) violations.push(`ref deleted: ${ref}`);
-    }
+    violations.push(...refDiff.violations);
+    warnings.push(...refDiff.warnings);
   }
 
-  return violations;
+  return { violations, warnings };
+}
+
+/** The violations half of `inspectRepoIntegrity` — empty means intact. */
+export async function checkRepoIntegrity(
+  repoPath: string,
+  baseline: RepoIntegrityBaseline,
+  opts: { runBranch: string; checkRefs: boolean },
+): Promise<string[]> {
+  return (await inspectRepoIntegrity(repoPath, baseline, opts)).violations;
+}
+
+/** Upper bound on how long the run-end check waits for a delivery worker to
+ * release the repo lease before judging an unexplained ref move. */
+export const LEASE_SETTLE_MS = 30_000;
+
+/** Poll `leaseHolder(repoPath)` every 50 ms until the lease is free or `maxMs`
+ * elapses. Resolves immediately when nobody holds it. */
+export async function waitForRepoLeaseRelease(repoPath: string, maxMs: number): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (leaseHolder(repoPath) !== null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,13 +270,14 @@ function baselineDir(): string {
   return path.join(DATA_DIR, "integrity");
 }
 
-export function baselinePath(runId: string): string {
+function baselinePath(runId: string): string {
   return path.join(baselineDir(), `${runId}.json`);
 }
 
 export function saveBaseline(runId: string, baseline: RepoIntegrityBaseline): void {
-  fs.mkdirSync(baselineDir(), { recursive: true });
-  fs.writeFileSync(baselinePath(runId), JSON.stringify(baseline));
+  privateDir(baselineDir());
+  fs.writeFileSync(baselinePath(runId), JSON.stringify(baseline), { mode: 0o600 });
+  tighten(baselinePath(runId));
 }
 
 export function loadBaseline(runId: string): RepoIntegrityBaseline | null {
@@ -175,4 +290,44 @@ export function loadBaseline(runId: string): RepoIntegrityBaseline | null {
 
 export function removeBaseline(runId: string): void {
   fs.rmSync(baselinePath(runId), { force: true });
+}
+
+// ---------------------------------------------------------------------------
+// Ref writes (spec 20 / spec 25 decision 6) — the durable record of refs
+// Radulf moved itself, so runs open against that repo in ANY process do not
+// report the server's own work as tampering.
+// ---------------------------------------------------------------------------
+
+/**
+ * Record a ref Radulf itself just wrote. Used for the base branch after an
+ * approved merge: every other card looping in that repo holds a baseline that
+ * still has the pre-merge oid, and the base branch is deliberately NOT in the
+ * managed namespace, because a human reviews a run branch against its base
+ * and tampering with base is invisible to that review. Recording what moved
+ * keeps the check's teeth while removing the false positive.
+ *
+ * `repoPath` is matched exactly, as the repo record stores it, which is also
+ * what every caller passes to `snapshotRepoIntegrity`.
+ */
+export function recordRefWrite(
+  repoPath: string,
+  ref: string,
+  sha: string,
+  workerId: string | null,
+): void {
+  db.insert(refWrites).values({ repoPath, ref, sha, workerId, writtenAt: now() }).run();
+}
+
+/** ref → the latest sha Radulf wrote to it in `repoPath` at or after
+ * `sinceIso`. Rows are applied in id order, so a later write wins. */
+export function refWritesSince(repoPath: string, sinceIso: string): Map<string, string> {
+  const rows = db
+    .select({ ref: refWrites.ref, sha: refWrites.sha })
+    .from(refWrites)
+    .where(and(eq(refWrites.repoPath, repoPath), gte(refWrites.writtenAt, sinceIso)))
+    .orderBy(asc(refWrites.id))
+    .all();
+  const latest = new Map<string, string>();
+  for (const row of rows) latest.set(row.ref, row.sha);
+  return latest;
 }

@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { withMigrationLock } from "./migrationLock";
+import { privateDir, tighten } from "./privateFs";
 import * as schema from "./schema";
 
 export const DATA_DIR = process.env.RADULF_DATA_DIR
@@ -21,17 +23,35 @@ export const WORKTREES_DIR = process.env.RADULF_WORKTREES_DIR
 export const PLANS_DIR = process.env.RADULF_PLANS_DIR
   ? path.resolve(/* turbopackIgnore: true */ process.env.RADULF_PLANS_DIR)
   : path.join(path.dirname(DATA_DIR), "plans");
+// Spec 21: repositories Radulf clones itself when one is registered by URL. A
+// sibling of data/ like the two above, so it sits outside the sandbox's data/
+// deny, and on a container install inside the same volume as everything else.
+export const CLONES_DIR = path.join(path.dirname(DATA_DIR), "repos");
 export const TRANSCRIPTS_DIR = path.join(DATA_DIR, "transcripts");
 
 function createDb() {
-  fs.mkdirSync(WORKTREES_DIR, { recursive: true });
-  fs.mkdirSync(PLANS_DIR, { recursive: true });
-  fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
-  const sqlite = new Database(path.join(DATA_DIR, "radulf.db"));
+  for (const dir of [DATA_DIR, WORKTREES_DIR, PLANS_DIR, TRANSCRIPTS_DIR]) {
+    privateDir(dir);
+  }
+  const dbFile = path.join(DATA_DIR, "radulf.db");
+  const sqlite = new Database(dbFile);
+  // The database holds every provider key (encrypted, but under a secret
+  // sitting beside it), every card and every plan, and a stock umask left it
+  // 0644. SQLite gives the -wal and -shm it creates the database file's mode,
+  // so tightening this before `journal_mode = WAL` covers a fresh install.
+  // An install that already has a 0644 WAL keeps it, and the WAL is where the
+  // most recent writes live, so all three are named. Startup fails if any file
+  // cannot be tightened and remains visible to another account.
+  tighten(dbFile);
   sqlite.pragma("journal_mode = WAL");
+  for (const suffix of ["-wal", "-shm"]) tighten(dbFile + suffix);
   sqlite.pragma("foreign_keys = ON");
   const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
+  // Spec 25: web and worker may boot the same data dir concurrently, and
+  // migrate() alone races (see migrationLock.ts), so serialize it.
+  withMigrationLock(path.join(DATA_DIR, "radulf-migrate.lock"), () => {
+    migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
+  });
   return db;
 }
 
@@ -67,3 +87,27 @@ export function migrationsPending(): boolean {
 
 export * from "./schema";
 export const now = () => new Date().toISOString();
+
+/**
+ * One JSON-valued row of the settings KV table, which the circuit breaker and
+ * the rate-limit readings share with the operator's settings. Null when the
+ * key is absent or its value is not JSON.
+ */
+export function readSettingJson(key: string): unknown {
+  const row = db.select().from(schema.settings).where(eq(schema.settings.key, key)).get();
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** Write one JSON-valued row of the settings KV table, replacing any existing value. */
+export function upsertSettingJson(key: string, value: unknown): void {
+  const json = JSON.stringify(value);
+  db.insert(schema.settings)
+    .values({ key, value: json })
+    .onConflictDoUpdate({ target: schema.settings.key, set: { value: json } })
+    .run();
+}

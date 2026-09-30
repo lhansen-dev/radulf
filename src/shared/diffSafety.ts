@@ -110,7 +110,7 @@ export function findSuspiciousChars(line: string): SuspiciousCharMatch[] {
   return matches;
 }
 
-export function codePointLabel(m: SuspiciousCharMatch): string {
+function codePointLabel(m: SuspiciousCharMatch): string {
   return `${m.name} (U+${m.codePoint.toString(16).toUpperCase().padStart(4, "0")})`;
 }
 

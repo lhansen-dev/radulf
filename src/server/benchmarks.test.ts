@@ -16,15 +16,9 @@ describe("listFixtures", () => {
     for (const f of fixtures) {
       expect(f.title.length).toBeGreaterThan(0);
       expect(f.criteriaCount).toBeGreaterThan(0);
+      // Existing-codebase fixtures are seeded; snake-tui is greenfield.
+      expect(f.seeded).toBe(f.name !== "snake-tui");
     }
-  });
-
-  it("flags the existing-codebase fixtures as seeded and snake-tui as greenfield", () => {
-    const byName = new Map(listFixtures().map((f) => [f.name, f]));
-    expect(byName.get("snake-tui")!.seeded).toBe(false);
-    expect(byName.get("small-ui-change")!.seeded).toBe(true);
-    expect(byName.get("server-data-change")!.seeded).toBe(true);
-    expect(byName.get("failing-test-repair")!.seeded).toBe(true);
   });
 
   it("returns an empty list for a missing directory", () => {
@@ -69,14 +63,6 @@ describe("summarizeReport", () => {
       medianModelTurns: 90,
       medianCostUsd: 1.25,
     });
-  });
-
-  it("identifies the loop and planner models independently", () => {
-    const summary = summarizeReport("split.json", {
-      meta: { model: "fast/loop", plannerModel: "strong/planner" },
-    });
-    expect(summary.model).toBe("fast/loop");
-    expect(summary.plannerModel).toBe("strong/planner");
   });
 
   it("uses the loop model as the planner for legacy reports", () => {

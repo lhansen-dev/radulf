@@ -1,20 +1,9 @@
 "use client";
 import { useEffect, useRef } from "react";
 
-export type CardStatus =
-  | "backlog"
-  | "todo"
-  | "planning"
-  | "ready"
-  | "looping"
-  | "evaluating"
-  | "paused"
-  | "review"
-  | "reviewing"
-  | "plan_review"
-  | "needs_attention"
-  | "done"
-  | "abandoned";
+export type { CardStatus } from "@/shared/cardStatus";
+import type { CardStatus } from "@/shared/cardStatus";
+import type { EpicRunMode } from "@/shared/epics";
 
 export type BoardCard = {
   id: string;
@@ -31,13 +20,17 @@ export type BoardCard = {
   updatedAt: string;
   repoName: string;
   baseBranch: string | null;
+  /** Spec 24: the epic this card is a piece of, and how an epic's pieces run. */
+  parentCardId: string | null;
+  runMode: EpicRunMode | null;
+  dependsOn: string[] | null;
   latestRun: {
     id: string;
-    kind: "plan" | "loop" | "evaluate";
+    kind: "plan" | "loop" | "evaluate" | "critique";
     status: string;
     iterationsDone: number;
     exitReason: string | null;
-    currentTask: string | null;
+    currentTask: { number: number; count: number; left: number; text: string } | null;
     startedAt: string;
   } | null;
   maxIterationsResolved: number;
@@ -47,39 +40,9 @@ export type BoardCard = {
   summary: string | null;
 };
 
-export type Repo = {
-  id: string;
-  name: string;
-  path: string;
-  defaultBranch: string;
-  createdAt: string;
-};
-
-export type ImprovementRunStatus = "running" | "completed" | "stopped" | "failed";
-
-export type ImprovementRun = {
-  id: string;
-  repoId: string;
-  status: ImprovementRunStatus;
-  featureBranch: string;
-  baseBranch: string;
-  focusPrompt: string | null;
-  plannerModel: string | null;
-  loopModel: string | null;
-  evaluatorModel: string | null;
-  maxIterations: number | null;
-  timeoutMinutes: number | null;
-  deadlineAt: string;
-  currentCardId: string | null;
-  tasksCreated: number;
-  tasksSucceeded: number;
-  consecutiveFailures: number;
-  createdAt: string;
-  updatedAt: string;
-  endedAt: string | null;
-};
-
-export type PlannerMessage = { role: "user" | "assistant"; content: string };
+export type { Repo } from "@/server/repos";
+export type { ImprovementRunStatus } from "@/db/schema";
+export type { ImprovementRun } from "@/server/improvementRuns";
 
 export async function api<T = unknown>(
   url: string,
@@ -97,9 +60,70 @@ export async function api<T = unknown>(
   return data as T;
 }
 
+type StreamEvent = { type: string; cardId: string | null; payload?: string };
+type StreamSubscriber = {
+  onEvent: (e: StreamEvent) => void;
+  onConnectionChange: (connected: boolean) => void;
+};
+
+// One EventSource per tab, shared by every useEventStream caller. The board
+// and a card page's two subscribers would otherwise each hold a connection,
+// and a few open tabs exhaust the browser's per-origin HTTP/1.1 limit under
+// `next dev`. Opened by the first subscriber, closed when the last leaves.
+let sharedStream: EventSource | null = null;
+let sharedConnected: boolean | null = null;
+const subscribers = new Set<StreamSubscriber>();
+
+// One subscriber's throwing callback must not starve the others of the frame;
+// a per-subscriber stream used to swallow it the same way.
+function dispatch(fn: () => void): void {
+  try {
+    fn();
+  } catch {
+    // ignore
+  }
+}
+
+function subscribeToStream(subscriber: StreamSubscriber): () => void {
+  subscribers.add(subscriber);
+  if (sharedStream) {
+    // A late subscriber gets the same open/error callback its own stream
+    // would have fired by now.
+    if (sharedConnected !== null) dispatch(() => subscriber.onConnectionChange(sharedConnected!));
+  } else {
+    const es = new EventSource("/api/events/stream");
+    es.onopen = () => {
+      sharedConnected = true;
+      subscribers.forEach((s) => dispatch(() => s.onConnectionChange(true)));
+    };
+    es.onerror = () => {
+      sharedConnected = false;
+      subscribers.forEach((s) => dispatch(() => s.onConnectionChange(false)));
+    };
+    es.onmessage = (msg) => {
+      let event: StreamEvent;
+      try {
+        event = JSON.parse(msg.data);
+      } catch {
+        return; // ignore malformed frames
+      }
+      subscribers.forEach((s) => dispatch(() => s.onEvent(event)));
+    };
+    sharedStream = es;
+  }
+  return () => {
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0) {
+      sharedStream?.close();
+      sharedStream = null;
+      sharedConnected = null;
+    }
+  };
+}
+
 /** Subscribe to the server event stream; call onEvent for each event row. */
 export function useEventStream(
-  onEvent: (e: { type: string; cardId: string | null; payload?: string }) => void,
+  onEvent: (e: StreamEvent) => void,
   onConnectionChange?: (connected: boolean) => void
 ) {
   const cb = useRef(onEvent);
@@ -108,19 +132,10 @@ export function useEventStream(
     cb.current = onEvent;
     connectionCb.current = onConnectionChange;
   });
-  useEffect(() => {
-    const es = new EventSource("/api/events/stream");
-    es.onopen = () => connectionCb.current?.(true);
-    es.onerror = () => connectionCb.current?.(false);
-    es.onmessage = (msg) => {
-      try {
-        cb.current(JSON.parse(msg.data));
-      } catch {
-        // ignore malformed frames
-      }
-    };
-    return () => es.close();
-  }, []);
+  useEffect(() => subscribeToStream({
+    onEvent: (event) => cb.current(event),
+    onConnectionChange: (connected) => connectionCb.current?.(connected),
+  }), []);
 }
 
 export function timeAgo(iso: string | null): string {

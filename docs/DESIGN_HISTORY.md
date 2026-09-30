@@ -37,7 +37,7 @@ history inline.
 |------|---------|--------|
 | [00 — Overview](../specs/00-overview.md) | The spec index, the locked decisions, and the glossary | Current, with inline amendments |
 | [01 — Product](../specs/01-product.md) | Vision, the user, core flows, non-goals | Current |
-| [02 — Architecture](../specs/02-architecture.md) | Process model, stack, the orchestrator, runner contracts | Mostly current; safety posture amended by 14 |
+| [02 — Architecture](../specs/02-architecture.md) | Process model, stack, the orchestrator, runner contracts | Mostly current; safety posture amended by 14, process model amended by 25 |
 | [03 — Data model](../specs/03-data-model.md) | The SQLite schema and entity lifecycles | Current |
 | [04 — Agent pipeline](../specs/04-agent-pipeline.md) | Planning, the Ralph loop, the evaluator gate, review and merge | Current |
 | [05 — UI design](../specs/05-ui-design.md) | Board layout, card detail, diff review | Presentation superseded by 10 |
@@ -46,30 +46,45 @@ history inline.
 | [08 — Hosting and auth](../specs/08-hosting-auth.md) | Internet exposure and single-password auth | Current — see also the [Authentication guide](AUTHENTICATION.md) |
 | [09 — Multi-harness runners](../specs/09-multi-harness.md) | A loop harness per provider | **Superseded by 13** |
 | [10 — Mobile-first workspace](../specs/10-mobile-first-ui.md) | The attention-ordered Work feed and responsive layout | Current; amends 05 |
-| [11 — Loop performance](../specs/11-loop-performance.md) | Loop latency, token and turn telemetry, lean harnesses, benchmarks | Current; amends 09 |
+| [11 — Loop performance](../specs/11-loop-performance.md) | Loop latency, token and turn telemetry, lean harnesses, benchmarks | Current; amends 09, amended by 18 |
 | [12 — Pi harness](../specs/12-pi-harness.md) | pi as a fourth harness, and the proxied-provider default | **Superseded by 13** |
-| [13 — One harness: pi in SDK mode](../specs/13-single-pi-sdk-harness.md) | Consolidating every provider onto pi in SDK mode | Current — this is what ships |
+| [13 — One harness: pi in SDK mode](../specs/13-single-pi-sdk-harness.md) | Consolidating every provider onto pi in SDK mode | Current — this is what ships; the hosting process is amended by 25 |
 | [13 — Implementation checklist](../specs/13-implementation-checklist.md) | The checklist that tracked the migration to 13 | Completed |
-| [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current — see also the [Sandboxing guide](SANDBOXING.md) |
+| [14 — Sandboxing](../specs/14-sandboxing.md) | Kernel-enforced containment and the threat model | Current; amended by 19. See also the [Sandboxing guide](SANDBOXING.md) |
+| [15 — GitHub PR delivery](../specs/15-github-pr-delivery.md) | Delivering an approved diff as a pull request instead of a local merge | Current; amends decision 6 |
+| [17 — Task scoping](../specs/17-task-scoping.md) | A repo-aware scoping thread on every card, closing the planner's questions loop | Current; extends 04, adds a fourth role to decision 3, replaces 10's planner chat. Fully built |
+| [18 — Loop failure modes](../specs/18-loop-failure-modes.md) | What the loop knows when an iteration ends badly, and what it does with it | Current; amends 11, extended by 26 |
+| [19: Radulf's own refs](../specs/19-shared-git-ref-noise.md) | Why a sibling card's branch is not tampering, and what the run-end integrity check still compares | Current; amends 14; amended 2026-09-25 (remote-tracking refs downgraded to a warning event) |
+| [20: More than one card at a time](../specs/20-concurrent-cards.md) | The per-repo concurrency cap, and telling the integrity check about the merges Radulf itself performs | Current; amends locked decision 5, completes 19; process-wide analysis amended by 25 |
+| [21: Registering a repository by URL](../specs/21-clone-on-register.md) | Cloning into Radulf's own repos dir when a URL is registered, so a server or container install needs no pre-mounted checkouts | Current; extends locked decision 1 |
+| [22: Scheduling queue drains and improvement runs](../specs/22-scheduled-work.md) | Cron schedules for the two things that want to happen unattended, and what that does to 06's autonomy boundary | Current; amends 06's hard rule 2, delivers roadmap item 4 |
+| [23: Logging a provider in from the app](../specs/23-provider-login-in-app.md) | Driving pi's typed login interaction from a route, so a server or container install needs no TUI over `docker exec` | Current; narrows the "OAuth belongs in the terminal" posture to "drive a typed interface, shell out otherwise" |
+| [24: Epics](../specs/24-epics.md) | Breaking one ask into child tasks under a parent card, with a run mode the queue enforces, and Jira child issues as pieces | Current; extends 17, amends 20's scope note; decisions 4 and 5 and the dependency-graph non-goal amended by 28 |
+| [25: Web and worker processes](../specs/25-web-and-worker-processes.md) | Splitting the one process into web and worker roles that share the database, so a web restart ends no run, several of each can run on one host, and a session crash stays in its worker | Current; amends 02's process model, 13's hosting note, and 20's process-wide analysis |
+| [26: Retries inherit the failed attempt](../specs/26-retries-inherit-the-failed-attempt.md) | Forwarding a killed planner or evaluator attempt's notes, transcript digest, and drafts into its retry, a deadline in the prompt, and honouring a complete result left on disk at a timeout | Current; extends 18 |
+| [27: A repository gate, run outside the model](../specs/27-repository-gate.md) | One gate command per repository, run by the orchestrator in the evaluator's sandbox before each evaluation cycle, with the result handed to the evaluator as evidence | Current; extends 18 item 7 and 26 |
+| [28: Epic pieces declare dependencies, scheduled as a graph](../specs/28-epic-dependency-graph.md) | A per-piece `dependsOn` list and a third run mode, `graph`, that starts a piece once its dependencies are done or abandoned, under the spec 20 cap | Current; amends 24 decisions 4 and 5 and its "No dependency graph" non-goal |
+| [29: Sync with base and gate before evaluation](../specs/29-sync-and-gate-before-evaluation.md) | Merging the base branch into a finished loop's worktree and running the repository gate before evaluation, with conflicts and gate failures handed back to the loop as tasks, bounded to two rounds | Current; extends 18 item 7 and 27 |
+| [30: A plan critic between planning and the loop](../specs/30-plan-critic.md) | A read-only critic run that reviews each plan against the card, the thread and the specs before the loop starts, approving or sending it back to the planner with feedback, at most twice | Current; extends 04's roles and 17; revision cap shared with 31 |
+| [31: Probe acceptance checks against the untouched worktree](../specs/31-acceptance-precheck.md) | Running a plan's check commands before the loop starts, sending back once a plan whose new-behavior checks already pass, and never spending a repair iteration on such a check after DONE | Current; extends 18 item 7 and 30 |
 
 ## Implementation plans
 
-Alongside the specs, `docs/` holds plans written to drive a particular piece of
-work to completion. They are checklists with a finish line, not reference
-material:
+`docs/` also held two implementation plans — checklists with a finish line
+rather than reference material — for spec 14's sandboxing work and for
+Improvement Runs. Both were completed and removed from the tree; they remain in
+git history if you want the phasing or the progress log that recorded the two
+bugs the live Improvement Runs exposed.
 
-- [Sandboxing implementation plan](PLAN_SPEC_14.md) — the phased plan behind
-  spec 14. Completed.
-- [Improvement Runs implementation plan](PLAN_IMPROVEMENT_RUNS.md) — the plan
-  behind the time-boxed self-driving loop, with a progress log recording the two
-  bugs the live runs exposed. Completed; the feature is documented in
-  [Improvement Runs](IMPROVEMENT_RUNS.md).
+What they built is documented in [Sandboxing](SANDBOXING.md) and
+[Improvement Runs](IMPROVEMENT_RUNS.md).
 
 ## The locked decisions
 
 A handful of decisions were made at the outset and are treated as fixed unless
 explicitly revisited: the task domain (coding tasks against local Git repos),
-the stack, one ticket in the pipeline at a time, in-app diff review, and — the
+the stack, a metered pipeline (one card at a time until you raise it, and
+always one on a local model), in-app diff review, and — the
 one that matters most — **merging always requires human approval**. No version
 of Radulf merges on its own without an explicit opt-in design.
 

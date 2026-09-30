@@ -18,9 +18,12 @@ Before running a benchmark, ensure the following are in place:
    and Loop Provider). The runner accepts `--model` and `--planner-model`
    overrides that are passed as the card's `loopModel` and `plannerModel`.
 4. **Authentication credentials** — either a session cookie value
-   (`--auth-cookie`) or the server's auth password (`--password`).  If
-   `--password` is used, the runner logs in via `POST /api/auth/login` and
-   reads the `Set-Cookie` header automatically.
+   (`RADULF_BENCH_AUTH_COOKIE`, or `--auth-cookie`) or the server's auth
+   password (`--password`).  If `--password` is used, the runner logs in via
+   `POST /api/auth/login` and reads the `Set-Cookie` header automatically.
+   Prefer the environment variable: a benchmark runs for hours, and a
+   process's command line is readable by every account on the host for that
+   whole time.  Launching from the Benchmarks page always uses it.
 
 ## Usage
 
@@ -42,7 +45,7 @@ node benchmarks/run-benchmark.mjs --fixture snake-tui [options]
 | `--model` | *(required)* | Loop model name (e.g. `claude-sonnet-4-20250514`) |
 | `--planner-model` | loop model | Planner model name; uses the planner provider from Settings |
 | `--runs` | `3` | Number of benchmark runs |
-| `--auth-cookie` | — | Session cookie value for authentication |
+| `--auth-cookie` | `$RADULF_BENCH_AUTH_COOKIE` | Session cookie value for authentication |
 | `--password` | — | Password to POST `/api/auth/login` and read `Set-Cookie` |
 | `--max-iterations` | *(default)* | Optional card `maxIterations` override |
 | `--timeout-minutes` | *(default)* | Optional card `timeoutMinutes` override |

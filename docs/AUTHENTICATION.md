@@ -23,9 +23,12 @@ Set the result as `RADULF_AUTH_PASSWORD_HASH`. When that variable is unset, auth
 is disabled and Radulf runs in its default no-auth mode.
 
 If you are serving Radulf on a public hostname, also set `RADULF_ALLOWED_ORIGIN`
-to that hostname — for example `RADULF_ALLOWED_ORIGIN=radulf.example.com`.
-Mutating requests are accepted only from localhost origins and, when set, this
-one.
+to the full origin, including the scheme and any non-default port. For example,
+use `RADULF_ALLOWED_ORIGIN=https://radulf.example.com`.
+Mutating requests are accepted only from the configured origin. Loopback use
+also accepts the exact local host and port addressed by the browser. A page on
+another `localhost` port is not the same origin, even though browsers send it
+the same cookies.
 
 ## How it behaves
 

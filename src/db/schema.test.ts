@@ -1,20 +1,29 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
+import { eq } from "drizzle-orm";
 
 // The DB must open against a throwaway data dir, so the env var is set before
 // the module (and its import-time path resolution) loads.
-const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-schema-"));
-process.env.RADULF_DATA_DIR = testDataDir;
+setupTestDataDir("radulf-schema-");
 
-const { db, now, repos, runs, cards, DATA_DIR, WORKTREES_DIR, PLANS_DIR } =
-  await import("@/db");
-
-afterAll(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
-  delete process.env.RADULF_DATA_DIR;
-});
+const {
+  db,
+  now,
+  repos,
+  runs,
+  cards,
+  worktrees,
+  reviewDeliveries,
+  repoLeases,
+  refWrites,
+  settings,
+  readSettingJson,
+  upsertSettingJson,
+  DATA_DIR,
+  WORKTREES_DIR,
+  PLANS_DIR,
+} = await import("@/db");
 
 describe("spec 14 directory layout", () => {
   it("keeps worktrees and plans OUTSIDE data/ (sandbox denies data/ wholesale)", () => {
@@ -25,55 +34,77 @@ describe("spec 14 directory layout", () => {
   });
 });
 
-describe("spec 14 schema additions", () => {
-  it("round-trips the sandbox run metadata", () => {
-    db.insert(repos)
-      .values({ id: "r1", name: "repo", path: "/tmp/repo", createdAt: now() })
-      .run();
-    db.insert(cards)
-      .values({ id: "c1", repoId: "r1", title: "t", createdAt: now(), updatedAt: now() })
-      .run();
-    db.insert(runs)
-      .values({
-        id: "run1",
-        cardId: "c1",
-        kind: "loop",
-        worktreePath: "/tmp/wt",
-        branch: "ralph/x",
-        startedAt: now(),
-        sandboxed: 1,
-        diskLimitMechanism: "watchdog",
-      })
-      .run();
+describe("schema defaults and constraints", () => {
+  it("defaults new cards to Backlog and repos to an empty install-script approval list", () => {
+    db.insert(repos).values({ id: "r1", name: "repo", path: "/tmp/repo", createdAt: now() }).run();
+    db.insert(cards).values({ id: "c1", repoId: "r1", title: "t", createdAt: now(), updatedAt: now() }).run();
 
-    const row = db.select().from(runs).all()[0];
-    expect(row.sandboxed).toBe(1);
-    expect(row.diskLimitMechanism).toBe("watchdog");
+    expect(db.select().from(cards).get()!.status).toBe("backlog");
+    expect(JSON.parse(db.select().from(repos).get()!.approvedInstallScripts)).toEqual([]);
   });
 
-  it("stores null sandbox metadata for legacy rows", () => {
+  it("set-nulls a worktree row's runId when its run is deleted", () => {
     db.insert(runs)
-      .values({
-        id: "run2",
-        cardId: "c1",
-        kind: "plan",
-        worktreePath: "/tmp/wt2",
-        branch: "ralph/y",
-        startedAt: now(),
-      })
+      .values({ id: "run1", cardId: "c1", kind: "loop", worktreePath: "/tmp/wt", branch: "ralph/x", startedAt: now() })
       .run();
-    const row = db.select().from(runs).all().find((r) => r.id === "run2")!;
-    expect(row.sandboxed).toBeNull();
-    expect(row.diskLimitMechanism).toBeNull();
+    db.insert(worktrees)
+      .values({ id: "wt1", repoId: "r1", runId: "run1", path: "/tmp/wt", branch: "ralph/x", createdAt: now() })
+      .run();
+
+    db.delete(runs).where(eq(runs.id, "run1")).run();
+    const row = db.select().from(worktrees).where(eq(worktrees.id, "wt1")).get()!;
+    expect(row.runId).toBeNull();
+    expect(row.removedAt).toBeNull();
+  });
+});
+
+describe("spec 25 decision 6 review-delivery tables", () => {
+  it("inserts and reads back a review_deliveries row that defaults to pending", () => {
+    db.insert(runs)
+      .values({ id: "run2", cardId: "c1", kind: "loop", worktreePath: "/tmp/wt2", branch: "ralph/y", startedAt: now() })
+      .run();
+    db.insert(reviewDeliveries)
+      .values({ id: "rd1", runId: "run2", cardId: "c1", repoId: "r1", fromStatus: "review", approvedBy: "human", createdAt: now() })
+      .run();
+
+    const row = db.select().from(reviewDeliveries).where(eq(reviewDeliveries.id, "rd1")).get()!;
+    expect(row.status).toBe("pending");
+    expect(row.fromStatus).toBe("review");
+    expect(row.approvedBy).toBe("human");
+    expect(row.workerId).toBeNull();
+    expect(row.ok).toBeNull();
+    expect(row.claimedAt).toBeNull();
+    expect(row.endedAt).toBeNull();
   });
 
-  it("defaults approvedInstallScripts to an empty JSON list and round-trips entries", () => {
-    const fresh = db.select().from(repos).all()[0];
-    expect(JSON.parse(fresh.approvedInstallScripts)).toEqual([]);
+  it("inserts and reads back a repo_leases row", () => {
+    db.insert(repoLeases).values({ repoPath: "/tmp/repo", workerId: "w1", acquiredAt: now() }).run();
+    const row = db.select().from(repoLeases).where(eq(repoLeases.repoPath, "/tmp/repo")).get()!;
+    expect(row.workerId).toBe("w1");
+  });
 
-    const approved = [{ name: "esbuild", version: "0.21.0", scriptHash: "abc123" }];
-    db.update(repos).set({ approvedInstallScripts: JSON.stringify(approved) }).run();
-    const updated = db.select().from(repos).all()[0];
-    expect(JSON.parse(updated.approvedInstallScripts)).toEqual(approved);
+  it("inserts and reads back a ref_writes row with an autoincrement id", () => {
+    db.insert(refWrites)
+      .values({ repoPath: "/tmp/repo", ref: "refs/heads/main", sha: "abc123", workerId: "w1", writtenAt: now() })
+      .run();
+    const row = db.select().from(refWrites).where(eq(refWrites.repoPath, "/tmp/repo")).get()!;
+    expect(typeof row.id).toBe("number");
+    expect(row.ref).toBe("refs/heads/main");
+    expect(row.sha).toBe("abc123");
+  });
+});
+
+describe("settings KV JSON helpers", () => {
+  it("upserts one row per key and reads it back parsed", () => {
+    upsertSettingJson("kv:test", { a: 1 });
+    upsertSettingJson("kv:test", { a: 2 });
+    expect(db.select().from(settings).where(eq(settings.key, "kv:test")).all()).toHaveLength(1);
+    expect(readSettingJson("kv:test")).toEqual({ a: 2 });
+  });
+
+  it("reads a missing or corrupt row as null", () => {
+    expect(readSettingJson("kv:absent")).toBeNull();
+    db.insert(settings).values({ key: "kv:corrupt", value: "not json" }).run();
+    expect(readSettingJson("kv:corrupt")).toBeNull();
   });
 });

@@ -1,0 +1,187 @@
+name: Benchmarks
+
+# Separate from ci.yml on purpose (PLAN.md Phase 17): the corpus needs a live
+# server, real provider credentials, and real wall-clock time/cost, so it must
+# never gate or slow down a PR. Scheduled + manually dispatchable only — never
+# `on: push`/`on: pull_request`.
+on:
+  schedule:
+    # Weekly, not nightly: each run drives all four fixtures through a real
+    # provider (plan + loop + evaluate per card), so it costs real time and
+    # real money. Sunday 06:00 UTC, off-hours for both US and EU maintainers.
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Runs per fixture (benchmarks/README.md's ground rule wants >=3 for promotion evidence; default matches the runner's own default)"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # A full n=3 pass over all four fixtures is many real card runs end to
+    # end (plan -> loop -> evaluate, each a real provider round trip); budget
+    # generously rather than risk a late-run cutoff losing completed reports.
+    timeout-minutes: 300
+    env:
+      # Cheap/fast OpenRouter model per PLAN.md Phase 17's decision — a
+      # subscription provider (anthropic/chatgpt/copilot) needs an interactive
+      # `pi`/`make login` that cannot run headless in Actions; OpenRouter only
+      # needs an API key. `deepseek/deepseek-v4-flash` is the model
+      # docs/PROVIDERS.md's own "What a card costs" table already measured the
+      # loop role against, so it's a known-cheap, known-working quantity here.
+      # Used for every role (planner/loop/evaluator): PROVIDERS.md recommends
+      # a frontier planner and an evaluator that differs from the loop model
+      # for production quality, but this job's goal is a cheap, repeatable
+      # week-over-week regression signal, not a production-quality card, and
+      # every fixture's CRITERIA.md is a deterministic pass/fail check rather
+      # than something that depends on evaluator independence.
+      BENCH_MODEL: deepseek/deepseek-v4-flash
+      BENCH_REPO_PATH: /tmp/radulf-bench-repo
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Sandbox is on by default (Settings.sandboxEnabled) and a real card
+      # run shells out through it — same dependency install ci.yml uses to
+      # make srt.test.ts's real-process tests pass on Linux.
+      - uses: ./.github/actions/linux-sandbox-deps
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: make install
+
+      - name: Fail fast if OPENROUTER_API_KEY is missing
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY repository secret is not set — a maintainer must add it (Settings -> Secrets and variables -> Actions) before this job can run. See benchmarks.yml's Phase 17 comment."
+            exit 1
+          fi
+
+      - name: Build production bundle
+        run: make build
+
+      - name: Start server in the background
+        # `make start` binds 127.0.0.1 (RADULF_AUTH_PASSWORD_HASH is unset, so
+        # Makefile's HOST logic picks loopback) and runs in the foreground, so
+        # background + disown it here to keep the step from hanging the job.
+        run: |
+          nohup make start > server.log 2>&1 &
+          disown
+
+      - name: Wait for server health
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:3000/api/health >/dev/null; then
+              echo "Server is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Server did not become healthy in time" >&2
+          cat server.log
+          exit 1
+
+      - name: Point every role at OpenRouter
+        # No subscription login exists in this runner, so plannerProvider and
+        # evaluatorProvider must move off the "anthropic" default too, or the
+        # plan/evaluate steps of every card fail preflight immediately.
+        run: |
+          curl -sf -X PATCH http://127.0.0.1:3000/api/settings \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg model "$BENCH_MODEL" --arg key "$OPENROUTER_API_KEY" '{
+              plannerProvider: "openrouter", plannerModel: $model,
+              loopProvider: "openrouter", loopModel: $model,
+              evaluatorProvider: "openrouter", evaluatorModel: $model,
+              openrouterApiKey: $key
+            }')" > /dev/null
+
+      - name: Register a throwaway repo
+        # benchmarks/README.md's ground rule: "use a throwaway repo" — this is
+        # a disposable local git repo inside the runner, not a real GitHub
+        # remote, so seeding/reset/registration never needs external network
+        # access to a git host.
+        id: repo
+        run: |
+          mkdir -p "$BENCH_REPO_PATH"
+          git -C "$BENCH_REPO_PATH" init -q -b main
+          git -C "$BENCH_REPO_PATH" \
+            -c user.name=radulf-benchmark -c user.email=benchmark@radulf.local \
+            commit -q --allow-empty -m "benchmark: throwaway repo baseline"
+          repo_json=$(curl -sf -X POST http://127.0.0.1:3000/api/repos \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg path "$BENCH_REPO_PATH" '{name: "ci-benchmark-throwaway", path: $path, defaultBranch: "main"}')")
+          echo "id=$(echo "$repo_json" | jq -r .id)" >> "$GITHUB_OUTPUT"
+
+      - name: Run the benchmark corpus
+        # No "run everything" mode exists in run-benchmark.mjs (--fixture is
+        # required, one fixture per invocation) — loop over the corpus.
+        # --auth-cookie is a placeholder, not a real session: proxy.ts permits
+        # exact loopback hosts without a session when RADULF_AUTH_PASSWORD_HASH
+        # is unset, so no valid cookie is required here.
+        run: |
+          mkdir -p benchmarks/reports
+          date_tag=$(date -u +%Y-%m-%d)
+          for fixture in snake-tui small-ui-change server-data-change failing-test-repair; do
+            echo "=== $fixture ==="
+            node benchmarks/run-benchmark.mjs \
+              --fixture "$fixture" \
+              --base-url http://127.0.0.1:3000 \
+              --repo "${{ steps.repo.outputs.id }}" \
+              --provider openrouter --model "$BENCH_MODEL" \
+              --planner-model "$BENCH_MODEL" \
+              --auth-cookie "ci-no-auth=1" \
+              --runs "${{ github.event.inputs.runs || '3' }}" \
+              --auto-review \
+              --out "benchmarks/reports/${fixture}-${date_tag}.json"
+          done
+
+      - name: Stop server
+        # `make start` runs `next start` via a Make recipe shell, so the
+        # backgrounded PID is Make's, not next's — pkill by command instead of
+        # chasing a PID. Best-effort only: this is a disposable runner VM that
+        # is torn down right after the job ends either way.
+        if: always()
+        run: pkill -f "next start" 2>/dev/null || true
+
+      - name: Upload benchmark reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmark-reports
+          path: benchmarks/reports/*.json
+          if-no-files-found: error
+
+  publish:
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download benchmark reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: benchmark-reports
+          path: benchmarks/reports
+
+      - name: Commit new reports
+        # This job never receives provider credentials and never executes files
+        # from the candidate repository. It only publishes the report artifact
+        # produced by the read-only benchmark job.
+        run: |
+          git config user.name "radulf-bot"
+          git config user.email "radulf-bot@users.noreply.github.com"
+          git add benchmarks/reports/
+          if git diff --cached --quiet; then
+            echo "No new/changed report files — nothing to commit."
+            exit 0
+          fi
+          git commit -m "benchmarks: scheduled run $(date -u +%Y-%m-%d)"
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin "HEAD:${{ github.ref_name }}"

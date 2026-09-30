@@ -97,6 +97,27 @@ export const DOCS: DocMeta[] = [
     sourcePath: "docs/AUTHENTICATION.md",
   },
   {
+    slug: "docker",
+    title: "Running in Docker",
+    description: "One image and one volume instead of a Node toolchain and a service unit: build, run, update, back up.",
+    group: "Guides",
+    sourcePath: "docs/DOCKER.md",
+  },
+  {
+    slug: "troubleshooting",
+    title: "Troubleshooting",
+    description: "Keyed on the exit reasons and error strings Radulf actually prints.",
+    group: "Guides",
+    sourcePath: "docs/TROUBLESHOOTING.md",
+  },
+  {
+    slug: "architecture",
+    title: "Architecture",
+    description: "The contributor's map: where each part of the pipeline lives in the tree.",
+    group: "Reference",
+    sourcePath: "docs/ARCHITECTURE.md",
+  },
+  {
     slug: "design-history",
     title: "Design history",
     description: "The specs, what each decided, and which ones later specs overturned.",
@@ -161,7 +182,7 @@ export async function readDoc(slug: string): Promise<{ meta: DocMeta; content: s
  * - Absolute http(s)/mailto links pass through as external.
  * - Any other scheme (javascript:, data:, …) is neutralized to `#` — this
  *   markdown is trusted repo content, but treating unknown schemes as inert
- *   matches the safety posture of `renderInlineMarkdown` and costs nothing.
+ *   matches react-markdown's default `urlTransform` and costs nothing.
  * - Relative links are resolved against the current doc's directory. If they
  *   land on another registered doc, they become an in-wiki `/docs/<slug>` link;
  *   otherwise they point at the file on GitHub so nothing dead-ends in the app.

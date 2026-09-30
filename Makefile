@@ -24,9 +24,12 @@ LOADENV := set -a; [ -f .env.local ] && . ./.env.local; set +a;
 # interfaces; auth off -> loopback only. Override with `make dev HOST=...`.
 HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 || echo 127.0.0.1)
 
+# Override with `make dev PORT=...` to match a non-default `next dev` port.
+PORT := 3000
+
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start lint typecheck test check login \
-        db-generate db-migrate db-studio clean release
+.PHONY: help install dev build start web lint typecheck test check check-deps check-split check-compose login \
+        worker build-worker db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -43,14 +46,55 @@ install: ## Install dependencies from the lockfile
 login: ## Log in a subscription provider (opens pi; type /login)
 	@$(LOADENV) PI_CODING_AGENT_DIR="$${RADULF_DATA_DIR:-$(CURDIR)/data}/pi-agent" $(BIN)/pi
 
-dev: ## Run the dev server (loopback-only unless auth is configured)
-	$(BIN)/next dev -H $(HOST)
+dev: ## Run the dev server (loopback-only unless auth is configured); restarts if already up
+	@pid=$$(lsof -ti tcp:$(PORT) -sTCP:LISTEN); \
+	if [ -n "$$pid" ]; then \
+		echo "Port $(PORT) already in use (pid $$pid) — stopping it"; \
+		kill $$pid; \
+		for _ in $$(seq 1 20); do kill -0 $$pid 2>/dev/null || break; sleep 0.25; done; \
+		kill -0 $$pid 2>/dev/null && kill -9 $$pid; \
+		true; \
+	fi
+	$(BIN)/next dev -H $(HOST) -p $(PORT)
 
-build: ## Production build
+# Turbopack roots the project at this checkout and refuses any symlink that
+# escapes it. A `node_modules` linked to another checkout's copy — the shortcut
+# that looks free in a `git worktree add` checkout, where the directory does not
+# exist until something installs it — therefore dies minutes into the build
+# with `Symlink [project]/node_modules is invalid, it points out of the
+# filesystem root`, while test, lint and typecheck follow the link happily and
+# only the build breaks. Check the directory instead, and name the fix
+# (`make install` gives the checkout its own dependencies).
+#
+# It has to be a prerequisite, not a recipe line at the top of `build`: recipe
+# lines run only after every prerequisite, so the first thing to touch the bad
+# link — `build-worker`'s esbuild — would still run, and `make check` would
+# still burn the whole vitest pass before finding out. Listing it first in
+# `build` and in `check` makes both say why in one line, before any of that.
+check-deps:
+	@test -d "$(BIN)" || { echo "no dependencies installed in $(CURDIR) — run 'make install'"; exit 1; }; \
+	test ! -L node_modules || { echo "node_modules is a symlink out of this checkout and Turbopack rejects it — run 'make install'"; exit 1; }
+
+build: check-deps build-worker ## Production build: the Next.js bundle plus dist/worker.mjs
 	NODE_ENV=production $(BIN)/next build
+	node scripts/sanitize-next-traces.mjs
 
+# esbuild resolves the `@/` alias from tsconfig.json and leaves every
+# node_modules package external, so the bundle is the `src/server` + `src/db`
+# graph and nothing else; Node runs it directly, no TypeScript loader needed.
+build-worker: ## Bundle the worker-only entry point (src/worker.ts) into dist/worker.mjs
+	$(BIN)/esbuild src/worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/worker.mjs --log-level=warning
+
+worker: build-worker ## Run a worker-only process (agent work, no HTTP) against this checkout
+	@$(LOADENV) RADULF_ROLES=worker node dist/worker.mjs
+
+# NEXT_MANUAL_SIG_HANDLE: Next's own SIGTERM/SIGINT handler exits as soon as
+# open connections close and would pre-empt Radulf's drain (src/server/shutdown.ts).
 start: ## Serve the production build (loopback-only unless auth is configured)
-	$(BIN)/next start -H $(HOST)
+	NEXT_MANUAL_SIG_HANDLE=1 $(BIN)/next start -H $(HOST)
+
+web: ## Serve the production build as a web-only process (no agent work; pair with make worker)
+	NEXT_MANUAL_SIG_HANDLE=1 RADULF_ROLES=web $(BIN)/next start -H $(HOST)
 
 lint: ## Lint
 	$(BIN)/eslint
@@ -61,7 +105,31 @@ typecheck: ## Type-check without emitting
 test: ## Run the test suite once
 	$(BIN)/vitest run
 
-check: test lint typecheck build ## Full gate: test + lint + typecheck + build (what CI runs)
+# Skipped by plain `make test` (describe.skipIf on RADULF_SPLIT_CHECK) because it
+# spawns two real `next start` web processes and a real worker process. Needs
+# the production build because both web processes run `next start`.
+check-split: build ## Boot two web-only and a worker-only process against a temp data dir and drive a card through the web API (needs the production build)
+	RADULF_SPLIT_CHECK=1 $(BIN)/vitest run src/server/splitProcesses.test.ts
+
+check: check-deps test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)
+
+# Runs under its own compose project name with a scratch env file so it never
+# touches the operator's `radulf` project: separate volume, separate port
+# (RADULF_CHECK_PORT, default 3999), and compose.check.yaml drops the fixed
+# OAuth callback ports so it can run beside a live stack. `--wait` blocks
+# until every container reports healthy, so a web or worker that boots and
+# dies fails the target instead of showing up as a fresh `ps` line. The
+# stack is torn down whatever `up` returned; `down -v` removes only this
+# project's volumes.
+check-compose: ## Throwaway compose run: one web + two workers under project name radulf-check, waits for healthy, tears down; never touches the operator's volume or ports
+	env_file=$$(mktemp); \
+	printf 'RADULF_PORT=%s\n' "$${RADULF_CHECK_PORT:-3999}" > "$$env_file"; \
+	compose="docker compose -p radulf-check -f compose.yaml -f compose.check.yaml --env-file $$env_file"; \
+	$$compose up -d --build --wait --wait-timeout 180 --scale worker=2; status=$$?; \
+	$$compose ps; \
+	$$compose down -v; \
+	rm -f "$$env_file"; \
+	exit $$status
 
 db-generate: ## Generate a migration from schema changes
 	$(BIN)/drizzle-kit generate
@@ -72,8 +140,16 @@ db-migrate: ## Apply pending migrations (usually unnecessary: the app migrates a
 db-studio: ## Open Drizzle Studio
 	@$(LOADENV) $(BIN)/drizzle-kit studio
 
+# WAL mode (src/db/index.ts) means a plain `cp` of the DB file while the server
+# is running can miss uncommitted WAL frames and produce a torn snapshot;
+# VACUUM INTO reads through a consistent view instead. Requires the sqlite3
+# CLI — a dev-machine convenience, not something CI needs.
+db-backup: ## Back up the SQLite DB safely while the server is running
+	@$(LOADENV) dir="$${RADULF_DATA_DIR:-data}"; \
+	sqlite3 "$$dir/radulf.db" "VACUUM INTO '$$dir/radulf-backup-$$(date +%Y%m%d-%H%M%S).db'"
+
 clean: ## Remove build output and caches
-	rm -rf .next tsconfig.tsbuildinfo
+	rm -rf .next dist tsconfig.tsbuildinfo
 
 release: ## Cut a release: make release VERSION=1.0.0 (or 1.1.0-beta.1 from beta)
 	@test -n "$(VERSION)" || { echo "VERSION is required, e.g. make release VERSION=1.0.0"; exit 1; }

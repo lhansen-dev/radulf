@@ -153,7 +153,7 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
   if (!/^[a-z0-9][a-z0-9-]*$/.test(opts.fixture)) {
     throw new ClientError("invalid fixture name");
   }
-  if (!listFixtures().some((f) => f.name === opts.fixture)) {
+  if (!existsSync(path.join(BENCH_DIR, opts.fixture, "TASK.md"))) {
     throw new ClientError(`unknown fixture: ${opts.fixture}`);
   }
   if (!opts.repoId) throw new ClientError("repoId is required");
@@ -173,7 +173,6 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
     "--provider", opts.provider,
     "--model", opts.model,
     "--runs", String(opts.runs ?? 3),
-    "--auth-cookie", opts.cookie,
     "--base-url", opts.baseUrl,
     "--out", reportPath,
   ];
@@ -183,10 +182,27 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
   if (opts.autoReview) args.push("--auto-review");
 
   const logFd = openSync(logPath, "a");
+  const runnerEnv: NodeJS.ProcessEnv = {
+    NODE_ENV: process.env.NODE_ENV,
+    PATH: process.env.PATH,
+    LANG: process.env.LANG,
+    HOME: process.env.HOME,
+    TMPDIR: process.env.TMPDIR,
+    RADULF_BENCH_AUTH_COOKIE: opts.cookie,
+  };
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("LC_") && value !== undefined) runnerEnv[key] = value;
+  }
   const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
     detached: true,
     stdio: ["ignore", logFd, logFd],
+    // The session cookie goes in the environment, not in argv. A benchmark
+    // runs for hours, and a process's command line is world-readable for as
+    // long as it lives (`ps -ef`, /proc/<pid>/cmdline) — that is the whole
+    // instance's bearer credential handed to every account on the host. Its
+    // environment is readable only by its own owner.
+    env: runnerEnv,
   });
   child.unref();
   closeSync(logFd);

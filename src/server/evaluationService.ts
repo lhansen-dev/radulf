@@ -1,42 +1,54 @@
-import fs from "node:fs";
-import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, cards, plans, runs, repos, type CardStatus } from "@/db";
+import { db, cards, runs } from "@/db";
 import { emitEvent } from "./events";
 import { getSettings } from "./settings";
-import { planStatePath } from "./bookkeeping";
-import { appendTask } from "./checklist";
-import { parseEvaluation } from "@/shared/evaluation";
+import {
+  ensureRalphDir,
+  readRalphArtifact,
+  removeRalphFiles,
+  writeRalphArtifact,
+} from "./bookkeeping";
+import { GATE_FILE, renderGateFile, renderGateSection, runGateCommand, type GateResult } from "./gate";
+import {
+  EVALUATION_NOTES_FILE,
+  EVALUATION_NOTES_SECTION,
+  attemptTranscriptPath,
+  digestTranscript,
+  previousFailedAttempt,
+  renderDeadlineSection,
+  renderPreviousAttemptSection,
+} from "./previousAttempt";
+import { EVALUATOR_CLEARED_EXITS, parseEvaluation } from "@/shared/evaluation";
 import { isDocPath, changedPaths } from "@/shared/docPaths";
-import { runHarness } from "./harness";
+import { errorMessage } from "@/shared/errorMessage";
+import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { tryGit } from "./git";
-import { runTranscriptDir } from "./retention";
+import { gitRaw, offRunBranchReason, tryGit } from "./git";
+import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
-import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
-import { checkRepoIntegrity, snapshotRepoIntegrity } from "./integrity";
+import { snapshotRepoIntegrity } from "./integrity";
+import {
+  circuitOpenReason,
+  harnessFailure,
+  integrityViolationReason,
+  runWithTranscript,
+  sandboxUnavailableReason,
+  startRunRow,
+  type FinishStatus,
+  type StageDependencies,
+} from "./stage";
 
-type Card = typeof cards.$inferSelect;
-type Plan = typeof plans.$inferSelect;
-type Run = typeof runs.$inferSelect;
-
-const EVALUATE_TIMEOUT_MS = 10 * 60 * 1000;
 /** After this many revise verdicts on one card the evaluator stops
  * re-looping it and escalates to the human, unresolved feedback attached —
  * an evaluator and a struggling loop must not ping-pong forever. */
 const MAX_EVALUATOR_REVISIONS = 2;
-/** Checklist task injected so the resumed loop picks the feedback up —
- * every iteration runs on an injected task, never on prose in PROMPT.md. */
-const EVALUATOR_FEEDBACK_TASK =
-  'Address the feedback in the "Evaluator feedback — address this first" section at the top of your prompt: fix every point it raises, then re-run the checks it names.';
+
+const [APPROVED_EXIT, REVISION_LIMIT_EXIT] = EVALUATOR_CLEARED_EXITS;
 
 /** Evaluator attempts share a worktree, but never another attempt's verdict. */
-export function clearEvaluationArtifact(ralphDir: string) {
-  fs.rmSync(
-    path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md"),
-    { force: true },
-  );
+export function clearEvaluationArtifact(worktreePath: string) {
+  removeRalphFiles(worktreePath, ["EVALUATION.md"]);
 }
 
 export function renderEvaluatorPrompt(
@@ -46,38 +58,24 @@ export function renderEvaluatorPrompt(
   baseBranch: string,
   criteria: string,
 ) {
+  // Replacer functions, not strings: a string replacement expands `$&`, `` $` ``
+  // and `$'` in the value into the surrounding prompt, and plans do contain
+  // those sequences: a bcrypt hash, a regex anchor before a closing quote.
   return template
-    .replaceAll("{{TITLE}}", title)
-    .replaceAll("{{DESCRIPTION}}", description || "(no description)")
-    .replaceAll("{{BASE_BRANCH}}", baseBranch)
-    .replaceAll("{{CRITERIA}}", criteria.trim() || "(no acceptance criteria were recorded)");
+    .replaceAll("{{TITLE}}", () => title)
+    .replaceAll("{{DESCRIPTION}}", () => description || "(no description)")
+    .replaceAll("{{BASE_BRANCH}}", () => baseBranch)
+    .replaceAll("{{CRITERIA}}", () => criteria.trim() || "(no acceptance criteria were recorded)");
 }
 
-/**
- * Pure helper: a plan's PROMPT.md with any previous evaluator-feedback
- * preamble stripped, so only the newest verdict ever claims "address this
- * first". Reviewer (human) feedback sections are left untouched.
- */
-export function basePromptMd(promptMd: string): string {
-  if (!promptMd.startsWith("## Evaluator feedback — address this first\n")) return promptMd;
-  const separator = "\n\n---\n\n";
-  const index = promptMd.indexOf(separator);
-  return index === -1 ? promptMd : promptMd.slice(index + separator.length);
-}
-
-export type EvaluationServiceDependencies = {
-  getCard(cardId: string): Card | undefined;
-  latestPlan(cardId: string): Plan | undefined;
-  latestWorktreeRun(cardId: string): Run | undefined;
-  moveCard(cardId: string, from: CardStatus, to: CardStatus, reason?: string): boolean;
-  finishRun(
-    runId: string,
-    status: "completed" | "failed" | "timeout" | "cancelled",
-    exitReason: string,
-  ): boolean;
-  registerController(runId: string, controller: AbortController): void;
-  releaseController(runId: string): void;
+export type EvaluationServiceDependencies = StageDependencies & {
+  /** Advance the repo's queue once this evaluation releases its slot. Every
+   * other stage already did this; without it a repo with cards waiting sits
+   * idle until an unrelated event pumps (spec 20). */
   pump(): void;
+  /** Run the planner on a card already moved to `planning` — a revise verdict
+   * re-plans rather than re-entering the loop. */
+  replan(cardId: string): void;
   /** Run the human-approval merge path automatically (auto-approve). Reuses the
    * exact review flow — integrity re-check, merge, conflict re-loop — so
    * auto-approve never bypasses the load-bearing pre-merge checks. */
@@ -88,18 +86,18 @@ export type EvaluationServiceDependencies = {
  * Phase 3 — evaluate a DONE-signalled loop before human review. The
  * evaluator is the sole whole-card verifier: it runs CRITERIA.md and reads
  * the diff, then writes a verdict to `.ralph/EVALUATION.md`: `approve`
- * forwards the card to review with the evaluation attached; `revise` writes
- * the feedback into plan v(n+1) and hands the card straight back to the
- * loop. A missing or malformed verdict fails loudly to needs_attention —
- * never a silent pass-through.
+ * forwards the card to review with the evaluation attached; `revise` records
+ * the feedback on the run and sends the card back to the planner. A missing
+ * or malformed verdict fails loudly to needs_attention — never a silent
+ * pass-through.
  */
 export class EvaluationService {
-  constructor(private readonly dependencies: EvaluationServiceDependencies) {}
+  constructor(private readonly deps: EvaluationServiceDependencies) {}
 
   async runEvaluator(cardId: string) {
-    const deps = this.dependencies;
+    const deps = this.deps;
     const card = deps.getCard(cardId)!;
-    const repo = db.select().from(repos).where(eq(repos.id, card.repoId)).get();
+    const repo = getRepo(card.repoId);
     if (!repo) throw new Error("repo not found");
     const plan = deps.latestPlan(cardId);
     if (!plan) throw new Error("card has no plan");
@@ -108,205 +106,262 @@ export class EvaluationService {
     const settings = getSettings();
 
     const runId = nanoid();
-    const evaluatorProvider = normalizeProvider(settings.evaluatorProvider, "anthropic");
-    const evaluatorModel = card.evaluatorModel || settings.evaluatorModel;
+    const provider = normalizeProvider(settings.evaluatorProvider, "anthropic");
+    const model = card.evaluatorModel || settings.evaluatorModel;
+    const { worktreePath, branch } = loopRun;
     const baseBranch = loopRun.baseBranch ?? repo.defaultBranch;
-    const ralphDir = path.join(/* turbopackIgnore: true */ loopRun.worktreePath, ".ralph");
-    const evaluationPath = path.join(/* turbopackIgnore: true */ ralphDir, "EVALUATION.md");
-    // A verdict left over from an earlier cycle must never be read as this
-    // run's output.
-    clearEvaluationArtifact(ralphDir);
+    ensureRalphDir(worktreePath);
+    // Spec 26: a retry inherits the attempt it retries. Decided before this
+    // run's row exists, since the rule reads the card's latest run.
+    const previous = previousFailedAttempt(cardId, "evaluate");
+    // A verdict left over from an earlier cycle must never be read as this run's.
+    clearEvaluationArtifact(worktreePath);
+    // The running notes belong to one evaluation cycle: kept across its
+    // attempts, cleared when a new loop run has started a fresh one.
+    if (!previous) removeRalphFiles(worktreePath, [EVALUATION_NOTES_FILE]);
 
     // Spec 14 L3: the evaluator holds bash, so it gets the same per-run
-    // containment as the loop — private TMPDIR/caches, allowlist env,
-    // reaping, and a parent-repo integrity check at run end.
-    const ctx = createRunSandbox(runId, { cwd: loopRun.worktreePath, s: settings });
+    // containment as the loop, including the parent-repo integrity check.
+    const ctx = await createRunSandbox(runId, { cwd: worktreePath, s: settings });
     const integrityBaseline = await snapshotRepoIntegrity(repo.path);
-
-    db.insert(runs)
-      .values({
+    startRunRow(
+      {
         id: runId,
         cardId,
         planId: plan.id,
         kind: "evaluate",
-        worktreePath: loopRun.worktreePath,
-        branch: loopRun.branch,
+        worktreePath,
+        branch,
         baseBranch,
-        provider: evaluatorProvider,
-        model: evaluatorModel,
-        startedAt: now(),
-        diskLimitMechanism: ctx.diskLimitMechanism,
-        sandboxed: settings.sandboxEnabled ? 1 : 0,
-      })
-      .run();
+        provider,
+        model,
+        workerId: deps.workerId(),
+      },
+      ctx,
+      settings,
+    );
     emitEvent("run.started", { cardId, runId, payload: { kind: "evaluate" } });
 
     const controller = new AbortController();
     deps.registerController(runId, controller);
+    let telemetry: RunTelemetry | undefined;
+    const fail = (exitReason: string, moveReason = exitReason, status: FinishStatus = "failed") => {
+      deps.finishRun(runId, status, exitReason, telemetry);
+      deps.moveCard(cardId, "evaluating", "needs_attention", moveReason);
+    };
+    const sourceStatus = async () =>
+      gitRaw(worktreePath, "status", "--porcelain=v1", "-z", "--", ".", ":(exclude).ralph");
+    const head = async () => (await tryGit(worktreePath, "rev-parse", "HEAD")).out;
     try {
-      // Spec 14 Phase 6: fail loudly before the first (only) iteration if
-      // sandboxEnabled but srt isn't actually usable — same posture as the
-      // loop's preflight, never a silent unsandboxed fallback.
-      if (settings.sandboxEnabled) {
-        const preflight = await initializeSandboxRuntimeOnce();
-        if (controller.signal.aborted) return; // cancelCard already finalized
-        if (!preflight.ok) {
-          const reason = `sandbox unavailable: ${preflight.errors.join("; ")}`;
-          deps.finishRun(runId, "failed", reason);
-          deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-          return;
-        }
+      // The awaited sandbox and integrity setup above open a window where the
+      // user can cancel before this run row existed. endActiveRun found
+      // nothing to abort then, so check here and never start a harness for
+      // a card that already left.
+      if (deps.getCard(cardId)?.status !== "evaluating") {
+        deps.finishRun(runId, "cancelled", "card left evaluating before the run started");
+        return;
       }
+      const breaker = circuitOpenReason(provider);
+      if (breaker) return fail(breaker);
+      const sandboxError = await sandboxUnavailableReason(settings);
+      if (controller.signal.aborted) return; // cancelCard already finalized
+      if (sandboxError) return fail(sandboxError);
 
-      const prompt = renderEvaluatorPrompt(
-        settings.evaluatorPromptTemplate,
-        card.title,
-        card.description,
-        baseBranch,
-        plan.acceptanceCriteria,
-      );
-      const headBefore = (await tryGit(loopRun.worktreePath, "rev-parse", "HEAD")).out;
-      const sourceStatusBefore = (await tryGit(
-        loopRun.worktreePath,
-        "status",
-        "--porcelain",
-        "--",
-        ".",
-        ":(exclude).ralph",
-      )).out;
-      const result = await runHarness({
-        provider: evaluatorProvider,
-        model: evaluatorModel,
+      // Spec 27: the repository gate runs by the orchestrator, so the
+      // evaluator judges its result instead of spending its budget producing
+      // it. Since spec 29 the loop's DONE path runs the gate and writes
+      // `.ralph/GATE.md`, and a new loop run clears the file at its start, so
+      // a file present here is this cycle's result on a first attempt and on
+      // a retry alike. The evaluator runs the gate itself only when the file
+      // is missing (a loop run that predates spec 29, or a gate added after
+      // the loop finished). Before the status snapshot below, so whatever a
+      // build leaves in the worktree is never attributed to the evaluator.
+      const gateCommand = repo.gateCommand?.trim() ?? "";
+      if (gateCommand && !readRalphArtifact(worktreePath, GATE_FILE)) {
+        emitEvent("gate.started", { cardId, runId, payload: { command: gateCommand } });
+        let gate: GateResult;
+        try {
+          gate = await runGateCommand({
+            command: gateCommand,
+            worktreePath,
+            ctx,
+            timeoutMs: settings.gateTimeoutMinutes * 60 * 1000,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (controller.signal.aborted) return; // cancelCard already finalized
+          throw error;
+        }
+        if (controller.signal.aborted) return; // cancelCard already finalized
+        const gateLeftovers = await ctx.reap();
+        if (gateLeftovers.length > 0) {
+          return fail(`surviving gate process groups after reap: ${gateLeftovers.join(", ")}`);
+        }
+        writeRalphArtifact(worktreePath, GATE_FILE, renderGateFile(gate));
+        emitEvent("gate.finished", {
+          cardId,
+          runId,
+          payload: { exitCode: gate.exitCode, timedOut: gate.timedOut, durationMs: gate.durationMs, error: gate.error },
+        });
+      }
+      const gateSection = gateCommand ? renderGateSection(readRalphArtifact(worktreePath, GATE_FILE)) : "";
+
+      const [headBefore, sourceStatusBefore] = await Promise.all([head(), sourceStatus()]);
+      // Spec 26: the previous attempt's notes and command digest, the running
+      // notes protocol, and the clock, appended outside the template so a
+      // customized template still receives them.
+      let previousSection = "";
+      if (previous) {
+        const digest = digestTranscript(attemptTranscriptPath(previous));
+        previousSection = renderPreviousAttemptSection({
+          stage: "evaluator",
+          attempt: previous,
+          digest,
+        notes: readRalphArtifact(worktreePath, EVALUATION_NOTES_FILE),
+        });
+        emitEvent("attempt.forwarded", {
+          cardId,
+          runId,
+          payload: { kind: "evaluate", previousRunId: previous.runId, toolCalls: digest.toolCalls },
+        });
+      }
+      const timeoutMs = settings.evaluatorTimeoutMinutes * 60 * 1000;
+      const prompt =
+        renderEvaluatorPrompt(
+          settings.evaluatorPromptTemplate,
+          card.title,
+          card.description,
+          baseBranch,
+          plan.acceptanceCriteria,
+        ) +
+        previousSection +
+        gateSection +
+        EVALUATION_NOTES_SECTION +
+        renderDeadlineSection("evaluator", new Date(), timeoutMs);
+      const result = await runWithTranscript({
+        runId,
+        file: "evaluate.jsonl",
+        provider,
+        model,
         reasoningLevel: settings.evaluatorReasoningLevel,
         prompt,
-        cwd: loopRun.worktreePath,
-        transcriptPath: path.join(runTranscriptDir(runId), "evaluate.jsonl"),
-        timeoutMs: EVALUATE_TIMEOUT_MS,
+        cwd: worktreePath,
+        timeoutMs,
         signal: controller.signal,
         role: "evaluator",
         runContext: ctx,
       });
       if (controller.signal.aborted) return; // cancelCard already finalized
+      telemetry = runTelemetry(result);
 
-      if (result.timedOut) {
-        deps.finishRun(runId, "timeout", "evaluation timed out");
-        deps.moveCard(cardId, "evaluating", "needs_attention", "evaluation timed out");
-        return;
-      }
-      // A dead stream, not a verdict — worth its own reason so it isn't read
-      // as the evaluator rejecting the work.
-      if (result.stalled) {
-        deps.finishRun(runId, "failed", `evaluator stalled: ${result.error.slice(0, 500)}`);
-        deps.moveCard(cardId, "evaluating", "needs_attention", "evaluator stalled");
-        return;
-      }
-      if (result.error) {
-        deps.finishRun(runId, "failed", `evaluator failed: ${result.error.slice(0, 500)}`);
-        deps.moveCard(cardId, "evaluating", "needs_attention", "evaluator failed");
-        return;
+      const leftoverProcesses = await ctx.reap();
+      if (leftoverProcesses.length > 0) {
+        return fail(`surviving process group(s) after reap: ${leftoverProcesses.join(", ")}`);
       }
 
-      // Spec 14 run-end ordering: reap surviving processes BEFORE any
-      // integrity conclusions are drawn, then verify the parent repo.
-      await ctx.reap();
-      if (integrityBaseline) {
-        const violations = await checkRepoIntegrity(repo.path, integrityBaseline, {
-          runBranch: loopRun.branch,
-          checkRefs: true,
+      // Spec 26 decision 4: a complete verdict on disk outlives the watchdog
+      // that killed the session, the way a loop's signal file does (spec 18
+      // item 1). Every check below still applies to it.
+      const recovered =
+        (result.timedOut || result.stalled) &&
+        parseEvaluation(readRalphArtifact(worktreePath, "EVALUATION.md")) !== null;
+      if (recovered) {
+        emitEvent("evaluation.recovered_after_timeout", {
+          cardId,
+          runId,
+          payload: { cause: result.timedOut ? "timeout" : "stalled" },
         });
-        if (violations.length > 0) {
-          const reason = `repo integrity violation: ${violations.join("; ")}`;
-          deps.finishRun(runId, "failed", reason);
-          deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-          return;
-        }
+      } else {
+        const failure = harnessFailure(result, provider, "evaluator");
+        if (failure) return fail(failure.exitReason, failure.moveReason, failure.status);
       }
+
+      const violation = await integrityViolationReason(ctx, repo.path, integrityBaseline, branch, {
+        cardId,
+        runId,
+      });
+      if (violation) return fail(violation);
+
+      // The verdict commit below must land on the run branch and nowhere else.
+      const offBranch = await offRunBranchReason(worktreePath, branch, repo.path);
+      if (offBranch) return fail(offBranch);
 
       // Spec 14: the judge provably cannot edit the implementation it judged.
-      // Git history stays immutable — the evaluator never commits (the
-      // orchestrator does, below). Uncommitted changes are narrowed to the
-      // doc allowlist: on approve the evaluator may refresh stale docs, but
-      // any code change (or a non-doc path) still rejects to needs_attention.
-      const headAfter = (await tryGit(loopRun.worktreePath, "rev-parse", "HEAD")).out;
+      // It never commits (the orchestrator does, below), and its uncommitted
+      // changes are narrowed to the doc allowlist.
+      const [headAfter, sourceStatusAfter] = await Promise.all([head(), sourceStatus()]);
       if (headAfter !== headBefore) {
-        const reason = "evaluator committed to Git history; verdict rejected";
-        deps.finishRun(runId, "failed", reason);
-        deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-        return;
+        return fail("evaluator committed to Git history; verdict rejected");
       }
-      const sourceStatusAfter = (await tryGit(
-        loopRun.worktreePath,
-        "status",
-        "--porcelain",
-        "--",
-        ".",
-        ":(exclude).ralph",
-      )).out;
       const changedBefore = new Set(changedPaths(sourceStatusBefore));
       const illegalPaths = changedPaths(sourceStatusAfter).filter(
         (p) => !changedBefore.has(p) && !isDocPath(p),
       );
       if (illegalPaths.length > 0) {
-        const reason = `evaluator modified non-doc files (${illegalPaths.join(", ")}); verdict rejected`;
-        deps.finishRun(runId, "failed", reason);
-        deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-        return;
+        return fail(`evaluator modified non-doc files (${illegalPaths.join(", ")}); verdict rejected`);
       }
 
-      const evaluation = fs.existsSync(/* turbopackIgnore: true */ evaluationPath)
-        ? parseEvaluation(
-            fs.readFileSync(/* turbopackIgnore: true */ evaluationPath, "utf8"),
-          )
-        : null;
-      if (!evaluation) {
-        const reason = "evaluator wrote no usable VERDICT in .ralph/EVALUATION.md";
-        deps.finishRun(runId, "failed", reason);
-        deps.moveCard(cardId, "evaluating", "needs_attention", reason);
-        return;
-      }
+      const evaluationMd = readRalphArtifact(worktreePath, "EVALUATION.md");
+      const evaluation = evaluationMd ? parseEvaluation(evaluationMd) : null;
+      if (!evaluation) return fail("evaluator wrote no usable VERDICT in .ralph/EVALUATION.md");
 
+      const hasCritical = evaluation.findings.some((f) => f.severity === "critical");
       emitEvent("evaluation.decided", {
         cardId,
         runId,
-        payload: { verdict: evaluation.verdict, feedback: evaluation.feedback.slice(0, 500) },
+        payload: {
+          verdict: evaluation.verdict,
+          feedback: evaluation.feedback.slice(0, 500),
+          findings: evaluation.findings,
+        },
       });
 
-      // Spec 14: the evaluator (not a separate summarizer) writes the card
-      // summary and, on approve, refreshes stale docs. Read the summary it
-      // left in `.ralph/SUMMARY.md`; a missing summary is non-fatal.
-      const applySummary = () => {
-        const summaryPath = path.join(/* turbopackIgnore: true */ ralphDir, "SUMMARY.md");
-        if (!fs.existsSync(/* turbopackIgnore: true */ summaryPath)) return;
-        const summary = fs
-          .readFileSync(/* turbopackIgnore: true */ summaryPath, "utf8")
-          .trim();
-        if (!summary) return;
-        db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
-        emitEvent("card.summarized", { cardId, runId });
-      };
-
       // Cards that advance straight to human review (approve, or a revise that
-      // hit the limit) carry the summary and the evaluator's doc edits onto the
-      // review branch (`add -A`); `.ralph` is stripped at merge, the docs stay.
-      const advanceToReview = async (exitReason: string, moveReason: string) => {
-        applySummary();
-        await tryGit(loopRun.worktreePath, "add", "-A");
-        await tryGit(loopRun.worktreePath, "commit", "-m", `ralph: evaluation — ${evaluation.verdict}`);
-        deps.finishRun(runId, "completed", exitReason);
+      // hit the limit) carry the evaluator's `.ralph/SUMMARY.md` onto the card
+      // and its doc edits onto the review branch (`add -A`); `.ralph` is
+      // stripped at merge, the docs stay. A missing summary is non-fatal.
+      const advanceToReview = async (
+        exitReason: (typeof EVALUATOR_CLEARED_EXITS)[number],
+        moveReason: string,
+      ) => {
+        const summary = readRalphArtifact(worktreePath, "SUMMARY.md").trim();
+        if (summary) {
+          db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
+          emitEvent("card.summarized", { cardId, runId });
+        }
+        await tryGit(worktreePath, "add", "-A");
+        await tryGit(worktreePath, "commit", "-m", `ralph: evaluation — ${evaluation.verdict}`);
+        deps.finishRun(runId, "completed", exitReason, telemetry);
         deps.moveCard(cardId, "evaluating", "review", moveReason);
       };
 
       if (evaluation.verdict === "approve") {
-        await advanceToReview("approve", "evaluator approved");
-        // Auto-approve (per-card, opt-in): skip the human In Review gate and
-        // merge straight through the same review path. Only genuine `approve`
-        // verdicts qualify — the revision-limit escalation below always waits
-        // for a human. On any merge/claim failure `approveReview` leaves the
-        // card in review (or needs_attention), so a human still sees it.
-        if (card.autoApprove) {
-          emitEvent("card.auto_approved", { cardId, runId, payload: { runId: loopRun.id } });
+        await advanceToReview(APPROVED_EXIT, "evaluator approved");
+        // Auto-approve: merge straight through the same review path, granted
+        // by the card's own flag or the global setting (a live override read
+        // at verdict time; `source` records which one, since the global may
+        // be flipped later). Only genuine `approve` verdicts qualify, and a
+        // `critical` finding always leaves the card in review for a human.
+        if ((card.autoApprove || getSettings().autoApprove) && !hasCritical) {
+          // The run to approve is the card's latest loop run. `loopRun` above
+          // is the latest run with a worktree, which after an evaluator retry
+          // is the failed evaluate attempt, and the review service rightly
+          // refuses to merge anything but a completed loop run.
+          const latestLoop = db
+            .select({ id: runs.id })
+            .from(runs)
+            .where(and(eq(runs.cardId, cardId), eq(runs.kind, "loop")))
+            .orderBy(desc(runs.startedAt))
+            .limit(1)
+            .get();
+          const approveRunId = latestLoop?.id ?? loopRun.id;
+          emitEvent("card.auto_approved", {
+            cardId,
+            runId,
+            payload: { runId: approveRunId, source: card.autoApprove ? "card" : "global" },
+          });
           try {
-            await deps.approveReview(loopRun.id);
+            await deps.approveReview(approveRunId);
           } catch {
             // Best-effort: the review service restores a safe status on error,
             // which for auto-approve means the card falls back to human review.
@@ -316,60 +371,33 @@ export class EvaluationService {
       }
 
       const priorRevisions = db
-        .select()
+        .select({ id: runs.id })
         .from(runs)
-        .where(
-          and(eq(runs.cardId, cardId), eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")),
-        )
+        .where(and(eq(runs.cardId, cardId), eq(runs.kind, "evaluate"), eq(runs.exitReason, "revise")))
         .all().length;
       if (priorRevisions >= MAX_EVALUATOR_REVISIONS) {
         await advanceToReview(
-          "revise — revision limit reached",
+          REVISION_LIMIT_EXIT,
           "evaluator revision limit — escalated to human review",
         );
         return;
       }
 
-      // A revise that re-loops carries only the verdict artifact back (the
-      // prompt forbids doc edits on revise, so `.ralph` is all that changed).
-      await tryGit(loopRun.worktreePath, "add", ".ralph");
-      await tryGit(loopRun.worktreePath, "commit", "-m", "ralph: evaluation — revise");
-
-      const promptMd = `## Evaluator feedback — address this first\n\n${evaluation.feedback}\n\n---\n\n${basePromptMd(plan.promptMd)}`;
-      const revisionPlanId = nanoid();
-      const planPath = planStatePath(cardId);
-      if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) {
-        throw new Error("evaluator cannot requeue feedback: private plan state is missing");
+      // A revise goes back to the planner, not straight to the loop (see
+      // `pendingReplanFeedback`). The prompt forbids doc edits on revise, so
+      // `.ralph` is all that changed.
+      await tryGit(worktreePath, "add", ".ralph");
+      await tryGit(worktreePath, "commit", "-m", "ralph: evaluation — revise");
+      db.update(runs).set({ feedback: evaluation.feedback }).where(eq(runs.id, runId)).run();
+      deps.finishRun(runId, "completed", "revise", telemetry);
+      // The card keeps its repo's pipeline slot: straight into planning,
+      // never back through a queue another card could claim first.
+      if (deps.moveCard(cardId, "evaluating", "planning", "evaluator requested changes — re-planning")) {
+        deps.replan(cardId);
       }
-      const updatedPlanState = appendTask(
-        fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"),
-        EVALUATOR_FEEDBACK_TASK,
-      );
-      try {
-        db.insert(plans)
-          .values({
-            id: revisionPlanId,
-            cardId,
-            version: plan.version + 1,
-            planMd: plan.planMd,
-            promptMd,
-            acceptanceCriteria: plan.acceptanceCriteria,
-            feedback: evaluation.feedback,
-            createdAt: now(),
-          })
-          .run();
-        fs.writeFileSync(/* turbopackIgnore: true */ planPath, updatedPlanState);
-      } catch (error) {
-        db.delete(plans).where(eq(plans.id, revisionPlanId)).run();
-        throw error;
-      }
-      emitEvent("plan.created", { cardId, runId, payload: { version: plan.version + 1 } });
-      deps.finishRun(runId, "completed", "revise");
-      deps.moveCard(cardId, "evaluating", "ready", "evaluator requested changes");
-      deps.pump();
     } catch (error) {
       if (!controller.signal.aborted) {
-        const reason = `evaluator failed: ${error instanceof Error ? error.message : String(error)}`;
+        const reason = `evaluator failed: ${errorMessage(error)}`;
         deps.finishRun(runId, "failed", reason.slice(0, 500));
         if (deps.getCard(cardId)?.status === "evaluating") {
           deps.moveCard(cardId, "evaluating", "needs_attention", reason);
@@ -378,6 +406,9 @@ export class EvaluationService {
     } finally {
       deps.releaseController(runId);
       await ctx.cleanup();
+      // Last, and on every exit path: the card has already landed wherever
+      // this evaluation sent it, so the slot this run held is free.
+      deps.pump();
     }
   }
 }

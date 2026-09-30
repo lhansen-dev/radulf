@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
-  type KeyboardEvent,
-  type MouseEvent,
 } from "react";
 import { AppShell } from "./ui/appShell";
 import {
@@ -19,11 +17,16 @@ import {
   type ImprovementRun,
   type Repo,
 } from "./ui/api";
+import { groupEpics, waitingOn, type EpicGroup } from "./ui/epics";
+import { ActivityDot } from "./ui/liveActivity";
 import { NewTaskDialog } from "./ui/newTaskDialog";
 import { ImprovementRunDialog } from "./ui/improvementRunDialog";
 import { DetailsMenu } from "./ui/detailsMenu";
 import { useWorkData } from "./ui/useWorkData";
 import { useNow } from "./ui/useNow";
+import { cardMatches } from "./ui/cardSearch";
+import { ACTIVE_STATUSES, ATTENTION_STATUSES, PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { errorMessage } from "@/shared/errorMessage";
 
 type View = "overview" | "needs" | "active" | "queue" | "backlog" | "done";
 
@@ -36,36 +39,38 @@ const views: { key: View; label: string }[] = [
   { key: "done", label: "Done" },
 ];
 
-const activeStatuses: CardStatus[] = ["planning", "ready", "looping", "evaluating", "paused", "reviewing"];
-
 function statusDetails(card: BoardCard): { mark: string; label: string; detail: string; tone: string } {
+  return { label: STATUS_LABELS[card.status], ...statusMark(card) };
+}
+
+function statusMark(card: BoardCard): { mark: string; detail: string; tone: string } {
   switch (card.status) {
     case "backlog":
-      return { mark: "○", label: "Backlog", detail: "Not scheduled", tone: "text-foreground/45" };
+      return { mark: "○", detail: "Not scheduled", tone: "text-foreground/45" };
     case "todo":
-      return { mark: "◎", label: "Queued", detail: "Waiting for auto-mode", tone: "text-slate-300" };
+      return { mark: "◎", detail: "Waiting for auto-mode", tone: "text-slate-300" };
     case "planning":
-      return { mark: "◔", label: "Planning", detail: `${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
+      return { mark: "◔", detail: `${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
     case "ready":
-      return { mark: "◇", label: "Ready", detail: "Queued for loop", tone: "text-amber-200" };
+      return { mark: "◇", detail: "Queued for loop", tone: "text-amber-200" };
     case "looping":
-      return { mark: "●", label: "Running", detail: `Iteration ${card.latestRun?.iterationsDone ?? 0}/${card.maxIterationsResolved} · ${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
+      return { mark: "●", detail: `Iteration ${card.latestRun?.iterationsDone ?? 0}/${card.maxIterationsResolved} · ${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
     case "evaluating":
-      return { mark: "🔎", label: "Evaluating", detail: "Evaluator reviewing the loop's work", tone: "text-amber-300" };
+      return { mark: "🔎", detail: "Evaluator reviewing the loop's work", tone: "text-amber-300" };
     case "paused":
-      return { mark: "⏸", label: "Paused", detail: "Paused after iteration " + (card.latestRun?.iterationsDone ?? 0), tone: "text-sky-300" };
+      return { mark: "⏸", detail: "Paused after iteration " + (card.latestRun?.iterationsDone ?? 0), tone: "text-sky-300" };
     case "plan_review":
-      return { mark: "◉", label: "Plan ready for review", detail: "Plan generated — approve to implement", tone: "text-cyan-300" };
+      return { mark: "◉", detail: "Plan generated — approve to implement", tone: "text-cyan-300" };
     case "review":
-      return { mark: "◆", label: "Ready for review", detail: "Diff ready", tone: "text-violet-300" };
+      return { mark: "◆", detail: "Diff ready", tone: "text-violet-300" };
     case "reviewing":
-      return { mark: "◌", label: "Applying review", detail: "Finalizing the decision", tone: "text-violet-300" };
+      return { mark: "◌", detail: "Finalizing the decision", tone: "text-violet-300" };
     case "needs_attention":
-      return { mark: "!", label: "Needs attention", detail: card.latestRun?.exitReason || "Run needs a decision", tone: "text-red-300" };
+      return { mark: "!", detail: card.latestRun?.exitReason || "Run needs a decision", tone: "text-red-300" };
     case "done":
-      return { mark: "✓", label: "Completed", detail: `${timeAgo(card.updatedAt)} ago`, tone: "text-green-300" };
+      return { mark: "✓", detail: `${timeAgo(card.updatedAt)} ago`, tone: "text-green-300" };
     default:
-      return { mark: "—", label: "Abandoned", detail: "No longer active", tone: "text-foreground/35" };
+      return { mark: "—", detail: "No longer active", tone: "text-foreground/35" };
   }
 }
 
@@ -80,54 +85,105 @@ export default function WorkPage() {
     streamConnected,
     autoMode,
     setAutoMode,
+    autoApprove,
+    setAutoApprove,
+    openPr,
+    setOpenPr,
     improvementRuns,
     improvementAlert,
     dismissImprovementAlert,
     restartRequired,
     restarting,
     setRestarting,
-    refetch,
+    refetchCards,
+    refetchImprovementRuns,
   } = useWorkData();
   const [repoFilter, setRepoFilter] = useState("");
   const [view, setView] = useState<View>("overview");
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [showNew, setShowNew] = useState(false);
   const [showImprovementRun, setShowImprovementRun] = useState(false);
   const [notice, setNotice] = useState("");
+  const restartPoll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const restartTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // restartServer's health poll and give-up timeout outlive the click handler;
+  // without this, navigating away mid-restart leaves them running and
+  // location.reload() fires on whatever page the operator has since moved to.
+  useEffect(() => {
+    return () => {
+      if (restartPoll.current) clearInterval(restartPoll.current);
+      if (restartTimeout.current) clearTimeout(restartTimeout.current);
+    };
+  }, []);
+  // Row details such as "3m elapsed" read Date.now() at render, so a tick here
+  // is what keeps them current; the card list itself does not change.
+  useNow(true, 30_000);
 
   useEffect(() => {
     const readUrl = () => {
-      const query = new URLSearchParams(window.location.search);
-      const urlRepo = query.get("repo");
-      const urlView = query.get("view") as View | null;
+      const params = new URLSearchParams(window.location.search);
+      const urlRepo = params.get("repo");
+      const urlView = params.get("view") as View | null;
       setRepoFilter(urlRepo ?? localStorage.getItem("radulf.repo") ?? "");
       setView(views.some((item) => item.key === urlView) ? urlView! : "overview");
+      setQuery(params.get("q") ?? "");
     };
     readUrl();
     window.addEventListener("popstate", readUrl);
     return () => window.removeEventListener("popstate", readUrl);
   }, []);
 
-  const updateScope = useCallback((repo: string, nextView: View) => {
+  /** Repo, view, and search together are the page's scope, so they travel in
+   * the URL together — a filtered feed stays linkable and survives a reload.
+   * Typing replaces rather than pushes, or every keystroke would be a Back. */
+  const updateScope = useCallback((repo: string, nextView: View, nextQuery: string, push = true) => {
     setRepoFilter(repo);
     setView(nextView);
+    setQuery(nextQuery);
     localStorage.setItem("radulf.repo", repo);
-    const query = new URLSearchParams();
-    if (repo) query.set("repo", repo);
-    if (nextView !== "overview") query.set("view", nextView);
-    const href = query.size ? `/?${query}` : "/";
-    window.history.pushState({}, "", href);
+    const params = new URLSearchParams();
+    if (repo) params.set("repo", repo);
+    if (nextView !== "overview") params.set("view", nextView);
+    if (nextQuery.trim()) params.set("q", nextQuery);
+    const href = params.size ? `/?${params}` : "/";
+    window.history[push ? "pushState" : "replaceState"]({}, "", href);
   }, []);
 
-  const scoped = useMemo(
-    () => (repoFilter ? cards.filter((card) => card.repoId === repoFilter) : cards),
-    [cards, repoFilter]
+  // "/" jumps to search the way it does in a forge, but only when the operator
+  // is not already typing somewhere.
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
+      if (active instanceof HTMLElement && active.isContentEditable) return;
+      event.preventDefault();
+      searchRef.current?.focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const scopedAll = useMemo(
+    () => cards.filter((card) => (!repoFilter || card.repoId === repoFilter) && cardMatches(card, query)),
+    [cards, repoFilter, query]
   );
+  // Spec 24: an epic has a row of its own below, with its pieces' progress, so
+  // it is left out of the status lists; the pieces are listed like any card,
+  // each naming its epic. An epic shows when it or any piece is in scope.
+  const { epics, parentOf, epicIds } = useMemo(() => groupEpics(cards), [cards]);
+  const scoped = useMemo(() => scopedAll.filter((card) => !epicIds.has(card.id)), [scopedAll, epicIds]);
+  const visibleEpics = useMemo(() => {
+    const inScope = new Set(scopedAll.map((card) => card.id));
+    return epics.filter((group) => group.epic.status !== "done" && (inScope.has(group.epic.id) || group.tasks.some((task) => inScope.has(task.id))));
+  }, [epics, scopedAll]);
   const needs = useMemo(
-    () => scoped.filter((card) => ["review", "plan_review", "needs_attention"].includes(card.status)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
+    () => scoped.filter((card) => ATTENTION_STATUSES.includes(card.status)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
     [scoped]
   );
   const active = useMemo(
-    () => scoped.filter((card) => activeStatuses.includes(card.status)).sort((a, b) => {
+    () => scoped.filter((card) => ACTIVE_STATUSES.includes(card.status)).sort((a, b) => {
       const rank = (status: CardStatus) => status === "looping" ? 0 : status === "planning" ? 1 : 2;
       return rank(a.status) - rank(b.status) || a.position - b.position;
     }),
@@ -162,19 +218,15 @@ export default function WorkPage() {
     setError("");
     try {
       await fn();
-      refetch();
+      refetchCards();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
-  async function start(card: BoardCard) {
-    await runAction(() => api(`/api/cards/${card.id}/move`, { json: { to: "in_progress" } }));
-  }
-
-  async function addToQueue(card: BoardCard) {
-    await runAction(() => api(`/api/cards/${card.id}/move`, { json: { to: "todo" } }));
-  }
+  const move = (card: BoardCard, json: object) => runAction(() => api(`/api/cards/${card.id}/move`, { json }));
+  const start = (card: BoardCard) => move(card, { to: "in_progress" });
+  const addToQueue = (card: BoardCard) => move(card, { to: "todo" });
 
   async function reorder(card: BoardCard, direction: -1 | 1) {
     const index = queue.findIndex((item) => item.id === card.id);
@@ -187,23 +239,47 @@ export default function WorkPage() {
     setNotice(`${card.title} moved to position ${target + 1} of ${queue.length}.`);
     try {
       await api(`/api/cards/${card.id}/move`, { json: { to: "todo", position } });
-      refetch();
+      refetchCards();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      refetch();
+      setError(errorMessage(e));
+      refetchCards();
     }
   }
 
-  async function toggleAutoMode() {
-    const previous = autoMode;
-    setAutoMode(!previous);
+  /** Flip a workspace toggle optimistically. Auto-approve and pull-request
+   * delivery hand authority away (merge without review; code leaving the
+   * machine), so turning those ON asks first; turning anything off never does. */
+  async function toggleSetting(
+    key: "autoMode" | "autoApprove" | "openPr",
+    current: boolean,
+    setValue: (value: boolean) => void,
+    confirmOn?: string,
+  ) {
+    if (!current && confirmOn && !confirm(confirmOn)) return;
+    setValue(!current);
     try {
-      await api("/api/settings", { method: "PATCH", json: { autoMode: !previous } });
+      await api("/api/settings", { method: "PATCH", json: { [key]: !current } });
     } catch (e) {
-      setAutoMode(previous);
-      setError(e instanceof Error ? e.message : String(e));
+      setValue(current);
+      setError(errorMessage(e));
     }
   }
+  const workspaceToggles = [
+    { label: "Auto Mode", on: autoMode, onTone: "text-green-300", toggle: () => toggleSetting("autoMode", autoMode, setAutoMode) },
+    {
+      label: "Auto-approve",
+      on: autoApprove,
+      onTone: "text-amber-300",
+      toggle: () => toggleSetting("autoApprove", autoApprove, setAutoApprove, "Turn on auto-approve?\n\nAn evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you."),
+    },
+    {
+      label: "Open pull requests",
+      on: openPr,
+      onTone: "text-amber-300",
+      // Spec 15: every approval's delivery becomes a pushed branch + pull request.
+      toggle: () => toggleSetting("openPr", openPr, setOpenPr, "Deliver approved work as pull requests?\n\nApproving a card will push its branch to \u201Corigin\u201D and open a pull request instead of merging into the local base branch. Requires the GitHub CLI (`gh`) to be installed and logged in. Radulf never merges the pull request it opens."),
+    },
+  ];
 
   async function stopImprovementRun(run: ImprovementRun) {
     if (!confirm(`Stop the improvement run on “${run.featureBranch}”? The current task finishes, then the run ends.`)) return;
@@ -211,24 +287,32 @@ export default function WorkPage() {
   }
 
   async function restartServer() {
-    const inProgress = cards.filter((card) => activeStatuses.includes(card.status)).length;
+    const inProgress = cards.filter((card) => ACTIVE_STATUSES.includes(card.status)).length;
     if (!confirm(`Restart the server?${inProgress ? ` ${inProgress} active task${inProgress === 1 ? "" : "s"} will return to the backlog.` : ""}`)) return;
     setRestarting(true);
     await api("/api/restart", { method: "POST" }).catch(() => {});
-    const poll = setInterval(async () => {
+    restartPoll.current = setInterval(async () => {
       try {
         const health = await api<{ ok?: boolean; restartRequired?: boolean }>("/api/health");
         if (health.ok && !health.restartRequired) {
-          clearInterval(poll);
+          if (restartPoll.current) clearInterval(restartPoll.current);
           location.reload();
         }
       } catch {}
     }, 1000);
-    setTimeout(() => { clearInterval(poll); setRestarting(false); setError("Server did not return after restart."); }, 60_000);
+    restartTimeout.current = setTimeout(() => {
+      if (restartPoll.current) clearInterval(restartPoll.current);
+      setRestarting(false);
+      setError("Server did not return after restart.");
+    }, 60_000);
   }
 
+  const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction, parentOf };
   const showSection = (section: View) => view === "overview" || view === section;
-  const filteredEmpty = !loading && scoped.length > 0 && counts[view] === 0;
+  // Keyed off the unfiltered set, not `scoped`: a repo filter or a search that
+  // matches nothing leaves `scoped` empty too, and that is exactly when the
+  // operator most needs to be told why the feed is blank.
+  const filteredEmpty = !loading && cards.length > 0 && counts[view] === 0;
 
   return (
     <AppShell onNewTask={() => setShowNew(true)}>
@@ -242,16 +326,18 @@ export default function WorkPage() {
           <select
             id="repo-scope"
             value={repoFilter}
-            onChange={(event) => updateScope(event.target.value, view)}
+            onChange={(event) => updateScope(event.target.value, view, query)}
             className="max-w-44 rounded-lg border border-foreground/10 bg-foreground/[0.05] px-3 text-sm"
           >
             <option value="">All repos</option>
             {repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}
           </select>
           <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-xl text-foreground/70" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="Work actions" summary="•••">
-              <button type="button" onClick={toggleAutoMode} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
-                Auto Mode <span className={autoMode ? "text-green-300" : "text-foreground/40"}>{autoMode ? "On" : "Off"}</span>
-              </button>
+              {workspaceToggles.map((t) => (
+                <button key={t.label} type="button" onClick={() => void t.toggle()} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
+                  {t.label} <span className={t.on ? t.onTone : "text-foreground/40"}>{t.on ? "On" : "Off"}</span>
+                </button>
+              ))}
               <button type="button" onClick={() => setShowImprovementRun(true)} disabled={repos.length === 0} className="min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] disabled:opacity-40">
                 Start improvement run
               </button>
@@ -259,9 +345,25 @@ export default function WorkPage() {
           <button type="button" onClick={() => setShowNew(true)} className="hidden min-h-11 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-on-accent hover:bg-amber-500 lg:block">＋ New task</button>
         </header>
 
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-xs text-foreground/55">
+        <div className="mt-4">
+          <label className="sr-only" htmlFor="task-search">Search tasks</label>
+          <input
+            id="task-search"
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(event) => updateScope(repoFilter, view, event.target.value, false)}
+            onKeyDown={(event) => { if (event.key === "Escape" && query) { event.preventDefault(); updateScope(repoFilter, view, "", false); } }}
+            placeholder="Search tasks by title or description…"
+            className="min-h-11 w-full rounded-lg border border-foreground/10 bg-foreground/[0.05] px-3 text-sm"
+          />
+        </div>
+
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-xs text-foreground/55">
           <span className={`size-2 shrink-0 rounded-full ${autoMode ? "bg-green-400" : "bg-slate-500"}`} aria-hidden="true" />
           <span>Auto Mode {autoMode ? "is on · Todo tasks run automatically" : "is off"}</span>
+          {autoApprove && <span className="text-amber-300">· Auto-approve is on · approved work merges without review</span>}
+          {openPr && <span className="text-amber-300">· Approved work is delivered as a pull request{autoApprove ? " (draft)" : ""}</span>}
           {!streamConnected && <span className="ml-auto text-amber-300">Offline · updates will resume</span>}
         </div>
 
@@ -287,7 +389,7 @@ export default function WorkPage() {
               <button
                 type="button"
                 key={item.key}
-                onClick={() => updateScope(repoFilter, item.key)}
+                onClick={() => updateScope(repoFilter, item.key, query)}
                 aria-current={view === item.key ? "page" : undefined}
                 className={`min-h-11 whitespace-nowrap rounded-full border px-3.5 text-sm ${view === item.key ? "border-amber-500/60 bg-amber-500/12 text-amber-200" : "border-foreground/10 bg-foreground/[0.03] text-foreground/55"}`}
               >
@@ -304,21 +406,28 @@ export default function WorkPage() {
           <Onboarding repos={repos} onNew={() => setShowNew(true)} />
         ) : filteredEmpty ? (
           <div className="mt-8 rounded-xl border border-foreground/10 bg-foreground/[0.025] p-6 text-center">
-            <h2 className="font-medium">No tasks in this view</h2>
-            <p className="mt-1 text-sm text-foreground/50">Try another repository or return to the full feed.</p>
-            <button type="button" onClick={() => updateScope("", "overview")} className="mt-4 rounded-lg bg-foreground/10 px-4 text-sm">Clear filters</button>
+            <h2 className="font-medium">{query.trim() ? `No tasks match “${query.trim()}”` : "No tasks in this view"}</h2>
+            <p className="mt-1 text-sm text-foreground/50">
+              {query.trim() ? "Search covers task titles and descriptions." : "Try another repository or return to the full feed."}
+            </p>
+            <button type="button" onClick={() => updateScope("", "overview", "")} className="mt-4 rounded-lg bg-foreground/10 px-4 text-sm">Clear filters</button>
           </div>
         ) : (
           <div className="mt-3 flex flex-col gap-7">
             {showSection("needs") && needs.length > 0 && (
               <WorkSection title="Needs you" count={needs.length} tone="text-violet-300">
-                {needs.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                {needs.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
               </WorkSection>
             )}
             {showSection("active") && (active.length > 0 || runningImprovementRuns.length > 0) && (
               <WorkSection title="Active now" count={active.length + runningImprovementRuns.length} tone="text-amber-300">
                 {runningImprovementRuns.map((r) => <ImprovementRunRow key={r.id} run={r} repos={repos} cards={cards} onStop={stopImprovementRun} />)}
-                {active.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                {active.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
+              </WorkSection>
+            )}
+            {(view === "overview" || view === "backlog") && visibleEpics.length > 0 && (
+              <WorkSection title="Epics" count={visibleEpics.length} tone="text-cyan-300">
+                {visibleEpics.map((group) => <EpicRow key={group.epic.id} group={group} />)}
               </WorkSection>
             )}
             {showSection("queue") && queue.length > 0 && (
@@ -329,9 +438,7 @@ export default function WorkPage() {
                     card={card}
                     repos={repos}
                     position={index + 1}
-                    onStart={start}
-                    onQueue={addToQueue}
-                    onAction={runAction}
+                    {...rowActions}
                     onMove={(direction) => reorder(card, direction)}
                     canMoveUp={index > 0}
                     canMoveDown={index < queue.length - 1}
@@ -341,21 +448,24 @@ export default function WorkPage() {
             )}
             {showSection("backlog") && backlog.length > 0 && (
               <WorkSection title="Backlog" count={backlog.length} tone="text-foreground/50">
-                {backlog.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                {backlog.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
               </WorkSection>
             )}
             {showSection("done") && done.length > 0 && (
-              view === "overview" ? (
+              // A search is usually how you go looking for something already
+              // finished, so matches are listed in full rather than collapsed
+              // behind "Recently completed" and cut off at five.
+              view === "overview" && !query.trim() ? (
                 <details open={needs.length + active.length + queue.length + backlog.length === 0} className="group">
                   <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold uppercase tracking-[0.12em] text-green-300/80">
                     Recently completed <span className="text-foreground/35">{Math.min(5, done.length)}</span><span className="ml-auto normal-case tracking-normal text-foreground/40 group-open:hidden">Show</span>
                   </summary>
-                  <div className="divide-y divide-white/[0.07] border-y border-foreground/[0.08]">{done.slice(0, 5).map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}</div>
-                  {done.length > 5 && <button type="button" onClick={() => updateScope(repoFilter, "done")} className="mt-2 min-h-11 text-sm text-foreground/55 underline">View all completed tasks</button>}
+                  <div className="divide-y divide-white/[0.07] border-y border-foreground/[0.08]">{done.slice(0, 5).map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}</div>
+                  {done.length > 5 && <button type="button" onClick={() => updateScope(repoFilter, "done", query)} className="mt-2 min-h-11 text-sm text-foreground/55 underline">View all completed tasks</button>}
                 </details>
               ) : (
                 <WorkSection title="Completed" count={done.length} tone="text-green-300">
-                  {done.map((card) => <TaskRow key={card.id} card={card} repos={repos} onStart={start} onQueue={addToQueue} onAction={runAction} />)}
+                  {done.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
                 </WorkSection>
               )
             )}
@@ -363,8 +473,8 @@ export default function WorkPage() {
         )}
       </main>
 
-      {showNew && <NewTaskDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refetch(); }} />}
-      {showImprovementRun && <ImprovementRunDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowImprovementRun(false)} onCreated={() => { setShowImprovementRun(false); refetch(); }} />}
+      {showNew && <NewTaskDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refetchCards(); }} />}
+      {showImprovementRun && <ImprovementRunDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowImprovementRun(false)} onCreated={() => { setShowImprovementRun(false); refetchImprovementRuns(); }} />}
     </AppShell>
   );
 }
@@ -412,7 +522,7 @@ function ImprovementRunRow({ run, repos, cards, onStop }: { run: ImprovementRun;
   );
 }
 
-function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, canMoveUp, canMoveDown }: {
+function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, canMoveUp, canMoveDown, parentOf }: {
   card: BoardCard;
   position?: number;
   repos: Repo[];
@@ -422,20 +532,17 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   onMove?: (direction: -1 | 1) => void;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
+  /** Spec 24: each piece's epic, for the row to name. */
+  parentOf?: Map<string, BoardCard>;
 }) {
-  const router = useRouter();
   const state = statusDetails(card);
+  const epic = parentOf?.get(card.id);
   const repo = repos.find((r) => r.id === card.repoId);
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
+  const currentTask = card.latestRun?.currentTask ?? null;
   const href = card.status === "review" ? `/review/${card.id}` : `/card/${card.id}`;
-  const navigate = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest("a,button,summary,details")) return;
-    if ("key" in event && event.key !== "Enter" && event.key !== " ") return;
-    if ("key" in event) event.preventDefault();
-    router.push(href);
-  };
   const pullBack = () => {
-    const active = ["planning", "looping", "evaluating"].includes(card.status);
+    const active = RUNNING_STATUSES.includes(card.status);
     if (active && !confirm(`Cancel the active run for “${card.title}” and return it to the backlog?`)) return;
     void onAction(() => api(`/api/cards/${card.id}/move`, { json: { to: "backlog" } }));
   };
@@ -445,10 +552,16 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   };
 
   return (
-    <article role="link" tabIndex={0} onClick={navigate} onKeyDown={navigate} className="group flex min-w-0 cursor-pointer gap-3 py-3.5 hover:bg-foreground/[0.025]">
+    <article className="group relative flex min-w-0 gap-3 py-3.5 hover:bg-foreground/[0.025]">
+      {/* Stretched-link overlay: covers the whole row so a click anywhere navigates, while
+          staying out of the tab order (aria-hidden + tabIndex=-1) since the title Link below
+          is the row's one real, screen-reader-visible link. Nested controls sit above it via
+          z-10 on the content wrapper, so they receive their own clicks natively — no
+          closest()/stopPropagation delegation hack needed. */}
+      <Link href={href} aria-hidden="true" tabIndex={-1} className="absolute inset-0" />
       {position !== undefined && <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.04] text-xs tabular-nums text-foreground/40">{position}</span>}
       <span className={`mt-1 flex size-5 shrink-0 items-center justify-center text-sm font-bold ${state.tone}`} aria-hidden="true">{state.mark}</span>
-      <div className="min-w-0 grow">
+      <div className="relative z-10 min-w-0 grow">
         <div className="flex min-w-0 items-start gap-2">
           <Link href={href} className="min-w-0 grow text-[0.95rem] font-medium leading-5 text-foreground/90 hover:underline">
             {card.source === "agent" && <span className="mr-1 text-xs text-amber-300" title="Agent-proposed task">AI</span>}{card.title}
@@ -458,14 +571,22 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {card.status === "review" && <Link href={`/review/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-violet-500/15 px-3 text-sm font-medium text-violet-200">Review</Link>}
           {card.status === "plan_review" && <Link href={`/card/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-cyan-500/15 px-3 text-sm font-medium text-cyan-200">Approve plan</Link>}
           {card.status === "needs_attention" && <Link href={`/card/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-red-500/15 px-3 text-sm font-medium text-red-200">Resolve</Link>}
-          {card.status === "looping" && <button type="button" onClick={(e) => { e.stopPropagation(); if (!confirm(`Pause “${card.title}” after the current iteration finishes?`)) return; void onAction(() => api(`/api/cards/${card.id}/pause`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 hover:bg-foreground/[0.10]">⏸ Pause</button>}
-          {card.status === "paused" && <button type="button" onClick={(e) => { e.stopPropagation(); void onAction(() => api(`/api/cards/${card.id}/resume`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-sky-500/15 px-3 text-sm font-medium text-sky-200 hover:bg-sky-500/25">▶ Continue</button>}
-          {activeStatuses.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
+          {card.status === "looping" && <button type="button" onClick={() => { if (!confirm(`Pause “${card.title}” after the current iteration finishes?`)) return; void onAction(() => api(`/api/cards/${card.id}/pause`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 hover:bg-foreground/[0.10]">⏸ Pause</button>}
+          {card.status === "paused" && <button type="button" onClick={() => { void onAction(() => api(`/api/cards/${card.id}/resume`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-sky-500/15 px-3 text-sm font-medium text-sky-200 hover:bg-sky-500/25">▶ Continue</button>}
+          {ACTIVE_STATUSES.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
-          <span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span> · {position ? `Queue position ${position}` : state.detail}
+          {epic && <><span className="text-cyan-300/80">↳ {epic.title}</span> · </>}<span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>} · {position ? `Queue position ${position}` : state.detail}
         </p>
-        {card.status === "looping" && <p className="mt-0.5 truncate text-xs text-foreground/40">{card.latestRun?.currentTask ? `Current task: ${card.latestRun.currentTask}` : `Latest activity: ${card.latestRun?.exitReason || "Ralph is working through the current iteration"}`}</p>}
+        {card.status === "looping" && (currentTask ? (
+          <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-xs text-foreground/40">
+            <span className="font-medium text-foreground/70">Task {currentTask.number}/{currentTask.count}</span>
+            <span>{currentTask.left === 1 ? "last one" : `${currentTask.left} left`}</span>
+            <span className="basis-full truncate">{currentTask.text}</span>
+          </p>
+        ) : (
+          <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "Ralph is working through the current iteration"}</p>
+        ))}
         {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-foreground/40">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
         {card.status === "needs_attention" && state.detail.length > 70 && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
         {(onMove || card.status !== "todo") && (
@@ -476,11 +597,44 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
             </>}
             <DetailsMenu detailsClassName="relative ml-auto" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-md text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground" menuClassName="absolute bottom-10 right-0 z-20 w-52 rounded-lg border border-foreground/10 bg-surface p-1 shadow-xl" ariaLabel={`More actions for ${card.title}`} summary="•••">
                 <Link href={`/card/${card.id}`} className="flex min-h-11 items-center rounded-md px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-                {["todo", "planning", "ready", "looping", "evaluating", "paused", "review", "plan_review", "needs_attention"].includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
+                {PULLBACK_STATUSES.includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
                 {["backlog", "todo", "done"].includes(card.status) && <button type="button" onClick={remove} className="w-full rounded-md px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Delete task</button>}
             </DetailsMenu>
           </div>
         )}
+      </div>
+    </article>
+  );
+}
+
+/** Spec 24: an epic on the feed, standing for its pieces' progress. */
+function EpicRow({ group }: { group: EpicGroup }) {
+  const { epic, tasks } = group;
+  const done = tasks.filter((task) => task.status === "done").length;
+  const running = tasks.filter((task) => RUNNING_STATUSES.includes(task.status)).length;
+  const waiting = tasks.filter((task) => ATTENTION_STATUSES.includes(task.status)).length;
+  return (
+    <article className="group relative flex min-w-0 gap-3 py-3.5 hover:bg-foreground/[0.025]">
+      <Link href={`/card/${epic.id}`} aria-hidden="true" tabIndex={-1} className="absolute inset-0" />
+      <span className="mt-1 flex size-5 shrink-0 items-center justify-center text-sm font-bold text-cyan-300" aria-hidden="true">▣</span>
+      <div className="relative z-10 min-w-0 grow">
+        <Link href={`/card/${epic.id}`} className="text-[0.95rem] font-medium leading-5 text-foreground/90 hover:underline">{epic.title}</Link>
+        <p className="mt-1 text-xs leading-5 text-foreground/48">
+          <span className="text-foreground/65">{epic.repoName}</span> · <span className="text-cyan-300">Epic</span> · {done} of {tasks.length} done
+          {running > 0 && ` · ${running} running`}{waiting > 0 && ` · ${waiting} need you`} · runs {{ ordered: "in order", parallel: "in parallel", graph: "as a graph" }[epic.runMode ?? "ordered"]}
+        </p>
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/10" aria-hidden="true">
+          <div className="h-full bg-green-400" style={{ width: `${Math.round((done / tasks.length) * 100)}%` }} />
+        </div>
+        {tasks.map((task) => {
+          const blockers = waitingOn(task, tasks, epic.runMode);
+          if (blockers.length === 0) return null;
+          return (
+            <p key={task.id} className="mt-1 truncate text-xs text-foreground/40">
+              {task.title} · waiting on {blockers.map((blocker) => blocker.title).join(", ")}
+            </p>
+          );
+        })}
       </div>
     </article>
   );

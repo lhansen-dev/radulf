@@ -134,10 +134,13 @@ Review it like any other branch, then merge, cherry-pick, or delete it yourself.
 ## Persistence and resume
 
 Run state lives in the `improvement_runs` table, so a server restart does not
-silently kill a run. On boot, `resumeImprovementRuns()` runs from
-[`src/instrumentation.ts`](../src/instrumentation.ts) — *after* `getOrchestrator()`,
-so the orchestrator's `recover()` has already flipped any orphaned card to
-`needs_attention`. For each still-`running` run it re-attaches to
+silently kill a run. `resumeImprovementRuns()` runs from
+[`src/server/boot.ts`](../src/server/boot.ts) in a process with the `worker`
+role — once at boot *after* `getOrchestrator()`, so the orchestrator's
+`recover()` has already flipped any orphaned card to `needs_attention`, and
+again on every queue-pump tick so a run created by a web-only process (which
+only inserts the row) is adopted within one pump interval. For each
+still-`running` run it re-attaches to
 `currentCardId`:
 
 - already terminal ⇒ reconcile it (an interrupted card counts as a failure),
@@ -233,7 +236,8 @@ and `tasksSucceeded` only ever move in lockstep with a card's own events.
 ## Gotchas
 
 - **A dirty working tree fails every merge — after the tokens are spent.**
-  The merge refuses with `target checkout has uncommitted changes`, and it only
+  The merge refuses with `target checkout <path> has uncommitted changes — commit
+  or stash them there, then press Retry merge`, and it only
   happens at the *end* of a card, so a full plan → loop → evaluate cycle is paid
   for and then lands in Needs Attention. Nothing validates this when the run is
   created, so an unclean checkout costs you the whole budget one card at a time.
@@ -248,6 +252,11 @@ and `tasksSucceeded` only ever move in lockstep with a card's own events.
   with 30 minutes against a repo you're happy to throw a branch away from.
 - **Auto-approve ≠ unreviewed merge.** Cards still go through the evaluator; the
   human review step is what's skipped. The branch is your review surface.
+- **Pull-request delivery does not apply to a run's cards.** A run's cards merge
+  into its feature branch — that accumulation is the whole point, and the
+  feature branch is local-only. Turning on **Open pull requests** workspace-wide
+  leaves them alone. Delivering the finished run is still your call: it is one
+  branch, and you push and open a pull request for it yourself.
 - **Reasoning-level overrides are partially applied.** The run row carries
   `plannerReasoning` / `loopReasoning` / `evaluatorReasoning`, but `cards` has no
   per-card reasoning columns — only `plannerReasoning` reaches the proposer pass.

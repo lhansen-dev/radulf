@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 
 import {
   SandboxManager,
@@ -9,9 +10,14 @@ import {
   type FilesystemConfig,
   type NetworkConfig,
 } from "@anthropic-ai/sandbox-runtime";
-import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
+import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
+import { getShellConfig, type BashOperations } from "@earendil-works/pi-coding-agent";
 
-import { DATA_DIR, WORKTREES_DIR } from "@/db";
+import { CLONES_DIR, DATA_DIR, WORKTREES_DIR } from "@/db";
+import { errorMessage } from "@/shared/errorMessage";
+import { git } from "../git";
+import { isInsideOrEqual } from "./pathGuard";
+import { createSerialQueue } from "./serialQueue";
 
 /**
  * Layer 1 — OS sandbox on agent bash (spec 14 Phase 6), via
@@ -27,6 +33,16 @@ import { DATA_DIR, WORKTREES_DIR } from "@/db";
  */
 
 const HOME = os.homedir();
+const execFileAsync = promisify(execFile);
+
+/** Use srt's own resolver so the executable allowed here is the one it invokes. */
+function sandboxHelperReadRoots(): string[] {
+  if (process.platform !== "linux") return [];
+  const helper = getApplySeccompBinaryPath();
+  if (!helper) throw new Error("sandbox apply-seccomp helper is missing; reinstall dependencies");
+  // Only this executable, never the surrounding application or node_modules.
+  return [helper];
+}
 
 /**
  * Backstop credential denylist (spec §L1). `$HOME` is already denied in
@@ -48,6 +64,8 @@ export function credentialBackstopDenylist(): string[] {
     ".kube",
     ".config/gcloud",
     ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".local/share/keyrings",
     ".gnupg",
     "Library/Keychains",
     "Library/Application Support/Google/Chrome",
@@ -65,45 +83,47 @@ export function systemReadRoots(): string[] {
 }
 
 /**
- * True when `candidate` is `target` itself or a proper ancestor directory of
- * it. srt's read-allow is a *recursive* subpath match, so an `allowRead`
- * entry that is an ancestor of a supposedly-denied root re-opens that whole
- * root — this is the check that stops that from happening by accident.
- */
-function isAncestorOrSelf(candidate: string, target: string): boolean {
-  if (candidate === target) return true;
-  const prefix = candidate.endsWith(path.sep) ? candidate : candidate + path.sep;
-  return target.startsWith(prefix);
-}
-
-/**
  * Drop any candidate read-allow root that would, by containing one of
  * `protectedRoots` (or being `/` itself), silently re-open it — e.g. a PATH
  * entry of `/bin` naively contributing `/` (its `dirname`) as an "allow"
  * would recursively re-open the entire filesystem, defeating `$HOME`'s
- * deny outright. Narrow re-allows genuinely *inside* a protected root
+ * deny outright. srt's read-allow is a *recursive* subpath match, so an
+ * `allowRead` entry that is an ancestor of a supposedly-denied root re-opens
+ * that whole root. Narrow re-allows genuinely *inside* a protected root
  * (`~/.nvm` inside `$HOME`) are unaffected — this only rejects candidates
  * that are the protected root or broader.
  */
 export function dropRootsThatWouldReopen(candidates: string[], protectedRoots: string[]): string[] {
   return candidates.filter(
-    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isAncestorOrSelf(c, protectedRoot)),
+    (c) => c !== "/" && !protectedRoots.some((protectedRoot) => isInsideOrEqual(protectedRoot, c)),
   );
 }
 
 /**
  * Best-effort toolchain read-allow derived from `PATH`: each entry and its
  * parent (so a `.../node/bin` PATH entry also opens `.../node`'s lib/include,
- * not just the bin dir). Deduplicated; empty/missing entries dropped. Does
- * **not** itself filter out dangerous entries (e.g. `/bin`'s parent is `/`)
- * — callers must run the result through `dropRootsThatWouldReopen`.
+ * not just the bin dir). Deduplicated; empty/missing entries dropped.
+ *
+ * A parent inside one of `protectedRoots` is skipped. `dropRootsThatWouldReopen`
+ * only rejects roots that CONTAIN a protected root, and a narrow re-allow
+ * inside `$HOME` is meant to pass it — but a developer PATH routinely holds
+ * `~/.cargo/bin`, `~/.local/bin` or `~/.local/share/pnpm`, whose parents
+ * would recursively re-open `~/.cargo` (credentials.toml), `~/.local` and
+ * `~/.local/share` (keyrings) against the blanket `$HOME` deny. The bin
+ * entry itself stays, so the toolchain still runs. Does **not** filter the
+ * ancestor case (`/bin`'s parent is `/`) — callers still run the result
+ * through `dropRootsThatWouldReopen`.
  */
-export function toolchainReadRootsFromPath(pathEnv = process.env.PATH ?? ""): string[] {
+export function toolchainReadRootsFromPath(
+  pathEnv = process.env.PATH ?? "",
+  protectedRoots: string[] = [],
+): string[] {
   const roots = new Set<string>();
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue;
     roots.add(dir);
-    roots.add(path.dirname(dir));
+    const parent = path.dirname(dir);
+    if (!protectedRoots.some((root) => isInsideOrEqual(parent, root))) roots.add(parent);
   }
   return [...roots];
 }
@@ -127,13 +147,11 @@ export function toolchainHomeReAllows(): string[] {
  * Resolve the shared `.git` dir for a worktree (`git rev-parse
  * --git-common-dir`) — the parent repo's real git metadata, which a linked
  * worktree's own `.git` file only points at. The agent's git commands need
- * write access here (refs, objects, the worktree's own HEAD/index) except
- * for the hook/config vectors carved out below.
+ * write access here (objects, the worktree's own index) except for the
+ * hook/config and ref vectors carved out below.
  */
-export function resolveGitCommonDir(worktree: string): string {
-  const out = execFileSync("git", ["-C", worktree, "rev-parse", "--git-common-dir"], {
-    encoding: "utf8",
-  }).trim();
+export async function resolveGitCommonDir(worktree: string): Promise<string> {
+  const out = await git(worktree, "rev-parse", "--git-common-dir");
   return path.isAbsolute(out) ? out : path.resolve(worktree, out);
 }
 
@@ -143,71 +161,63 @@ export function resolveGitCommonDir(worktree: string): string {
  * denied wholesale, then this run's own worktree is individually re-opened
  * — verified live (PLAN_SPEC_14.md Phase 5) that a narrow `allowRead`
  * re-opens a path inside a broader `denyRead`. Write is allow-only: the
- * worktree, run-private TMPDIR/cache, and the parent repo's shared `.git`
- * except the hook/config vectors.
+ * worktree and run-private TMPDIR/cache. The parent repo's shared `.git` is
+ * readable but entirely write-denied because host-side Git owns every update.
  */
-/**
- * Concrete `<gitCommonDir>/worktrees/<name>/config` paths for every linked
- * worktree registered right now.
- *
- * srt glob-expands only its OWN mandatory deny list (via ripgrep `--iglob`).
- * A caller-supplied `denyWrite` entry is taken as a literal path: Seatbelt
- * still matches `*` as a pattern, but bwrap has no pattern support and would
- * mount over a path whose component is literally `*`, protecting nothing. So
- * the pattern form alone left this write vector — `core.hooksPath` in a
- * per-worktree config is arbitrary code execution on the next git
- * command — open on Linux. Enumerating gives both platforms a real deny.
- */
-export function gitWorktreeConfigDenies(gitCommonDir: string): string[] {
-  const worktreesDir = path.join(gitCommonDir, "worktrees");
-  let entries;
-  try {
-    entries = fs.readdirSync(worktreesDir, { withFileTypes: true });
-  } catch {
-    return []; // no linked worktrees registered — nothing to carve out
-  }
-  return entries
-    .filter((e) => e.isDirectory())
-    .map((e) => path.join(worktreesDir, e.name, "config"));
-}
-
 export function buildFilesystemConfig(opts: {
   worktree: string;
   gitCommonDir: string;
   tmpdir: string;
   cacheRoot: string;
+  repositoryRoots?: string[];
+  cgroupProcsFile?: string;
 }): FilesystemConfig {
-  const denyRead = [HOME, DATA_DIR, WORKTREES_DIR, ...credentialBackstopDenylist()];
+  // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
+  // run's own shared .git is re-allowed for reads through opts.gitCommonDir.
+  const repositoryRoots = [...new Set(opts.repositoryRoots ?? [])];
+  const protectedRoots = [
+    ...new Set([HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR, ...repositoryRoots]),
+  ];
+  const siblingRepositoryRoots = repositoryRoots.filter(
+    (root) => !isInsideOrEqual(path.resolve(opts.worktree), path.resolve(root)),
+  );
+  const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
     opts.worktree,
     opts.tmpdir,
     opts.cacheRoot,
     opts.gitCommonDir,
     ...systemReadRoots(),
-    ...toolchainReadRootsFromPath(),
+    ...toolchainReadRootsFromPath(undefined, protectedRoots),
     ...toolchainHomeReAllows(),
+    ...sandboxHelperReadRoots(),
   ];
   return {
     denyRead,
     // PATH-derived roots are untrusted input to this filter — a shallow PATH
     // entry (`/bin`, whose dirname is `/`) must never silently re-open the
-    // deny list. `HOME`/`DATA_DIR`/`WORKTREES_DIR` themselves are checked
+    // deny list. `HOME`/`DATA_DIR`/`WORKTREES_DIR`/`CLONES_DIR` themselves are checked
     // (not just their listed backstop children) because an allow entry
     // doesn't need to name a deny target exactly to reopen it — containing
     // it is enough, per srt's recursive subpath matching.
-    allowRead: dropRootsThatWouldReopen(rawAllowRead, [HOME, DATA_DIR, WORKTREES_DIR]),
-    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, opts.gitCommonDir],
+    allowRead: dropRootsThatWouldReopen(rawAllowRead, protectedRoots),
+    allowWrite: [opts.worktree, opts.tmpdir, opts.cacheRoot, ...(opts.cgroupProcsFile ? [opts.cgroupProcsFile] : [])],
     denyWrite: [
-      path.join(opts.gitCommonDir, "hooks"),
-      path.join(opts.gitCommonDir, "config"),
-      ...gitWorktreeConfigDenies(opts.gitCommonDir),
-      // Kept on macOS only: Seatbelt honours the pattern, which also covers a
-      // worktree registered after this config was built — something the
-      // snapshot above cannot. On Linux the same entry is inert at best, so
-      // there it would only add a bogus literal-`*` mount.
-      ...(process.platform === "darwin"
-        ? [path.join(opts.gitCommonDir, "worktrees", "*", "config")]
-        : []),
+      // A read-denied repository becomes an opaque mount on Linux. Also mark
+      // sibling repositories read-only so a write cannot land in that mount
+      // or in the host checkout on another platform. An ancestor containing
+      // this run's worktree is excluded so its narrow allowWrite still works.
+      ...siblingRepositoryRoots,
+      // A linked worktree's `.git` is a FILE naming its gitdir, and it sits
+      // inside the worktree write-allow above. Rewriting it to point at a
+      // gitdir the agent populated (with its own config, hooks, fsmonitor)
+      // makes every host-side git call in the worktree trust that gitdir.
+      // srt's own `.git` protection skips the file case, so it goes here.
+      path.join(opts.worktree, ".git"),
+      // Agent Git only needs reads. Denying the whole common directory also
+      // covers indexes, logs, messages, locks, refs, configs, and worktree
+      // administration files that a filename denylist would inevitably miss.
+      opts.gitCommonDir,
     ],
   };
 }
@@ -240,6 +250,8 @@ export function buildRunSandboxConfig(opts: {
   gitCommonDir: string;
   tmpdir: string;
   cacheRoot: string;
+  repositoryRoots?: string[];
+  cgroupProcsFile?: string;
   networkAllowlistText: string;
   /** Spec 14 opt-in (default off), macOS only: allow the trustd mach service so
    * Go-family tools (go, gh, gcloud, terraform, kubectl) can verify TLS certs —
@@ -322,18 +334,33 @@ export function initializeSandboxRuntimeOnce(): Promise<SandboxPreflightResult> 
     readyPromise = (async () => {
       const preflight = sandboxPreflight();
       if (!preflight.ok) return preflight;
+      let probeDir: string | undefined;
       try {
         await SandboxManager.initialize({
           filesystem: { denyRead: [HOME], allowWrite: [], denyWrite: [] },
           network: { allowedDomains: [], deniedDomains: [] },
         });
+        // Dependency presence on the host does not prove that the sandbox can
+        // start: denyRead can hide srt's own executable under $HOME.
+        probeDir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-sandbox-preflight-"));
+        const wrapped = await SandboxManager.wrapWithSandbox("true", "/bin/bash", {
+          filesystem: buildFilesystemConfig({
+            worktree: probeDir,
+            gitCommonDir: probeDir,
+            tmpdir: probeDir,
+            cacheRoot: probeDir,
+          }),
+        });
+        await execFileAsync("/bin/bash", ["-c", wrapped], { cwd: probeDir, timeout: 10_000 });
         return preflight;
       } catch (e) {
         return {
           ok: false,
-          errors: [...preflight.errors, e instanceof Error ? e.message : String(e)],
+          errors: [...preflight.errors, `sandbox startup failed: ${errorMessage(e)}`],
           warnings: preflight.warnings,
         };
+      } finally {
+        if (probeDir) fs.rmSync(probeDir, { recursive: true, force: true });
       }
     })();
   }
@@ -346,8 +373,91 @@ export function resetSandboxRuntimeForTests(): void {
 }
 
 /**
- * `SandboxManager.wrapWithSandbox` returns the srt-wrapped command string —
- * ready to hand to a shell exactly like the unwrapped command was.
+ * Serializing queue for the wrap-and-`updateConfig` step (PLAN.md Phase 18.2,
+ * superseding Phase 4's hard-throw guard below). `serializeSandboxWrap` is a
+ * promise-chain mutex (`createSerialQueue`), so calls take that step one at a
+ * time, in arrival order, without rejecting any of them.
+ *
+ * Only that step is serialized. Two commands that agree on network policy run
+ * concurrently, which is what one-loop-per-repo (Phase 10) needs: an
+ * `npm install` in one repo must not block every bash command in another for
+ * minutes. What keeps them safe is the claim below, not this queue.
+ */
+const serializeSandboxWrap = createSerialQueue();
+
+/**
+ * The only slice of `SandboxRuntimeConfig` that `updateConfig()` actually
+ * mutates process-wide (see `runSandboxedCommand`'s doc comment). Deliberately
+ * excludes `filesystem`: that's per-call `customConfig` built fresh from
+ * per-run paths (`buildFilesystemConfig`'s `worktree`/`tmpdir`/`cacheRoot`/
+ * `gitCommonDir`), unique to every run by construction (PLAN.md Phase 19.1
+ * — comparing the whole config made every concurrent pair "different" and
+ * defeated 18.2's own fix).
+ */
+type NetworkPolicySlice = {
+  network: SandboxRuntimeConfig["network"];
+  enableWeakerNetworkIsolation?: boolean;
+};
+
+function networkPolicySlice(runConfig: SandboxRuntimeConfig): NetworkPolicySlice {
+  return {
+    network: runConfig.network,
+    enableWeakerNetworkIsolation: runConfig.enableWeakerNetworkIsolation,
+  };
+}
+
+/**
+ * The network policy the egress proxy is enforcing right now, and how many
+ * sandboxed commands are relying on it.
+ *
+ * Held from before a command is wrapped until after it has *finished
+ * running*, because the proxy filters a request against session-level config
+ * at the moment the request is made. The pair used to be released when
+ * `wrapWithSandbox` returned, which is the wrong end of the command: a run
+ * whose `npm install` had just been wrapped was left with a count of zero, so
+ * a second run starting with a different allowlist passed the check below and
+ * called `updateConfig()` — and the first run's install then spent its whole
+ * length filtered against the second run's policy. The window was the entire
+ * execution, which is where all the network traffic is.
+ */
+let activePolicy: NetworkPolicySlice | null = null;
+let activeCommands = 0;
+
+/** Order-independent-on-keys, order-dependent-on-arrays structural equality
+ * over plain JSON-shaped values — enough for a `NetworkPolicySlice` (strings,
+ * booleans, arrays of strings), and deliberately not a `JSON.stringify`
+ * comparison, which would be fooled by key-order differences from anywhere
+ * that ever builds the config object differently than `buildRunSandboxConfig`
+ * does today. */
+function sandboxConfigsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => sandboxConfigsEqual(v, b[i]));
+  }
+  if (typeof a === "object" && typeof b === "object") {
+    const aKeys = Object.keys(a as Record<string, unknown>);
+    const bKeys = Object.keys(b as Record<string, unknown>);
+    if (aKeys.length !== bKeys.length) return false;
+    return aKeys.every(
+      (k) =>
+        Object.hasOwn(b as Record<string, unknown>, k) &&
+        sandboxConfigsEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+    );
+  }
+  return false;
+}
+
+/**
+ * Run `command` inside the run's sandbox policy: wrap it, hand the wrapped
+ * string to `execute`, and keep the process-wide network policy claimed for
+ * as long as `execute` is running.
+ *
+ * `execute` receives the srt-wrapped command string, ready for a shell
+ * exactly like the unwrapped command was. Every sandboxed command in the
+ * process goes through here rather than wrapping and executing in two steps,
+ * because the second step is the one the network policy has to cover.
  *
  * **Load-bearing quirk, found via the spec 14 Phase 6 positive control (a
  * real `npm install` was denied with `blocked-by-allowlist` even though the
@@ -360,17 +470,198 @@ export function resetSandboxRuntimeForTests(): void {
  * `customConfig.network`. Passing a run's `allowedDomains` only as
  * `customConfig` silently does nothing for network — proven live: identical
  * `customConfig`, `curl` denied before `updateConfig()`, allowed after.
- * `updateConfig()` mutates session-wide state, which is safe here only
- * because Radulf's pipeline is strictly serial (one card at a time, spec
- * 02) — never call this from anything that could run two sandboxed
- * commands with different policies concurrently.
+ * `updateConfig()` mutates session-wide state, so every call's
+ * wrap-and-`updateConfig` step is serialized against every other's via the
+ * queue above (PLAN.md Phase 18.2) — Radulf's pipeline is no longer strictly
+ * serial end-to-end (Phase 10: one loop per repo), but this specific window
+ * still must be, since two interleaved `updateConfig()` calls could apply
+ * the wrong run's network allowlist to the other's request.
  */
-export async function wrapBashCommand(
+export async function runSandboxedCommand<T>(
   command: string,
   runConfig: SandboxRuntimeConfig,
+  execute: (wrapped: string) => Promise<T>,
+  opts?: { tmpdir?: string },
+): Promise<T> {
+  // Real (not hardcoded-"always equal") safety check. Every run derives its
+  // network policy from the Settings snapshot taken at its start
+  // (context.ts), so two overlapping runs differ only when an operator edits
+  // `sandboxNetworkAllowlist` between their starts — and then this trips for
+  // the later run rather than letting its `updateConfig()` silently overwrite
+  // the earlier run's policy. Compares only the network-policy slice
+  // (PLAN.md Phase 19.1) — the per-run filesystem config is expected to
+  // differ on every call and must never factor in.
+  const incomingPolicy = networkPolicySlice(runConfig);
+  if (activeCommands > 0 && activePolicy !== null && !sandboxConfigsEqual(activePolicy, incomingPolicy)) {
+    throw new Error(
+      "sandbox network policy is process-wide (see runSandboxedCommand's doc comment) — a " +
+        "concurrent sandboxed command is using a DIFFERENT network policy; applying this one now " +
+        "would silently clobber it, so refusing to start it",
+    );
+  }
+  activePolicy = incomingPolicy;
+  activeCommands++;
+  try {
+    return await execute(await wrapUnderPolicy(command, runConfig, opts?.tmpdir));
+  } finally {
+    activeCommands--;
+  }
+}
+
+type ProcessTracker = {
+  markCommandStarted(): void;
+  trackProcessGroup(pgid: number): void;
+};
+
+function killProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // The process already exited.
+    }
+  }
+}
+
+const EXIT_STDIO_IDLE_MS = 100;
+
+/**
+ * Resolve with the shell's exit code once its output is drained. `exit` can
+ * fire while stdout/stderr still hold unread chunks, so resolving there and
+ * destroying the pipes drops the tail of the output. Wait for both pipes to
+ * end instead — or, when a backgrounded descendant inherited them and keeps
+ * them open, for the pipes to fall idle for a short grace after `exit`. This
+ * is pi's own local-backend behavior, which it does not export.
+ */
+function waitForChildOutput(child: ChildProcess): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    let exitCode: number | null = null;
+    let exited = false;
+    let settled = false;
+    let openPipes = [child.stdout, child.stderr].filter(Boolean).length;
+    let idle: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (idle) clearTimeout(idle);
+      resolve(exitCode);
+    };
+    const armIdle = () => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(finish, EXIT_STDIO_IDLE_MS);
+    };
+    const onEnd = () => {
+      openPipes -= 1;
+      if (exited && openPipes === 0) finish();
+    };
+    const onData = () => {
+      if (exited && !settled) armIdle();
+    };
+    for (const pipe of [child.stdout, child.stderr]) {
+      pipe?.once("end", onEnd);
+      pipe?.on("data", onData);
+    }
+    child.once("error", (e) => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    });
+    child.once("exit", (code) => {
+      exited = true;
+      exitCode = code;
+      if (openPipes === 0) finish();
+      else armIdle();
+    });
+  });
+}
+
+/** Local bash backend that records the detached shell PID in trusted parent
+ * memory immediately after spawn. An in-sandbox command can neither erase nor
+ * replace this ledger. */
+export function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
+  return {
+    async exec(command, cwd, options) {
+      if (options.signal?.aborted) throw new Error("aborted");
+      const timeoutMs = options.timeout === undefined ? undefined : options.timeout * 1000;
+      // pi's backend rejects these too: a zero timer would kill the command
+      // before it ran, and a non-finite one would never fire.
+      if (timeoutMs !== undefined && !(Number.isFinite(timeoutMs) && timeoutMs > 0)) {
+        throw new Error("Invalid timeout: must be a finite number of seconds");
+      }
+      const shell = getShellConfig();
+      const fromStdin = shell.commandTransport === "stdin";
+      tracker?.markCommandStarted();
+      const child = spawn(shell.shell, fromStdin ? shell.args : [...shell.args, command], {
+        cwd,
+        detached: process.platform !== "win32",
+        env: options.env,
+        stdio: [fromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      if (fromStdin) {
+        child.stdin?.on("error", () => undefined);
+        child.stdin?.end(command);
+      }
+      if (child.pid && process.platform !== "win32") tracker?.trackProcessGroup(child.pid);
+
+      child.stdout?.on("data", options.onData);
+      child.stderr?.on("data", options.onData);
+      let timedOut = false;
+      const timeout = timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            if (child.pid) killProcessGroup(child.pid);
+          }, timeoutMs);
+      const onAbort = () => {
+        if (child.pid) killProcessGroup(child.pid);
+      };
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        const exitCode = await waitForChildOutput(child);
+        if (options.signal?.aborted) throw new Error("aborted");
+        if (timedOut) throw new Error(`timeout:${options.timeout}`);
+        return { exitCode: exitCode ?? 1 };
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", onAbort);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }
+    },
+  };
+}
+
+/** The serialized half: apply this run's config process-wide and wrap under
+ * it, with no other call able to do either in between.
+ *
+ * `tmpdir`: srt overrides `TMPDIR` inside every wrapped command so temp-file
+ * writers land somewhere the filesystem policy allows. Its default is
+ * `/tmp/claude` — a path that does not exist in Radulf's container image and
+ * is not in the run's write-allow — unless the *server process* has
+ * `CLAUDE_CODE_TMPDIR` set at wrap time (srt reads `process.env` in
+ * `generateProxyEnvVars`, on the wrap path). So the run-private tmpdir is
+ * published through that env var for exactly the duration of the wrap. It
+ * is process-wide state, like `updateConfig`, which is why it lives inside
+ * this serialized window and is restored before the turn is released. */
+async function wrapUnderPolicy(
+  command: string,
+  runConfig: SandboxRuntimeConfig,
+  tmpdir?: string,
 ): Promise<string> {
-  SandboxManager.updateConfig(runConfig);
-  return SandboxManager.wrapWithSandbox(command, undefined, runConfig);
+  return serializeSandboxWrap(async () => {
+    const previous = process.env.CLAUDE_CODE_TMPDIR;
+    try {
+      if (tmpdir !== undefined) process.env.CLAUDE_CODE_TMPDIR = tmpdir;
+      SandboxManager.updateConfig(runConfig);
+      return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
+      else process.env.CLAUDE_CODE_TMPDIR = previous;
+    }
+  });
 }
 
 /**
@@ -382,12 +673,39 @@ export async function wrapBashCommand(
  * named `spawnHook`, but the SDK's `BashSpawnHook` type is
  * `(ctx) => ctx`, not `Promise<ctx>`).
  */
-export function createSandboxedBashOperations(runConfig: SandboxRuntimeConfig): BashOperations {
-  const local = createLocalBashOperations();
+export function createSandboxedBashOperations(
+  runConfig: SandboxRuntimeConfig,
+  opts?: {
+    tmpdir?: string;
+    runExclusive?: <T>(operation: () => Promise<T>) => Promise<T>;
+    tracker?: ProcessTracker;
+  },
+): BashOperations {
+  const local = createTrackedBashOperations(opts?.tracker);
   return {
     async exec(command, cwd, options) {
-      const wrapped = await wrapBashCommand(command, runConfig);
-      return local.exec(wrapped, cwd, options);
+      const operation = () =>
+        runSandboxedCommand(
+          command,
+          runConfig,
+          (wrapped) => local.exec(wrapped, cwd, options),
+          opts,
+        );
+      return opts?.runExclusive ? opts.runExclusive(operation) : operation();
+    },
+  };
+}
+
+/** Serialize an explicitly unsandboxed run's bash with its guarded file tools.
+ * The operator has disabled L1, but L2 must still not regain a path race. */
+export function createSerializedBashOperations(
+  runExclusive: <T>(operation: () => Promise<T>) => Promise<T>,
+  tracker?: ProcessTracker,
+): BashOperations {
+  const local = createTrackedBashOperations(tracker);
+  return {
+    exec(command, cwd, options) {
+      return runExclusive(() => local.exec(command, cwd, options));
     },
   };
 }

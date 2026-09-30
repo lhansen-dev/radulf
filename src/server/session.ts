@@ -20,14 +20,7 @@ export function authEnabled(): boolean {
  * Format: `<expiresAtMs>.<base64url(hmac_sha256(expiresAtMs))>`
  */
 export async function signSession(expiresAtMs: number): Promise<string> {
-  const secret = getSecret();
-  const key = await importHmacKey(secret);
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(String(expiresAtMs)),
-  );
-  return `${expiresAtMs}.${base64url(sig)}`;
+  return `${expiresAtMs}.${base64url(await hmac(expiresAtMs))}`;
 }
 
 /**
@@ -43,42 +36,148 @@ export async function verifySession(value: string): Promise<boolean> {
 
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
 
-  const secret = getSecret();
-  const key = await importHmacKey(secret);
+  // A cookie whose signature is not valid base64 is an invalid session, not a
+  // server error: `atob` throws on a stray character, and this runs inside the
+  // proxy on every request, so letting it escape turns any garbage cookie —
+  // truncated by a proxy, or simply sent by anyone who can reach the port —
+  // into a 500 on every route instead of a redirect to /login. Fail closed.
+  let signature: Uint8Array;
+  try {
+    signature = base64urlDecode(sigB64);
+  } catch {
+    return false;
+  }
 
-  const expectedSig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(String(expiresAtMs)),
-  );
+  return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), signature);
+}
 
-  // Constant-time comparison
-  const expectedArr = new Uint8Array(expectedSig);
-  const actualArr = base64urlDecode(sigB64);
-  if (expectedArr.byteLength !== actualArr.byteLength) return false;
+/**
+ * The host (with port) a request was addressed to: the Host header, or the
+ * request URL's when a client sent none. Node's HTTP server always passes the
+ * header through; the fallback is for in-process callers, such as tests.
+ */
+export function requestHost(request: Request): string {
+  return request.headers.get("host") ?? new URL(request.url).host;
+}
 
-  return constantTimeEqual(expectedArr, actualArr);
+/**
+ * The no-auth deployment is loopback-only. Enforce the same invariant at the
+ * HTTP boundary so DNS rebinding cannot use a foreign Host header to read the
+ * local API through the operator's browser.
+ */
+export function isAllowedUnauthenticatedHost(host: string): boolean {
+  try {
+    const addressed = new URL(`http://${host}`);
+    return (
+      addressed.hostname === "localhost" ||
+      addressed.hostname === "127.0.0.1" ||
+      addressed.hostname === "[::1]"
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
  * CSRF backstop: returns true for allowed origins.
  *
- * Accepts localhost origins (any scheme/port) and the deployment host named
- * by the RADULF_ALLOWED_ORIGIN env var (a bare hostname).
+ * Same-origin only: local development accepts an exact loopback host and port.
+ * Any non-loopback deployment must set RADULF_ALLOWED_ORIGIN to its full
+ * origin, including scheme and any non-default port. This used to accept any
+ * localhost or 127.0.0.1 origin on any port. That is not a boundary: browsers
+ * treat every localhost port as ONE site, so SameSite=Lax still attaches the
+ * session cookie to a request from a page on localhost:8080, and a text/plain
+ * POST from it needs no preflight. Every other local dev server, and every
+ * XSS in one, could approve a review or register a repo.
  */
-export function isAllowedOrigin(origin: string | null): boolean {
+export function isAllowedOrigin(origin: string | null, host: string): boolean {
   if (!origin) return true; // browser won't send Origin for same-origin GET
   try {
     const url = new URL(origin);
-    return (
-      url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
-      (!!process.env.RADULF_ALLOWED_ORIGIN &&
-        url.hostname === process.env.RADULF_ALLOWED_ORIGIN)
-    );
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      return false;
+    }
+
+    const configured = process.env.RADULF_ALLOWED_ORIGIN?.trim();
+    if (configured) {
+      const allowed = new URL(configured);
+      if (
+        !["http:", "https:"].includes(allowed.protocol) ||
+        allowed.username ||
+        allowed.password ||
+        allowed.pathname !== "/" ||
+        allowed.search ||
+        allowed.hash
+      ) {
+        return false;
+      }
+      if (url.origin === allowed.origin) return true;
+    }
+
+    const addressed = new URL(`http://${host}`);
+    const loopback =
+      addressed.hostname === "localhost" ||
+      addressed.hostname === "127.0.0.1" ||
+      addressed.hostname === "[::1]";
+    return loopback && url.host === addressed.host;
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether the session cookie should carry `Secure`.
+ *
+ * `new URL(request.url).protocol` is not the answer on its own: like the
+ * redirect base above, `request.url` in a Route Handler carries the address
+ * the server is bound to, and a TLS-terminating reverse proxy talks plain
+ * HTTP to it. Keying off it alone issued a 30-day session cookie with no
+ * `Secure` flag to every browser behind such a proxy, so any later plain-HTTP
+ * request to the same host — a typo'd URL, a downgrade an attacker can force
+ * — puts the session on the wire.
+ *
+ * The browser's own `Origin` is the authority when there is one: it names the
+ * scheme the browser used, the proxy already had to be crossed for the
+ * request to arrive, and the CSRF check above has confirmed it names this
+ * deployment. `x-forwarded-proto` covers the non-browser caller that sends no
+ * `Origin`. Neither can be used to *remove* `Secure` that the bind address
+ * would have set, so a forged header buys nothing.
+ */
+export function requestIsSecure(request: Request): boolean {
+  if (new URL(request.url).protocol === "https:") return true;
+  const origin = request.headers.get("origin");
+  if (origin && isAllowedOrigin(origin, requestHost(request))) {
+    try {
+      return new URL(origin).protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+  return request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() === "https";
+}
+
+/**
+ * Base URL a Route Handler should build its redirects against.
+ *
+ * `request.url` in a Route Handler carries the address the server is bound to,
+ * not the Host the client asked for. On anything but a localhost-only
+ * deployment that sends the browser somewhere it cannot reach: bound to
+ * 0.0.0.0 a LAN client is redirected to http://0.0.0.0:3000/, and bound to
+ * 127.0.0.1 it is sent to the client's own loopback. The proxy rejects any
+ * mutating request whose Origin is not allowed before a handler ever runs, so
+ * when a browser sent one it is both present and safe to redirect to. Non-
+ * browser clients send none, and fall back to the previous behaviour.
+ */
+export function redirectBase(request: Request): string {
+  const origin = request.headers.get("origin");
+  return origin && isAllowedOrigin(origin, requestHost(request)) ? origin : request.url;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +199,19 @@ async function importHmacKey(secret: string): Promise<CryptoKey> {
     false,
     ["sign"],
   );
+}
+
+/** The imported key for the secret it was imported from. Importing once per
+ * process rather than once per request (the proxy verifies on every hit)
+ * while still following a rotated RADULF_AUTH_SECRET. */
+let cachedKey: { secret: string; key: CryptoKey } | undefined;
+
+/** HMAC-SHA256 of the expiry timestamp — what signSession writes and
+ * verifySession recomputes. */
+async function hmac(expiresAtMs: number): Promise<ArrayBuffer> {
+  const secret = getSecret();
+  if (cachedKey?.secret !== secret) cachedKey = { secret, key: await importHmacKey(secret) };
+  return crypto.subtle.sign("HMAC", cachedKey.key, new TextEncoder().encode(String(expiresAtMs)));
 }
 
 /** Base64url-encode an ArrayBuffer (no padding). */

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { OpenTasksStrip } from "./openTasksStrip";
 
 const destinations = [
   { href: "/", label: "Work", icon: "▤" },
@@ -32,20 +33,7 @@ export function AppShell({
           R
         </Link>
         <nav className="flex flex-col gap-1">
-          {destinations.map((item) => {
-            const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-current={active ? "page" : undefined}
-                className={`rail-link ${active ? "rail-link-active" : ""}`}
-              >
-                <span aria-hidden="true" className="text-lg">{item.icon}</span>
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
+          <NavLinks pathname={pathname} variant="rail" />
         </nav>
         <div className="rail-footer">
           {onNewTask && (
@@ -66,7 +54,10 @@ export function AppShell({
         </div>
       </aside>
 
-      <div className="min-w-0">{children}</div>
+      <div className="min-w-0">
+        <OpenTasksStrip pathname={pathname} />
+        {children}
+      </div>
 
       {onNewTask && (
         <button type="button" onClick={onNewTask} className="mobile-new-task" aria-label="New task">
@@ -74,22 +65,28 @@ export function AppShell({
         </button>
       )}
       <nav className="bottom-nav" aria-label="Primary navigation">
-        {destinations.map((item) => {
-          const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-current={active ? "page" : undefined}
-              className={`bottom-nav-link ${active ? "bottom-nav-link-active" : ""}`}
-            >
-              <span aria-hidden="true" className="text-lg leading-none">{item.icon}</span>
-              <span>{item.label}</span>
-            </Link>
-          );
-        })}
+        <NavLinks pathname={pathname} variant="bottom-nav" />
       </nav>
     </div>
   );
+}
+
+/** The destinations as links, styled by the `.rail-link` or `.bottom-nav-link`
+ * rules in globals.css. */
+function NavLinks({ pathname, variant }: { pathname: string; variant: "rail" | "bottom-nav" }) {
+  return destinations.map((item) => {
+    const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        aria-current={active ? "page" : undefined}
+        className={`${variant}-link ${active ? `${variant}-link-active` : ""}`}
+      >
+        <span aria-hidden="true" className={variant === "rail" ? "text-lg" : "text-lg leading-none"}>{item.icon}</span>
+        <span>{item.label}</span>
+      </Link>
+    );
+  });
 }
 

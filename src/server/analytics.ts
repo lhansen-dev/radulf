@@ -1,3 +1,5 @@
+import { groupBy } from "./queryGrouping";
+
 export type BarDatum = { label: string; value: number };
 
 export type AnalyticsCardRow = {
@@ -16,6 +18,14 @@ export type AnalyticsRunRow = {
   endedAt: string | null;
   provider?: string | null;
   model?: string | null;
+  /** Run-level telemetry roll-up (spec: cost visibility for the planner and
+   * evaluator) — populated for every kind, not just loop. A loop run's
+   * value is the sum of its iterations; plan/evaluate write their single
+   * invocation's numbers directly. Absent/null on runs that predate these
+   * columns, same "never coerced to zero" convention as iterations. */
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  costUsd?: number | null;
 };
 
 export type AnalyticsIterationRow = {
@@ -72,7 +82,11 @@ export type LoopCohort = {
   durationP90Ms: number;
 };
 
-export const MIN_COHORT_SIZE = 10;
+const MIN_COHORT_SIZE = 10;
+/** The flat "this is taking a while" mark. Still the comparison point for the
+ * cross-run KPIs below, which have no single run's budget to scale to, and
+ * since spec 18 §10 also the floor under the orchestrator's per-iteration
+ * slow signal rather than the whole of it. */
 export const SLOW_ITERATION_MS = 5 * 60 * 1000;
 
 /** Spec 11 rollout acceptance: the performance-policy targets, evaluated
@@ -120,51 +134,40 @@ export type Analytics = {
   runsByStatus: BarDatum[];
   tokensPerRun: BarDatum[];
   costPerRun: BarDatum[];
-  iterationDurationsMs: number[];
   loopKpis: LoopKpis;
   loopCohorts: LoopCohort[];
   successRate: number;
   tokensByModel: BarDatum[];
   costByModel: BarDatum[];
   runsByProvider: BarDatum[];
-};
-
-export type AnalyticsFilter = {
-  fromMs?: number | null;   // inclusive lower bound on run.startedAt; null = no bound
-  provider?: string;        // exact match on run.provider; "" / undefined = no filter
-  model?: string;           // exact match on run.model; "" / undefined = no filter
+  /** Cost/tokens grouped by run kind (plan/loop/evaluate) — "your planner is
+   * 70% of your spend" is the whole point of measuring per-role. */
+  costByRole: BarDatum[];
+  tokensByRole: BarDatum[];
 };
 
 export type AnalyticsResponse = Analytics & { providers: string[]; models: string[] };
 
-export function filterAnalyticsInput(
-  input: { cards: AnalyticsCardRow[]; runs: AnalyticsRunRow[]; iterations: AnalyticsIterationRow[] },
-  filter: AnalyticsFilter,
-): { cards: AnalyticsCardRow[]; runs: AnalyticsRunRow[]; iterations: AnalyticsIterationRow[] } {
-  const { fromMs, provider, model } = filter;
-
-  let filteredRuns = input.runs;
-  if (fromMs != null) {
-    filteredRuns = filteredRuns.filter(
-      (r) => new Date(r.startedAt).getTime() >= fromMs,
-    );
-  }
-  if (provider) {
-    filteredRuns = filteredRuns.filter((r) => r.provider === provider);
-  }
-  if (model) {
-    filteredRuns = filteredRuns.filter((r) => r.model === model);
-  }
-
-  const runIds = new Set(filteredRuns.map((r) => r.id));
-  const filteredIterations = input.iterations.filter((i) => runIds.has(i.runId));
-
-  return {
-    cards: input.cards,
-    runs: filteredRuns,
-    iterations: filteredIterations,
-  };
+/** Sum `value` per `label`, drop empty groups, largest first. */
+function groupBars<T>(rows: T[], label: (row: T) => string, value: (row: T) => number): BarDatum[] {
+  const groups = new Map<string, number>();
+  for (const row of rows) groups.set(label(row), (groups.get(label(row)) ?? 0) + value(row));
+  return byValueDesc([...groups].map(([l, v]) => ({ label: l, value: v })));
 }
+
+function byValueDesc(bars: BarDatum[]): BarDatum[] {
+  return bars.filter((d) => d.value > 0).sort((a, b) => b.value - a.value);
+}
+
+/** Sum of the reported values, or null when none reported — an unreported
+ * fact is never presented as zero. */
+function sumReported(values: (number | null | undefined)[]): number | null {
+  const present = values.filter((v): v is number => v != null);
+  return present.length > 0 ? present.reduce((sum, v) => sum + v, 0) : null;
+}
+
+const durationMs = (i: AnalyticsIterationRow) =>
+  new Date(i.endedAt!).getTime() - new Date(i.startedAt).getTime();
 
 export function computeAnalytics(input: {
   cards: AnalyticsCardRow[];
@@ -173,123 +176,29 @@ export function computeAnalytics(input: {
 }): Analytics {
   const { cards, runs, iterations } = input;
 
-  const promptTokens = iterations.reduce(
-    (sum, i) => sum + (i.promptTokens ?? 0),
-    0,
-  );
-  const completionTokens = iterations.reduce(
-    (sum, i) => sum + (i.completionTokens ?? 0),
-    0,
-  );
-  // Only iterations that reported a cost contribute — see totals.costUsd.
-  const pricedIterations = iterations.filter((i) => i.costUsd != null);
-  const costUsd =
-    pricedIterations.length > 0
-      ? pricedIterations.reduce((sum, i) => sum + (i.costUsd ?? 0), 0)
-      : null;
+  // Totals source tokens/cost from RUNS, not iterations: a run's telemetry is
+  // populated for every kind (loop = the roll-up of its iterations;
+  // plan/evaluate = their single invocation), so this is the only way plan and
+  // evaluate cost shows up at all.
+  const tokens = (r: AnalyticsRunRow) => (r.promptTokens ?? 0) + (r.completionTokens ?? 0);
+  const cost = (r: AnalyticsRunRow) => r.costUsd ?? 0;
+  const promptTokens = runs.reduce((sum, r) => sum + (r.promptTokens ?? 0), 0);
+  const completionTokens = runs.reduce((sum, r) => sum + (r.completionTokens ?? 0), 0);
+  // Only runs that reported a cost contribute — a run with nothing priced
+  // gets no bar rather than a $0 one.
+  const pricedRuns = runs.filter((r) => r.costUsd != null);
 
-  // Group counts by status
-  const cardStatusCounts = new Map<string, number>();
-  for (const c of cards) {
-    cardStatusCounts.set(c.status, (cardStatusCounts.get(c.status) ?? 0) + 1);
-  }
+  const cardTitle = new Map(cards.map((c) => [c.id, c.title]));
+  const runLabel = (r: AnalyticsRunRow) => cardTitle.get(r.cardId) ?? r.id;
+  const model = (r: AnalyticsRunRow) => (r.model?.trim() ? r.model : "unknown");
+  const count = () => 1;
 
-  const runStatusCounts = new Map<string, number>();
-  for (const r of runs) {
-    runStatusCounts.set(r.status, (runStatusCounts.get(r.status) ?? 0) + 1);
-  }
-
-  // Tokens per run: sum each run's iteration tokens, label = card title (fallback run.id)
-  const cardMap = new Map<string, string>();
-  for (const c of cards) {
-    cardMap.set(c.id, c.title);
-  }
-
-  const runTokenMap = new Map<string, number>();
-  for (const i of iterations) {
-    const tokens = (i.promptTokens ?? 0) + (i.completionTokens ?? 0);
-    runTokenMap.set(i.runId, (runTokenMap.get(i.runId) ?? 0) + tokens);
-  }
-
-  const tokensPerRun: BarDatum[] = runs
-    .map((r) => ({
-      label: cardMap.get(r.cardId) ?? r.id,
-      value: runTokenMap.get(r.id) ?? 0,
-    }))
-    .filter((d) => d.value > 0)
-    .sort((a, b) => b.value - a.value);
-
-  // Cost per run mirrors tokens per run, over priced iterations only: a run with
-  // nothing priced gets no bar rather than a $0 one.
-  const runCostMap = new Map<string, number>();
-  for (const i of pricedIterations) {
-    runCostMap.set(i.runId, (runCostMap.get(i.runId) ?? 0) + (i.costUsd ?? 0));
-  }
-
-  const costPerRun: BarDatum[] = runs
-    .map((r) => ({
-      label: cardMap.get(r.cardId) ?? r.id,
-      value: runCostMap.get(r.id) ?? 0,
-    }))
-    .filter((d) => d.value > 0)
-    .sort((a, b) => b.value - a.value);
-
-  // Iteration durations: endedAt - startedAt in ms, both timestamps required, ordered by startedAt asc
-  const iterationDurationsMs = iterations
-    .filter((i) => i.startedAt && i.endedAt)
-    .map((i) => new Date(i.endedAt!).getTime() - new Date(i.startedAt).getTime())
-    .sort((a, b) => a - b);
-
-  // Loop KPIs derive from the SAME duration pipeline (iterationDurationsMs) —
-  // spec 11 forbids a second duration calculation.
-  const loopKpis = computeLoopKpis(iterations, iterationDurationsMs);
-  const loopCohorts = computeLoopCohorts(iterations, runs);
-
-  // Success rate: completed / (completed+failed+timeout+cancelled+interrupted)
+  // "paused" is deliberately absent (spec 18 §6): the operator stopped that
+  // run, so it is neither a success nor a failure and belongs on neither side
+  // of the rate.
   const terminalStatuses = ["completed", "failed", "timeout", "cancelled", "interrupted"];
   const terminal = runs.filter((r) => terminalStatuses.includes(r.status));
   const completed = terminal.filter((r) => r.status === "completed").length;
-  const successRate = terminal.length === 0 ? 0 : completed / terminal.length;
-
-  // Tokens by model: sum iteration tokens per model
-  const runModel = new Map<string, string>();
-  for (const r of runs) {
-    runModel.set(r.id, r.model && r.model.trim() ? r.model : "unknown");
-  }
-
-  const modelTokenMap = new Map<string, number>();
-  for (const i of iterations) {
-    const tokens = (i.promptTokens ?? 0) + (i.completionTokens ?? 0);
-    const model = runModel.get(i.runId) ?? "unknown";
-    modelTokenMap.set(model, (modelTokenMap.get(model) ?? 0) + tokens);
-  }
-
-  const tokensByModel: BarDatum[] = Array.from(modelTokenMap.entries())
-    .filter(([, value]) => value > 0)
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => b.value - a.value);
-
-  const modelCostMap = new Map<string, number>();
-  for (const i of pricedIterations) {
-    const model = runModel.get(i.runId) ?? "unknown";
-    modelCostMap.set(model, (modelCostMap.get(model) ?? 0) + (i.costUsd ?? 0));
-  }
-
-  const costByModel: BarDatum[] = Array.from(modelCostMap.entries())
-    .filter(([, value]) => value > 0)
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => b.value - a.value);
-
-  // Runs by provider: count runs per provider
-  const providerCounts = new Map<string, number>();
-  for (const r of runs) {
-    const provider = r.provider && r.provider.trim() ? r.provider : "unknown";
-    providerCounts.set(provider, (providerCounts.get(provider) ?? 0) + 1);
-  }
-
-  const runsByProvider: BarDatum[] = Array.from(providerCounts.entries())
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => b.value - a.value);
 
   return {
     totals: {
@@ -299,23 +208,21 @@ export function computeAnalytics(input: {
       promptTokens,
       completionTokens,
       totalTokens: promptTokens + completionTokens,
-      costUsd,
+      costUsd: sumReported(runs.map((r) => r.costUsd)),
     },
-    cardsByStatus: Array.from(cardStatusCounts.entries())
-      .map(([label, value]) => ({ label, value }))
-      .sort((a, b) => b.value - a.value),
-    runsByStatus: Array.from(runStatusCounts.entries())
-      .map(([label, value]) => ({ label, value }))
-      .sort((a, b) => b.value - a.value),
-    tokensPerRun,
-    costPerRun,
-    iterationDurationsMs,
-    loopKpis,
-    loopCohorts,
-    successRate,
-    tokensByModel,
-    costByModel,
-    runsByProvider,
+    cardsByStatus: groupBars(cards, (c) => c.status, count),
+    runsByStatus: groupBars(runs, (r) => r.status, count),
+    tokensPerRun: byValueDesc(runs.map((r) => ({ label: runLabel(r), value: tokens(r) }))),
+    costPerRun: byValueDesc(pricedRuns.map((r) => ({ label: runLabel(r), value: cost(r) }))),
+    loopKpis: computeLoopKpis(iterations),
+    loopCohorts: computeLoopCohorts(iterations, runs),
+    successRate: terminal.length === 0 ? 0 : completed / terminal.length,
+    tokensByModel: groupBars(runs, model, tokens),
+    costByModel: groupBars(pricedRuns, model, cost),
+    runsByProvider: groupBars(runs, (r) => (r.provider?.trim() ? r.provider : "unknown"), count),
+    // "Your planner is 70% of your spend" is the point of measuring per role.
+    costByRole: groupBars(pricedRuns, (r) => r.kind, cost),
+    tokensByRole: groupBars(runs, (r) => r.kind, tokens),
   };
 }
 
@@ -330,16 +237,34 @@ function median(values: number[]): number | null {
   return percentile([...values].sort((a, b) => a - b), 50);
 }
 
-function computeLoopKpis(
-  iterations: AnalyticsIterationRow[],
-  sortedDurationsMs: number[],
-): LoopKpis {
-  const sampleSize = sortedDurationsMs.length;
+/** The duration and model-turn facts both the loop KPIs and the rollout
+ * acceptance read off a set of iterations: the measurable durations ranked
+ * ascending (spec 11 forbids a second duration calculation, so this is the
+ * one place it happens), their p50 and p90, the share at or over
+ * SLOW_ITERATION_MS, and the median of the reported model turns. */
+function loopWindowStats(iterations: AnalyticsIterationRow[]) {
+  const sortedDurationsMs = iterations
+    .filter((i) => i.startedAt && i.endedAt)
+    .map(durationMs)
+    .sort((a, b) => a - b);
   const slowCount = sortedDurationsMs.filter((d) => d >= SLOW_ITERATION_MS).length;
-
   const turnSamples = iterations
     .map((i) => i.modelTurns)
     .filter((t): t is number => t != null);
+  return {
+    sortedDurationsMs,
+    durationP50Ms: percentile(sortedDurationsMs, 50),
+    durationP90Ms: percentile(sortedDurationsMs, 90),
+    slowIterationRate: sortedDurationsMs.length > 0 ? slowCount / sortedDurationsMs.length : null,
+    medianModelTurns: median(turnSamples),
+    modelTurnsSampleSize: turnSamples.length,
+  };
+}
+
+function computeLoopKpis(iterations: AnalyticsIterationRow[]): LoopKpis {
+  const stats = loopWindowStats(iterations);
+  const { sortedDurationsMs } = stats;
+  const sampleSize = sortedDurationsMs.length;
 
   // Cache-hit ratio only over iterations that actually reported cache facts —
   // mixing in pre-telemetry rows would understate the ratio.
@@ -347,56 +272,34 @@ function computeLoopKpis(
   const cachedInput = cacheRows.reduce((sum, i) => sum + (i.cachedInputTokens ?? 0), 0);
   const uncachedInput = cacheRows.reduce((sum, i) => sum + (i.promptTokens ?? 0), 0);
 
-  const toolRows = iterations.filter((i) => i.toolDurationMs != null);
-  const costRows = iterations.filter((i) => i.costUsd != null);
-
   return {
     sampleSize,
-    durationP50Ms: percentile(sortedDurationsMs, 50),
-    durationP90Ms: percentile(sortedDurationsMs, 90),
+    durationP50Ms: stats.durationP50Ms,
+    durationP90Ms: stats.durationP90Ms,
     durationP95Ms: percentile(sortedDurationsMs, 95),
     durationMaxMs: sampleSize > 0 ? sortedDurationsMs[sampleSize - 1] : null,
-    slowIterationRate: sampleSize > 0 ? slowCount / sampleSize : null,
-    medianModelTurns: median(turnSamples),
-    modelTurnsSampleSize: turnSamples.length,
+    slowIterationRate: stats.slowIterationRate,
+    medianModelTurns: stats.medianModelTurns,
+    modelTurnsSampleSize: stats.modelTurnsSampleSize,
     cacheHitRatio:
       cachedInput + uncachedInput > 0 ? cachedInput / (cachedInput + uncachedInput) : null,
     cacheSampleSize: cacheRows.length,
-    totalToolDurationMs:
-      toolRows.length > 0 ? toolRows.reduce((sum, i) => sum + (i.toolDurationMs ?? 0), 0) : null,
-    totalCostUsd:
-      costRows.length > 0 ? costRows.reduce((sum, i) => sum + (i.costUsd ?? 0), 0) : null,
+    totalToolDurationMs: sumReported(iterations.map((i) => i.toolDurationMs)),
+    totalCostUsd: sumReported(iterations.map((i) => i.costUsd)),
   };
 }
 
-/** Evaluate the spec 11 performance-policy targets over the most recent
- * ROLLOUT_SAMPLE_SIZE iterations that have a measurable duration. The
- * criteria-pass / approval-rate "no regression" condition needs a baseline
- * cohort comparison and stays a human judgment — it is not encoded here. */
+/** Evaluate the spec 11 performance-policy targets over `iterations`: the
+ * rollout window, i.e. the most recent ROLLOUT_SAMPLE_SIZE iterations with a
+ * measurable duration, which the caller's query selects. The criteria-pass /
+ * approval-rate "no regression" condition needs a baseline cohort comparison
+ * and stays a human judgment — it is not encoded here. */
 export function computeRolloutAcceptance(
   iterations: AnalyticsIterationRow[],
 ): RolloutAcceptance {
-  const measurable = iterations
-    .filter((i) => i.startedAt && i.endedAt)
-    .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
-
-  const window = measurable.slice(-ROLLOUT_SAMPLE_SIZE);
-  const sufficientSample = measurable.length >= ROLLOUT_SAMPLE_SIZE;
-
-  const durations = window
-    .map((i) => new Date(i.endedAt!).getTime() - new Date(i.startedAt).getTime())
-    .sort((a, b) => a - b);
-  const turnSamples = window
-    .map((i) => i.modelTurns)
-    .filter((t): t is number => t != null);
-
-  const medianDuration = percentile(durations, 50);
-  const p90Duration = percentile(durations, 90);
-  const slowRate =
-    durations.length > 0
-      ? durations.filter((d) => d >= SLOW_ITERATION_MS).length / durations.length
-      : null;
-  const medianTurns = median(turnSamples);
+  const stats = loopWindowStats(iterations);
+  const windowSize = stats.sortedDurationsMs.length;
+  const sufficientSample = windowSize >= ROLLOUT_SAMPLE_SIZE;
 
   function evaluate(
     key: RolloutTarget["key"],
@@ -416,10 +319,10 @@ export function computeRolloutAcceptance(
   }
 
   const targets = [
-    evaluate("medianDurationMs", "Median iteration duration", medianDuration, 120_000, "atMost", "ms"),
-    evaluate("p90DurationMs", "p90 iteration duration", p90Duration, 240_000, "atMost", "ms"),
-    evaluate("slowIterationRate", "Iterations at least 5 minutes", slowRate, 0.05, "under", "ratio"),
-    evaluate("medianModelTurns", "Median model turns", medianTurns, 14, "atMost", "count"),
+    evaluate("medianDurationMs", "Median iteration duration", stats.durationP50Ms, 120_000, "atMost", "ms"),
+    evaluate("p90DurationMs", "p90 iteration duration", stats.durationP90Ms, 240_000, "atMost", "ms"),
+    evaluate("slowIterationRate", "Iterations at least 5 minutes", stats.slowIterationRate, 0.05, "under", "ratio"),
+    evaluate("medianModelTurns", "Median model turns", stats.medianModelTurns, 14, "atMost", "count"),
   ];
 
   const accepted = targets.some((t) => t.pass === false)
@@ -429,7 +332,7 @@ export function computeRolloutAcceptance(
       : null;
 
   return {
-    windowSize: window.length,
+    windowSize,
     requiredSampleSize: ROLLOUT_SAMPLE_SIZE,
     sufficientSample,
     targets,
@@ -444,26 +347,21 @@ function computeLoopCohorts(
   // Breakdowns use ACTUAL provider/model/harness/version. Pre-telemetry rows
   // fall back to the run's requested pair, which was accurate absent fallback.
   const runById = new Map(runs.map((r) => [r.id, r]));
-  const groups = new Map<string, number[]>();
-  for (const i of iterations) {
-    if (!i.startedAt || !i.endedAt) continue;
+  const cohortLabel = (i: AnalyticsIterationRow) => {
     const run = runById.get(i.runId);
     const provider = i.actualProvider ?? run?.provider ?? "unknown";
     const model = i.actualModel ?? run?.model ?? "unknown";
     const harness = i.harness
       ? ` · ${i.harness}${i.harnessVersion ? ` ${i.harnessVersion}` : ""}`
       : "";
-    const label = `${provider}/${model || "unknown"}${harness}`;
-    const durationMs = new Date(i.endedAt).getTime() - new Date(i.startedAt).getTime();
-    const group = groups.get(label);
-    if (group) group.push(durationMs);
-    else groups.set(label, [durationMs]);
-  }
+    return `${provider}/${model || "unknown"}${harness}`;
+  };
+  const groups = groupBy(iterations.filter((i) => i.startedAt && i.endedAt), cohortLabel);
 
   return Array.from(groups.entries())
-    .filter(([, durations]) => durations.length >= MIN_COHORT_SIZE)
-    .map(([label, durations]) => {
-      const sorted = durations.sort((a, b) => a - b);
+    .filter(([, cohort]) => cohort.length >= MIN_COHORT_SIZE)
+    .map(([label, cohort]) => {
+      const sorted = cohort.map(durationMs).sort((a, b) => a - b);
       return {
         label,
         sampleSize: sorted.length,

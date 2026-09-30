@@ -16,81 +16,35 @@ vi.mock("next/navigation", () => ({
 describe("AppShell", () => {
   beforeEach(cleanup);
 
-  it("renders a link to the GitHub repo with correct href and accessible name", () => {
+  it("renders Benchmarks and Docs in both the desktop rail and mobile nav, and no Info", () => {
     render(
       <AppShell>
         <div>content</div>
-      </AppShell>
+      </AppShell>,
     );
 
-    const link = screen.getByRole("link", { name: /radulf on github/i });
-    expect(link.getAttribute("href")).toContain("https://github.com/lhansen-dev/radulf");
-  });
-
-  it("renders the Benchmarks destination in both navs", () => {
-    render(
-      <AppShell>
-        <div>content</div>
-      </AppShell>
-    );
-
-    // Desktop rail + mobile bottom nav each render the destination once
-    const links = screen.getAllByRole("link", { name: /benchmarks/i });
-    expect(links).toHaveLength(2);
-    for (const link of links) expect(link.getAttribute("href")).toBe("/benchmarks");
-  });
-
-  it("no longer offers an Info destination — Docs absorbed it", () => {
-    render(
-      <AppShell>
-        <div>content</div>
-      </AppShell>
-    );
-
+    for (const [name, href] of [[/benchmarks/i, "/benchmarks"], [/docs/i, "/docs"]] as const) {
+      const links = screen.getAllByRole("link", { name });
+      expect(links).toHaveLength(2);
+      for (const link of links) expect(link.getAttribute("href")).toBe(href);
+    }
+    // Docs absorbed the old Info destination.
     expect(screen.queryAllByRole("link", { name: /^info$/i })).toHaveLength(0);
   });
 
-  it("renders the Docs destination in both navs", () => {
-    render(
-      <AppShell>
-        <div>content</div>
-      </AppShell>
-    );
-
-    const links = screen.getAllByRole("link", { name: /docs/i });
-    expect(links).toHaveLength(2);
-    for (const link of links) expect(link.getAttribute("href")).toBe("/docs");
-  });
-
-  it("has rail-footer with GitHub link as last button/link when onNewTask is provided", () => {
+  it.each([
+    ["with", () => {}],
+    ["without", undefined],
+  ])("ends the rail footer with the GitHub link %s a New task action", (_label, onNewTask) => {
     const { container } = render(
-      <AppShell onNewTask={() => {}}>
+      <AppShell onNewTask={onNewTask}>
         <div>content</div>
-      </AppShell>
+      </AppShell>,
     );
-    const rail = container.querySelector(".desktop-rail");
-    expect(rail).not.toBeNull();
-    const footer = rail!.querySelector(".rail-footer");
-    expect(footer).not.toBeNull();
-    const allInteractive = Array.from(rail!.querySelectorAll("a, button"));
-    const last = allInteractive[allInteractive.length - 1];
+    const rail = container.querySelector(".desktop-rail")!;
+    expect(rail.querySelector(".rail-footer")).not.toBeNull();
+    const last = Array.from(rail.querySelectorAll("a, button")).at(-1)!;
     expect(last.getAttribute("href")).toContain("https://github.com/lhansen-dev/radulf");
-    expect(last.getAttribute("aria-label")).toMatch(/radulf on github/i);
-  });
-
-  it("has rail-footer with GitHub link as last button/link when onNewTask is not provided", () => {
-    const { container } = render(
-      <AppShell>
-        <div>content</div>
-      </AppShell>
-    );
-    const rail = container.querySelector(".desktop-rail");
-    expect(rail).not.toBeNull();
-    const footer = rail!.querySelector(".rail-footer");
-    expect(footer).not.toBeNull();
-    const allInteractive = Array.from(rail!.querySelectorAll("a, button"));
-    const last = allInteractive[allInteractive.length - 1];
-    expect(last.getAttribute("href")).toContain("https://github.com/lhansen-dev/radulf");
-    expect(last.getAttribute("aria-label")).toMatch(/radulf on github/i);
+    expect(screen.getByRole("link", { name: /radulf on github/i })).toBe(last);
   });
 });

@@ -2,42 +2,59 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api } from "../../ui/api";
+import { api, useEventStream } from "../../ui/api";
+import { formatDuration } from "../../ui/formatDuration";
+import { Banner } from "../../ui/banner";
+import { DetailsMenu } from "../../ui/detailsMenu";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
+import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
 import { classifySelfModifying } from "./selfModifying";
+import { diffHeaderPaths, extendedHeaderPath, type DiffHeaderPaths } from "./diffHeader";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
-import { segmentSuspiciousChars } from "@/shared/diffSafety";
+import { hasSuspiciousChars, segmentSuspiciousChars, type DiffLineSegment } from "@/shared/diffSafety";
 import { DoneSummaryView } from "./doneSummaryView";
+import { errorMessage } from "@/shared/errorMessage";
+import type { CardDetailData } from "../../card/[id]/useCardDetail";
+import type { DiffResponse } from "../../api/cards/[id]/diff/route";
 
-type Detail = {
-  card: { id: string; title: string; status: string };
-  plans: { version: number; planMd: string; acceptanceCriteria: string }[];
-  runs: {
-    id: string;
-    kind: string;
-    status: string;
-    iterationsDone: number;
-    startedAt: string;
-    endedAt: string | null;
-    iterations: { n: number; summary: string | null }[];
-    provider: string | null;
-    model: string | null;
-  }[];
-};
-type DiffPayload = { runId: string; branch: string; diff: string; stat: string; done: string | null; evaluation: string | null };
+/** A diff line with its suspicious-character segments, scanned once when the
+ * diff is parsed rather than on every render. */
+type DiffLine = { text: string; segments: DiffLineSegment[] };
+type DiffFile = { header: string; paths: string[]; lines: DiffLine[] };
 
-type DiffFile = { header: string; lines: string[] };
+function setFilePaths(file: DiffFile, { source, destination }: DiffHeaderPaths) {
+  file.header = source === destination ? destination : `${source} → ${destination}`;
+  file.paths = source === destination ? [destination] : [source, destination];
+}
 
 function parseDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
+  let identity: DiffHeaderPaths = { source: "", destination: "" };
+  // True until the file's first `---`/`@@` line: only the extended header
+  // before it can carry `rename from`/`rename to`, never hunk content.
+  let inExtendedHeader = false;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      current = { header: line.replace(/^diff --git a\/(.*) b\/.*$/, "$1"), lines: [] };
+      identity = diffHeaderPaths(line);
+      current = { header: "", paths: [], lines: [] };
+      setFilePaths(current, identity);
+      inExtendedHeader = true;
       files.push(current);
     } else if (current) {
-      current.lines.push(line);
+      if (inExtendedHeader) {
+        if (line.startsWith("--- ") || line.startsWith("@@")) {
+          inExtendedHeader = false;
+        } else {
+          const named = extendedHeaderPath(line);
+          if (named) {
+            identity = { ...identity, [named.side]: named.path };
+            setFilePaths(current, identity);
+          }
+        }
+      }
+      current.lines.push({ text: line, segments: segmentSuspiciousChars(line) });
     }
   }
   return files;
@@ -56,10 +73,9 @@ function lineClass(line: string): string {
 /** Render a diff line with any bidi-override/zero-width/tag/confusable
  * character shown as a visible, labeled escape instead of silently doing
  * whatever it does to the surrounding text's display order. */
-function renderDiffLineContent(line: string) {
-  if (!line) return " ";
-  const segments = segmentSuspiciousChars(line);
-  if (segments.length === 1 && segments[0].kind === "text") return segments[0].value;
+function renderDiffLineContent({ text, segments }: DiffLine) {
+  if (!text) return " ";
+  if (segments.length === 1 && segments[0].kind === "text") return text;
   return segments.map((seg, i) =>
     seg.kind === "text" ? (
       <span key={i}>{seg.value}</span>
@@ -74,36 +90,48 @@ function renderDiffLineContent(line: string) {
 export default function ReviewPage() {
   const { id } = useParams<{ id: string }>()!;
   const router = useRouter();
-  const [detail, setDetail] = useState<Detail | null>(null);
-  const [diff, setDiff] = useState<DiffPayload | null>(null);
+  const [detail, setDetail] = useState<CardDetailData | null>(null);
+  const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
-  const rejectRef = useRef<HTMLDivElement>(null);
 
   const refetch = useCallback(() => {
-    api<Detail>(`/api/cards/${id}`).then(setDetail).catch((e) => setError(String(e)));
-    api<DiffPayload>(`/api/cards/${id}/diff`).then(setDiff).catch((e) => setError(String(e)));
+    api<CardDetailData>(`/api/cards/${id}`).then(setDetail).catch((e) => setError(String(e)));
+    api<DiffResponse>(`/api/cards/${id}/diff`).then(setDiff).catch((e) => setError(String(e)));
   }, [id]);
   useEffect(refetch, [refetch]);
+  const wasDisconnected = useRef(false);
+  useEventStream(
+    (event) => {
+      if (event.cardId === id) refetch();
+    },
+    (connected) => {
+      if (!connected) {
+        wasDisconnected.current = true;
+        return;
+      }
+      // Missed events aren't replayed: refetch on a genuine reconnect, not on
+      // the first open after mount, which the initial load already covers.
+      if (wasDisconnected.current) {
+        wasDisconnected.current = false;
+        refetch();
+      }
+    },
+  );
 
   const files = useMemo(() => (diff ? parseDiff(diff.diff) : []), [diff]);
   const evaluation = useMemo(() => (diff?.evaluation ? parseEvaluation(diff.evaluation) : null), [diff]);
-  const flags = useMemo(() => classifySelfModifying(files.map((f) => f.header)), [files]);
-  const sensitiveFlags = useMemo(() => classifySensitivePaths(files.map((f) => f.header)), [files]);
-  const ignoreFilesChanged = useMemo(() => changedIgnoreFiles(files.map((f) => f.header)), [files]);
-  const hasSuspiciousChars = useMemo(
-    () => files.some((f) => f.lines.some((line) => segmentSuspiciousChars(line).length > 1)),
-    [files],
-  );
+  const changedPaths = useMemo(() => files.flatMap((f) => f.paths), [files]);
+  const flags = useMemo(() => classifySelfModifying(changedPaths), [changedPaths]);
+  const sensitiveFlags = useMemo(() => classifySensitivePaths(changedPaths), [changedPaths]);
+  const ignoreFilesChanged = useMemo(() => changedIgnoreFiles(changedPaths), [changedPaths]);
+  const hasSuspicious = useMemo(() => (diff ? hasSuspiciousChars(diff.diff) : false), [diff]);
   const loopRun = detail?.runs.find((r) => r.kind === "loop" && r.status === "completed");
   const plan = detail?.plans[0];
   const planTag = detail ? plannerModelTag(detail.runs) : null;
-  const wallTime =
-    loopRun?.endedAt && loopRun.startedAt
-      ? Math.round((new Date(loopRun.endedAt).getTime() - new Date(loopRun.startedAt).getTime()) / 60000)
-      : null;
+  const wallTime = loopRun?.endedAt ? formatDuration(loopRun.startedAt, loopRun.endedAt) : null;
 
   async function decide(decision: "approved" | "rejected") {
     if (!loopRun) return;
@@ -113,28 +141,22 @@ export default function ReviewPage() {
       await api("/api/reviews", { json: { runId: loopRun.id, decision, feedback } });
       router.push("/");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
       setBusy(false);
     }
   }
 
-  useEffect(() => {
-    if (!rejecting) return;
-    const previous = document.activeElement as HTMLElement;
-    const oldOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    rejectRef.current?.querySelector<HTMLElement>("textarea")?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) setRejecting(false);
-      if (event.key !== "Tab") return;
-      const items = Array.from(rejectRef.current?.querySelectorAll<HTMLElement>('textarea, button:not([disabled])') ?? []);
-      if (!items.length) return;
-      if (event.shiftKey && document.activeElement === items[0]) { event.preventDefault(); items.at(-1)?.focus(); }
-      if (!event.shiftKey && document.activeElement === items.at(-1)) { event.preventDefault(); items[0].focus(); }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => { document.body.style.overflow = oldOverflow; document.removeEventListener("keydown", onKey); previous?.focus(); };
-  }, [rejecting, busy]);
+  async function abandon() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/cards/${id}/abandon`, { json: {} });
+      router.push("/");
+    } catch (e) {
+      setError(errorMessage(e));
+      setBusy(false);
+    }
+  }
 
   if (!detail) return <div className="p-8 text-foreground/50">{error || "Loading…"}</div>;
 
@@ -145,13 +167,10 @@ export default function ReviewPage() {
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>
-        <details className="relative">
-          <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" aria-label="Review options">•••</summary>
-          <div className="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl">
-            <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-            <button disabled={busy} onClick={() => confirm("Abandon this task? Its worktree and branch will be deleted.") && api(`/api/cards/${id}/abandon`, { json: {} }).then(() => router.push("/"))} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
-          </div>
-        </details>
+        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
+          <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
+          <button disabled={busy} onClick={() => { if (confirm("Abandon this task? Its worktree and branch will be deleted.")) void abandon(); }} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
+        </DetailsMenu>
       </header>
 
       {diff?.done && <DoneSummaryView done={diff.done} />}
@@ -168,61 +187,35 @@ export default function ReviewPage() {
         </div>
       )}
       {sensitiveFlags.length > 0 && (
-        <div className="bg-red-950/40 border border-red-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-red-300">🛑 Touches sandbox / security-critical code</span>
-          <div className="mt-1 space-y-1">
-            {sensitiveFlags.map((flag) => (
-              <div key={flag.label} className="text-foreground/80">
-                <span className="text-red-400 font-medium">{flag.label}</span>
-                {flag.paths.length > 0 && (
-                  <span className="text-foreground/50 ml-1">({flag.paths.join(", ")})</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <Banner tone="red" title="🛑 Touches sandbox / security-critical code"><FlagList flags={sensitiveFlags} tone="text-red-400" /></Banner>
       )}
       {ignoreFilesChanged.length > 0 && (
-        <div className="bg-red-950/40 border border-red-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-red-300">🛑 .gitignore / .gitattributes changed</span>
-          <p className="mt-1 text-foreground/80">
+        <Banner tone="red" title="🛑 .gitignore / .gitattributes changed">
+          <p>
             These files can hide content from <code>git add</code> or from how a diff renders:{" "}
             {ignoreFilesChanged.join(", ")}
           </p>
-        </div>
+        </Banner>
       )}
-      {hasSuspiciousChars && (
-        <div className="bg-red-950/40 border border-red-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-red-300">🛑 Invisible or confusable characters in the diff</span>
-          <p className="mt-1 text-foreground/80">
+      {hasSuspicious && (
+        <Banner tone="red" title="🛑 Invisible or confusable characters in the diff">
+          <p>
             Highlighted inline below — bidi-override, zero-width, tag, or homoglyph characters can
             make code display differently than it executes.
           </p>
-        </div>
+        </Banner>
       )}
       {flags.length > 0 && (
-        <div className="bg-amber-950/40 border border-amber-800/50 rounded p-3 text-sm">
-          <span className="font-medium text-amber-300">⚠️ Self-modifying / load-bearing diff</span>
-          <div className="mt-1 space-y-1">
-            {flags.map((flag) => (
-              <div key={flag.label} className="text-foreground/80">
-                <span className="text-amber-400 font-medium">{flag.label}</span>
-                {flag.paths.length > 0 && (
-                  <span className="text-foreground/50 ml-1">({flag.paths.join(", ")})</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <Banner tone="amber" title="⚠️ Self-modifying / load-bearing diff"><FlagList flags={flags} tone="text-amber-400" /></Banner>
       )}
       <div className="text-sm text-foreground/60">
         {loopRun ? `${loopRun.iterationsDone} iterations` : "no completed loop run"}
-        {wallTime !== null && ` · ${wallTime} min wall time`}
+        {wallTime && ` · ${wallTime} wall time`}
         {diff && ` · ${diff.stat.trim() || "no source changes"} · branch ${diff.branch}`}
       </div>
       {error && <p className="text-red-400 text-sm">{error}</p>}
 
-      {files.length > 0 && <label className="block text-sm text-foreground/60 lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className="mt-1 w-full rounded-lg border border-foreground/10 bg-foreground/5 px-3"><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
+      {files.length > 0 && <label className="block text-sm text-foreground/60 lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className={dialogInputCls}><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
 
       <div className="flex min-w-0 flex-col items-start gap-4 lg:flex-row">
         <main className="grow min-w-0 flex flex-col gap-2">
@@ -232,14 +225,14 @@ export default function ReviewPage() {
               feedback or abandon.
             </p>
           )}
-          {files.map((file) => (
-            <details id={`diff-file-${files.indexOf(file)}`} key={file.header} open className="w-full min-w-0 scroll-mt-4 rounded border border-foreground/10 bg-foreground/[0.03]">
+          {files.map((file, index) => (
+            <details id={`diff-file-${index}`} key={file.header} open className="w-full min-w-0 scroll-mt-4 rounded border border-foreground/10 bg-foreground/[0.03]">
               <summary className="cursor-pointer px-3 py-2 text-sm font-mono text-foreground/80 hover:bg-foreground/[0.05]">
                 {file.header}
               </summary>
               <pre className="text-xs font-mono overflow-x-auto px-3 pb-3 leading-5">
                 {file.lines.map((line, i) => (
-                  <div key={i} className={lineClass(line)}>
+                  <div key={i} className={lineClass(line.text)}>
                     {renderDiffLineContent(line)}
                   </div>
                 ))}
@@ -296,49 +289,40 @@ export default function ReviewPage() {
       </footer>
 
       {rejecting && (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4"
-          onMouseDown={(event) => event.target === event.currentTarget && !busy && setRejecting(false)}
+        <DialogShell
+          titleId="reject-title"
+          title="Reject with feedback"
+          closeLabel="Close reject with feedback"
+          onRequestClose={() => { if (!busy) setRejecting(false); }}
+          footer={<>
+            <button type="button" onClick={() => setRejecting(false)} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+            <button type="button" disabled={!feedback.trim() || busy} onClick={() => decide("rejected")} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">Reject &amp; re-plan</button>
+          </>}
         >
-          <div
-            ref={rejectRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="reject-title"
-            className="w-full rounded-t-2xl border border-foreground/10 bg-surface p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:max-w-lg sm:rounded-2xl"
-          >
-            <h3 id="reject-title" className="font-medium mb-2">Reject with feedback</h3>
-            <p className="text-xs text-foreground/50 mb-2">
-              The feedback becomes the loop’s first task on the next run — be concrete about what to
-              change.
-            </p>
-            <textarea
-              autoFocus
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-              rows={5}
-              required
-              aria-required="true"
-              className="w-full bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm font-mono"
-            />
-            <div className="flex gap-2 justify-end mt-3">
-              <button
-                onClick={() => setRejecting(false)}
-                className="px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground"
-              >
-                Cancel
-              </button>
-              <button
-                disabled={!feedback.trim() || busy}
-                onClick={() => decide("rejected")}
-                className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-on-accent font-medium rounded px-3 py-1.5 text-sm"
-              >
-                Reject &amp; resume loop
-              </button>
-            </div>
-          </div>
-        </div>
+          <p className="text-xs text-foreground/50">
+            The planner re-plans this task with your feedback, on top of the work already done — be
+            concrete about what to change.
+          </p>
+          <textarea
+            autoFocus
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            rows={5}
+            required
+            aria-required="true"
+            className="w-full bg-foreground/5 border border-foreground/10 rounded px-2 py-1.5 text-sm font-mono"
+          />
+        </DialogShell>
       )}
     </div>
   );
+}
+
+function FlagList({ flags, tone }: { flags: { label: string; paths: string[] }[]; tone: string }) {
+  return flags.map((flag) => (
+    <div key={flag.label}>
+      <span className={`${tone} font-medium`}>{flag.label}</span>
+      {flag.paths.length > 0 && <span className="text-foreground/50 ml-1">({flag.paths.join(", ")})</span>}
+    </div>
+  ));
 }

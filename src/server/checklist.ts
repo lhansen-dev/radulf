@@ -38,6 +38,8 @@ export type SelectedTask = {
   item: ChecklistItem;
   /** true when no other unchecked item remains after this one. */
   isLastUnchecked: boolean;
+  /** How many items the checklist holds in all, checked or not. */
+  taskCount: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,14 @@ export type SelectedTask = {
 
 /** Regex that matches a task marker line (must start at column 0). */
 const TASK_MARKER_RE = /^-\s*\[([ xX])\]\s+(.*)$/;
+
+/**
+ * Same marker as TASK_MARKER_RE, split into (prefix, char, suffix) so
+ * markChecked can flip just the bracket character without touching the
+ * whitespace the author used — used only there, kept next to
+ * TASK_MARKER_RE so the two stay in sync.
+ */
+const MARKER_SPLIT_RE = /^(-\s*\[)([ xX])(\]\s+.*)$/;
 
 /** Returns true when the trimmed line is exactly `## Tasks`. */
 function isTasksHeading(line: string): boolean {
@@ -164,6 +174,7 @@ export function firstUnchecked(planMd: string): SelectedTask | null {
     taskNumber: firstUncheckedIndex + 1, // 1-based
     item: parsed.items[firstUncheckedIndex],
     isLastUnchecked: !hasLaterUnchecked,
+    taskCount: parsed.items.length,
   };
 }
 
@@ -204,20 +215,20 @@ export function markChecked(planMd: string, taskNumber: number): string {
   const markerLineIndex = item.startLine - 1; // 0-based
   const line = lines[markerLineIndex];
 
-  // Replace the first "- [ ]" with "- [x]" (byte-preserving)
-  const uncheckedMarker = "- [ ]";
-  const checkedMarker = "- [x]";
-  const markerPos = line.indexOf(uncheckedMarker);
+  // Split on the same marker TASK_MARKER_RE accepts (tolerant of the
+  // whitespace between "-" and "[") so a marker the parser finds is always
+  // one markChecked can flip. Only the bracket character changes; the
+  // captured prefix/suffix are the original bytes, untouched.
+  const splitMatch = line.match(MARKER_SPLIT_RE);
 
-  if (markerPos === -1) {
+  if (splitMatch === null) {
     // Should not happen given we parsed it, but be defensive
     throw new Error(
-      `markChecked: cannot find "- [ ]" marker on line ${item.startLine}`,
+      `markChecked: line ${item.startLine} does not match a task marker`,
     );
   }
 
-  const newLine =
-    line.slice(0, markerPos) + checkedMarker + line.slice(markerPos + uncheckedMarker.length);
+  const newLine = splitMatch[1] + "x" + splitMatch[3];
   lines[markerLineIndex] = newLine;
 
   return lines.join("\n");
@@ -231,8 +242,8 @@ export function markChecked(planMd: string, taskNumber: number): string {
  * Return `planMd` with a new unchecked item appended to the end of the
  * `## Tasks` section (before the next `##` heading, else at EOF).
  *
- * Every iteration runs on an injected checklist task, so feedback re-entry
- * (evaluator revise, reviewer reject, merge-conflict reloop) must add one —
+ * Every iteration runs on an injected checklist task, so a loop re-entry
+ * without re-planning (a merge-conflict reloop) must add one —
  * otherwise the resumed loop dies with an exhausted checklist. Multiline
  * text becomes indented continuation lines; blank lines are dropped so the
  * item stays a single checklist entry. Throws when the plan has no

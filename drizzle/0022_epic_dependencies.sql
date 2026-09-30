@@ -1,0 +1,1 @@
+ALTER TABLE `cards` ADD `depends_on` text;

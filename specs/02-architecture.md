@@ -65,8 +65,9 @@ hot-reload double-start). Responsibilities:
    review; a revise verdict returns it to the ready queue with an injected
    feedback task. Only one ticket occupies the pipeline at a time: nothing new
    starts while a card is planning, looping, or evaluating (`pump` returns early
-   when `pipelineBusy()` is true, tracking the in-flight loop in an
-   `activeLoopCards` set). There are no parallel loops or planners. Cards
+   when `pipelineBusy()` is true; since spec 25 the in-flight loop is tracked
+   by the card's own `looping` status plus a running `runs` row claimed under
+   `BEGIN IMMEDIATE`, not an in-memory set). There are no parallel loops or planners. Cards
    waiting for the slot show a "queued" sub-state in In Progress.
 3. **Session management** — drive one in-process pi (SDK) session per run,
    normalize its event stream to a transcript file, and mirror run-level status

@@ -1,0 +1,10 @@
+# Overrides for `make check-compose`, layered over compose.yaml. The check
+# only has to prove the stack boots; it never runs a provider login, so the
+# fixed OAuth callback ports compose.yaml publishes for `web` are dropped —
+# left in, a check next to a running Radulf stack fails at `up` because the
+# host ports are already taken. `!override` replaces the whole list rather
+# than merging into it.
+services:
+  web:
+    ports: !override
+      - "127.0.0.1:${RADULF_PORT:-3000}:3000"

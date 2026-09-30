@@ -1,5 +1,15 @@
+import { EPIC_RUN_MODES, type EpicRunMode } from "@/db";
+import type { BreakdownPiece } from "./epics";
+import { isJiraIssueKey } from "./jira";
 import type { CreateCardRequest } from "@/shared/cardRequests";
-import { ClientError } from "./clientError";
+import {
+  invalid,
+  optionalInteger,
+  optionalString,
+  record,
+  rejectUnknownKeys,
+  requiredString,
+} from "./requestValidation";
 
 type CreateCardInput = Omit<
   CreateCardRequest,
@@ -10,6 +20,11 @@ type CreateCardInput = Omit<
   plannerModel: string | null;
   loopModel: string | null;
   evaluatorModel: string | null;
+  /** Spec 30: per-card plan critic override; null/undefined defers to settings. */
+  planCritic?: boolean | null;
+  criticModel?: string | null;
+  /** The Jira issue this card mirrors; null clears it. */
+  jiraKey?: string | null;
 };
 
 export type UpdateCardInput = {
@@ -21,72 +36,49 @@ export type UpdateCardInput = {
   plannerModel?: string | null;
   loopModel?: string | null;
   evaluatorModel?: string | null;
+  /** Spec 30: null clears the override; otherwise stored as SQLite's 0/1. */
+  planCritic?: number | null;
+  criticModel?: string | null;
+  /** Stored as SQLite's 0/1, so the PATCH route can spread these straight in. */
+  grillMe?: number;
+  scopingAuthorsPlan?: number;
+  /** Spec 24: how an epic's pieces are scheduled. */
+  runMode?: EpicRunMode | null;
+  /** The Jira issue this card mirrors; null clears it. */
+  jiraKey?: string | null;
 };
 
-function invalid(message: string): never {
-  throw new ClientError(message);
-}
-
-function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    invalid("card body must be an object");
-  }
-  return value as Record<string, unknown>;
-}
-
-function rejectUnknownKeys(body: Record<string, unknown>, allowed: Set<string>) {
-  const unknown = Object.keys(body).find((key) => !allowed.has(key));
-  if (unknown) invalid(`unknown card field: ${unknown}`);
-}
-
-function requiredString(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) invalid(`${field} is required`);
-  return value.trim();
-}
-
-function optionalString(value: unknown, field: string): string | null {
-  if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string") invalid(`${field} must be a string or null`);
-  return value.trim() || null;
-}
-
-function optionalInteger(value: unknown, field: string, max: number): number | null {
-  if (value === undefined || value === null || value === "") return null;
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) {
-    invalid(`${field} must be an integer between 1 and ${max}`);
-  }
-  return parsed;
-}
-
 const CREATE_FIELDS = new Set([
-  "repoId",
-  "title",
-  "description",
-  "maxIterations",
-  "timeoutMinutes",
-  "plannerModel",
-  "loopModel",
-  "evaluatorModel",
-  "reviewPlanBeforeImplementation",
-  "autoApprove",
-  "baseBranch",
+  "repoId", "title", "description", "maxIterations", "timeoutMinutes", "plannerModel",
+  "loopModel", "evaluatorModel", "reviewPlanBeforeImplementation", "autoApprove", "openPr",
+  "grillMe", "scopingAuthorsPlan", "baseBranch", "planCritic", "criticModel", "jiraKey",
 ]);
 
+/** The create body's boolean flags, all optional and all defaulting to false. */
+const CREATE_BOOLEANS = [
+  "reviewPlanBeforeImplementation", "autoApprove", "openPr", "grillMe", "scopingAuthorsPlan",
+] as const;
+
+/** A card's Jira issue key, upper-cased so it matches what Jira itself shows.
+ * Null means "no issue linked", which is also the default. A pasted link is
+ * rejected: the stored value is always the bare key the comment API needs. */
+function jiraKey(value: unknown, field = "jiraKey"): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && isJiraIssueKey(value)) return value.trim().toUpperCase();
+  return invalid("jiraKey must be a Jira issue key like DEV-123, or null");
+}
+
 export function parseCreateCard(value: unknown): CreateCardInput {
-  const body = record(value);
-  rejectUnknownKeys(body, CREATE_FIELDS);
+  const body = record(value, "card body");
+  rejectUnknownKeys(body, CREATE_FIELDS, "card field");
   if (body.description !== undefined && typeof body.description !== "string") {
     invalid("description must be a string");
   }
-  if (
-    body.reviewPlanBeforeImplementation !== undefined &&
-    typeof body.reviewPlanBeforeImplementation !== "boolean"
-  ) {
-    invalid("reviewPlanBeforeImplementation must be a boolean");
+  for (const field of CREATE_BOOLEANS) {
+    if (body[field] !== undefined && typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
   }
-  if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") {
-    invalid("autoApprove must be a boolean");
+  if (body.planCritic != null && typeof body.planCritic !== "boolean") {
+    invalid("planCritic must be a boolean or null");
   }
   return {
     repoId: requiredString(body.repoId, "repoId"),
@@ -99,24 +91,29 @@ export function parseCreateCard(value: unknown): CreateCardInput {
     evaluatorModel: optionalString(body.evaluatorModel, "evaluatorModel"),
     reviewPlanBeforeImplementation: body.reviewPlanBeforeImplementation ?? false,
     autoApprove: body.autoApprove ?? false,
+    openPr: body.openPr ?? false,
+    grillMe: body.grillMe ?? false,
+    scopingAuthorsPlan: body.scopingAuthorsPlan ?? false,
     baseBranch: optionalString(body.baseBranch, "baseBranch"),
+    planCritic: body.planCritic === undefined ? undefined : (body.planCritic as boolean | null),
+    criticModel: optionalString(body.criticModel, "criticModel"),
+    jiraKey: jiraKey(body.jiraKey),
   } as CreateCardInput;
 }
 
 const UPDATE_FIELDS = new Set([
-  "title",
-  "description",
-  "maxIterations",
-  "timeoutMinutes",
-  "position",
-  "plannerModel",
-  "loopModel",
-  "evaluatorModel",
+  "title", "description", "maxIterations", "timeoutMinutes", "position", "plannerModel", "loopModel",
+  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "runMode", "planCritic", "criticModel", "jiraKey",
 ]);
 
+function runMode(value: unknown): EpicRunMode {
+  if (!EPIC_RUN_MODES.includes(value as EpicRunMode)) invalid("runMode must be ordered, parallel or graph");
+  return value as EpicRunMode;
+}
+
 export function parseUpdateCard(value: unknown): UpdateCardInput {
-  const body = record(value);
-  rejectUnknownKeys(body, UPDATE_FIELDS);
+  const body = record(value, "card body");
+  rejectUnknownKeys(body, UPDATE_FIELDS, "card field");
   const patch: UpdateCardInput = {};
   if ("title" in body) patch.title = requiredString(body.title, "title");
   if ("description" in body) {
@@ -135,9 +132,61 @@ export function parseUpdateCard(value: unknown): UpdateCardInput {
     }
     patch.position = body.position;
   }
-  for (const field of ["plannerModel", "loopModel", "evaluatorModel"] as const) {
+  for (const field of ["plannerModel", "loopModel", "evaluatorModel", "criticModel"] as const) {
     if (field in body) patch[field] = optionalString(body[field], field);
   }
+  if ("planCritic" in body) {
+    if (body.planCritic === null) patch.planCritic = null;
+    else if (typeof body.planCritic === "boolean") patch.planCritic = body.planCritic ? 1 : 0;
+    else invalid("planCritic must be a boolean or null");
+  }
+  for (const field of ["grillMe", "scopingAuthorsPlan"] as const) {
+    if (!(field in body)) continue;
+    if (typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
+    patch[field] = body[field] ? 1 : 0;
+  }
+  if ("runMode" in body) patch.runMode = body.runMode === null ? null : runMode(body.runMode);
+  if ("jiraKey" in body) patch.jiraKey = jiraKey(body.jiraKey);
   if (Object.keys(patch).length === 0) invalid("nothing to update");
   return patch;
+}
+
+const BREAKDOWN_FIELDS = new Set(["pieces", "runMode"]);
+const PIECE_FIELDS = new Set(["title", "description", "repoId", "dependsOn", "jiraKey"]);
+
+/** Spec 28: a piece's `dependsOn` as 0-based sibling indexes, deduplicated
+ * and sorted. Messages count pieces from 1, the way people read the list. */
+function pieceDependsOn(value: unknown, index: number, count: number): number[] {
+  if (!Array.isArray(value) || value.some((item) => !Number.isInteger(item))) {
+    invalid("dependsOn must be a list of piece indexes");
+  }
+  const indexes = value as number[];
+  for (const target of indexes) {
+    if (target === index) invalid(`piece ${index + 1} cannot depend on itself`);
+    if (target < 0 || target >= count) invalid(`piece ${index + 1} depends on unknown piece ${target + 1}`);
+  }
+  return [...new Set(indexes)].sort((a, b) => a - b);
+}
+
+/** Spec 24: the body of POST /api/cards/:id/breakdown. The run mode defaults
+ * to in order, as the split proposal's parser does. */
+export function parseBreakdown(value: unknown): { pieces: BreakdownPiece[]; runMode: EpicRunMode } {
+  const body = record(value, "breakdown body");
+  rejectUnknownKeys(body, BREAKDOWN_FIELDS, "breakdown field");
+  if (!Array.isArray(body.pieces)) invalid("pieces must be an array");
+  const count = body.pieces.length;
+  const pieces = (body.pieces as unknown[]).map((item, index): BreakdownPiece => {
+    const piece = record(item, "breakdown piece");
+    rejectUnknownKeys(piece, PIECE_FIELDS, "piece field");
+    if (typeof piece.description !== "string") invalid("every piece needs a description");
+    const parsed: BreakdownPiece = {
+      title: requiredString(piece.title, "title"),
+      description: piece.description as string,
+      repoId: optionalString(piece.repoId, "repoId"),
+    };
+    if (piece.dependsOn !== undefined) parsed.dependsOn = pieceDependsOn(piece.dependsOn, index, count);
+    if (piece.jiraKey !== undefined) parsed.jiraKey = jiraKey(piece.jiraKey);
+    return parsed;
+  });
+  return { pieces, runMode: body.runMode === undefined ? "ordered" : runMode(body.runMode) };
 }

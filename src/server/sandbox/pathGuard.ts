@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /**
  * Layer 2 path containment (spec 14): the OS sandbox (L1) cannot reach the
@@ -32,6 +35,20 @@ function expandTilde(input: string): string {
     return path.join(os.homedir(), input.slice(2));
   }
   return input;
+}
+
+/**
+ * Apply the same path spellings accepted by pi's built-in file tools before
+ * enforcing containment. The delegate receives the canonical path returned by
+ * guardPath, so it cannot reinterpret a checked `@`, file URL, or Unicode
+ * space form as a different filesystem location.
+ */
+export function normalizeToolPath(input: string): string {
+  let normalized = input.replace(UNICODE_SPACES, " ");
+  if (normalized.startsWith("@")) normalized = normalized.slice(1);
+  normalized = expandTilde(normalized);
+  if (/^file:\/\//.test(normalized)) return fileURLToPath(normalized);
+  return normalized;
 }
 
 /**
@@ -71,21 +88,52 @@ export function isInsideOrEqual(child: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+/** The error for a write inside a root that is nonetheless off limits. */
+export function deniedPathMessage(deniedRoots: string[]): string {
+  return `path is inside ${deniedRoots.join(", ")}, which this role may never write to`;
+}
+
 /**
  * Resolve `input` (after `~` expansion, relative to `cwd`) and assert its
- * realpath falls inside one of `allowedRoots`. Returns the resolved realpath
- * on success; throws the single L2 error shape on escape.
+ * realpath falls inside one of `allowedRoots` and none of `deniedRoots`.
+ * Returns the resolved realpath on success; throws the single L2 error shape
+ * on escape, or the denied-path shape for a carve-out inside a root.
  */
 export function guardPath(
   input: string,
   allowedRoots: string[],
   cwd: string,
+  deniedRoots: string[] = [],
 ): string {
-  const expanded = expandTilde(input);
-  const abs = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+  return guardPathInternal(input, allowedRoots, cwd, deniedRoots, false);
+}
+
+/** Guard against roots that were canonicalized when the tool was created. */
+export function guardPathWithPinnedRoots(
+  input: string,
+  allowedRoots: string[],
+  cwd: string,
+  deniedRoots: string[] = [],
+): string {
+  return guardPathInternal(input, allowedRoots, cwd, deniedRoots, true);
+}
+
+function guardPathInternal(
+  input: string,
+  allowedRoots: string[],
+  cwd: string,
+  deniedRoots: string[],
+  rootsArePinned: boolean,
+): string {
+  const normalized = normalizeToolPath(input);
+  const abs = path.isAbsolute(normalized) ? normalized : path.resolve(cwd, normalized);
   const real = realpathBestEffort(abs);
+  const rootPath = (root: string) => (rootsArePinned ? root : realpathBestEffort(root));
+  if (deniedRoots.some((root) => isInsideOrEqual(real, rootPath(root)))) {
+    throw new Error(deniedPathMessage(deniedRoots));
+  }
   for (const root of allowedRoots) {
-    if (isInsideOrEqual(real, realpathBestEffort(root))) return real;
+    if (isInsideOrEqual(real, rootPath(root))) return real;
   }
   throw new Error(pathBoundaryMessage(allowedRoots));
 }

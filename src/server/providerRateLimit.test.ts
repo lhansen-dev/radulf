@@ -1,0 +1,130 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTestDataDir } from "@/testUtils/testDataDir";
+
+setupTestDataDir("radulf-rate-limit-");
+
+const { db, settings } = await import("@/db");
+const {
+  observeRateLimitHeaders,
+  readProviderRateLimit,
+  rateLimitCooldownMs,
+  limitCooldownMs,
+  recordProviderFailure,
+} = await import("./providerRateLimit");
+const { providerBreakerStatus } = await import("./circuitBreaker");
+
+beforeEach(() => {
+  db.delete(settings).run();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const exhausted = (resetEpochSeconds: number) => ({
+  "anthropic-ratelimit-unified-status": "rejected",
+  "anthropic-ratelimit-unified-reset": String(resetEpochSeconds),
+  "anthropic-ratelimit-unified-7d-utilization": "1.0",
+});
+
+describe("observeRateLimitHeaders", () => {
+  it("stores a reading and reads it back", () => {
+    observeRateLimitHeaders("anthropic", {
+      "anthropic-ratelimit-unified-status": "allowed_warning",
+      "anthropic-ratelimit-unified-7d-utilization": "0.8",
+      "anthropic-ratelimit-unified-representative-claim": "seven_day",
+    });
+    const reading = readProviderRateLimit("anthropic")!;
+    expect(reading.status).toBe("warning");
+    expect(reading.bindingWindow).toBe("7d");
+  });
+
+  it("overwrites rather than accumulating, since only the current standing matters", () => {
+    observeRateLimitHeaders("anthropic", { "anthropic-ratelimit-unified-status": "allowed" });
+    observeRateLimitHeaders("anthropic", { "anthropic-ratelimit-unified-status": "rejected" });
+    expect(readProviderRateLimit("anthropic")!.status).toBe("exhausted");
+    expect(db.select().from(settings).all()).toHaveLength(1);
+  });
+
+  it("records nothing for a provider that sends no such headers", () => {
+    observeRateLimitHeaders("omlx", { "content-type": "application/json" });
+    expect(readProviderRateLimit("omlx")).toBeNull();
+  });
+
+  it("never throws out into the agent's hot path", () => {
+    expect(() => observeRateLimitHeaders("anthropic", undefined)).not.toThrow();
+    // A header value of the wrong shape must not take a run down with it.
+    expect(() =>
+      observeRateLimitHeaders("anthropic", { "anthropic-ratelimit-unified-status": "allowed", "anthropic-ratelimit-unified-reset": "{}" }),
+    ).not.toThrow();
+  });
+
+  it("reads a corrupt stored row as absent", () => {
+    db.insert(settings).values({ key: "rateLimit:anthropic", value: "not json" }).run();
+    expect(readProviderRateLimit("anthropic")).toBeNull();
+  });
+});
+
+describe("cooldowns from the observed reset", () => {
+  const nowMs = Date.parse("2026-09-20T12:00:00.000Z");
+  const inOneHour = Math.floor((nowMs + 3_600_000) / 1000);
+
+  it("waits exactly until the provider's own reset instant", () => {
+    observeRateLimitHeaders("anthropic", exhausted(inOneHour));
+    expect(rateLimitCooldownMs("anthropic", nowMs)).toBe(3_600_000);
+  });
+
+  it("prefers the observed reset over a duration named in the error text", () => {
+    observeRateLimitHeaders("anthropic", exhausted(inOneHour));
+    expect(limitCooldownMs("anthropic", "429 rate limit; retry after 30 seconds", nowMs)).toBe(3_600_000);
+  });
+
+  it("falls back to the error text when there is no reading", () => {
+    expect(limitCooldownMs("anthropic", "429 rate limit; retry after 30 seconds", nowMs)).toBe(30_000);
+  });
+
+  it("falls through to null when neither source says anything", () => {
+    expect(limitCooldownMs("anthropic", "429 Too Many Requests", nowMs)).toBeNull();
+  });
+
+  it("ignores a reading that says the account is fine, so a limit error came from elsewhere", () => {
+    observeRateLimitHeaders("anthropic", {
+      "anthropic-ratelimit-unified-status": "allowed",
+      "anthropic-ratelimit-unified-reset": String(inOneHour),
+    });
+    expect(rateLimitCooldownMs("anthropic", nowMs)).toBeNull();
+  });
+
+  it("ignores a reset that has already passed", () => {
+    observeRateLimitHeaders("anthropic", exhausted(Math.floor((nowMs - 60_000) / 1000)));
+    expect(rateLimitCooldownMs("anthropic", nowMs)).toBeNull();
+  });
+});
+
+describe("recordProviderFailure", () => {
+  it("counts a connection failure towards the breaker and reports its kind", () => {
+    expect(recordProviderFailure("anthropic", "fetch failed")).toBe("conn");
+    expect(providerBreakerStatus("anthropic").consecutiveFailures).toBe(1);
+  });
+
+  it("classifies a config failure without recording it", () => {
+    expect(recordProviderFailure("anthropic", "400 invalid_request: unknown model")).toBe("config");
+    expect(providerBreakerStatus("anthropic").consecutiveFailures).toBe(0);
+  });
+
+  it("says nothing about an error that is not the provider's", () => {
+    expect(recordProviderFailure("anthropic", "2 tests failed")).toBeNull();
+    expect(providerBreakerStatus("anthropic").consecutiveFailures).toBe(0);
+  });
+
+  it("opens on a limit failure until the account's own observed reset", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-20T12:00:00.000Z"));
+    observeRateLimitHeaders("anthropic", exhausted(Math.floor(Date.now() / 1000) + 3_600));
+    expect(recordProviderFailure("anthropic", "429 rate limit; retry after 30 seconds")).toBe("limit");
+    const status = providerBreakerStatus("anthropic");
+    expect(status.state).toBe("open");
+    expect(status.reason).toBe("limit");
+    expect(status.openUntil).toBe("2026-09-20T13:00:00.000Z");
+  });
+});

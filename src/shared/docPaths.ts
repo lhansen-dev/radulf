@@ -20,19 +20,28 @@ export function isDocPath(relPath: string): boolean {
 }
 
 /**
- * Extract the affected worktree-relative paths from `git status --porcelain`
- * output. Renames (`R  old -> new`) report the destination — the path that now
- * exists in the tree.
+ * Extract affected paths from the exact output of
+ * `git status --porcelain=v1 -z`. The NUL form never quotes path names and
+ * emits a rename destination first, followed by a separate source record.
+ * Both identities are security-relevant: allowing only the destination would
+ * let an evaluator move implementation code into an allowed documentation
+ * path and thereby delete the implementation.
+ * Human-readable arrow parsing is intentionally unsupported because the
+ * arrow may be part of a valid file name.
  */
 export function changedPaths(porcelain: string): string[] {
-  return porcelain
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .map((line) => {
-      const rest = line.slice(3);
-      const arrow = rest.indexOf(" -> ");
-      const p = arrow === -1 ? rest : rest.slice(arrow + 4);
-      return p.replace(/^"(.*)"$/, "$1");
-    });
+  const records = porcelain.split("\0");
+  const paths: string[] = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
+    if (!record) continue;
+    const status = record.slice(0, 2);
+    paths.push(record[2] === " " ? record.slice(3) : record);
+    if (status.includes("R") || status.includes("C")) {
+      const source = records[i + 1];
+      if (source) paths.push(source);
+      i += 1;
+    }
+  }
+  return paths;
 }
