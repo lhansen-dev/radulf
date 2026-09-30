@@ -537,6 +537,7 @@ export default function SettingsPage() {
                   <SectionHeading title="Planning" />
                   {numberInput("plannerTimeoutMinutes", "Timeout (minutes)", "Caps each card's planning pass.", 1, "max-w-xs text-sm text-foreground/70")}
                   {numberInput("criticTimeoutMinutes", "Critic timeout (minutes)", "Caps each plan critique pass.", 1)}
+                  {numberInput("scopingTimeoutMinutes", "Scoping timeout (minutes)", "Caps each scoping turn: a reply, a proposal or a breakdown.", 1)}
                   <label className="block max-w-xs text-sm text-foreground/70">
                     Plan critic
                     <select

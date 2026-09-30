@@ -107,6 +107,9 @@ export const SETTING_DEFAULTS = {
   evaluatorTimeoutMinutes: 10,
   // Spec 30: one critic pass is one harness invocation.
   criticTimeoutMinutes: 10,
+  // Spec 17: one scoping turn is one read-only harness invocation while the
+  // operator waits. Big repositories can need more than the default to read.
+  scopingTimeoutMinutes: 5,
   // Spec 30 — `breakdown` = on for cards that are pieces of an epic, `always`,
   // `off`; a card's own `planCritic` column overrides.
   planCriticMode: "breakdown",
@@ -244,6 +247,7 @@ const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   iterationHardTimeoutMinutes: [1, 1_440],
   evaluatorTimeoutMinutes: [1, 10_080],
   criticTimeoutMinutes: [1, 10_080],
+  scopingTimeoutMinutes: [1, 1_440],
   gateTimeoutMinutes: [1, 1_440],
   stallTimeoutSeconds: [30, 86_400],
   workerStaleSeconds: [15, 86_400],

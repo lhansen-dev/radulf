@@ -14,13 +14,6 @@ import { scopingRunId } from "@/shared/scopingRunId";
 
 export type ScopingMessage = typeof scopingMessages.$inferSelect;
 
-/**
- * One scoping turn is a read-only exploration of a real repository while the
- * operator waits, so this bounds a wedged provider without cutting off a
- * genuine look around. The stall watchdog still ends a dead stream early.
- */
-const TURN_TIMEOUT_MS = 5 * 60 * 1000;
-
 export function listScopingMessages(cardId: string): ScopingMessage[] {
   return db
     .select()
@@ -311,7 +304,7 @@ export type ScopingTurnInFlight = { request: ScopingRequest; startedAt: string }
 /**
  * Cards with a scoping turn in flight. Scoping runs outside the pipeline
  * slots, so nothing else bounds it: every POST started another model session
- * against the repository for up to TURN_TIMEOUT_MS, however many were already
+ * against the repository for up to scopingTimeoutMinutes, however many were already
  * running for the same card. One turn per card at a time; the thread is
  * sequential anyway. The entry is also how the card page learns a turn is
  * running when it was not the one to start it: after a reload, or in a
@@ -364,7 +357,9 @@ async function ask(
       prompt: renderScopingPrompt(card, messages, request),
       cwd: repo.path,
       transcriptPath,
-      timeoutMs: TURN_TIMEOUT_MS,
+      // One turn is a read-only look around a real repository while the
+      // operator waits; the stall watchdog still ends a dead stream early.
+      timeoutMs: settings.scopingTimeoutMinutes * 60 * 1000,
       readOnly: true,
     });
   } finally {
