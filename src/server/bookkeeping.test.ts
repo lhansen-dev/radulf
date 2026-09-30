@@ -312,7 +312,7 @@ describe("performIterationBookkeeping", () => {
       taskNumber: 1,
       summary: "implemented the first feature",
     });
-    expect(fs.existsSync(signal)).toBe(false);
+    expect(fs.readdirSync(dir)).not.toContain(path.basename(signal));
     expect(fs.readFileSync(path.join(dir, "PLAN.md"), "utf8")).toContain("- [x] item 1\n- [ ] item 2");
     expect(await git(dir, "log", "-1", "--format=%s")).toBe(
       "ralph: task 1 — implemented the first feature",

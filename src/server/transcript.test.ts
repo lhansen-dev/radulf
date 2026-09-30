@@ -194,7 +194,7 @@ describe("startTranscriptPush", () => {
     watchCallback!();
     const first = await firstPending;
     expect(first.fromCursor).toBe(0);
-    expect(first.cursor).toBe(fs.statSync(file).size);
+    expect(first.cursor).toBe(fs.readFileSync(file).length);
 
     const secondPending = nextTranscriptPush("run-fromcursor");
     fs.appendFileSync(file, `${JSON.stringify({ t: "raw", line: "two" })}\n`);

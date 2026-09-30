@@ -574,7 +574,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       type LoopRow = { id: string };
       let running: LoopRow | undefined;
       const deadline = Date.now() + 90_000;
-      while (!running) {
+      for (;;) {
         [running] = dbQuery<LoopRow>(
           "SELECT id FROM runs WHERE kind = 'loop' AND status = 'running' AND worker_id IS NOT NULL AND card_id = ?",
           cardId,
@@ -1060,7 +1060,7 @@ describe.skipIf(process.env.RADULF_SPLIT_CHECK !== "1")("split web/worker proces
       type LoopRow = { id: string; worker_id: string | null; iterations_done: number };
       let victim: LoopRow | undefined;
       const deadline = Date.now() + 120_000;
-      while (!victim) {
+      for (;;) {
         [victim] = dbQuery<LoopRow>(
           "SELECT id, worker_id, iterations_done FROM runs WHERE kind = 'loop' AND status = 'running' AND iterations_done >= 1 AND card_id = ?",
           cardId,

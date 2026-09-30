@@ -22,7 +22,10 @@ describe("repository inspection", () => {
   let repo: string;
   let emptyRepo: string;
   let nonGitDir: string;
-  const missingPath = path.join(os.tmpdir(), "nonexistent-ralph-test-path-12345");
+  // Parent for the missing path, worktrees and marker files below: a fresh
+  // private directory rather than fixed names directly under the shared temp dir.
+  let scratch: string;
+  let missingPath: string;
 
   beforeAll(() => {
     repo = initScratchRepo("ralph-git-test-");
@@ -30,10 +33,12 @@ describe("repository inspection", () => {
     emptyRepo = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-empty-repo-"));
     git(emptyRepo, "init");
     nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-no-git-"));
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-git-scratch-"));
+    missingPath = path.join(scratch, "nonexistent");
   });
 
   afterAll(() => {
-    for (const d of [repo, emptyRepo, nonGitDir]) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of [repo, emptyRepo, nonGitDir, scratch]) fs.rmSync(d, { recursive: true, force: true });
   });
 
   it("listBranches returns every branch, or [] outside a git repo", async () => {
@@ -60,7 +65,7 @@ describe("repository inspection", () => {
   });
 
   it("offRunBranchReason is null on the run branch, and names where the worktree went otherwise", async () => {
-    const wt = path.join(os.tmpdir(), `ralph-offbranch-wt-${process.pid}`);
+    const wt = path.join(scratch, "ralph-offbranch-wt");
     git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-1");
     try {
       expect(await offRunBranchReason(wt, "ralph/run-1", repo)).toBeNull();
@@ -79,7 +84,7 @@ describe("repository inspection", () => {
   });
 
   it("offRunBranchReason names a worktree whose .git pointer no longer leads to the repository", async () => {
-    const wt = path.join(os.tmpdir(), `ralph-gitdir-wt-${process.pid}`);
+    const wt = path.join(scratch, "ralph-gitdir-wt");
     git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-2");
     const pointer = path.join(wt, ".git");
     const original = fs.readFileSync(pointer, "utf8");
@@ -102,8 +107,8 @@ describe("repository inspection", () => {
   });
 
   it("host-side git runs neither hooks nor fsmonitor, even from a relative hooksPath", async () => {
-    const wt = path.join(os.tmpdir(), `ralph-hooks-wt-${process.pid}`);
-    const marker = path.join(os.tmpdir(), `ralph-hook-ran-${process.pid}`);
+    const wt = path.join(scratch, "ralph-hooks-wt");
+    const marker = path.join(scratch, "ralph-hook-ran");
     fs.rmSync(marker, { force: true });
     git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-hooks");
     try {
@@ -133,8 +138,8 @@ describe("repository inspection", () => {
   });
 
   it("host commits replace a planted COMMIT_EDITMSG link without touching its target", async () => {
-    const wt = path.join(os.tmpdir(), `ralph-message-wt-${process.pid}`);
-    const target = path.join(os.tmpdir(), `ralph-message-target-${process.pid}`);
+    const wt = path.join(scratch, "ralph-message-wt");
+    const target = path.join(scratch, "ralph-message-target");
     git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-message");
     fs.writeFileSync(target, "preserve me");
     try {
