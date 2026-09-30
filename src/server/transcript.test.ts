@@ -390,8 +390,8 @@ describe("startTranscriptPush", () => {
     // The ancestor's event has to be processed before the file is written, or
     // the attach succeeds from the ancestor's event and the walk-down never
     // happens. Poll for it: it is an fs event, but a slow machine must not make
-    // this test red.
-    for (let i = 0; i < 100 && !watched.includes(runDir); i++) {
+    // this test red. macOS FSEvents can take over a second under a full suite.
+    for (let i = 0; i < 300 && !watched.includes(runDir); i++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(watched).toContain(runDir); // the watch moved down a level
