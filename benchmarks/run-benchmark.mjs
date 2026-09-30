@@ -148,7 +148,7 @@ export async function runSandboxedCriterion(command, worktree, timeout = 30_000)
     process.env.CLAUDE_CODE_TMPDIR = tmpdir;
     SandboxManager.updateConfig(config);
     const wrapped = await SandboxManager.wrapWithSandbox(command, "/bin/sh", config);
-    return await execCmd("/bin/sh", ["-c", wrapped], {
+    return await execShellCmd(wrapped, {
       cwd: worktree,
       timeout,
       env: benchmarkChildEnv(tmpdir),
@@ -306,23 +306,41 @@ function parseTs(ts) {
  * Uses child_process.execFile for safety.
  */
 function execCmd(bin, args, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const child = execFile(bin, args, {
-      cwd: opts.cwd || process.cwd(),
-      timeout: opts.timeout || 30_000,
-      maxBuffer: 10 * 1024 * 1024, // 10 MB
-      env: opts.env || benchmarkChildEnv(os.tmpdir()),
-    }, (error, stdout, stderr) => {
-      if (error && error.killed) {
-        // Timeout
-        resolve({ exitCode: null, stdout: stdout || "", stderr: stderr || "", error: "Timed out" });
-      } else if (error) {
-        resolve({ exitCode: error.code || 1, stdout: stdout || "", stderr: stderr || "" });
-      } else {
-        resolve({ exitCode: 0, stdout: stdout || "", stderr: stderr || "" });
-      }
-    });
+  return new Promise((resolve) => {
+    execFile(bin, args, execCmdOptions(opts), execCmdCallback(resolve));
   });
+}
+
+/**
+ * `execCmd` for a shell command line: `/bin/sh -c command`. Its own execFile
+ * call, so the argv-only callers (git, cp) never share one with a shell.
+ */
+function execShellCmd(command, opts = {}) {
+  return new Promise((resolve) => {
+    execFile("/bin/sh", ["-c", command], execCmdOptions(opts), execCmdCallback(resolve));
+  });
+}
+
+function execCmdOptions(opts) {
+  return {
+    cwd: opts.cwd || process.cwd(),
+    timeout: opts.timeout || 30_000,
+    maxBuffer: 10 * 1024 * 1024, // 10 MB
+    env: opts.env || benchmarkChildEnv(os.tmpdir()),
+  };
+}
+
+function execCmdCallback(resolve) {
+  return (error, stdout, stderr) => {
+    if (error && error.killed) {
+      // Timeout
+      resolve({ exitCode: null, stdout: stdout || "", stderr: stderr || "", error: "Timed out" });
+    } else if (error) {
+      resolve({ exitCode: error.code || 1, stdout: stdout || "", stderr: stderr || "" });
+    } else {
+      resolve({ exitCode: 0, stdout: stdout || "", stderr: stderr || "" });
+    }
+  };
 }
 
 // ── CLI entry point ──────────────────────────────────────────────

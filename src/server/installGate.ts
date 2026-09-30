@@ -4,7 +4,7 @@ import path from "node:path";
 import type { ApprovedInstallScript } from "@/db";
 import { scriptKey } from "@/shared/installScripts";
 import { errorMessage } from "@/shared/errorMessage";
-import { execBounded } from "./exec";
+import { execShellBounded } from "./exec";
 import type { RunSandboxContext } from "./sandbox/context";
 import { runSandboxedCommand } from "./sandbox/srt";
 
@@ -222,13 +222,13 @@ export function sandboxedNpmRunner(ctx: RunSandboxContext): NpmRunner {
     // Same joining as the acceptance probe: the preamble's lines end in
     // `|| true`, so the command must start a line of its own.
     const prefixed = ctx.commandPrefix ? `${ctx.commandPrefix}\n${command}` : command;
-    // execBounded rather than a bare exec: SIGTERM at the bound, SIGKILL
+    // execShellBounded rather than a bare exec: SIGTERM at the bound, SIGKILL
     // after, stdin closed — a postinstall that prompts or hangs fails instead
     // of wedging the approval route. Run inside the sandbox claim, not after
     // it: a rebuild is the network-heaviest thing Radulf runs, and the
     // process-wide egress policy has to stay this run's for its duration.
     const run = (toRun: string) =>
-      execBounded("/bin/sh", ["-c", toRun], {
+      execShellBounded(toRun, {
         cwd,
         env: ctx.env,
         timeoutMs: REBUILD_TIMEOUT_MS,
@@ -236,7 +236,7 @@ export function sandboxedNpmRunner(ctx: RunSandboxContext): NpmRunner {
       });
     let outcome: Awaited<ReturnType<typeof run>>;
     try {
-      // Only the wrap can throw here — execBounded reports failures in its
+      // Only the wrap can throw here — execShellBounded reports failures in its
       // result. Could not contain it, so do not run it.
       outcome = ctx.srtConfig
         ? await runSandboxedCommand(prefixed, ctx.srtConfig, run, { tmpdir: ctx.tmpdir })

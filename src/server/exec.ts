@@ -1,4 +1,4 @@
-import { execFile, type ExecFileException } from "node:child_process";
+import { execFile, type ChildProcess, type ExecFileException } from "node:child_process";
 
 // A process wedged deep in a blocking syscall can ignore SIGTERM; escalate to
 // SIGKILL this long after if it's still alive.
@@ -37,23 +37,42 @@ export function execBounded(
   args: string[],
   options: ExecBoundedOptions
 ): Promise<ExecBoundedResult> {
+  return runBounded(options, (done) => execFile(bin, args, execFileOptions(options), done));
+}
+
+/**
+ * `execBounded` for a shell command line: `/bin/sh -c command`. A call site of
+ * its own rather than `execBounded("/bin/sh", ["-c", …])`, so the argv-only
+ * callers (git, gh) never share an `execFile` with a shell — sharing one is
+ * what lets a static analysis read every git argument as a shell command.
+ */
+export function execShellBounded(
+  command: string,
+  options: ExecBoundedOptions
+): Promise<ExecBoundedResult> {
+  return runBounded(options, (done) => execFile("/bin/sh", ["-c", command], execFileOptions(options), done));
+}
+
+function execFileOptions(options: ExecBoundedOptions) {
+  return {
+    encoding: "utf8" as const,
+    maxBuffer: options.maxBuffer,
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  };
+}
+
+function runBounded(
+  options: ExecBoundedOptions,
+  spawn: (done: (err: ExecFileException | null, stdout: string, stderr: string) => void) => ChildProcess
+): Promise<ExecBoundedResult> {
   return new Promise((resolve) => {
     let timedOut = false;
-    const child = execFile(
-      bin,
-      args,
-      {
-        encoding: "utf8" as const,
-        maxBuffer: options.maxBuffer,
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-        ...(options.env ? { env: options.env } : {}),
-      },
-      (err, stdout, stderr) => {
-        clearTimeout(termTimer);
-        clearTimeout(killTimer);
-        resolve({ err, stdout, stderr, timedOut });
-      }
-    );
+    const child = spawn((err, stdout, stderr) => {
+      clearTimeout(termTimer);
+      clearTimeout(killTimer);
+      resolve({ err, stdout, stderr, timedOut });
+    });
     // Nothing run through here is ever meant to read stdin. Closing it makes a
     // credential helper (or gh) that decides to prompt fail immediately instead
     // of blocking on a read that will never be answered.
