@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CLONES_DIR } from "@/db";
+import { privateDir } from "@/db/privateFs";
 import { ClientError } from "./clientError";
 import { assertUsableRepo, cloneRemote, tryGit } from "./git";
 import { assertRepoName } from "./repoInit";
@@ -30,8 +31,7 @@ export async function cloneRepository(
   const target = path.join(CLONES_DIR, name);
   if (fs.existsSync(target)) throw new ClientError(`${target} already exists`);
   try {
-    fs.mkdirSync(CLONES_DIR, { recursive: true, mode: 0o700 });
-    fs.chmodSync(CLONES_DIR, 0o700);
+    privateDir(CLONES_DIR);
   } catch (cause) {
     throw new ClientError(`could not create ${CLONES_DIR}: ${errorMessage(cause)}`);
   }

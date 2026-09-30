@@ -15,6 +15,7 @@ import {
 } from "./cgroup";
 import { detectMacDiskMechanism } from "./diskWatchdog";
 import { buildRunSandboxConfig, resolveGitCommonDir } from "./srt";
+import { createSerialQueue } from "./serialQueue";
 
 /**
  * Per-run sandbox context (spec 14, resolved design question 4): ONE factory
@@ -98,22 +99,21 @@ function groupAlive(pgid: number): boolean {
  * truncate that ledger immediately after starting a symlink flipper.
  */
 export async function reapProcessGroups(pgids: Iterable<number>): Promise<number[]> {
-  const leftover: number[] = [];
-  for (const pgid of pgids) {
-    for (let attempt = 0; groupAlive(pgid); attempt++) {
-      if (attempt >= REAP_RETRIES) {
-        leftover.push(pgid);
-        break;
-      }
+  // Kill every live group before each wait, so N survivors cost one retry
+  // interval rather than N of them.
+  let live = [...pgids].filter(groupAlive);
+  for (let attempt = 0; live.length > 0 && attempt < REAP_RETRIES; attempt++) {
+    for (const pgid of live) {
       try {
         process.kill(-pgid, "SIGKILL");
       } catch {
         // Group vanished between the check and the kill.
       }
-      await sleep(REAP_RETRY_MS);
     }
+    await sleep(REAP_RETRY_MS);
+    live = live.filter(groupAlive);
   }
-  return leftover;
+  return live;
 }
 
 /**
@@ -197,9 +197,9 @@ export async function createRunSandbox(
   const processGroups = new Set<number>();
   let commandStarted = false;
   const reap = async (): Promise<number[]> => {
-    await reapProcessGroups(processGroups);
+    const survivors = new Set(await reapProcessGroups(processGroups));
     for (const pgid of processGroups) {
-      if (!groupAlive(pgid)) processGroups.delete(pgid);
+      if (!survivors.has(pgid)) processGroups.delete(pgid);
     }
 
     if (cgroup) {
@@ -230,20 +230,7 @@ export async function createRunSandbox(
     }
     return [...processGroups];
   };
-  let operationTail = Promise.resolve();
-  const runExclusive = async <T>(operation: () => Promise<T>): Promise<T> => {
-    const previous = operationTail;
-    let release: () => void = () => undefined;
-    operationTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  };
+  const runExclusive = createSerialQueue();
   return {
     runId,
     root,

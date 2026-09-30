@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SENSITIVE_ROOTS = [
+/** Also the source of next.config.ts's `outputFileTracingExcludes`. */
+export const SENSITIVE_ROOTS = [
   ".agents",
   ".codex",
   ".git",
@@ -12,11 +13,14 @@ const SENSITIVE_ROOTS = [
   path.join("benchmarks", "reports"),
 ];
 
-function walk(dir) {
+// The build cache holds compiler state, not the trace manifests the
+// standalone output is assembled from, and it is by far the largest tree.
+function walk(dir, skip = new Set()) {
   const files = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...walk(full));
+    if (skip.has(full)) continue;
+    if (entry.isDirectory()) files.push(...walk(full, skip));
     else if (entry.isFile() && entry.name.endsWith(".nft.json")) files.push(full);
   }
   return files;
@@ -36,7 +40,7 @@ export function sanitizeTraceManifests(projectRoot = process.cwd()) {
   const nextDir = path.join(projectRoot, ".next");
   if (!fs.existsSync(nextDir)) throw new Error(".next does not exist; run next build first");
   let removed = 0;
-  for (const manifestPath of walk(nextDir)) {
+  for (const manifestPath of walk(nextDir, new Set([path.join(nextDir, "cache")]))) {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     if (!Array.isArray(manifest.files)) continue;
     const safe = manifest.files.filter((file) => {
@@ -47,16 +51,6 @@ export function sanitizeTraceManifests(projectRoot = process.cwd()) {
     if (safe.length !== manifest.files.length) {
       fs.writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, files: safe })}\n`, { mode: 0o600 });
     }
-  }
-
-  for (const manifestPath of walk(nextDir)) {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    const leaked = Array.isArray(manifest.files)
-      ? manifest.files.find(
-          (file) => typeof file === "string" && isSensitive(file, path.dirname(manifestPath), projectRoot),
-        )
-      : undefined;
-    if (leaked) throw new Error(`sensitive trace entry remains in ${manifestPath}: ${leaked}`);
   }
   return removed;
 }

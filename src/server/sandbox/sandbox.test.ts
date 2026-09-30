@@ -282,6 +282,24 @@ describe("process-group reaping (spec 14 L3 1f)", () => {
     }
   });
 
+
+  it("kills every live group before waiting, not one group per wait", async () => {
+    // Direct children of this process, so Node reaps them as soon as they die
+    // and the timing reflects the reap loop rather than a zombie's lifetime.
+    const children = Array.from({ length: 5 }, () =>
+      spawn("sleep", ["600"], { detached: true, stdio: "ignore" }),
+    );
+    const pgids = children.flatMap((child) => (child.pid ? [child.pid] : []));
+    try {
+      expect(pgids).toHaveLength(5);
+      const startedAt = Date.now();
+      expect(await reapProcessGroups(pgids)).toEqual([]);
+      // One group at a time costs a 100ms retry interval each, 500ms here.
+      expect(Date.now() - startedAt).toBeLessThan(400);
+    } finally {
+      await reapProcessGroups(pgids);
+    }
+  });
 });
 
 describe("cgroup plan (spec 14 L3 1e — unit level; enforcement is checklist #9)", () => {

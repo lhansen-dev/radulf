@@ -71,7 +71,7 @@ describe("runGateCommand", () => {
     await expect(pending).rejects.toThrow();
   });
 
-  it("reaps a background process group before returning to the artifact writer", async () => {
+  it("tracks a background process group so the caller's reap can kill it", async () => {
     const pgids = new Set<number>();
     const reaping = {
       ...ctx,
@@ -85,6 +85,7 @@ describe("runGateCommand", () => {
       timeoutMs: 5_000,
     });
     expect(result).toMatchObject({ exitCode: 0, error: null });
+    expect(await reaping.reap()).toEqual([]);
     const [pgid] = [...pgids];
     expect(() => process.kill(-pgid, 0)).toThrow();
   });

@@ -146,15 +146,8 @@ export async function runGateCommand(opts: {
     // A wrap that could not be built: the gate did not run, and says so.
     outcome = { exitCode: null, timedOut: false, error: errorMessage(e), output: "" };
   }
-  const leftovers = await ctx.reap();
-  if (leftovers.length > 0) {
-    outcome = {
-      exitCode: null,
-      timedOut: false,
-      error: `surviving gate process groups after reap: ${leftovers.join(", ")}`,
-      output: outcome.output,
-    };
-  }
+  // No reap here on the way out: both callers reap before writing GATE.md
+  // and fail the run outright if any group survives.
   return {
     command,
     startedAt: startedAt.toISOString(),

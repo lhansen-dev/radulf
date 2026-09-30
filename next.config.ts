@@ -3,6 +3,8 @@ import path from "node:path";
 
 import type { NextConfig } from "next";
 
+import { SENSITIVE_ROOTS } from "./scripts/sanitize-next-traces.mjs";
+
 /**
  * Turbopack panics — `Symlink [project]/node_modules is invalid, it points out
  * of the filesystem root` — when `<project>/node_modules` is a symlink that
@@ -78,17 +80,9 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@earendil-works/pi-coding-agent", "@anthropic-ai/sandbox-runtime"],
   // Runtime worktrees, transcripts, private plans, and benchmark reports are
   // created after deployment and must never be copied into production output.
+  // The same roots scripts/sanitize-next-traces.mjs strips after the build.
   outputFileTracingExcludes: {
-    "/*": [
-      "./.agents/**/*",
-      "./.codex/**/*",
-      "./.env*",
-      "./.git/**/*",
-      "./benchmarks/reports/**/*",
-      "./data/**/*",
-      "./runtmp/**/*",
-      "./worktrees/**/*",
-    ],
+    "/*": ["./.env*", ...SENSITIVE_ROOTS.map((root) => `./${root}/**/*`)],
   },
   // The Docs wiki reads repo markdown from disk at request time. Trace those
   // files into the standalone build so the routes work in production, not just

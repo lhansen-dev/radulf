@@ -155,6 +155,25 @@ describe("authentication routes", () => {
     expect((await success).status).toBe(307);
   });
 
+  it("frees password-check slots before the shared bucket's escalated stall", async () => {
+    // Eight bad guesses in flight with the shared delay at its 15s cap must not
+    // hold every slot for 15s: the operator's password is admitted once the
+    // flat baseline delay has passed, not 503'd for the whole stall.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+    for (let i = 0; i < 10; i++) recordLoginFailure(loginClientKey(loginRequest("x")));
+
+    const guesses = Array.from({ length: 8 }, () => login(loginRequest("wrong")));
+    await settle(BASE_FAILURE_DELAY_MS);
+
+    const success = login(loginRequest(PASSWORD));
+    await settle(0);
+    expect((await success).status).toBe(307);
+
+    await settle(20_000);
+    expect((await Promise.all(guesses)).map((r) => r.status)).toEqual(Array(8).fill(401));
+  });
+
   it("rejects a declared oversized login body before parsing it", async () => {
     const response = await login(
       new Request("http://localhost/api/auth/login", {

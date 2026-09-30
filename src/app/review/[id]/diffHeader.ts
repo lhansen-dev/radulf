@@ -87,6 +87,12 @@ export function diffHeaderPaths(line: string): DiffHeaderPaths {
       }
     }
   }
+  // A header for anything but a rename or copy names the same path twice.
+  // A crafted rename can also produce a symmetric header, but git follows
+  // every rename with unambiguous `rename from`/`rename to` lines, which
+  // callers apply via `extendedHeaderPath` to override this reading.
+  const same = rest.slice(2, (rest.length - 1) / 2);
+  if (rest === `a/${same} b/${same}`) return { source: same, destination: same };
   // Git may leave spaces unquoted, including the exact ` b/` delimiter text
   // inside a path. The grammar is ambiguous in that case. Use the earliest
   // plausible destination marker so a sensitive destination remains whole
@@ -108,6 +114,25 @@ export function diffHeaderPaths(line: string): DiffHeaderPaths {
     }
   }
   return { source: line, destination: line };
+}
+
+const EXTENDED_HEADER = /^(rename|copy) (from|to) (.+)$/;
+
+/**
+ * The path named by a `rename from`/`rename to`/`copy from`/`copy to` line in
+ * a file's extended header, or null for any other line. These carry one path
+ * each, C-quoted like the header, so they are the unambiguous identities of a
+ * rename whose `diff --git` header cannot be split reliably.
+ */
+export function extendedHeaderPath(
+  line: string,
+): { side: "source" | "destination"; path: string } | null {
+  const match = EXTENDED_HEADER.exec(line);
+  if (!match) return null;
+  return {
+    side: match[2] === "from" ? "source" : "destination",
+    path: unquoteGitPath(match[3]),
+  };
 }
 
 /** The destination path used as the primary review identity. */
