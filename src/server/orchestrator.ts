@@ -1900,9 +1900,15 @@ export class Orchestrator {
     // be able to read PLAN.md.
     const planPath = planStatePath(cardId);
     const legacyPlanPath = ralphFile("PLAN.md");
-    if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) {
-      fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(planPath), { recursive: true });
-      fs.writeFileSync(/* turbopackIgnore: true */ planPath, readFileIfExists(legacyPlanPath) || plan.planMd);
+    fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(planPath), { recursive: true });
+    try {
+      // "wx": create only, so an existing copy is kept by the write itself
+      // rather than by a separate existence check it could race.
+      fs.writeFileSync(/* turbopackIgnore: true */ planPath, readFileIfExists(legacyPlanPath) || plan.planMd, {
+        flag: "wx",
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     // CRITERIA.md is orchestrator-private like PLAN.md (the evaluator gets the
     // criteria injected into its prompt). Only PROMPT.md and the signal files

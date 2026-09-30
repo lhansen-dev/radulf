@@ -138,11 +138,13 @@ export function ralphDirPath(worktreePath: string): string {
 export function readFileIfExists(filePath: string): string {
   let fd: number | undefined;
   try {
-    const stat = fs.lstatSync(/* turbopackIgnore: true */ filePath);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) return "";
+    // Opened first and inspected through the descriptor, so the path cannot be
+    // swapped between a check and the read: a final symlink fails the open,
+    // and O_NONBLOCK keeps a planted FIFO from blocking it before fstat
+    // rejects anything that is not a regular file.
     fd = fs.openSync(
       /* turbopackIgnore: true */ filePath,
-      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
     );
     const opened = fs.fstatSync(fd);
     if (!opened.isFile() || opened.size > 4 * 1024 * 1024) return "";
@@ -298,17 +300,33 @@ async function dirtyContentHash(worktreePath: string): Promise<string> {
     const abs = path.join(/* turbopackIgnore: true */ worktreePath, rel);
     hash.update(`\0${rel}\0`);
     try {
-      const stat = fs.lstatSync(/* turbopackIgnore: true */ abs);
-      hash.update(
-        stat.isSymbolicLink()
-          ? fs.readlinkSync(/* turbopackIgnore: true */ abs)
-          : fs.readFileSync(/* turbopackIgnore: true */ abs),
-      );
+      hash.update(untrackedEntryContent(abs));
     } catch {
       // Removed between the listing and the read — the path alone still counts.
     }
   }
   return hash.digest("hex");
+}
+
+/** A symlink's target, a regular file's bytes, or nothing for anything else.
+ * Opened before it is inspected, so an entry swapped for a link or a FIFO in
+ * between is never followed or blocked on. */
+function untrackedEntryContent(abs: string): Buffer | string {
+  let fd: number;
+  try {
+    fd = fs.openSync(
+      /* turbopackIgnore: true */ abs,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") return fs.readlinkSync(/* turbopackIgnore: true */ abs);
+    throw error;
+  }
+  try {
+    return fs.fstatSync(fd).isFile() ? fs.readFileSync(fd) : "";
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /** Snapshot of the worktree taken just before a loop iteration runs. */

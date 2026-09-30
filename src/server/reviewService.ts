@@ -40,8 +40,14 @@ import type { StageDependencies } from "./stage";
  * never runs. */
 function appendFeedbackTask(cardId: string, text: string): string | null {
   const planPath = planStatePath(cardId);
-  if (!fs.existsSync(/* turbopackIgnore: true */ planPath)) return null;
-  const updated = appendTask(fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8"), text);
+  let current: string;
+  try {
+    current = fs.readFileSync(/* turbopackIgnore: true */ planPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const updated = appendTask(current, text);
   fs.writeFileSync(/* turbopackIgnore: true */ planPath, updated);
   return updated;
 }

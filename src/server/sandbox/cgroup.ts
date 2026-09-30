@@ -66,9 +66,10 @@ export function setupRunCgroup(runId: string, root: string = CGROUP_ROOT): RunCg
     }
     for (const [file, value] of plan.writes) {
       const controlFile = path.join(plan.dir, file);
-      if (!fs.existsSync(controlFile) && !requiredLimits.has(file)) continue;
       try {
-        fs.writeFileSync(controlFile, value);
+        // "r+" never creates the file, so an absent optional controller fails
+        // this write instead of needing an existence check ahead of it.
+        fs.writeFileSync(controlFile, value, { flag: "r+" });
         if (fs.readFileSync(controlFile, "utf8").trim() !== value) throw new Error("cgroup limit mismatch");
       } catch {
         if (requiredLimits.has(file)) return null;

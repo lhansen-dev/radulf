@@ -36,17 +36,30 @@ const HOST_GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor
 /** Remove Git's reusable message path before every trusted host commit. */
 function clearCommitMessagePath(cwd: string): void {
   const marker = path.join(cwd, ".git");
-  const stat = fs.lstatSync(marker);
+  // Opened without following a final symlink and inspected through the
+  // descriptor, so the pointer that is read is the entry that was checked.
+  let fd: number;
+  try {
+    fd = fs.openSync(marker, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(`unsafe git metadata path: ${marker}`);
+    throw error;
+  }
   let gitDir: string;
-  if (stat.isDirectory() && !stat.isSymbolicLink()) {
-    gitDir = fs.realpathSync.native(marker);
-  } else if (stat.isFile() && !stat.isSymbolicLink()) {
-    const pointer = fs.readFileSync(marker, "utf8");
-    const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
-    if (!match) throw new Error(`invalid gitdir pointer: ${marker}`);
-    gitDir = realpathBestEffort(path.resolve(cwd, match[1]));
-  } else {
-    throw new Error(`unsafe git metadata path: ${marker}`);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (stat.isDirectory()) {
+      gitDir = fs.realpathSync.native(marker);
+    } else if (stat.isFile()) {
+      const pointer = fs.readFileSync(fd, "utf8");
+      const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
+      if (!match) throw new Error(`invalid gitdir pointer: ${marker}`);
+      gitDir = realpathBestEffort(path.resolve(cwd, match[1]));
+    } else {
+      throw new Error(`unsafe git metadata path: ${marker}`);
+    }
+  } finally {
+    fs.closeSync(fd);
   }
   // Unlinking removes symlinks and hardlink directory entries without
   // touching their targets. Git then creates a fresh regular file.

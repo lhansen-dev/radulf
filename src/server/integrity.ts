@@ -71,8 +71,14 @@ function snapshotHooks(hooksDir: string): Record<string, string> {
   for (const name of entries) {
     if (name.endsWith(".sample")) continue;
     try {
-      const p = path.join(hooksDir, name);
-      if (fs.statSync(p).isFile()) hooks[name] = sha256(fs.readFileSync(p));
+      // Opened before it is inspected, so the file that is hashed is the one
+      // fstat saw; O_NONBLOCK keeps a FIFO from blocking the open.
+      const fd = fs.openSync(path.join(hooksDir, name), fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+      try {
+        if (fs.fstatSync(fd).isFile()) hooks[name] = sha256(fs.readFileSync(fd));
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch {
       // Vanished between readdir and read — treat as absent.
     }

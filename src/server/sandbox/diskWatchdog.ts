@@ -55,14 +55,15 @@ export async function ensureBallast(
   bytes: number = BALLAST_BYTES,
 ): Promise<void> {
   try {
-    const existing = await fs.promises.stat(ballastPath).catch(() => null);
-    if (existing && existing.size >= bytes) return;
     await fs.promises.mkdir(path.dirname(ballastPath), { recursive: true });
-    const chunk = Buffer.alloc(64 * 1024 * 1024);
-    const handle = await fs.promises.open(ballastPath, "w");
+    // Opened without truncating and sized through the handle, so the file
+    // whose size is checked is the one that gets written.
+    const handle = await fs.promises.open(ballastPath, fs.constants.O_WRONLY | fs.constants.O_CREAT);
     try {
+      if ((await handle.stat()).size >= bytes) return;
+      const chunk = Buffer.alloc(64 * 1024 * 1024);
       for (let written = 0; written < bytes; written += chunk.length) {
-        await handle.write(chunk, 0, Math.min(chunk.length, bytes - written));
+        await handle.write(chunk, 0, Math.min(chunk.length, bytes - written), written);
       }
     } finally {
       await handle.close();
