@@ -44,7 +44,7 @@ type BraveResponse = {
 
 /** Collapse whitespace and strip Brave's `<strong>` highlight markup. */
 function clean(text: string): string {
-  return text.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  return text.replace(/<\/?strong>/g, "").replace(/\s+/g, " ").trim();
 }
 
 export function createWebSearchTool(apiKey: string): ToolDefinition {
