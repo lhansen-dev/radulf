@@ -10,6 +10,8 @@ import type { RolloutTarget } from "../../server/analytics";
 import { errorMessage } from "@/shared/errorMessage";
 import { formatDurationMs } from "../ui/formatDuration";
 import { formatPercent } from "../ui/formatPercent";
+import { ModelBrowser, ModelField, useProviderModels } from "../ui/modelPicker";
+import { providerLabel } from "@/shared/providers";
 
 export default function BenchmarksPage() {
   const [data, setData] = useState<BenchmarksResponse | null>(null);
@@ -18,7 +20,10 @@ export default function BenchmarksPage() {
 
   const [fixture, setFixture] = useState("");
   const [repoId, setRepoId] = useState("");
+  // Cards carry model overrides but no provider: the orchestrator always runs
+  // a card on the providers configured in Settings, so these are read-only.
   const [provider, setProvider] = useState("");
+  const [plannerProvider, setPlannerProvider] = useState("");
   const [model, setModel] = useState("");
   const [plannerModel, setPlannerModel] = useState("");
   const [runs, setRuns] = useState(3);
@@ -35,9 +40,10 @@ export default function BenchmarksPage() {
   useEffect(() => {
     refresh();
     api<Repo[]>("/api/repos").then(setRepos).catch(() => {});
-    api<{ plannerModel?: string; loopProvider?: string; loopModel?: string }>("/api/settings")
+    api<{ plannerProvider?: string; plannerModel?: string; loopProvider?: string; loopModel?: string }>("/api/settings")
       .then((s) => {
-        setProvider((p) => p || s.loopProvider || "");
+        setProvider(s.loopProvider ?? "");
+        setPlannerProvider(s.plannerProvider ?? "");
         setModel((m) => m || s.loopModel || "");
         setPlannerModel((m) => m || s.plannerModel || "");
       })
@@ -192,31 +198,6 @@ export default function BenchmarksPage() {
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
-            <label className="sr-only" htmlFor="bench-provider">Loop provider</label>
-            <input
-              id="bench-provider"
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              placeholder="loop provider"
-              className="w-36 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
-            <label className="sr-only" htmlFor="bench-model">Loop model</label>
-            <input
-              id="bench-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="loop model"
-              className="w-56 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
-            <label className="sr-only" htmlFor="bench-planner-model">Planner model</label>
-            <input
-              id="bench-planner-model"
-              value={plannerModel}
-              onChange={(e) => setPlannerModel(e.target.value)}
-              placeholder="planner model (defaults to loop)"
-              title="Uses the planner provider configured in Settings"
-              className="w-64 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
             <label className="flex items-center gap-2 text-sm text-foreground/60" htmlFor="bench-runs">
               Runs
               <input
@@ -237,6 +218,24 @@ export default function BenchmarksPage() {
               />
               Auto-review
             </label>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <BenchModelPicker
+              id="bench-model"
+              title="Loop model"
+              provider={provider}
+              model={model}
+              onModel={setModel}
+            />
+            <BenchModelPicker
+              id="bench-planner-model"
+              title="Planner model"
+              provider={plannerProvider}
+              model={plannerModel}
+              onModel={setPlannerModel}
+            />
+          </div>
+          <div className="mt-3 flex justify-end">
             <button
               type="button"
               disabled={!canStart}
@@ -331,6 +330,41 @@ export default function BenchmarksPage() {
       </main>
     </div>
     </AppShell>
+  );
+}
+
+/** The Settings model picker, locked to the provider Settings assigns the role. */
+function BenchModelPicker({ id, title, provider, model, onModel }: {
+  id: string;
+  title: string;
+  provider: string;
+  model: string;
+  onModel: (m: string) => void;
+}) {
+  const { models, status, setStatus, load } = useProviderModels(provider);
+  return (
+    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.02] p-3">
+      <p className="text-xs text-foreground/40">
+        Provider: {provider ? providerLabel(provider) : "…"} ·{" "}
+        <Link href="/settings#models" className="underline">change in Settings</Link>
+      </p>
+      <div className="min-w-0 text-sm text-foreground/70">
+        <ModelField
+          id={id}
+          label={title}
+          provider={provider}
+          model={model}
+          onModel={onModel}
+          models={models}
+          onLoadModels={() => {
+            setStatus("Loading models…");
+            void load(provider, true);
+          }}
+          loadTitle="Refresh available models"
+        />
+      </div>
+      <ModelBrowser model={model} onModel={onModel} models={models} status={status} />
+    </div>
   );
 }
 
