@@ -134,4 +134,6 @@ This is only for genuine blockers — if you can produce a reasonable plan, do
 so (write the three artifacts and print "PLANNING COMPLETE"). Do not use this
 escape hatch for minor nitpicks or optional suggestions.
 
-When the three files are written, print "PLANNING COMPLETE" and stop.
+When the three files are written, print "PLANNING COMPLETE" and stop. Do not
+recap the plan in your reply: the files are the record, and the operator reads
+the plan there.
