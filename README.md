@@ -473,6 +473,7 @@ these same targets.
 | `make dev` | 🔥 Start the Next.js dev server with hot reload |
 | `make build` | 📦 Build the application for production |
 | `make start` | 🚀 Start the production server (run `build` first) |
+| `make desktop` | 🖥️ Open Radulf in a desktop window (Electron) on a running server — `URL=...` points it at another install |
 | `make worker` | ⚙️ Run a worker-only process (orchestrator, no HTTP) against this checkout — builds `dist/worker.mjs` first |
 | `make build-worker` | 📦 Bundle the worker entry point `src/worker.ts` into `dist/worker.mjs` |
 | `make check-split` | 🔀 Boot two web-only and a worker-only process against a temp data dir, drive a card through the web API, and assert events and live transcripts fan out across processes (runs `make build` first) |
@@ -500,6 +501,7 @@ radulf/
 ├── docs/             The guides, browsable in-app under the Docs tab
 ├── specs/            Dated design decision log  → see docs/DESIGN_HISTORY.md
 ├── benchmarks/       Repeatable loop-performance fixtures and runners
+├── desktop/          Electron shell behind make desktop, an npm package of its own
 ├── data/             Gitignored runtime state (SQLite DB, transcripts, provider auth)
 └── worktrees/        Gitignored per-card git worktrees — beside data/, never inside it
 ```
@@ -518,6 +520,7 @@ supersedes an earlier one, and
 | `docs` | The guides served by the in-app Docs tab |
 | `specs` | Dated design decision log (see [`docs/DESIGN_HISTORY.md`](docs/DESIGN_HISTORY.md)) |
 | `benchmarks` | Loop-performance benchmark fixtures and runners (see [`benchmarks/snake-tui/README.md`](benchmarks/snake-tui/README.md)) |
+| `desktop` | The Electron shell behind `make desktop`. Its own npm package, so Electron stays out of the root install |
 | `data` | Gitignored runtime state (SQLite DB, transcripts, provider auth). Denied to agents wholesale by the sandbox |
 | `worktrees`, `plans` | Gitignored agent-writable dirs, siblings of `data/` so that deny needs no carve-out |
 

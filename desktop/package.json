@@ -1,0 +1,11 @@
+{
+  "name": "radulf-desktop",
+  "productName": "Radulf",
+  "private": true,
+  "description": "Opens a running Radulf server in a desktop window. Started by `make desktop`; see docs/GETTING_STARTED.md.",
+  "license": "MIT",
+  "main": "main.mjs",
+  "devDependencies": {
+    "electron": "^44.5.1"
+  }
+}
