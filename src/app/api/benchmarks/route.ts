@@ -52,7 +52,6 @@ export async function POST(req: Request) {
   return handle(async () => {
     const body = record(await req.json(), "benchmark body");
     const cookie = req.headers.get("cookie") ?? "";
-    if (!cookie) return err("missing session cookie");
 
     const runs = Number(body.runs ?? 3);
     if (!Number.isInteger(runs) || runs < 1 || runs > 10) {

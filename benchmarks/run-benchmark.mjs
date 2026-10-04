@@ -352,6 +352,7 @@ Options:
                             (prefer RADULF_BENCH_AUTH_COOKIE: argv is
                             world-readable through ps for the whole run)
   --password <value>        Password to POST /api/auth/login and read Set-Cookie
+                            (omit both when the server runs with auth disabled)
   --max-iterations <n>      Optional card maxIterations override
   --timeout-minutes <n>     Optional card timeoutMinutes override
   --auto-review             Approve (criteria pass) or abandon (criteria fail) each run
@@ -424,9 +425,6 @@ Options:
   if (!repo) errors.push("--repo is required");
   if (!provider) errors.push("--provider is required");
   if (!model) errors.push("--model is required");
-  if (!auth_cookie && !password) {
-    errors.push("either --auth-cookie (or RADULF_BENCH_AUTH_COOKIE) or --password is required");
-  }
   if (errors.length > 0) {
     for (const e of errors) console.error(`Error: ${e}`);
     console.error("");
@@ -446,7 +444,7 @@ Options:
       `  Loop model:      ${model}`,
       `  Planner model:   ${planner_model}`,
       `  Runs:            ${numRuns}`,
-      `  Auth:            ${auth_cookie ? "cookie provided" : "password login"}`,
+      `  Auth:            ${auth_cookie ? "cookie provided" : password ? "password login" : "none (server auth disabled)"}`,
       `  Max iterations:  ${max_iterations || "(default)"}`,
       `  Timeout minutes: ${timeout_minutes || "(default)"}`,
       `  Auto-review:     ${auto_review ? "yes" : "no"}`,
@@ -529,8 +527,10 @@ Options:
       cookie = setCookie.split(";")[0].trim();
     }
 
+    // No cookie and no password: the server runs with auth disabled, where
+    // the proxy admits loopback requests without a session.
     const authHeaders = {
-      Cookie: cookie,
+      ...(cookie ? { Cookie: cookie } : {}),
       "Content-Type": "application/json",
     };
 
