@@ -41,6 +41,16 @@ const TASK_STATE_CLASS: Record<IterationTask["state"], string> = {
   "not done": "bg-foreground/10 text-foreground/60",
 };
 
+/** The verdict an evaluator row labels itself with, so approve vs revise reads
+ * without expanding it. Only a completed run reached one — a failed run's
+ * exit reason is an error, which stays in the tooltip and detail. */
+function evaluatorVerdict(run: Run): "approve" | "revise" | null {
+  if (run.kind !== "evaluate" || run.status !== "completed") return null;
+  if (run.exitReason === "approve") return "approve";
+  // "revise", or "revise — revision limit reached" when it went to review anyway.
+  return run.exitReason?.startsWith("revise") ? "revise" : null;
+}
+
 function statusClass(status: string): string {
   if (status === "completed") return "bg-green-900/60 text-green-300";
   if (status === "running") return "bg-amber-900/60 text-amber-300";
@@ -138,6 +148,7 @@ export function RunsTable({
             const totals = perRunTotals[index];
             const isOpen = expanded.has(run.id);
             const durationMs = runDurationMs(run, nowMs);
+            const verdict = evaluatorVerdict(run);
             return [
               <tr key={run.id} className="border-b border-foreground/5 align-top">
                 <td className="pr-3">
@@ -157,6 +168,15 @@ export function RunsTable({
                       {isOpen ? "▾" : "▸"}
                     </span>
                     <span className="font-medium">{KIND_LABEL[run.kind]}</span>
+                    {verdict && (
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-xs ${
+                          verdict === "approve" ? "bg-green-900/60 text-green-300" : "bg-amber-900/60 text-amber-300"
+                        }`}
+                      >
+                        {verdict}
+                      </span>
+                    )}
                   </button>
                 </td>
                 <td className="py-2 pr-3">

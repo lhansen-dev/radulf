@@ -264,6 +264,22 @@ describe("RunsTable", () => {
     expect(duration()).toBe("7s");
   });
 
+  it("labels a collapsed evaluator row with its verdict, but never with an error", () => {
+    renderTable([
+      evaluateRun({ id: "r-eval-failed", status: "failed", exitReason: "evaluator failed: Connection error." }),
+      evaluateRun({ id: "r-eval-limit", exitReason: "revise — revision limit reached" }),
+      evaluateRun(),
+    ]);
+
+    // Oldest first: approve, revise (at the limit), then the failed run.
+    const toggles = screen.getAllByRole("button", { name: /Evaluator/ });
+    expect(toggles.map((button) => button.textContent)).toEqual([
+      "▸🔎 Evaluatorapprove",
+      "▸🔎 Evaluatorrevise",
+      "▸🔎 Evaluator",
+    ]);
+  });
+
   it("keeps a run's exit reason off its collapsed row and shows it once expanded", () => {
     renderTable([planRun({ exitReason: "plan artifacts written" })]);
 
