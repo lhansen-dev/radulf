@@ -199,6 +199,15 @@ traffic never goes through agent bash — the pi SDK calls providers in-process
 - `SSH_AUTH_SOCK` is dropped from the agent env by L3 (denying `~/.ssh` stops
   *reading* the key; the agent socket would let a process *use* it without
   reading — both are required).
+- **Listening on a port is denied on macOS, loopback included.** srt's
+  `allowLocalBinding` is not set; on macOS it would also allow outbound
+  connections to every localhost port, which includes Radulf's own API and any
+  local model server. A dev or preview server, Playwright's `webServer`, Vitest
+  browser mode, and a plain `vitest run` whose config defines a browser project
+  all fail with `listen EPERM`. On macOS, sandboxed planner and critic runs are
+  told this (`noListenSection`), so such commands go under the plan's Operator
+  steps instead of becoming checks. Linux runs get a private network namespace
+  and are not told.
 
 ---
 

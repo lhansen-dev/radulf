@@ -171,6 +171,7 @@ const {
   renderPlanPrompt,
   writePlanRow,
   YOLO_PLANNER_SECTION,
+  noListenSection,
 } = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
@@ -1235,6 +1236,15 @@ describe("PlanningService.runPlanning — revising a sent-back plan in place (sp
     await new PlanningService(makeDeps()).runPlanning("card-seed-questions");
 
     expect(stagedPrivate).toEqual([false]);
+  });
+});
+
+describe("noListenSection", () => {
+  it("warns only a sandboxed macOS run, where Seatbelt denies every bind", () => {
+    expect(noListenSection(true, "darwin")).toContain("listen EPERM");
+    expect(noListenSection(true, "darwin")).toContain("## Operator steps");
+    expect(noListenSection(true, "linux")).toBe("");
+    expect(noListenSection(false, "darwin")).toBe("");
   });
 });
 

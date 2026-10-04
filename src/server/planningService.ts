@@ -321,6 +321,25 @@ that truly needs the operator — credentials, a live service — still goes und
 \`## Operator steps\`, never into \`## Tasks\`.
 `;
 
+const NO_LISTEN_SECTION = `
+NO LISTENING PORTS
+==================
+The sandbox on this host refuses every attempt to listen on a network port,
+localhost included, so anything that starts a server fails with \`listen EPERM\`
+before a single test runs. That covers a dev or preview server, Playwright's
+\`webServer\`, and Vitest browser mode. It also covers a plain \`vitest run\` when
+the Vitest config defines a browser project, unless \`--project\` selects only
+Node projects. A command that needs a listening port cannot be a task's check or
+an acceptance criterion; it belongs under \`## Operator steps\` in PLAN.md.
+`;
+
+/** Appended to the planner's and the critic's prompts outside their templates,
+ * and only where it is true: macOS's Seatbelt profile denies every bind,
+ * loopback included. Linux runs get a private network namespace instead. */
+export function noListenSection(sandboxEnabled: boolean, platform = process.platform): string {
+  return sandboxEnabled && platform === "darwin" ? NO_LISTEN_SECTION : "";
+}
+
 /**
  * Owns the planning run: worktree setup, the planner harness invocation, and
  * artifact validation. Queue scheduling and run/card state stay behind
@@ -440,6 +459,7 @@ export class PlanningService {
           seed !== undefined,
         ) +
         (settings.yoloMode ? YOLO_PLANNER_SECTION : "") +
+        noListenSection(settings.sandboxEnabled) +
         previousSection +
         renderDeadlineSection("planner", new Date(), timeoutMs);
       const result = await runWithTranscript({
