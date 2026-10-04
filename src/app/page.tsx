@@ -578,13 +578,26 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
           {epic && <><span className="text-cyan-300/80">↳ {epic.title}</span> · </>}<span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>} · {position ? `Queue position ${position}` : state.detail}
         </p>
-        {card.status === "looping" && (currentTask ? (
-          <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-xs text-foreground/40">
+        {card.status === "looping" && (currentTask ? (<>
+          {/* Every task before the current one is checked off — it is the
+              first unchecked item — so `number - 1` of `count` are done. */}
+          <div
+            role="progressbar"
+            aria-label="Tasks done"
+            aria-valuemin={0}
+            aria-valuemax={currentTask.count}
+            aria-valuenow={currentTask.number - 1}
+            aria-valuetext={`${currentTask.number - 1} of ${currentTask.count} tasks done`}
+            className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/10"
+          >
+            <div className="h-full bg-amber-400" style={{ width: `${Math.round(((currentTask.number - 1) / currentTask.count) * 100)}%` }} />
+          </div>
+          <p className="mt-1.5 flex flex-wrap items-baseline gap-x-2 text-xs text-foreground/40">
             <span className="font-medium text-foreground/70">Task {currentTask.number}/{currentTask.count}</span>
             <span>{currentTask.left === 1 ? "last one" : `${currentTask.left} left`}</span>
             <span className="basis-full truncate">{currentTask.text}</span>
           </p>
-        ) : (
+        </>) : (
           <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "Ralph is working through the current iteration"}</p>
         ))}
         {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-foreground/40">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
