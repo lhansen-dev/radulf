@@ -8,21 +8,25 @@ import { afterAll } from "vitest";
  * return its path. Removes the dir and restores the previous value in an
  * `afterAll`.
  *
+ * The data dir sits one level down (`<root>/data`) so the siblings Radulf
+ * derives from it (worktrees/, plans/, repos/, runtmp/) land inside the temp
+ * root too. Directly in the system temp dir they would be shared by every
+ * test file, and an orchestrator booting in one file sweeps runtmp/ of the
+ * run dirs another file is using.
+ *
  * `@/db` resolves DATA_DIR from the env var when it loads, so call this at
  * module top level, before the file's `await import("@/db")` and before
  * importing anything that loads it.
  */
 export function setupTestDataDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  pointDataDirAt(dir, dir);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = path.join(root, "data");
+  fs.mkdirSync(dir);
+  pointDataDirAt(dir, root);
   return dir;
 }
 
-/**
- * Like setupTestDataDir, but with the data dir one level down (`<root>/data`)
- * so the siblings Radulf derives from it (worktrees/, plans/, repos/) land
- * inside the temp root too, not in the system temp dir. Returns the root.
- */
+/** Like setupTestDataDir, but returns the temp root rather than the data dir. */
 export function setupTestStateDir(prefix: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   pointDataDirAt(path.join(root, "data"), root);
