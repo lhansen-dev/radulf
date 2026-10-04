@@ -62,6 +62,9 @@ describe("summarizeReport", () => {
       provider: "openrouter",
       model: "some/model",
       plannerModel: "planner/model",
+      evaluatorModel: null,
+      planCritic: null,
+      criticModel: null,
       numRuns: 3,
       timestamp: "2026-07-15T00:00:00.000Z",
       error: null,
@@ -72,6 +75,13 @@ describe("summarizeReport", () => {
       medianModelTurns: 90,
       medianCostUsd: 1.25,
     });
+  });
+
+  it("reads the evaluator and plan critic the runs used", () => {
+    const summary = summarizeReport("roles.json", {
+      meta: { model: "m", evaluatorModel: "eval/model", planCritic: true, criticModel: "critic/model" },
+    });
+    expect(summary).toMatchObject({ evaluatorModel: "eval/model", planCritic: true, criticModel: "critic/model" });
   });
 
   it("uses the loop model as the planner for legacy reports", () => {
@@ -135,6 +145,13 @@ describe("launchBenchmark", () => {
     vi.stubEnv("RADULF_AUTH_PASSWORD_HASH", "$2b$hash");
     expect(() => launchBenchmark({ ...opts, cookie: "" })).toThrow("missing session cookie");
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("passes the evaluator, critic, and plan critic choice to the runner", () => {
+    vi.stubEnv("RADULF_AUTH_PASSWORD_HASH", "");
+    launchBenchmark({ ...opts, cookie: "", evaluatorModel: "eval/m", criticModel: "critic/m", planCritic: false });
+    const args = (spawn.mock.calls.at(-1) as unknown as [string, string[]])[1];
+    expect(args.join(" ")).toContain("--evaluator-model eval/m --critic-model critic/m --plan-critic off");
   });
 
   it("forwards the cookie through the environment", () => {

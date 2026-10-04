@@ -23,6 +23,11 @@ export type BenchmarkReport = {
   provider: string | null;
   model: string | null;
   plannerModel: string | null;
+  /** The evaluator model the runs used; null in reports that predate it. */
+  evaluatorModel: string | null;
+  /** Whether the plan critic ran, and on which model; null when unrecorded. */
+  planCritic: boolean | null;
+  criticModel: string | null;
   numRuns: number | null;
   timestamp: string | null;
   /** Set when the runner died before completing — the fatal error message. */
@@ -90,6 +95,9 @@ export function summarizeReport(file: string, report: unknown): BenchmarkReport 
     // Reports written before planner selection was added always used the
     // loop model for planning, so retain that fact in their summaries.
     plannerModel: str("plannerModel") ?? model,
+    evaluatorModel: str("evaluatorModel"),
+    planCritic: typeof meta.planCritic === "boolean" ? meta.planCritic : null,
+    criticModel: str("criticModel"),
     numRuns: typeof meta.numRuns === "number" ? meta.numRuns : null,
     timestamp: str("timestamp"),
     error: str("error"),
@@ -139,6 +147,11 @@ export type LaunchBenchmarkOptions = {
   model: string;
   /** Optional for compatibility with callers that want one model for both roles. */
   plannerModel?: string;
+  /** Unset leaves the role on its Settings model. */
+  evaluatorModel?: string;
+  criticModel?: string;
+  /** Unset follows the Settings plan critic mode. */
+  planCritic?: boolean;
   runs?: number;
   maxIterations?: number;
   timeoutMinutes?: number;
@@ -180,6 +193,9 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
     "--out", reportPath,
   ];
   if (opts.plannerModel) args.push("--planner-model", opts.plannerModel);
+  if (opts.evaluatorModel) args.push("--evaluator-model", opts.evaluatorModel);
+  if (opts.criticModel) args.push("--critic-model", opts.criticModel);
+  if (opts.planCritic !== undefined) args.push("--plan-critic", opts.planCritic ? "on" : "off");
   if (opts.maxIterations) args.push("--max-iterations", String(opts.maxIterations));
   if (opts.timeoutMinutes) args.push("--timeout-minutes", String(opts.timeoutMinutes));
   if (opts.autoReview) args.push("--auto-review");

@@ -241,4 +241,14 @@ describe("runner CLI auth", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("none (server auth disabled)");
   });
+
+  it("rejects a --plan-critic value other than on or off", () => {
+    const script = new URL("./run-benchmark.mjs", import.meta.url).pathname;
+    const result = spawnSync(process.execPath, [
+      script, "--fixture", "snake-tui", "--repo", "r", "--provider", "p", "--model", "m",
+      "--plan-critic", "yes", "--dry-run",
+    ], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--plan-critic must be on or off");
+  });
 });

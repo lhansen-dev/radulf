@@ -347,6 +347,10 @@ Options:
   --provider <name>         Provider name for the loop (required)
   --model <name>            Model name for the loop (required)
   --planner-model <name>    Planner model (default: loop model)
+  --evaluator-model <name>  Evaluator model (default: the Settings evaluator model)
+  --critic-model <name>     Plan critic model (default: the Settings critic model)
+  --plan-critic <on|off>    Run the plan critic (default: follow Settings, where
+                            "breakdown" mode skips it for a top-level card)
   --runs <n>                Number of benchmark runs (default: 3)
   --auth-cookie <value>     Session cookie value for authentication
                             (prefer RADULF_BENCH_AUTH_COOKIE: argv is
@@ -392,6 +396,9 @@ Options:
     provider,
     model,
     planner_model = model,
+    evaluator_model,
+    critic_model,
+    plan_critic,
     runs = "3",
     auth_cookie = process.env.RADULF_BENCH_AUTH_COOKIE,
     password,
@@ -425,6 +432,9 @@ Options:
   if (!repo) errors.push("--repo is required");
   if (!provider) errors.push("--provider is required");
   if (!model) errors.push("--model is required");
+  if (plan_critic !== undefined && plan_critic !== "on" && plan_critic !== "off") {
+    errors.push("--plan-critic must be on or off");
+  }
   if (errors.length > 0) {
     for (const e of errors) console.error(`Error: ${e}`);
     console.error("");
@@ -443,6 +453,8 @@ Options:
       `  Loop provider:   ${provider}`,
       `  Loop model:      ${model}`,
       `  Planner model:   ${planner_model}`,
+      `  Evaluator model: ${evaluator_model || "(Settings)"}`,
+      `  Plan critic:     ${plan_critic || "(Settings)"}${critic_model ? `, model ${critic_model}` : ""}`,
       `  Runs:            ${numRuns}`,
       `  Auth:            ${auth_cookie ? "cookie provided" : password ? "password login" : "none (server auth disabled)"}`,
       `  Max iterations:  ${max_iterations || "(default)"}`,
@@ -457,7 +469,7 @@ Options:
       `  2. For each run:`,
       `     a. Hard-reset repo to baseline (unless --no-reset)`,
       `     b. Read TASK.md for title + description`,
-      `     c. POST /api/cards with repo, title, description, plannerModel, loopModel`,
+      `     c. POST /api/cards with repo, title, description, and the role model overrides`,
       `     d. POST /api/cards/[id]/move {to: "todo"}`,
       `     e. POST /api/cards/[id]/move {to: "in_progress"}`,
       `     f. Poll GET /api/cards until terminal status`,
@@ -536,6 +548,24 @@ Options:
 
     // ── Resolve repo path, commit seed, record baseline ──────────
 
+    // Snapshot what the card's pipeline will actually run on. Cards carry
+    // model overrides but no provider, so every role's provider — and any model
+    // left unset here — comes from Settings, which the report records so two
+    // reports are only compared when their pipelines match.
+    const settingsRes = await fetch(`${base_url}/api/settings`, { headers: authHeaders });
+    await assertOk(settingsRes, "GET /api/settings");
+    const settings = await settingsRes.json();
+    const pipeline = {
+      plannerProvider: settings.plannerProvider,
+      loopProvider: settings.loopProvider,
+      evaluatorProvider: settings.evaluatorProvider,
+      evaluatorModel: evaluator_model || settings.evaluatorModel || null,
+      criticProvider: settings.criticProvider,
+      criticModel: critic_model || settings.criticModel || null,
+      // A benchmark card is top-level, so "breakdown" mode skips the critic.
+      planCritic: plan_critic ? plan_critic === "on" : settings.planCriticMode === "always",
+    };
+
     const reposRes = await fetch(`${base_url}/api/repos`, { headers: authHeaders });
     await assertOk(reposRes, "GET /api/repos");
     const repoRow = (await reposRes.json()).find((r) => r.id === repo);
@@ -610,6 +640,9 @@ Options:
         plannerModel: planner_model,
         loopModel: model,
       };
+      if (evaluator_model) cardBody.evaluatorModel = evaluator_model;
+      if (critic_model) cardBody.criticModel = critic_model;
+      if (plan_critic) cardBody.planCritic = plan_critic === "on";
       if (max_iterations) cardBody.maxIterations = parseInt(max_iterations, 10);
       if (timeout_minutes) cardBody.timeoutMinutes = parseInt(timeout_minutes, 10);
 
@@ -931,6 +964,10 @@ Options:
         provider,
         model,
         plannerModel: planner_model,
+        evaluatorModel: pipeline.evaluatorModel,
+        criticModel: pipeline.planCritic ? pipeline.criticModel : null,
+        planCritic: pipeline.planCritic,
+        pipeline,
         numRuns,
         maxIterations: max_iterations || null,
         timeoutMinutes: timeout_minutes || null,
@@ -978,6 +1015,8 @@ Options:
     console.log(`Fixture:    ${report.meta.fixture}`);
     console.log(`Loop:       ${report.meta.provider}/${report.meta.model}`);
     console.log(`Planner:    ${report.meta.plannerModel}`);
+    console.log(`Evaluator:  ${pipeline.evaluatorProvider}/${pipeline.evaluatorModel ?? "(default)"}`);
+    console.log(`Critic:     ${pipeline.planCritic ? `${pipeline.criticProvider}/${pipeline.criticModel ?? "(default)"}` : "off"}`);
     console.log(`Runs:       ${numRuns}`);
     console.log(`Criteria pass rate: ${agg.criteriaPassRate !== null ? (agg.criteriaPassRate * 100).toFixed(0) + "%" : "N/A"}`);
     console.log(`Diff correctness:   ${agg.diffCorrectnessRate !== null ? (agg.diffCorrectnessRate * 100).toFixed(0) + "%" : "N/A"}`);
@@ -1014,6 +1053,8 @@ Options:
             provider,
             model,
             plannerModel: planner_model,
+            evaluatorModel: evaluator_model || null,
+            criticModel: critic_model || null,
             numRuns,
             autoReview: !!auto_review,
             timestamp: new Date().toISOString(),

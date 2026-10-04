@@ -54,6 +54,11 @@ describe("BenchmarksPage", () => {
           loopModel: "fast/loop",
           plannerProvider: "anthropic",
           plannerModel: "strong/planner",
+          evaluatorProvider: "chatgpt",
+          evaluatorModel: "eval/model",
+          criticProvider: "copilot",
+          criticModel: "critic/model",
+          planCriticMode: "breakdown",
         }));
       }
       if (url === "/api/providers/openrouter/models") {
@@ -83,6 +88,13 @@ describe("BenchmarksPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Other loop" }));
     expect((screen.getByLabelText("Loop model") as HTMLInputElement).value).toBe("other/loop");
 
+    // "breakdown" mode skips the critic for a top-level card, so it starts off
+    // and its picker stays hidden until switched on.
+    expect((screen.getByLabelText("Evaluator model") as HTMLInputElement).value).toBe("eval/model");
+    expect(screen.queryByLabelText("Plan critic model")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Run the plan critic"));
+    expect((screen.getByLabelText("Plan critic model") as HTMLInputElement).value).toBe("critic/model");
+
     fireEvent.change(screen.getByLabelText("Fixture"), { target: { value: "small-ui-change" } });
     fireEvent.change(screen.getByLabelText("Repo"), { target: { value: "repo-1" } });
     fireEvent.click(screen.getByRole("button", { name: "Start benchmark" }));
@@ -96,6 +108,9 @@ describe("BenchmarksPage", () => {
         provider: "openrouter",
         model: "other/loop",
         plannerModel: "strong/planner",
+        evaluatorModel: "eval/model",
+        criticModel: "critic/model",
+        planCritic: true,
       });
     });
   });
