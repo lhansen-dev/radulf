@@ -195,7 +195,7 @@ page (an OpenRouter API key, or the local server's base URL). See [Requirements]
 
 | Provider | Auth | Where | Notes |
 |----------|------|-------|-------|
-| 🟣 **Claude** (default) | Settings → Sign in | Claude Pro/Max subscription | Third-party harness usage billed per token as extra usage |
+| 🟣 **Claude** (default) | Settings → Sign in | Claude Pro/Max subscription | — |
 | 🟢 **ChatGPT (Codex)** | Settings → Sign in | ChatGPT Plus/Pro subscription | — |
 | ⚫ **GitHub Copilot** | Settings → Sign in | GitHub Copilot subscription | — |
 | 🔵 **OpenRouter** | API key | remote | Bring your own model. Set in Settings — no login |

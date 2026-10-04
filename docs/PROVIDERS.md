@@ -10,7 +10,7 @@ roles.
 
 | Provider | Auth | Where it runs | Notes |
 |----------|------|---------------|-------|
-| **Anthropic / Claude** | Settings, or `make login` | Remote | The default. Uses your Claude Pro/Max subscription. Third-party harness usage is billed per token as extra usage. |
+| **Anthropic / Claude** | Settings, or `make login` | Remote | The default. Uses your Claude Pro/Max subscription. |
 | **ChatGPT (Codex)** | Settings, or `make login` | Remote | Uses your ChatGPT Plus/Pro subscription. |
 | **GitHub Copilot** | Settings, or `make login` | Remote | Uses your GitHub Copilot subscription. |
 | **OpenRouter** | API key | Remote | Bring your own model. Set the key in Settings — no login. |
