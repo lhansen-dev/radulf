@@ -4,7 +4,7 @@ import { api, type Repo } from "../ui/api";
 import { FolderBrowser } from "../ui/folderBrowser";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
-import { ModelChips } from "../ui/taskDialog";
+import { ModelBrowser, ModelField, formatPricePerMillion, useProviderModels } from "../ui/modelPicker";
 import { ProviderLoginSection } from "./providerLogin";
 import { SchedulesSection } from "./schedulesSection";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
@@ -104,21 +104,6 @@ function GithubSection() {
   );
 }
 
-/** $3.00 for typical prices, $0.075 for very cheap ones — 2 decimals loses
- * sub-cent-per-million models (e.g. Haiku-class) by rounding them to $0.00. */
-function formatPricePerMillion(usd: number): string {
-  if (usd === 0) return "$0.00";
-  return usd < 1 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
-}
-
-/** "$3.00 / 1M input · $15.00 / 1M output", or "" when the provider reports no pricing. */
-function priceLabel(m: ProviderModel, input = " / 1M input", output = " / 1M output", sep = " · "): string {
-  return [
-    m.costPerMillionInput != null && `${formatPricePerMillion(m.costPerMillionInput)}${input}`,
-    m.costPerMillionOutput != null && `${formatPricePerMillion(m.costPerMillionOutput)}${output}`,
-  ].filter(Boolean).join(sep);
-}
-
 /**
  * Levels to offer for the picked model, ordered by the canonical ladder. When
  * the provider advertises the model's supported efforts (OpenRouter), narrow to
@@ -138,15 +123,6 @@ function availableReasoningLevels(
   allowed.add(current);
   return REASONING_LEVELS.filter((level) => allowed.has(level));
 }
-
-const MODEL_HINTS: Record<string, string> = {
-  anthropic: "Leave blank to use your subscription's default model.",
-  chatgpt: "Leave blank to use your subscription's default model.",
-  copilot: "Leave blank to use your subscription's default model.",
-  omlx: "Use the id of a model your server reports at /v1/models; it must support tool use.",
-  openrouter: "Type a model id to search the available models.",
-  mock: "The model id picks a scripted scenario. Leave blank for happy-path.",
-};
 
 type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
 type StringKey = { [K in keyof Settings]: Settings[K] extends string ? K : never }[keyof Settings];
@@ -867,36 +843,7 @@ function AgentSection({
    * provider+model. Never blocks saving. */
   warnings: string[];
 }) {
-  const [models, setModels] = useState<ProviderModel[]>([]);
-  const [status, setStatus] = useState("");
-
-  // setState only happens in the promise callbacks, never synchronously,
-  // so this is safe to call from the effect below.
-  // `force` is only ever set by the "Load models" button — see the route.
-  const load = useCallback((p: string, force = false, isLive: () => boolean = () => true) => {
-    return api<{ models: ProviderModel[] }>(`/api/providers/${p}/models${force ? "?refresh=1" : ""}`)
-      .then((r) => {
-        if (!isLive()) return;
-        setModels(r.models);
-        setStatus(r.models.length > 0
-          ? `✓ ${r.models.length} model${r.models.length === 1 ? "" : "s"}`
-          : "No models found. Check your provider connection or enter a model id.");
-      })
-      .catch((e) => {
-        if (!isLive()) return;
-        setModels([]);
-        setStatus(`✗ ${errorMessage(e)}`);
-      });
-  }, []);
-
-  // Refresh the picker whenever the provider changes. Guard against a slow
-  // provider's listing (e.g. openrouter's hundreds of models) landing after
-  // the user has already switched this role to a different provider.
-  useEffect(() => {
-    let live = true;
-    void load(provider, false, () => live);
-    return () => { live = false; };
-  }, [provider, load]);
+  const { models, status, setStatus, load } = useProviderModels(provider);
 
   const selectedModel = models.find((m) => m.value === model);
   const reasoningOptions = availableReasoningLevels(selectedModel, reasoningLevel);
@@ -932,36 +879,18 @@ function AgentSection({
           </select>
         </label>
         <div className="min-w-0 text-sm text-foreground/70 sm:col-span-2 sm:row-start-2">
-          <label htmlFor={`${datalistId}-input`}>Model</label>
-          <div className="flex gap-2">
-            <input
-              id={`${datalistId}-input`}
-              aria-describedby={`${datalistId}-hint`}
-              value={model}
-              onChange={(e) => onModel(e.target.value)}
-              placeholder={provider === "anthropic" ? "e.g. opus" : "model id"}
-              className={inputCls}
-              list={datalistId}
-            />
-            <datalist id={datalistId}>
-              {models.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.displayName}
-                </option>
-              ))}
-            </datalist>
-            <button
-              onClick={() => {
-                setStatus("Loading models…");
-                saveFirst().then(() => load(provider, true)).catch(() => setStatus(""));
-              }}
-              title="Save settings and refresh available models"
-              className={`${secondaryButtonCls} mt-2 shrink-0 whitespace-nowrap`}
-            >
-              Load models
-            </button>
-          </div>
-          <p id={`${datalistId}-hint`} className="mt-2 text-xs leading-relaxed text-foreground/45">{MODEL_HINTS[provider] ?? "Enter a model id."}</p>
+          <ModelField
+            id={datalistId}
+            provider={provider}
+            model={model}
+            onModel={onModel}
+            models={models}
+            onLoadModels={() => {
+              setStatus("Loading models…");
+              saveFirst().then(() => load(provider, true)).catch(() => setStatus(""));
+            }}
+            loadTitle="Save settings and refresh available models"
+          />
         </div>
         <label className="min-w-0 text-sm text-foreground/70 sm:col-start-2 sm:row-start-1">
           Reasoning
@@ -988,29 +917,7 @@ function AgentSection({
       {warnings.map((warning) => (
         <p key={warning} className="rounded-lg border border-accent/15 bg-accent/5 px-3 py-2.5 text-xs leading-relaxed text-accent/85">{warning}</p>
       ))}
-      {selectedModel && priceLabel(selectedModel) && (
-        <p className="text-xs text-foreground/40">{priceLabel(selectedModel)}</p>
-      )}
-      {status && !status.startsWith("✓") && (
-        <p role="status" className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-foreground/40"}`}>
-          {status}
-        </p>
-      )}
-      <ModelChips
-        models={models}
-        value={model}
-        onPick={onModel}
-        titleFor={(m) => priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
-        wrap={(chips) => (
-          <details className="group border-t border-foreground/10 pt-3">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
-              Browse {models.length} available model{models.length === 1 ? "" : "s"}
-              <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
-            </summary>
-            {chips}
-          </details>
-        )}
-      />
+      <ModelBrowser model={model} onModel={onModel} models={models} status={status} />
     </section>
   );
 }
