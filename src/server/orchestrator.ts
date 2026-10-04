@@ -71,7 +71,7 @@ import {
   staleBefore,
   staleWorkerIds,
 } from "./workers";
-import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
+import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, REPLAN_LOOP_EXITS, retryableFailedStep } from "@/shared/failedStep";
 import { scriptKey } from "@/shared/installScripts";
 import { parsePayload } from "@/shared/eventPayload";
 import { RUNNING_STATUSES, SCOPABLE_STATUSES } from "@/shared/cardStatus";
@@ -173,6 +173,11 @@ const BLOAT_MULTIPLIER = 4;
  * conflict the loop cannot resolve, or a gate it keeps breaking, does not spin
  * the run forever. */
 const MAX_SYNC_GATE_ROUNDS = 2;
+
+/** YOLO mode: how many times a card's loop may stop for the planner (a
+ * blocker, or an exhausted checklist) and be re-planned without a human. The
+ * same bound as the evaluator's revisions; past it the card waits as usual. */
+const YOLO_MAX_LOOP_REPLANS = 2;
 
 /**
  * How far out of scale this iteration's prompt is with the run's own, or null
@@ -900,6 +905,27 @@ export class Orchestrator {
       .set({ status: "failed", summary, endedAt: now() })
       .where(eq(iterations.runId, runId))
       .run();
+  }
+
+  /**
+   * YOLO mode: a loop that stopped for the planner re-plans straight away,
+   * keeping the card's pipeline slot, instead of waiting in Needs Attention
+   * for someone to press Plan again. `pendingReplanFeedback` hands the planner
+   * the blocker exactly as it would on that button. False when the card should
+   * wait after all: YOLO is off, or the card has used its re-plans.
+   */
+  private yoloReplan(cardId: string, reason: string): boolean {
+    if (!getSettings().yoloMode) return false;
+    const stops = db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.cardId, cardId), eq(runs.kind, "loop"), inArray(runs.exitReason, [...REPLAN_LOOP_EXITS])))
+      .all().length;
+    if (stops > YOLO_MAX_LOOP_REPLANS) return false;
+    if (!this.moveCard(cardId, "looping", "planning", `YOLO mode: re-planning (${reason})`)) return false;
+    emitEvent("card.yolo_replanned", { cardId, payload: { reason } });
+    this.startStage("planning", cardId);
+    return true;
   }
 
   /** Run the planner or evaluator in the background on a card already moved
@@ -1959,6 +1985,7 @@ export class Orchestrator {
       // continuation must not then push a card that was re-queued — or is
       // running a NEW loop by now — into Needs Attention.
       if (!this.finishRun(runId, status, reason)) return;
+      if (REPLAN_LOOP_EXITS.has(reason) && this.yoloReplan(cardId, reason)) return;
       this.moveCard(cardId, "looping", "needs_attention", reason);
     };
 
@@ -2103,7 +2130,7 @@ export class Orchestrator {
             provider,
             model,
             reasoningLevel: settings.loopReasoningLevel,
-            prompt: buildLoopPrompt(plan.promptMd, planMd) + (remindSignal ? SIGNAL_REMINDER : ""),
+            prompt: buildLoopPrompt(plan.promptMd, planMd, getSettings().yoloMode) + (remindSignal ? SIGNAL_REMINDER : ""),
             cwd: worktreePath,
             timeoutMs: Math.min(remaining, budgetMs),
             signal: controller.signal,

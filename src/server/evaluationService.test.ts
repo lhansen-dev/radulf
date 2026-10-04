@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
     // The workspace-wide auto-approve override. Off for every test but the
     // ones that flip it, so the card's own flag stays the only grant.
     autoApprove: false,
+    yoloMode: false,
   },
 }));
 
@@ -59,7 +60,7 @@ const testDataDir = setupTestDataDir("radulf-evaluationService-");
 const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
-const { EvaluationService, renderEvaluatorPrompt } = await import("./evaluationService");
+const { EvaluationService, renderEvaluatorPrompt, YOLO_EVALUATOR_SECTION } = await import("./evaluationService");
 
 function seedRepo() {
   db.insert(repos)
@@ -258,8 +259,24 @@ describe("EvaluationService.runEvaluator", () => {
     mocks.settings.sandboxEnabled = false;
     mocks.settings.sandboxWeakerIsolationForGoTls = false;
     mocks.settings.autoApprove = false;
+    mocks.settings.yoloMode = false;
     mocks.settings.evaluatorTimeoutMinutes = 10;
     seedRepo();
+  });
+
+  it("tells the evaluator to judge a criterion whose tool is missing by reading, only in YOLO mode", async () => {
+    for (const yolo of [false, true]) {
+      mocks.settings.yoloMode = yolo;
+      const cardId = `card-yolo-${yolo}`;
+      seedCard(cardId);
+      seedLoopRun(cardId, seedPlan(cardId));
+      mockEvaluationVerdict("VERDICT: approve\n\nLooks solid.");
+
+      await new EvaluationService(makeDeps()).runEvaluator(cardId);
+
+      const prompt = mocks.runHarness.mock.calls.at(-1)![0].prompt as string;
+      expect(prompt.includes(YOLO_EVALUATOR_SECTION)).toBe(yolo);
+    }
   });
 
   it("approves and advances the card to review", async () => {

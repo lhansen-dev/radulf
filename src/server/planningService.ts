@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, plans, runs, reviews, type PlanOrigin, type ScopingRole } from "@/db";
 import { privateDir, tighten } from "@/db/privateFs";
@@ -279,12 +279,32 @@ export function writePlanRow(
   return { planId, version };
 }
 
-/** Opted-in cards pause for human plan review; ordinary cards go straight to ready. */
+/** Opted-in cards pause for human plan review; ordinary cards go straight to
+ * ready, and so does every card while YOLO mode is on — read live, like
+ * auto-approve, so turning it on applies to work already in flight. */
 export function planningDestination(
   card: { reviewPlanBeforeImplementation: number }
 ): "plan_review" | "ready" {
-  return card.reviewPlanBeforeImplementation ? "plan_review" : "ready";
+  return card.reviewPlanBeforeImplementation && !getSettings().yoloMode ? "plan_review" : "ready";
 }
+
+const QUESTIONS_EXIT = "planner raised follow-up questions";
+
+/** Appended outside the template, so a customized one still closes the
+ * escape hatch while the operator is away. */
+export const YOLO_PLANNER_SECTION = `
+YOLO MODE
+=========
+The operator turned on YOLO mode and is away: nobody will answer a question
+until this card is finished. The NEEDS ATTENTION escape hatch is closed — do
+not write \`.ralph/QUESTIONS.md\`. Where the card is ambiguous, pick the most
+conservative reasonable reading and plan that, and list each assumption you
+made, with the alternatives you rejected, under a \`## Assumptions\` heading in
+PLAN.md, outside \`## Tasks\`. Questions an earlier planning run left in the
+scoping thread with no operator answer are yours to answer the same way. Work
+that truly needs the operator — credentials, a live service — still goes under
+\`## Operator steps\`, never into \`## Tasks\`.
+`;
 
 /**
  * Owns the planning run: worktree setup, the planner harness invocation, and
@@ -387,6 +407,7 @@ export class PlanningService {
           replanFeedback ?? prevPlan?.feedback ?? undefined,
           listScopingMessages(cardId),
         ) +
+        (settings.yoloMode ? YOLO_PLANNER_SECTION : "") +
         previousSection +
         renderDeadlineSection("planner", new Date(), timeoutMs);
       const result = await runWithTranscript({
@@ -435,7 +456,23 @@ export class PlanningService {
         // Spec 17: the questions join the card's scoping thread, where the
         // operator answers them; the next planning run reads the whole thread.
         addScopingMessage(cardId, "planner", questions);
-        deps.finishRun(runId, "completed", "planner raised follow-up questions", telemetry);
+        // YOLO mode: nobody is there to answer, so the planner gets one more
+        // run told to answer them itself. The card's plan run before this one
+        // asking too means it will not, and the card waits after all.
+        const askedLastTime =
+          db
+            .select({ exitReason: runs.exitReason })
+            .from(runs)
+            .where(and(eq(runs.cardId, cardId), eq(runs.kind, "plan"), ne(runs.id, runId)))
+            .orderBy(desc(runs.startedAt))
+            .limit(1)
+            .get()?.exitReason === QUESTIONS_EXIT;
+        deps.finishRun(runId, "completed", QUESTIONS_EXIT, telemetry);
+        if (getSettings().yoloMode && !askedLastTime) {
+          emitEvent("card.yolo_replanned", { cardId, runId, payload: { reason: QUESTIONS_EXIT } });
+          deps.replan(cardId);
+          return;
+        }
         deps.moveCard(cardId, "planning", "needs_attention", "planner has follow-up questions");
         return;
       }

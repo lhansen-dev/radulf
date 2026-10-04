@@ -320,6 +320,44 @@ describe("mock provider — full pipeline", () => {
     expect(replan?.feedback).toContain("Mock blocker");
   }, 30_000);
 
+  it("planner-questions in YOLO mode: re-plans once for the planner to answer itself, then parks", async () => {
+    patchSettings({ yoloMode: true });
+    try {
+      const { cardId } = await runScenario("planner-questions", seedRepo("planner-questions-yolo"), {
+        cardId: "card-planner-questions-yolo",
+      });
+      expect(cardStatus(cardId)).toBe("needs_attention");
+      expect(cardRuns(cardId).map((r) => r.exitReason)).toEqual([
+        "planner raised follow-up questions",
+        "planner raised follow-up questions",
+      ]);
+      expect(cardEvents(cardId, "card.yolo_replanned")).toHaveLength(1);
+    } finally {
+      patchSettings({ yoloMode: false });
+    }
+  }, 30_000);
+
+  it("loop-blocked in YOLO mode: re-plans around the blocker without a human, up to the cap", async () => {
+    patchSettings({ yoloMode: true });
+    try {
+      const { cardId } = await runScenario("loop-blocked", seedRepo("loop-blocked-yolo"), {
+        cardId: "card-loop-blocked-yolo",
+      });
+      expect(cardStatus(cardId)).toBe("needs_attention");
+      // Every loop run blocks: two automatic re-plans, then the card waits.
+      expect(cardRuns(cardId, "loop").map((r) => r.exitReason)).toEqual(["loop blocked", "loop blocked", "loop blocked"]);
+      expect(cardRuns(cardId, "plan")).toHaveLength(3);
+      const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+      expect(replan?.feedback).toContain("Mock blocker");
+      expect(cardEvents(cardId, "card.yolo_replanned")).toHaveLength(2);
+      // The card went straight from looping to planning: no stop in Needs
+      // Attention, so no alert, until the cap.
+      expect(cardEvents<{ to: string }>(cardId, "card.moved").filter((m) => m.to === "needs_attention")).toHaveLength(1);
+    } finally {
+      patchSettings({ yoloMode: false });
+    }
+  }, 60_000);
+
   it("provider-error: the planner fails with the provider's message", async () => {
     const { cardId } = await runScenario("provider-error");
     expect(cardStatus(cardId)).toBe("needs_attention");

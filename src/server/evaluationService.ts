@@ -68,6 +68,21 @@ export function renderEvaluatorPrompt(
     .replaceAll("{{CRITERIA}}", () => criteria.trim() || "(no acceptance criteria were recorded)");
 }
 
+/** Appended outside the template while YOLO mode is on: a missing tool is a
+ * fact about the sandbox, and revising on it re-plans work nobody can fix
+ * overnight. The finding keeps the gap in front of the human reviewer. */
+export const YOLO_EVALUATOR_SECTION = `
+YOLO MODE
+=========
+The operator turned on YOLO mode and is away. If an acceptance criterion's
+command cannot run in this sandbox because its tool is missing (\`command not
+found\`, a test runner that is not installed) rather than because the change is
+wrong, do not \`revise\` on that alone: judge that criterion by reading the code
+and its tests, and add an \`important\` finding naming the criterion as
+unverified so the human reviewer sees it. Everything else about your verdict
+is unchanged.
+`;
+
 export type EvaluationServiceDependencies = StageDependencies & {
   /** Advance the repo's queue once this evaluation releases its slot. Every
    * other stage already did this; without it a repo with cards waiting sits
@@ -234,6 +249,7 @@ export class EvaluationService {
           baseBranch,
           plan.acceptanceCriteria,
         ) +
+        (settings.yoloMode ? YOLO_EVALUATOR_SECTION : "") +
         previousSection +
         gateSection +
         EVALUATION_NOTES_SECTION +

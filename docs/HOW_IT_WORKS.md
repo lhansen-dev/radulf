@@ -163,6 +163,34 @@ If auto-approve and pull-request delivery are both on, the pull request is opene
 as a **draft** — nobody looked at the diff, and the draft says so. A pull request
 Radulf opens as ready-for-review is one a human approved.
 
+**YOLO mode.** For leaving the queue to run overnight, the **YOLO mode** toggle
+in the Work page's `•••` menu stops the pipeline asking you anything. While it
+is on:
+
+- The planner is told nobody will answer. It plans the most conservative
+  reading of a vague card and writes its assumptions under `## Assumptions` in
+  `PLAN.md` instead of raising questions. If it raises them anyway, it gets one
+  more run to answer them itself before the card waits for you.
+- The loop makes the decisions a task leaves open and says what it chose. When
+  a task's check can't run because its tool is missing from the sandbox
+  (`vitest: command not found`), the loop skips the check and says so. It still
+  reports a blocker for work that is impossible without credentials or a live
+  service. A blocked loop, or one that ticks every task without signalling
+  DONE, goes straight back to the planner, as **Plan again** would, up to two
+  times per card.
+- **Review plan before implementation** is skipped, and a plan that reaches
+  the plan critic's revision limit runs as written rather than waiting in plan
+  review.
+- When a criterion's tool is missing from the sandbox, the evaluator judges it
+  by reading the code and adds an `important` finding naming it as unverified,
+  instead of revising on that alone.
+
+YOLO mode never merges anything. An approved card still waits in In Review
+unless Auto-approve is on too. Failures that need you still go to Needs
+Attention: errors, timeouts, stalls, a card past its re-plan budget, and the
+install-script gate. Like Auto-approve, the toggle is read when each decision
+is made, so it applies to work already in flight.
+
 ## The five agent roles
 
 | Role | Job |

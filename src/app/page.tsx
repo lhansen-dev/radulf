@@ -87,6 +87,8 @@ export default function WorkPage() {
     setAutoMode,
     autoApprove,
     setAutoApprove,
+    yoloMode,
+    setYoloMode,
     openPr,
     setOpenPr,
     improvementRuns,
@@ -250,7 +252,7 @@ export default function WorkPage() {
    * delivery hand authority away (merge without review; code leaving the
    * machine), so turning those ON asks first; turning anything off never does. */
   async function toggleSetting(
-    key: "autoMode" | "autoApprove" | "openPr",
+    key: "autoMode" | "autoApprove" | "yoloMode" | "openPr",
     current: boolean,
     setValue: (value: boolean) => void,
     confirmOn?: string,
@@ -271,6 +273,14 @@ export default function WorkPage() {
       on: autoApprove,
       onTone: "text-amber-300",
       toggle: () => toggleSetting("autoApprove", autoApprove, setAutoApprove, "Turn on auto-approve?\n\nAn evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you."),
+    },
+    {
+      label: "YOLO mode",
+      on: yoloMode,
+      onTone: "text-amber-300",
+      // Nothing stops to ask: the agents decide for themselves, plan review is
+      // skipped, and a blocked loop re-plans. Merging stays Auto-approve's call.
+      toggle: () => toggleSetting("yoloMode", yoloMode, setYoloMode),
     },
     {
       label: "Open pull requests",
@@ -363,6 +373,7 @@ export default function WorkPage() {
           <span className={`size-2 shrink-0 rounded-full ${autoMode ? "bg-green-400" : "bg-slate-500"}`} aria-hidden="true" />
           <span>Auto Mode {autoMode ? "is on · Todo tasks run automatically" : "is off"}</span>
           {autoApprove && <span className="text-amber-300">· Auto-approve is on · approved work merges without review</span>}
+          {yoloMode && <span className="text-amber-300">· YOLO mode is on · agents decide instead of asking you</span>}
           {openPr && <span className="text-amber-300">· Approved work is delivered as a pull request{autoApprove ? " (draft)" : ""}</span>}
           {!streamConnected && <span className="ml-auto text-amber-300">Offline · updates will resume</span>}
         </div>

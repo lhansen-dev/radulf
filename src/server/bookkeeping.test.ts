@@ -103,6 +103,18 @@ describe("buildLoopPrompt", () => {
     expect(block).not.toContain("CRITERIA.md");
   });
 
+  it("in YOLO mode, has the loop decide and skip a check whose tool is missing, blocking only on the impossible", () => {
+    const planMd = "## Tasks\n- [ ] implement the widget\n";
+    const block = taskInjectionBlock(planMd, true);
+
+    expect(buildLoopPrompt("# Original prompt\n", planMd, true)).toBe(`${block}\n\n# Original prompt\n`);
+    expect(block).toContain("YOLO mode is on");
+    expect(block).toContain("skip that check");
+    expect(block).toContain(".ralph/BLOCKED");
+    expect(block).not.toContain("a decision only the");
+    expect(taskInjectionBlock(planMd)).not.toContain("YOLO");
+  });
+
   it("preserves multiline item text verbatim", () => {
     const planMd =
       "## Tasks\n- [ ] implement the widget\n  handle edge cases\n  and retries\n- [ ] test it\n";

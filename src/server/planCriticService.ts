@@ -332,7 +332,12 @@ export class PlanCriticService {
       const { critic, precheck } = consecutivePlanRevisions(cardId);
       if (critic + precheck >= MAX_CRITIC_REVISIONS) {
         deps.finishRun(runId, "completed", "revise — revision limit reached", telemetry);
-        deps.moveCard(cardId, "planning", "plan_review", "plan critic revision limit — escalated to plan review");
+        // YOLO mode: nobody is there to review it, so the latest plan runs.
+        if (getSettings().yoloMode) {
+          deps.moveCard(cardId, "planning", "ready", "plan critic revision limit — YOLO mode runs the latest plan");
+        } else {
+          deps.moveCard(cardId, "planning", "plan_review", "plan critic revision limit — escalated to plan review");
+        }
         return;
       }
       deps.finishRun(runId, "completed", "revise", telemetry);

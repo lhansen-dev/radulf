@@ -13,6 +13,11 @@ describe("planningDestination", () => {
       expect(planningDestination({ reviewPlanBeforeImplementation: v })).toBe("plan_review");
     }
   });
+
+  it("skips plan review while YOLO mode is on", () => {
+    mocks.yoloMode = true;
+    expect(planningDestination({ reviewPlanBeforeImplementation: 1 })).toBe("ready");
+  });
 });
 
 describe("renderPlanPrompt", () => {
@@ -115,6 +120,7 @@ const mocks = vi.hoisted(() => ({
   // The fixture worktree is not a real checkout; the guard would otherwise
   // report it as no longer sharing the repository's git dir.
   offRunBranchReason: vi.fn().mockResolvedValue(null),
+  yoloMode: false,
 }));
 
 vi.mock("./harness", async (importOriginal) => ({
@@ -146,6 +152,7 @@ vi.mock("./settings", async (importOriginal) => ({
       // Spec 30: the routing tests below expect a plan to go straight to
       // ready; a card opts into the critic explicitly where it is tested.
       planCriticMode: "off",
+      yoloMode: mocks.yoloMode,
     }),
 }));
 
@@ -163,12 +170,15 @@ const {
   clearPlannerArtifacts,
   renderPlanPrompt,
   writePlanRow,
+  YOLO_PLANNER_SECTION,
 } = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
 // Default the pre-check spy back to the real implementation for every test in
 // this file; the cancellation tests replace it with a promise they control.
+// YOLO mode is off unless a test turns it on.
 beforeEach(async () => {
+  mocks.yoloMode = false;
   const real = await vi.importActual<typeof import("./acceptanceProbe")>("./acceptanceProbe");
   mocks.precheckAcceptance.mockImplementation((opts) => real.precheckAcceptance(opts));
 });
@@ -436,6 +446,19 @@ describe("PlanningService.runPlanning", () => {
     // Any other loop ending is a retry, not a re-plan.
     loopRun("run-stalled", "stalled", null, "2026-09-21T16:30:00.000Z");
     expect(pendingReplanFeedback("card-loop-stop")).toContain("No Atlassian session in the sandbox.");
+  });
+
+  it("closes the questions escape hatch in the planner's prompt only while YOLO mode is on", async () => {
+    for (const yolo of [false, true]) {
+      mocks.yoloMode = yolo;
+      seedCard(`card-yolo-${yolo}`);
+      mockPlannerHarness(completeArtifacts);
+
+      await new PlanningService(makeDeps()).runPlanning(`card-yolo-${yolo}`);
+
+      const prompt = mocks.runHarness.mock.calls.at(-1)![0].prompt as string;
+      expect(prompt.includes(YOLO_PLANNER_SECTION)).toBe(yolo);
+    }
   });
 
   it("hands the scoping thread to the planner", async () => {
