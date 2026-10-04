@@ -14,6 +14,7 @@ import {
   planStatePath,
   readRalphArtifact,
   removeRalphFiles,
+  writeRalphArtifact,
 } from "./bookkeeping";
 import {
   attemptTranscriptPath,
@@ -112,10 +113,14 @@ export function renderPlanPrompt(
   description: string,
   feedback?: string,
   scoping: Pick<ScopingMessage, "role" | "content">[] = [],
+  /** Spec 32: the feedback is on the plan alone, which is seeded in `.ralph/`. */
+  revisingPlan = false,
 ) {
-  const feedbackSection = feedback
-    ? `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n\nThe working directory already holds the previous attempt's implementation,\ncommitted on this branch. Plan only the work needed to address the feedback\nabove on top of that code — do not re-plan tasks it already satisfies.\n`
-    : "";
+  const feedbackSection = !feedback
+    ? ""
+    : revisingPlan
+      ? `\nPLAN REVISION — FEEDBACK ON YOUR PREVIOUS PLAN\n==============================================\n${feedback}\n\nNo code has been written since that plan, and it is already in \`.ralph/\`:\nPLAN.md, CRITERIA.md and PROMPT.md as you wrote them. Revise those files in\nplace rather than starting over. Use targeted edits to fix what the feedback\nnames and anything it makes inconsistent, and leave the rest as it is. Read\nonly the code you need to settle the feedback; the rest of the plan was\nwritten from this repository as it stands. Every rule below still applies to\nthe revised files.\n`
+      : `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n\nThe working directory already holds the previous attempt's implementation,\ncommitted on this branch. Plan only the work needed to address the feedback\nabove on top of that code — do not re-plan tasks it already satisfies.\n`;
   // Spec 17: the thread is part of the card, so the planner gets it whole and
   // the decisions reached there constrain the plan. Questions an earlier
   // planning run raised appear with the operator's answers under them.
@@ -149,6 +154,12 @@ export function renderPlanPrompt(
  * latest plan — once the planner writes a new version, it is spent.
  */
 export function pendingReplanFeedback(cardId: string): string | null {
+  return pendingReplan(cardId)?.feedback ?? null;
+}
+
+/** `pendingReplanFeedback`, plus whether the feedback is on the plan alone —
+ * a critic or pre-check revise, with no code written since (spec 32). */
+function pendingReplan(cardId: string): { feedback: string; revisesPlan: boolean } | null {
   const latest = db
     .select({ id: plans.id })
     .from(plans)
@@ -210,14 +221,18 @@ export function pendingReplanFeedback(cardId: string): string | null {
     .limit(1)
     .get();
   const newest = [
-    rejection,
-    revise,
-    precheck,
-    loopStop && { feedback: loopStopFeedback(loopStop.exitReason!, loopStop.feedback), at: loopStop.at },
+    rejection && { ...rejection, revisesPlan: false },
+    revise && { ...revise, revisesPlan: revise.kind === "critique" },
+    precheck && { ...precheck, revisesPlan: true },
+    loopStop && {
+      feedback: loopStopFeedback(loopStop.exitReason!, loopStop.feedback),
+      at: loopStop.at,
+      revisesPlan: false,
+    },
   ]
     .filter((row) => row?.feedback)
     .sort((a, b) => b!.at.localeCompare(a!.at))[0];
-  return newest?.feedback ?? null;
+  return newest ? { feedback: newest.feedback!, revisesPlan: newest.revisesPlan } : null;
 }
 
 /**
@@ -381,10 +396,26 @@ export class PlanningService {
       return;
     }
     const prevPlan = deps.latestPlan(cardId);
-    const replanFeedback = pendingReplanFeedback(cardId);
+    const replan = pendingReplan(cardId);
+    const replanFeedback = replan?.feedback ?? null;
+    // Spec 32: feedback on the plan alone means nothing was built since it, so
+    // the planner revises that plan in `.ralph/` instead of starting over.
+    const seed =
+      replan?.revisesPlan && prevPlan
+        ? {
+            "PLAN.md": prevPlan.planMd,
+            "CRITERIA.md": prevPlan.acceptanceCriteria,
+            "PROMPT.md": prevPlan.promptMd,
+          }
+        : undefined;
     try {
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
+      if (seed) {
+        for (const [name, content] of Object.entries(seed)) {
+          writeRalphArtifact(worktreePath, name, `${content.trim()}\n`);
+        }
+      }
 
       // Spec 26: the killed attempt's drafts and command digest, then the
       // clock, appended outside the template so a customized one still gets them.
@@ -406,6 +437,7 @@ export class PlanningService {
           card.description,
           replanFeedback ?? prevPlan?.feedback ?? undefined,
           listScopingMessages(cardId),
+          seed !== undefined,
         ) +
         (settings.yoloMode ? YOLO_PLANNER_SECTION : "") +
         previousSection +
@@ -429,7 +461,12 @@ export class PlanningService {
       // Spec 26 decision 4: complete artifacts on disk outlive the watchdog
       // that killed the session (spec 18 item 1 for the planner). Every
       // check below still applies to them.
-      const recovered = (result.timedOut || result.stalled) && plannerArtifactsComplete(worktreePath);
+      const recovered =
+        (result.timedOut || result.stalled) &&
+        plannerArtifactsComplete(worktreePath) &&
+        // Spec 32: a seed is complete before the session starts, so a
+        // revision counts as recovered only once it has changed something.
+        !(seed && RALPH_FILES.every((f) => readRalphFile(worktreePath, f) === seed[f].trim()));
       if (recovered) {
         emitEvent("plan.recovered_after_timeout", {
           cardId,
@@ -450,6 +487,9 @@ export class PlanningService {
       // The planner's follow-up questions escape hatch.
       const questions = readRalphFile(worktreePath, "QUESTIONS.md");
       if (questions) {
+        // Spec 32: a revision's seeded PLAN.md and CRITERIA.md stay private
+        // on this path too, out of the worktree and out of branch history.
+        removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md"]);
         await tryGit(worktreePath, "add", ".ralph");
         await tryGit(worktreePath, "commit", "-m", `ralph: planner raised questions for "${card.title}"`);
         emitEvent("plan.questions", { cardId, runId, payload: { questions } });

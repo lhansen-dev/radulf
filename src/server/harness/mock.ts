@@ -70,6 +70,8 @@ const call = (name: string, args: ToolArgs): Block => ({
   arguments: args,
 });
 const write = (path: string, content: string) => call("write", { path, content });
+const edit = (path: string, oldText: string, newText: string) =>
+  call("edit", { path, edits: [{ oldText, newText }] });
 const bash = (command: string) => call("bash", { command });
 
 // ---------------------------------------------------------------------------
@@ -78,6 +80,11 @@ const bash = (command: string) => call("bash", { command });
 
 const PLAN_PROMPT_MD =
   "Do exactly the assigned task: write the file it names with the task text as its content, then write the signal file.\n";
+
+/** A re-plan carries a feedback section: PREVIOUS ATTEMPT after an evaluator
+ * revise or human reject, PLAN REVISION after a critic or pre-check revise. */
+const isReplan = (prompt: string) =>
+  prompt.includes("PREVIOUS ATTEMPT") || prompt.includes("PLAN REVISION");
 
 /**
  * The planner, with only its CRITERIA.md swapped.
@@ -91,13 +98,23 @@ const PLAN_PROMPT_MD =
  */
 const plannerWithCriteria = (criteria: (prompt: string) => string): Script => ({ prompt, step }) => {
   if (step > 0) return [say("Plan written to .ralph/.")];
-  // A re-plan (evaluator revise or human reject) carries the feedback section.
-  const tasks = prompt.includes("PREVIOUS ATTEMPT")
-    ? ["Address the reviewer feedback in mock-output/feedback.md"]
-    : ["Create mock-output/task-1.md", "Create mock-output/task-2.md"];
+  const checklist = (tasks: string[]) => tasks.map((t) => `- [ ] ${t}`).join("\n");
+  const firstTasks = ["Create mock-output/task-1.md", "Create mock-output/task-2.md"];
+  const replanTasks = ["Address the reviewer feedback in mock-output/feedback.md"];
+  // Spec 32: a critic or pre-check revise seeds the plan it sent back, so the
+  // revision edits PLAN.md in place and leaves PROMPT.md as seeded. Without
+  // the seed the edit fails and the artifacts are incomplete.
+  if (prompt.includes("PLAN REVISION")) {
+    return [
+      think("Scripted revision: swap the checklist for the feedback task."),
+      edit(".ralph/PLAN.md", checklist(firstTasks), checklist(replanTasks)),
+      write(".ralph/CRITERIA.md", criteria(prompt)),
+    ];
+  }
+  const tasks = isReplan(prompt) ? replanTasks : firstTasks;
   return [
     think("Scripted plan: one file per task, no real analysis."),
-    write(".ralph/PLAN.md", `# Plan\n\n## Tasks\n${tasks.map((t) => `- [ ] ${t}`).join("\n")}\n`),
+    write(".ralph/PLAN.md", `# Plan\n\n## Tasks\n${checklist(tasks)}\n`),
     write(".ralph/CRITERIA.md", criteria(prompt)),
     write(".ralph/PROMPT.md", PLAN_PROMPT_MD),
   ];
@@ -223,7 +240,7 @@ const MOCK_SCENARIOS: Record<string, { description: string; scripts: Partial<Rec
       // The re-plan's check names the one file the default re-plan task writes:
       // missing when the pre-check runs, present by the time DONE does.
       planner: plannerWithCriteria((prompt) =>
-        prompt.includes("PREVIOUS ATTEMPT")
+        isReplan(prompt)
           ? "- [ ] `test -f mock-output/task-1.md` succeeds\n"
           : "- [ ] `test -f README.md` succeeds\n",
       ),
