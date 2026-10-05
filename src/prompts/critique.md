@@ -92,6 +92,10 @@ RULES
 - Judge the plan against the card and the spec files, not your own taste. A
   different approach you would have preferred is not grounds for `revise`;
   a task that cannot be built or verified is.
+- The orchestrator commits each task separately and delivers the branch as a
+  whole: a merge commit named after the card, or a pull request. A card's
+  instructions about how many commits to make, or what to name them, are not
+  loop tasks — never send a plan back over them.
 - You are READ-ONLY. Write EXACTLY ONE file: `.ralph/CRITIQUE.md`. Do NOT
   modify source code, `.ralph/PLAN.md`, `.ralph/CRITERIA.md`,
   `.ralph/PROMPT.md`, or anything else, and do NOT run `git commit` or

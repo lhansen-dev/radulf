@@ -59,6 +59,10 @@ directory (create it if needed). Do not modify any other file.
    - ORDERED: sequence items so each builds only on the ones before it.
    Use exactly as many items as the definition of done demands — impose no
    numeric target and no cap; a big card may legitimately need many.
+   The orchestrator commits each task separately and delivers the branch as
+   a whole: a merge commit named after the card, or a pull request. A card's
+   instructions about how many commits to make, or what to name them, are
+   never loop tasks.
 
 2. `.ralph/CRITERIA.md` — a checklist of mechanically verifiable acceptance
    criteria for the WHOLE card. Every item must be a command to run plus its
