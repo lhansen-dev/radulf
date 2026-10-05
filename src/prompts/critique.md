@@ -57,6 +57,9 @@ YOUR TASK
    - Acceptance criteria that grep for text the plan never produces — a
      criterion checking for a string, a file, a log line or a command output
      that no task in the plan actually creates.
+   - Checks that a string is gone which also search test files: a test
+     asserting the string's absence contains it, so the check fails on
+     correct work.
    - Work the card did not ask for: tasks that widen scope, refactor
      unrelated code, or "improve" things the card never mentioned.
    - Tasks too vague to build, tasks whose check does not verify what the

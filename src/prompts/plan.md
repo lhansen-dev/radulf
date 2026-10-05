@@ -61,7 +61,16 @@ directory (create it if needed). Do not modify any other file.
    expected outcome (e.g. "`npx vitest run src/health.test.ts` exits 0",
    "`grep -q 'GET /health' src/app.ts` succeeds"). Test commands must name
    only the test files relevant to this card — never a bare `npm test` or
-   anything that runs the full suite.
+   anything that runs the full suite — with one exception: if the card names
+   a whole-project verification command (`make check`, `npm run check`,
+   `cargo test`, …), put it verbatim under `## Regression`, and never replace
+   it with a narrower list.
+   A check that a string is gone must search production files only: a test
+   asserting the string's absence contains that very string. Never disguise a
+   test to get past such a check.
+   Every exact string, identifier, path or count a criterion checks must be
+   spelled out in the task item that produces it — the loop never sees
+   CRITERIA.md.
    Every check for NEW behaviour must exit non-zero on the repository exactly as
    it stands now, and exit the way its criterion wants once the work is done —
    and the exact reverse for a check you write as failing ("`grep -rq old_name
