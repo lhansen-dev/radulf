@@ -60,7 +60,9 @@ const testDataDir = setupTestDataDir("radulf-evaluationService-");
 const { testSettings } = await import("@/testUtils/testSettings");
 
 const { db, cards, events, plans, runs, repos, now } = await import("@/db");
-const { EvaluationService, renderEvaluatorPrompt, YOLO_EVALUATOR_SECTION } = await import("./evaluationService");
+const { EvaluationService, renderEvaluatorPrompt, YOLO_EVALUATOR_SECTION, noListenEvaluatorSection } = await import(
+  "./evaluationService"
+);
 
 function seedRepo() {
   db.insert(repos)
@@ -277,6 +279,13 @@ describe("EvaluationService.runEvaluator", () => {
       const prompt = mocks.runHarness.mock.calls.at(-1)![0].prompt as string;
       expect(prompt.includes(YOLO_EVALUATOR_SECTION)).toBe(yolo);
     }
+  });
+
+  it("tells a sandboxed macOS evaluator not to revise on a refused listen", () => {
+    expect(noListenEvaluatorSection(true, "darwin")).toContain("listen EPERM");
+    expect(noListenEvaluatorSection(true, "darwin")).toContain("operator verification step");
+    expect(noListenEvaluatorSection(true, "linux")).toBe("");
+    expect(noListenEvaluatorSection(false, "darwin")).toBe("");
   });
 
   it("approves and advances the card to review", async () => {

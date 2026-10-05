@@ -334,11 +334,16 @@ Node projects. A command that needs a listening port cannot be a task's check or
 an acceptance criterion; it belongs under \`## Operator steps\` in PLAN.md.
 `;
 
+/** macOS's Seatbelt profile denies every bind, loopback included. Linux runs
+ * get a private network namespace instead. */
+export function sandboxDeniesListen(sandboxEnabled: boolean, platform = process.platform): boolean {
+  return sandboxEnabled && platform === "darwin";
+}
+
 /** Appended to the planner's and the critic's prompts outside their templates,
- * and only where it is true: macOS's Seatbelt profile denies every bind,
- * loopback included. Linux runs get a private network namespace instead. */
+ * and only where it is true. */
 export function noListenSection(sandboxEnabled: boolean, platform = process.platform): string {
-  return sandboxEnabled && platform === "darwin" ? NO_LISTEN_SECTION : "";
+  return sandboxDeniesListen(sandboxEnabled, platform) ? NO_LISTEN_SECTION : "";
 }
 
 /** Appended to the planner's and the critic's prompts outside their templates:

@@ -206,8 +206,10 @@ traffic never goes through agent bash — the pi SDK calls providers in-process
   browser mode, and a plain `vitest run` whose config defines a browser project
   all fail with `listen EPERM`. On macOS, sandboxed planner and critic runs are
   told this (`noListenSection`), so such commands go under the plan's Operator
-  steps instead of becoming checks. Linux runs get a private network namespace
-  and are not told.
+  steps instead of becoming checks. The evaluator is told too
+  (`noListenEvaluatorSection`): a criterion that fails this way becomes an
+  operator verification finding, not a `revise`. Linux runs get a private
+  network namespace and are not told.
 
 ---
 

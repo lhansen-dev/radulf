@@ -27,6 +27,7 @@ import { normalizeProvider } from "./providers";
 import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
+import { sandboxDeniesListen } from "./planningService";
 import { snapshotRepoIntegrity } from "./integrity";
 import {
   circuitOpenReason,
@@ -82,6 +83,26 @@ and its tests, and add an \`important\` finding naming the criterion as
 unverified so the human reviewer sees it. Everything else about your verdict
 is unchanged.
 `;
+
+const NO_LISTEN_EVALUATOR_SECTION = `
+NO LISTENING PORTS
+==================
+The sandbox on this host refuses every attempt to listen on a network port,
+localhost included, so anything that starts a server fails with \`listen EPERM\`
+before a single test runs: a dev or preview server, Playwright's \`webServer\`,
+Vitest browser mode, or a plain \`vitest run\` whose config defines a browser
+project. If a criterion fails that way, the sandbox stopped it, not the change,
+and re-planning cannot fix it, so do not \`revise\` on that alone. Judge that
+criterion by reading the code and its tests, and add an \`important\` finding
+naming it as an operator verification step, so the human reviewer runs it
+outside the sandbox.
+`;
+
+/** The evaluator's side of the planner's NO LISTENING PORTS section: the card
+ * may name a server-backed check, and only the operator can run it. */
+export function noListenEvaluatorSection(sandboxEnabled: boolean, platform = process.platform): string {
+  return sandboxDeniesListen(sandboxEnabled, platform) ? NO_LISTEN_EVALUATOR_SECTION : "";
+}
 
 export type EvaluationServiceDependencies = StageDependencies & {
   /** Advance the repo's queue once this evaluation releases its slot. Every
@@ -250,6 +271,7 @@ export class EvaluationService {
           plan.acceptanceCriteria,
         ) +
         (settings.yoloMode ? YOLO_EVALUATOR_SECTION : "") +
+        noListenEvaluatorSection(settings.sandboxEnabled) +
         previousSection +
         gateSection +
         EVALUATION_NOTES_SECTION +
