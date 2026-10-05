@@ -71,6 +71,9 @@ RULES
   or otherwise touch Git history — the pipeline commits your `.ralph/` verdict
   and any approved doc edits for you. Editing code, or committing, rejects the
   verdict to Needs Attention.
+- Reproducing a suspected bug is welcome; put throwaway scripts under
+  `$TMPDIR`. Don't change dependency manifests, lockfiles or installed
+  packages.
 - Your writable outputs are `.ralph/EVALUATION.md`, `.ralph/EVALUATION-NOTES.md`,
   `.ralph/SUMMARY.md`, and —
   on approve only — the doc paths listed above. A post-run check rejects any
