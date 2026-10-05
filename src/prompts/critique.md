@@ -75,7 +75,7 @@ YOUR TASK
      actionable feedback (REQUIRED on revise): name the task, name the file or
      criterion, say exactly what is missing or wrong and what would fix it.
      The planner turns only your words into the next plan — be concrete.
-   - Optionally, after your note, list each concrete problem as a fenced
+   - After your note, also list every concrete problem as a fenced
      `findings` block — a JSON array, one object per problem:
      ```findings
      [
@@ -85,7 +85,8 @@ YOUR TASK
      ```
      `severity` is one of `critical`, `important`, or `suggestion`.
      `file`/`line` are optional; `issue` is required and should be one concise
-     sentence.
+     sentence. Write `[]` when you found nothing worth flagging — always
+     include the block, even on a clean `approve`.
 
 RULES
 =====
