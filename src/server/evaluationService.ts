@@ -28,6 +28,7 @@ import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { sandboxDeniesListen } from "./planningService";
+import { CRITIC_LIMIT_EXIT } from "./planCriticService";
 import { snapshotRepoIntegrity } from "./integrity";
 import {
   circuitOpenReason,
@@ -102,6 +103,32 @@ outside the sandbox.
  * may name a server-backed check, and only the operator can run it. */
 export function noListenEvaluatorSection(sandboxEnabled: boolean, platform = process.platform): string {
   return sandboxDeniesListen(sandboxEnabled, platform) ? NO_LISTEN_EVALUATOR_SECTION : "";
+}
+
+/** Appended when the critic sent this plan back after the revision cap, so it
+ * was built as written: nothing has addressed that feedback yet, and the
+ * evaluator is the next reader who can. */
+export function cappedCritiqueSection(planId: string): string {
+  const critique = db
+    .select({ feedback: runs.feedback })
+    .from(runs)
+    .where(and(eq(runs.planId, planId), eq(runs.kind, "critique"), eq(runs.exitReason, CRITIC_LIMIT_EXIT)))
+    .orderBy(desc(runs.startedAt))
+    .limit(1)
+    .get();
+  if (!critique?.feedback) return "";
+  return `
+UNRESOLVED PLAN CRITIQUE
+========================
+Before the loop ran, the plan critic asked for changes to this plan, but the
+plan had reached its revision limit and was built as written. The critic's
+feedback:
+
+${critique.feedback}
+
+Check each concern against the change. One the change still has is grounds for
+\`revise\` like any other bug; one the change already handles is not.
+`;
 }
 
 export type EvaluationServiceDependencies = StageDependencies & {
@@ -272,6 +299,7 @@ export class EvaluationService {
         ) +
         (settings.yoloMode ? YOLO_EVALUATOR_SECTION : "") +
         noListenEvaluatorSection(settings.sandboxEnabled) +
+        cappedCritiqueSection(plan.id) +
         previousSection +
         gateSection +
         EVALUATION_NOTES_SECTION +

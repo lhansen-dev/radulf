@@ -84,8 +84,9 @@ for any card via its **Plan critic** setting — a read-only second model reads
 the plan against the card, its thread and the specs it names before anything
 runs. An approve sends the card on as usual; a revise sends the plan back to
 the planner with the critic's feedback, at most twice, after which the card
-goes to plan review for a person to decide. Its verdicts show in the card's
-events. A plan sent back by the critic or the acceptance pre-check returns to
+goes to plan review for a person to decide. If that plan runs anyway, the
+critic's last feedback goes to the evaluator to check against the change. Its
+verdicts show in the card's events. A plan sent back by the critic or the acceptance pre-check returns to
 the planner as written, so the planner edits it rather than starting over
 (spec 32).
 
