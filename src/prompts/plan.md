@@ -52,6 +52,10 @@ directory (create it if needed). Do not modify any other file.
      files it touches (e.g. `npx vitest run src/foo.test.ts`, or a single `-t`
      pattern) — never the full suite. The whole-card checks belong to
      CRITERIA.md and the evaluator; never copy them into a final loop task.
+     Some test runners skip type-checking or compiling (Vitest, Jest with
+     Babel or SWC, pytest without mypy). If the repo has a typecheck or
+     compile step, chain it onto the check (`<test> && <typecheck>`); a
+     project-wide typecheck is not "the full suite".
    - ORDERED: sequence items so each builds only on the ones before it.
    Use exactly as many items as the definition of done demands — impose no
    numeric target and no cap; a big card may legitimately need many.
