@@ -15,7 +15,7 @@ import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { listScopingMessages, type ScopingMessage } from "./scoping";
-import { noListenSection, planningDestination } from "./planningService";
+import { networkSection, noListenSection, planningDestination } from "./planningService";
 import { PRECHECK_REVISE_EXIT } from "./acceptanceProbe";
 import {
   circuitOpenReason,
@@ -256,6 +256,7 @@ export class PlanCriticService {
           promptMd: plan.promptMd,
         }) +
         noListenSection(settings.sandboxEnabled) +
+        networkSection(settings.sandboxEnabled, settings.sandboxNetworkAllowlist) +
         renderDeadlineSection("critic", new Date(), timeoutMs);
       const result = await runWithTranscript({
         runId,

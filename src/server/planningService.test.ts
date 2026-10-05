@@ -172,6 +172,7 @@ const {
   writePlanRow,
   YOLO_PLANNER_SECTION,
   noListenSection,
+  networkSection,
 } = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
@@ -1245,6 +1246,20 @@ describe("noListenSection", () => {
     expect(noListenSection(true, "darwin")).toContain("## Operator steps");
     expect(noListenSection(true, "linux")).toBe("");
     expect(noListenSection(false, "darwin")).toBe("");
+  });
+});
+
+describe("networkSection", () => {
+  it("lists the hosts the sandbox actually allows, extras included", () => {
+    const section = networkSection(true, "pypi.org\n\nfiles.pythonhosted.org\n");
+    expect(section).toContain("- registry.npmjs.org\n- pypi.org\n- files.pythonhosted.org\n");
+    expect(section).toContain("## Operator steps");
+  });
+
+  it("says the network is open when the sandbox is off", () => {
+    const section = networkSection(false, "pypi.org");
+    expect(section).toContain("open\nnetwork access");
+    expect(section).not.toContain("registry.npmjs.org");
   });
 });
 

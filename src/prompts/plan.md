@@ -17,9 +17,9 @@ Title: {{TITLE}}
 
 WHERE THE WORK RUNS
 ===================
-The loop and the evaluator run inside a sandbox: no network except package
-registries, no access to the operator's home directory, credentials, or
-logged-in sessions, no browser, and nobody to answer a question mid-task. A
+The loop and the evaluator run inside a sandbox: no access to the operator's
+home directory, credentials, or logged-in sessions, no browser, and nobody to
+answer a question mid-task. A
 task that needs an authenticated external service, a live system, or a human
 decision cannot be a checklist item — the loop will stop on it and the card
 comes back to the operator. Plan only what can be built and verified offline,

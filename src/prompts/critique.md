@@ -47,8 +47,9 @@ YOUR TASK
    the files.
 2. Check the plan for gaps. In particular:
    - Tasks that cannot be built or verified in the loop's sandbox — it has NO
-     network and NO credentials. A task that installs a package, calls a
-     hosted API, needs a logged-in session or a secret cannot be done there.
+     credentials, and its network access is exactly what the NETWORK section
+     below says. A task that calls a hosted API, needs a logged-in session or
+     a secret cannot be done there.
    - Races the plan does not cover: concurrent workers, shared files, timers,
      ordering between tasks that assume something the previous task never
      produced.
@@ -78,7 +79,7 @@ YOUR TASK
      `findings` block — a JSON array, one object per problem:
      ```findings
      [
-       { "severity": "critical", "file": ".ralph/PLAN.md", "line": 12, "issue": "task 3 installs a package; the sandbox has no network" },
+       { "severity": "critical", "file": ".ralph/PLAN.md", "line": 12, "issue": "task 3 calls a hosted API; the sandbox has no credentials" },
        { "severity": "suggestion", "file": ".ralph/CRITERIA.md", "issue": "criterion 2 greps for a log line no task writes" }
      ]
      ```

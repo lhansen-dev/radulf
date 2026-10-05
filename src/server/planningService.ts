@@ -29,6 +29,7 @@ import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
+import { parseNetworkAllowlist } from "./sandbox/srt";
 import {
   precheckAcceptance,
   precheckReviseFeedback,
@@ -84,7 +85,7 @@ function loopStopFeedback(exitReason: string, feedback: string | null): string {
     return (
       "The implementation loop stopped on a blocker outside its control:\n\n" +
       (feedback ?? "(no detail recorded)") +
-      "\n\nPlan around it. The loop runs sandboxed — no network beyond package registries, " +
+      "\n\nPlan around it. The loop runs sandboxed — network only as the NETWORK section below allows, " +
       "no credentials, no logged-in sessions, nobody to ask — so do not give it a task that " +
       "needs what it does not have. Leave what only the operator can do to the operator, and " +
       "say so in PLAN.md. The scoping thread holds the operator's answers, if any."
@@ -340,6 +341,26 @@ export function noListenSection(sandboxEnabled: boolean, platform = process.plat
   return sandboxEnabled && platform === "darwin" ? NO_LISTEN_SECTION : "";
 }
 
+/** Appended to the planner's and the critic's prompts outside their templates:
+ * what the loop and evaluator can reach depends on the operator's sandbox
+ * settings, so no template can state it for every host. */
+export function networkSection(sandboxEnabled: boolean, allowlistText: string): string {
+  const reach = sandboxEnabled
+    ? `The loop and the evaluator can reach only these hosts:
+${parseNetworkAllowlist(allowlistText).map((domain) => `- ${domain}`).join("\n")}
+Every other host is unreachable, other package registries included. A task or
+criterion that fetches from one cannot be done in the sandbox; it belongs under
+\`## Operator steps\` in PLAN.md.`
+    : `The sandbox is off on this host, so the loop and the evaluator have open
+network access.`;
+  return `
+NETWORK
+=======
+${reach} Installing an npm package whose install scripts this repository has
+not approved stops the card for the operator to review those scripts.
+`;
+}
+
 /**
  * Owns the planning run: worktree setup, the planner harness invocation, and
  * artifact validation. Queue scheduling and run/card state stay behind
@@ -460,6 +481,7 @@ export class PlanningService {
         ) +
         (settings.yoloMode ? YOLO_PLANNER_SECTION : "") +
         noListenSection(settings.sandboxEnabled) +
+        networkSection(settings.sandboxEnabled, settings.sandboxNetworkAllowlist) +
         previousSection +
         renderDeadlineSection("planner", new Date(), timeoutMs);
       const result = await runWithTranscript({
