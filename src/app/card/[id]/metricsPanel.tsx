@@ -1,8 +1,3 @@
-"use client";
-import { formatDuration } from "../../ui/formatDuration";
-import { formatCostUsd } from "../../ui/formatCost";
-import { formatTokens, runTotals } from "./runTotals";
-
 export type Iteration = {
   id: number;
   runId: string;
@@ -60,58 +55,3 @@ export type Run = {
   iterations: Iteration[];
   reviews?: Review[];
 };
-
-/** Per-iteration metrics under a loop run's row. `nowMs` is the clock the
- * RunsTable already ticks for its live rows, so this table never runs its own. */
-export function MetricsPanel({ run, nowMs }: { run: Run; nowMs: number }) {
-  const { iterations } = run;
-  const totals = runTotals(run);
-
-  return (
-    <div className="mt-2 mb-2">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[28rem] text-xs text-foreground/70">
-          <thead>
-            <tr className="border-b border-foreground/10 text-foreground/50">
-              <th className="text-left py-1 pr-2 font-medium">Iter</th>
-              <th className="text-left py-1 pr-2 font-medium">Duration</th>
-              <th className="text-right py-1 pr-2 font-medium">Prompt</th>
-              <th className="text-right py-1 pr-2 font-medium">Completion</th>
-              <th className="text-right py-1 font-medium">Cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {iterations.map((it) => (
-              <tr key={it.id} className="border-b border-foreground/5">
-                <td className="py-1 pr-2 text-amber-400/80">{it.n}</td>
-                <td className="py-1 pr-2">
-                  {formatDuration(it.startedAt, it.endedAt, it.endedAt ? undefined : nowMs)}
-                </td>
-                <td className="py-1 pr-2 text-right font-mono">
-                  {formatTokens(it.promptTokens)}
-                </td>
-                <td className="py-1 pr-2 text-right font-mono">
-                  {formatTokens(it.completionTokens)}
-                </td>
-                <td className="py-1 text-right font-mono">
-                  {formatCostUsd(it.costUsd)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="font-medium border-t border-foreground/20 text-foreground/80">
-              <td className="py-1 pr-2">Total</td>
-              <td className="py-1 pr-2">
-                {formatDuration(run.startedAt, run.endedAt, nowMs)}
-              </td>
-              <td className="py-1 pr-2 text-right font-mono">{formatTokens(totals.promptTokens)}</td>
-              <td className="py-1 pr-2 text-right font-mono">{formatTokens(totals.completionTokens)}</td>
-              <td className="py-1 text-right font-mono">{formatCostUsd(totals.costUsd)}</td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-    </div>
-  );
-}

@@ -24,6 +24,13 @@ make dev
 
 Then open <http://localhost:3000>.
 
+Rather have a window of its own than a browser tab? `make desktop` opens the
+running server in an Electron window. Start it before or after the server: the
+window waits for the server to answer. Links that lead off the app open in your
+browser. To use a Radulf on another machine, pass its address:
+`make desktop URL=https://radulf.example.com`. The first run downloads Electron,
+a few hundred MB kept in `desktop/node_modules`.
+
 The SQLite database and every runtime directory are created for you on first run
 — `./data`, plus `./worktrees`, `./plans` and `./runtmp` beside it, all
 gitignored. There is no migration step to remember.

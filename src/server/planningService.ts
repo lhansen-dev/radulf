@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, now, plans, runs, reviews, type PlanOrigin, type ScopingRole } from "@/db";
 import { privateDir, tighten } from "@/db/privateFs";
@@ -14,6 +14,7 @@ import {
   planStatePath,
   readRalphArtifact,
   removeRalphFiles,
+  writeRalphArtifact,
 } from "./bookkeeping";
 import {
   attemptTranscriptPath,
@@ -28,6 +29,7 @@ import { normalizeProvider } from "./providers";
 import { offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
+import { parseNetworkAllowlist } from "./sandbox/srt";
 import {
   precheckAcceptance,
   precheckReviseFeedback,
@@ -83,7 +85,7 @@ function loopStopFeedback(exitReason: string, feedback: string | null): string {
     return (
       "The implementation loop stopped on a blocker outside its control:\n\n" +
       (feedback ?? "(no detail recorded)") +
-      "\n\nPlan around it. The loop runs sandboxed — no network beyond package registries, " +
+      "\n\nPlan around it. The loop runs sandboxed — network only as the NETWORK section below allows, " +
       "no credentials, no logged-in sessions, nobody to ask — so do not give it a task that " +
       "needs what it does not have. Leave what only the operator can do to the operator, and " +
       "say so in PLAN.md. The scoping thread holds the operator's answers, if any."
@@ -112,10 +114,14 @@ export function renderPlanPrompt(
   description: string,
   feedback?: string,
   scoping: Pick<ScopingMessage, "role" | "content">[] = [],
+  /** Spec 32: the feedback is on the plan alone, which is seeded in `.ralph/`. */
+  revisingPlan = false,
 ) {
-  const feedbackSection = feedback
-    ? `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n\nThe working directory already holds the previous attempt's implementation,\ncommitted on this branch. Plan only the work needed to address the feedback\nabove on top of that code — do not re-plan tasks it already satisfies.\n`
-    : "";
+  const feedbackSection = !feedback
+    ? ""
+    : revisingPlan
+      ? `\nPLAN REVISION — FEEDBACK ON YOUR PREVIOUS PLAN\n==============================================\n${feedback}\n\nNo code has been written since that plan, and it is already in \`.ralph/\`:\nPLAN.md, CRITERIA.md and PROMPT.md as you wrote them. Revise those files in\nplace rather than starting over. Use targeted edits to fix what the feedback\nnames and anything it makes inconsistent, and leave the rest as it is. Read\nonly the code you need to settle the feedback; the rest of the plan was\nwritten from this repository as it stands. Every rule below still applies to\nthe revised files.\n`
+      : `\nPREVIOUS ATTEMPT — REVIEWER FEEDBACK\n====================================\n${feedback}\n\nThe working directory already holds the previous attempt's implementation,\ncommitted on this branch. Plan only the work needed to address the feedback\nabove on top of that code — do not re-plan tasks it already satisfies.\n`;
   // Spec 17: the thread is part of the card, so the planner gets it whole and
   // the decisions reached there constrain the plan. Questions an earlier
   // planning run raised appear with the operator's answers under them.
@@ -149,6 +155,12 @@ export function renderPlanPrompt(
  * latest plan — once the planner writes a new version, it is spent.
  */
 export function pendingReplanFeedback(cardId: string): string | null {
+  return pendingReplan(cardId)?.feedback ?? null;
+}
+
+/** `pendingReplanFeedback`, plus whether the feedback is on the plan alone —
+ * a critic or pre-check revise, with no code written since (spec 32). */
+function pendingReplan(cardId: string): { feedback: string; revisesPlan: boolean } | null {
   const latest = db
     .select({ id: plans.id })
     .from(plans)
@@ -210,14 +222,18 @@ export function pendingReplanFeedback(cardId: string): string | null {
     .limit(1)
     .get();
   const newest = [
-    rejection,
-    revise,
-    precheck,
-    loopStop && { feedback: loopStopFeedback(loopStop.exitReason!, loopStop.feedback), at: loopStop.at },
+    rejection && { ...rejection, revisesPlan: false },
+    revise && { ...revise, revisesPlan: revise.kind === "critique" },
+    precheck && { ...precheck, revisesPlan: true },
+    loopStop && {
+      feedback: loopStopFeedback(loopStop.exitReason!, loopStop.feedback),
+      at: loopStop.at,
+      revisesPlan: false,
+    },
   ]
     .filter((row) => row?.feedback)
     .sort((a, b) => b!.at.localeCompare(a!.at))[0];
-  return newest?.feedback ?? null;
+  return newest ? { feedback: newest.feedback!, revisesPlan: newest.revisesPlan } : null;
 }
 
 /**
@@ -279,11 +295,75 @@ export function writePlanRow(
   return { planId, version };
 }
 
-/** Opted-in cards pause for human plan review; ordinary cards go straight to ready. */
+/** Opted-in cards pause for human plan review; ordinary cards go straight to
+ * ready, and so does every card while YOLO mode is on — read live, like
+ * auto-approve, so turning it on applies to work already in flight. */
 export function planningDestination(
   card: { reviewPlanBeforeImplementation: number }
 ): "plan_review" | "ready" {
-  return card.reviewPlanBeforeImplementation ? "plan_review" : "ready";
+  return card.reviewPlanBeforeImplementation && !getSettings().yoloMode ? "plan_review" : "ready";
+}
+
+const QUESTIONS_EXIT = "planner raised follow-up questions";
+
+/** Appended outside the template, so a customized one still closes the
+ * escape hatch while the operator is away. */
+export const YOLO_PLANNER_SECTION = `
+YOLO MODE
+=========
+The operator turned on YOLO mode and is away: nobody will answer a question
+until this card is finished. The NEEDS ATTENTION escape hatch is closed — do
+not write \`.ralph/QUESTIONS.md\`. Where the card is ambiguous, pick the most
+conservative reasonable reading and plan that, and list each assumption you
+made, with the alternatives you rejected, under a \`## Assumptions\` heading in
+PLAN.md, outside \`## Tasks\`. Questions an earlier planning run left in the
+scoping thread with no operator answer are yours to answer the same way. Work
+that truly needs the operator — credentials, a live service — still goes under
+\`## Operator steps\`, never into \`## Tasks\`.
+`;
+
+const NO_LISTEN_SECTION = `
+NO LISTENING PORTS
+==================
+The sandbox on this host refuses every attempt to listen on a network port,
+localhost included, so anything that starts a server fails with \`listen EPERM\`
+before a single test runs. That covers a dev or preview server, Playwright's
+\`webServer\`, and Vitest browser mode. It also covers a plain \`vitest run\` when
+the Vitest config defines a browser project, unless \`--project\` selects only
+Node projects. A command that needs a listening port cannot be a task's check or
+an acceptance criterion; it belongs under \`## Operator steps\` in PLAN.md.
+`;
+
+/** macOS's Seatbelt profile denies every bind, loopback included. Linux runs
+ * get a private network namespace instead. */
+export function sandboxDeniesListen(sandboxEnabled: boolean, platform = process.platform): boolean {
+  return sandboxEnabled && platform === "darwin";
+}
+
+/** Appended to the planner's and the critic's prompts outside their templates,
+ * and only where it is true. */
+export function noListenSection(sandboxEnabled: boolean, platform = process.platform): string {
+  return sandboxDeniesListen(sandboxEnabled, platform) ? NO_LISTEN_SECTION : "";
+}
+
+/** Appended to the planner's and the critic's prompts outside their templates:
+ * what the loop and evaluator can reach depends on the operator's sandbox
+ * settings, so no template can state it for every host. */
+export function networkSection(sandboxEnabled: boolean, allowlistText: string): string {
+  const reach = sandboxEnabled
+    ? `The loop and the evaluator can reach only these hosts:
+${parseNetworkAllowlist(allowlistText).map((domain) => `- ${domain}`).join("\n")}
+Every other host is unreachable, other package registries included. A task or
+criterion that fetches from one cannot be done in the sandbox; it belongs under
+\`## Operator steps\` in PLAN.md.`
+    : `The sandbox is off on this host, so the loop and the evaluator have open
+network access.`;
+  return `
+NETWORK
+=======
+${reach} Installing an npm package whose install scripts this repository has
+not approved stops the card for the operator to review those scripts.
+`;
 }
 
 /**
@@ -361,10 +441,26 @@ export class PlanningService {
       return;
     }
     const prevPlan = deps.latestPlan(cardId);
-    const replanFeedback = pendingReplanFeedback(cardId);
+    const replan = pendingReplan(cardId);
+    const replanFeedback = replan?.feedback ?? null;
+    // Spec 32: feedback on the plan alone means nothing was built since it, so
+    // the planner revises that plan in `.ralph/` instead of starting over.
+    const seed =
+      replan?.revisesPlan && prevPlan
+        ? {
+            "PLAN.md": prevPlan.planMd,
+            "CRITERIA.md": prevPlan.acceptanceCriteria,
+            "PROMPT.md": prevPlan.promptMd,
+          }
+        : undefined;
     try {
       const breaker = circuitOpenReason(provider);
       if (breaker) return fail(breaker);
+      if (seed) {
+        for (const [name, content] of Object.entries(seed)) {
+          writeRalphArtifact(worktreePath, name, `${content.trim()}\n`);
+        }
+      }
 
       // Spec 26: the killed attempt's drafts and command digest, then the
       // clock, appended outside the template so a customized one still gets them.
@@ -386,7 +482,11 @@ export class PlanningService {
           card.description,
           replanFeedback ?? prevPlan?.feedback ?? undefined,
           listScopingMessages(cardId),
+          seed !== undefined,
         ) +
+        (settings.yoloMode ? YOLO_PLANNER_SECTION : "") +
+        noListenSection(settings.sandboxEnabled) +
+        networkSection(settings.sandboxEnabled, settings.sandboxNetworkAllowlist) +
         previousSection +
         renderDeadlineSection("planner", new Date(), timeoutMs);
       const result = await runWithTranscript({
@@ -408,7 +508,12 @@ export class PlanningService {
       // Spec 26 decision 4: complete artifacts on disk outlive the watchdog
       // that killed the session (spec 18 item 1 for the planner). Every
       // check below still applies to them.
-      const recovered = (result.timedOut || result.stalled) && plannerArtifactsComplete(worktreePath);
+      const recovered =
+        (result.timedOut || result.stalled) &&
+        plannerArtifactsComplete(worktreePath) &&
+        // Spec 32: a seed is complete before the session starts, so a
+        // revision counts as recovered only once it has changed something.
+        !(seed && RALPH_FILES.every((f) => readRalphFile(worktreePath, f) === seed[f].trim()));
       if (recovered) {
         emitEvent("plan.recovered_after_timeout", {
           cardId,
@@ -429,13 +534,32 @@ export class PlanningService {
       // The planner's follow-up questions escape hatch.
       const questions = readRalphFile(worktreePath, "QUESTIONS.md");
       if (questions) {
+        // Spec 32: a revision's seeded PLAN.md and CRITERIA.md stay private
+        // on this path too, out of the worktree and out of branch history.
+        removeRalphFiles(worktreePath, ["PLAN.md", "CRITERIA.md"]);
         await tryGit(worktreePath, "add", ".ralph");
         await tryGit(worktreePath, "commit", "-m", `ralph: planner raised questions for "${card.title}"`);
         emitEvent("plan.questions", { cardId, runId, payload: { questions } });
         // Spec 17: the questions join the card's scoping thread, where the
         // operator answers them; the next planning run reads the whole thread.
         addScopingMessage(cardId, "planner", questions);
-        deps.finishRun(runId, "completed", "planner raised follow-up questions", telemetry);
+        // YOLO mode: nobody is there to answer, so the planner gets one more
+        // run told to answer them itself. The card's plan run before this one
+        // asking too means it will not, and the card waits after all.
+        const askedLastTime =
+          db
+            .select({ exitReason: runs.exitReason })
+            .from(runs)
+            .where(and(eq(runs.cardId, cardId), eq(runs.kind, "plan"), ne(runs.id, runId)))
+            .orderBy(desc(runs.startedAt))
+            .limit(1)
+            .get()?.exitReason === QUESTIONS_EXIT;
+        deps.finishRun(runId, "completed", QUESTIONS_EXIT, telemetry);
+        if (getSettings().yoloMode && !askedLastTime) {
+          emitEvent("card.yolo_replanned", { cardId, runId, payload: { reason: QUESTIONS_EXIT } });
+          deps.replan(cardId);
+          return;
+        }
         deps.moveCard(cardId, "planning", "needs_attention", "planner has follow-up questions");
         return;
       }

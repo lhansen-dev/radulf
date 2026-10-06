@@ -17,9 +17,9 @@ Title: {{TITLE}}
 
 WHERE THE WORK RUNS
 ===================
-The loop and the evaluator run inside a sandbox: no network except package
-registries, no access to the operator's home directory, credentials, or
-logged-in sessions, no browser, and nobody to answer a question mid-task. A
+The loop and the evaluator run inside a sandbox: no access to the operator's
+home directory, credentials, or logged-in sessions, no browser, and nobody to
+answer a question mid-task. A
 task that needs an authenticated external service, a live system, or a human
 decision cannot be a checklist item — the loop will stop on it and the card
 comes back to the operator. Plan only what can be built and verified offline,
@@ -52,16 +52,33 @@ directory (create it if needed). Do not modify any other file.
      files it touches (e.g. `npx vitest run src/foo.test.ts`, or a single `-t`
      pattern) — never the full suite. The whole-card checks belong to
      CRITERIA.md and the evaluator; never copy them into a final loop task.
+     Some test runners skip type-checking or compiling (Vitest, Jest with
+     Babel or SWC, pytest without mypy). If the repo has a typecheck or
+     compile step, chain it onto the check (`<test> && <typecheck>`); a
+     project-wide typecheck is not "the full suite".
    - ORDERED: sequence items so each builds only on the ones before it.
    Use exactly as many items as the definition of done demands — impose no
    numeric target and no cap; a big card may legitimately need many.
+   The orchestrator commits each task separately and delivers the branch as
+   a whole: a merge commit named after the card, or a pull request. A card's
+   instructions about how many commits to make, or what to name them, are
+   never loop tasks.
 
 2. `.ralph/CRITERIA.md` — a checklist of mechanically verifiable acceptance
    criteria for the WHOLE card. Every item must be a command to run plus its
    expected outcome (e.g. "`npx vitest run src/health.test.ts` exits 0",
    "`grep -q 'GET /health' src/app.ts` succeeds"). Test commands must name
    only the test files relevant to this card — never a bare `npm test` or
-   anything that runs the full suite.
+   anything that runs the full suite — with one exception: if the card names
+   a whole-project verification command (`make check`, `npm run check`,
+   `cargo test`, …), put it verbatim under `## Regression`, and never replace
+   it with a narrower list.
+   A check that a string is gone must search production files only: a test
+   asserting the string's absence contains that very string. Never disguise a
+   test to get past such a check.
+   Every exact string, identifier, path or count a criterion checks must be
+   spelled out in the task item that produces it — the loop never sees
+   CRITERIA.md.
    Every check for NEW behaviour must exit non-zero on the repository exactly as
    it stands now, and exit the way its criterion wants once the work is done —
    and the exact reverse for a check you write as failing ("`grep -rq old_name
@@ -134,4 +151,6 @@ This is only for genuine blockers — if you can produce a reasonable plan, do
 so (write the three artifacts and print "PLANNING COMPLETE"). Do not use this
 escape hatch for minor nitpicks or optional suggestions.
 
-When the three files are written, print "PLANNING COMPLETE" and stop.
+When the three files are written, print "PLANNING COMPLETE" and stop. Do not
+recap the plan in your reply: the files are the record, and the operator reads
+the plan there.

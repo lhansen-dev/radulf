@@ -101,6 +101,7 @@ drizzle/          Generated SQL migration files
 docs/             Guides served by the in-app Docs tab
 specs/            Dated, append-only design decision log
 benchmarks/       Repeatable loop-performance fixtures and runners
+desktop/          Electron shell for `make desktop` (own package.json, not in the root install)
 ```
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full pipeline map

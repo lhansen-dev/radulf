@@ -2,6 +2,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, 
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { ClientError } from "./clientError";
+import { authEnabled } from "./session";
 
 const BENCH_DIR = path.join(process.cwd(), "benchmarks");
 const REPORTS_DIR = path.join(BENCH_DIR, "reports");
@@ -22,6 +23,11 @@ export type BenchmarkReport = {
   provider: string | null;
   model: string | null;
   plannerModel: string | null;
+  /** The evaluator model the runs used; null in reports that predate it. */
+  evaluatorModel: string | null;
+  /** Whether the plan critic ran, and on which model; null when unrecorded. */
+  planCritic: boolean | null;
+  criticModel: string | null;
   numRuns: number | null;
   timestamp: string | null;
   /** Set when the runner died before completing — the fatal error message. */
@@ -89,6 +95,9 @@ export function summarizeReport(file: string, report: unknown): BenchmarkReport 
     // Reports written before planner selection was added always used the
     // loop model for planning, so retain that fact in their summaries.
     plannerModel: str("plannerModel") ?? model,
+    evaluatorModel: str("evaluatorModel"),
+    planCritic: typeof meta.planCritic === "boolean" ? meta.planCritic : null,
+    criticModel: str("criticModel"),
     numRuns: typeof meta.numRuns === "number" ? meta.numRuns : null,
     timestamp: str("timestamp"),
     error: str("error"),
@@ -138,11 +147,18 @@ export type LaunchBenchmarkOptions = {
   model: string;
   /** Optional for compatibility with callers that want one model for both roles. */
   plannerModel?: string;
+  /** Unset leaves the role on its Settings model. */
+  evaluatorModel?: string;
+  criticModel?: string;
+  /** Unset follows the Settings plan critic mode. */
+  planCritic?: boolean;
   runs?: number;
   maxIterations?: number;
   timeoutMinutes?: number;
   autoReview?: boolean;
-  /** The caller's Cookie header — forwarded so the runner can use the API. */
+  /** The caller's Cookie header — forwarded so the runner can use the API.
+   * Empty when auth is disabled: the browser never logged in, and the proxy
+   * lets loopback requests through without a session. */
   cookie: string;
   baseUrl: string;
 };
@@ -158,7 +174,7 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
   }
   if (!opts.repoId) throw new ClientError("repoId is required");
   if (!opts.provider || !opts.model) throw new ClientError("provider and model are required");
-  if (!opts.cookie) throw new ClientError("missing session cookie");
+  if (!opts.cookie && authEnabled()) throw new ClientError("missing session cookie");
 
   mkdirSync(REPORTS_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -177,6 +193,9 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
     "--out", reportPath,
   ];
   if (opts.plannerModel) args.push("--planner-model", opts.plannerModel);
+  if (opts.evaluatorModel) args.push("--evaluator-model", opts.evaluatorModel);
+  if (opts.criticModel) args.push("--critic-model", opts.criticModel);
+  if (opts.planCritic !== undefined) args.push("--plan-critic", opts.planCritic ? "on" : "off");
   if (opts.maxIterations) args.push("--max-iterations", String(opts.maxIterations));
   if (opts.timeoutMinutes) args.push("--timeout-minutes", String(opts.timeoutMinutes));
   if (opts.autoReview) args.push("--auto-review");
@@ -188,8 +207,8 @@ export function launchBenchmark(opts: LaunchBenchmarkOptions): { reportFile: str
     LANG: process.env.LANG,
     HOME: process.env.HOME,
     TMPDIR: process.env.TMPDIR,
-    RADULF_BENCH_AUTH_COOKIE: opts.cookie,
   };
+  if (opts.cookie) runnerEnv.RADULF_BENCH_AUTH_COOKIE = opts.cookie;
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith("LC_") && value !== undefined) runnerEnv[key] = value;
   }

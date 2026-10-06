@@ -23,7 +23,9 @@ Before running a benchmark, ensure the following are in place:
    `POST /api/auth/login` and reads the `Set-Cookie` header automatically.
    Prefer the environment variable: a benchmark runs for hours, and a
    process's command line is readable by every account on the host for that
-   whole time.  Launching from the Benchmarks page always uses it.
+   whole time.  Launching from the Benchmarks page always uses it.  Pass
+   neither when the server runs with auth disabled (no
+   `RADULF_AUTH_PASSWORD_HASH`).
 
 ## Usage
 
@@ -44,6 +46,9 @@ node benchmarks/run-benchmark.mjs --fixture snake-tui [options]
 | `--provider` | *(required)* | Loop provider name (e.g. `anthropic`, `openrouter`) |
 | `--model` | *(required)* | Loop model name (e.g. `claude-sonnet-4-20250514`) |
 | `--planner-model` | loop model | Planner model name; uses the planner provider from Settings |
+| `--evaluator-model` | Settings | Evaluator model name; uses the evaluator provider from Settings |
+| `--critic-model` | Settings | Plan critic model name; uses the critic provider from Settings |
+| `--plan-critic` | Settings | `on` or `off`; Settings' default `breakdown` mode skips the critic for a benchmark card |
 | `--runs` | `3` | Number of benchmark runs |
 | `--auth-cookie` | `$RADULF_BENCH_AUTH_COOKIE` | Session cookie value for authentication |
 | `--password` | — | Password to POST `/api/auth/login` and read `Set-Cookie` |

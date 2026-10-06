@@ -52,7 +52,6 @@ export async function POST(req: Request) {
   return handle(async () => {
     const body = record(await req.json(), "benchmark body");
     const cookie = req.headers.get("cookie") ?? "";
-    if (!cookie) return err("missing session cookie");
 
     const runs = Number(body.runs ?? 3);
     if (!Number.isInteger(runs) || runs < 1 || runs > 10) {
@@ -65,6 +64,9 @@ export async function POST(req: Request) {
       provider: String(body.provider ?? ""),
       model: String(body.model ?? ""),
       plannerModel: String(body.plannerModel ?? ""),
+      evaluatorModel: String(body.evaluatorModel ?? ""),
+      criticModel: String(body.criticModel ?? ""),
+      planCritic: typeof body.planCritic === "boolean" ? body.planCritic : undefined,
       runs,
       maxIterations: body.maxIterations ? Number(body.maxIterations) : undefined,
       timeoutMinutes: body.timeoutMinutes ? Number(body.timeoutMinutes) : undefined,

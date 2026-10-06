@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { RunsTable } from "./runsTable";
 import { runTotals } from "./runTotals";
 import type { Run } from "./metricsPanel";
@@ -129,7 +129,10 @@ function renderTable(runs: Run[], cardSummary: string | null = null) {
   );
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("runTotals", () => {
   it("sums a loop run from its iterations, falling back to the run row when it has none", () => {
@@ -206,18 +209,86 @@ describe("RunsTable", () => {
         status: "running",
         iterations: [
           { ...first, taskNumber: 1, taskCount: 2, taskText: "Wire the table", taskCompleted: 1 },
-          { ...second, status: "running", taskNumber: 2, taskCount: 2, taskText: "Add totals", taskCompleted: null },
+          { ...second, status: "running", summary: null, taskNumber: 2, taskCount: 2, taskText: "Add totals", taskCompleted: null },
         ],
       }),
     ]);
 
     expect(screen.getByText("Task 1/2")).toBeTruthy();
     expect(screen.getByText("done")).toBeTruthy();
-    expect(screen.getByText("Wire the table")).toBeTruthy();
     expect(screen.getByText("Task 2/2")).toBeTruthy();
     expect(screen.getByText("working")).toBeTruthy();
-    expect(screen.getByText("Add totals")).toBeTruthy();
     expect(screen.getAllByText("1 left")).toHaveLength(2);
+    // A finished iteration's one line is its outcome, with the task it was
+    // given on hover; one still running has no outcome yet, so it shows the task.
+    expect(screen.getByRole("button", { name: /wired the table/ }).getAttribute("title")).toBe(
+      "Wire the table\n\nwired the table",
+    );
+    expect(screen.getByText("Add totals")).toBeTruthy();
+  });
+
+  it("lines each iteration's duration, tokens, and cost up under the loop's own columns", () => {
+    const [first, second] = loopRun().iterations;
+    renderTable([
+      loopRun({ iterations: [first, { ...second, promptTokens: null, completionTokens: null, costUsd: null }] }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: /Loop/ }));
+
+    const row = (text: string) =>
+      [...screen.getByText(text).closest("tr")!.querySelectorAll("td")].map((cell) => cell.textContent);
+    // Run (spanning Run/Status/Model), Iters, Duration, Prompt, Completion, Cost, Started.
+    expect(row("wired the table").slice(1, 6)).toEqual(["", "1m 0s", "300", "30", "$0.3000"]);
+    // An unmeasured iteration is an em dash, never a zero that reads as free.
+    expect(row("added the totals row").slice(1, 6)).toEqual(["", "1m 0s", "—", "—", "—"]);
+    // The loop's totals are its own row; there is no second, nested total.
+    expect(screen.getAllByText("Total")).toHaveLength(1);
+  });
+
+  it("ticks a running iteration's duration on the table's clock", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T10:01:05.000Z"));
+    const [first] = loopRun().iterations;
+    renderTable([
+      loopRun({
+        status: "running",
+        endedAt: null,
+        iterations: [{ ...first, status: "running", summary: "still going", endedAt: null }],
+      }),
+    ]);
+
+    const duration = () => screen.getByText("still going").closest("tr")!.querySelectorAll("td")[2].textContent;
+    expect(duration()).toBe("5s");
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(duration()).toBe("7s");
+  });
+
+  it("labels a collapsed evaluator row with its verdict, but never with an error", () => {
+    renderTable([
+      evaluateRun({ id: "r-eval-failed", status: "failed", exitReason: "evaluator failed: Connection error." }),
+      evaluateRun({ id: "r-eval-limit", exitReason: "revise — revision limit reached" }),
+      evaluateRun(),
+    ]);
+
+    // Oldest first: approve, revise (at the limit), then the failed run.
+    const toggles = screen.getAllByRole("button", { name: /Evaluator/ });
+    expect(toggles.map((button) => button.textContent)).toEqual([
+      "▸🔎 Evaluatorapprove",
+      "▸🔎 Evaluatorrevise",
+      "▸🔎 Evaluator",
+    ]);
+  });
+
+  it("keeps a run's exit reason off its collapsed row and shows it once expanded", () => {
+    renderTable([planRun({ exitReason: "plan artifacts written" })]);
+
+    expect(screen.queryByText("plan artifacts written")).toBeNull();
+    expect(screen.getByRole("button", { name: /Planning/ }).getAttribute("title")).toBe("plan artifacts written");
+
+    fireEvent.click(screen.getByRole("button", { name: /Planning/ }));
+
+    expect(screen.getByText("plan artifacts written")).toBeTruthy();
   });
 
   it("expands a planning run onto the plan it wrote", () => {

@@ -1,0 +1,308 @@
+{
+  "meta": {
+    "fixture": "failing-test-repair",
+    "seeded": true,
+    "baselineSha": "154de07e1117f298eb78f445d30bd681db45a3d8",
+    "baseUrl": "http://localhost:3000",
+    "repo": "2kICzZSihfBmNuDSJeym3",
+    "provider": "chatgpt",
+    "model": "gpt-6-luna",
+    "plannerModel": "claude-sonnet-5-5",
+    "evaluatorModel": "claude-sonnet-5-5",
+    "criticModel": "claude-sonnet-5-5",
+    "planCritic": true,
+    "pipeline": {
+      "plannerProvider": "anthropic",
+      "loopProvider": "chatgpt",
+      "evaluatorProvider": "anthropic",
+      "evaluatorModel": "claude-sonnet-5-5",
+      "criticProvider": "anthropic",
+      "criticModel": "claude-sonnet-5-5",
+      "planCritic": true
+    },
+    "numRuns": 3,
+    "maxIterations": null,
+    "timeoutMinutes": null,
+    "autoReview": true,
+    "timestamp": "2026-10-04T02:59:51.307Z"
+  },
+  "perRun": [
+    {
+      "run": 1,
+      "cardId": "Erl7prW0gn0sVJNK8Fds_",
+      "runId": null,
+      "runCount": 1,
+      "status": "needs_attention",
+      "reviewOutcome": "needs_attention",
+      "totalWallTimeMs": 2,
+      "iterationCount": 0,
+      "totalModelTurns": 0,
+      "p50IterationTimeMs": null,
+      "p90IterationTimeMs": null,
+      "iterationWallTimesMs": [],
+      "sumPromptTokens": 0,
+      "sumCachedInputTokens": 0,
+      "sumCompletionTokens": 0,
+      "sumReasoningTokens": 0,
+      "sumCostUsd": 0,
+      "costByKind": {
+        "plan": 0
+      },
+      "criteriaPass": false,
+      "criteriaResults": [
+        {
+          "command": "node --test",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "TAP version 13\n# Subtest: subtotal sums price times quantity\nok 1 - subtotal sums price times quantity\n  ---\n  duration_ms: 0.5205\n  type: 'test'\n  ...\n# Subtest: an item with no quantity counts as one\nnot ok 2 - an item with no quantity counts as one\n  ---\n  duration_ms: 0.549\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-1tldPRf-aTTzhsQsB2u6e/test/cart.test.js:15:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 20\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 20\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-1tldPRf-aTTzhsQsB2u6e/test/cart.test.js:17:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n# Subtest: no discount below one hundred dollars\nok 3 - no discount below one hundred dollars\n  ---\n  duration_ms: 0.116166\n  type: 'test'\n  ...\n# Subtest: ten percent discount at exactly one hundred dollars\nnot ok 4 - ten percent discount at exactly one hundred dollars\n  ---\n  duration_ms: 0.09675\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-1tldPRf-aTTzhsQsB2u6e/test/cart.test.js:25:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 10\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 10\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-1tldPRf-aTTzhsQsB2u6e/test/cart.test.js:27:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: ten percent discount above one hundred dollars\nok 5 - ten percent discount above one hundred dollars\n  ---\n  duration_ms: 0.142084\n  type: 'test'\n  ...\n# Subtest: flat shipping under the free-shipping threshold\nok 6 - flat shipping under the free-shipping threshold\n  ---\n  duration_ms: 0.04975\n  type: 'test'\n  ...\n# Subtest: free shipping from fifty dollars discounted\nok 7 - free shipping from fifty dollars discounted\n  ---\n  duration_ms: 0.100167\n  type: 'test'\n  ...\n# Subtest: empty cart is all zeros\nok 8 - empty cart is all zeros\n  ---\n  duration_ms: 0.456875\n  type: 'test'\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 6\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 57.607708\n",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        }
+      ],
+      "diffStat": "",
+      "diffCorrectness": false,
+      "worktreePath": "/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-1tldPRf-aTTzhsQsB2u6e"
+    },
+    {
+      "run": 2,
+      "cardId": "4-90aCKZ0KFZPzOp7chOT",
+      "runId": null,
+      "runCount": 1,
+      "status": "needs_attention",
+      "reviewOutcome": "needs_attention",
+      "totalWallTimeMs": 1,
+      "iterationCount": 0,
+      "totalModelTurns": 0,
+      "p50IterationTimeMs": null,
+      "p90IterationTimeMs": null,
+      "iterationWallTimesMs": [],
+      "sumPromptTokens": 0,
+      "sumCachedInputTokens": 0,
+      "sumCompletionTokens": 0,
+      "sumReasoningTokens": 0,
+      "sumCostUsd": 0,
+      "costByKind": {
+        "plan": 0
+      },
+      "criteriaPass": false,
+      "criteriaResults": [
+        {
+          "command": "node --test",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "TAP version 13\n# Subtest: subtotal sums price times quantity\nok 1 - subtotal sums price times quantity\n  ---\n  duration_ms: 0.552875\n  type: 'test'\n  ...\n# Subtest: an item with no quantity counts as one\nnot ok 2 - an item with no quantity counts as one\n  ---\n  duration_ms: 0.587333\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-PzXoARMEjaZN9jk0KTHbg/test/cart.test.js:15:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 20\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 20\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-PzXoARMEjaZN9jk0KTHbg/test/cart.test.js:17:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n# Subtest: no discount below one hundred dollars\nok 3 - no discount below one hundred dollars\n  ---\n  duration_ms: 0.125334\n  type: 'test'\n  ...\n# Subtest: ten percent discount at exactly one hundred dollars\nnot ok 4 - ten percent discount at exactly one hundred dollars\n  ---\n  duration_ms: 0.100209\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-PzXoARMEjaZN9jk0KTHbg/test/cart.test.js:25:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 10\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 10\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-PzXoARMEjaZN9jk0KTHbg/test/cart.test.js:27:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: ten percent discount above one hundred dollars\nok 5 - ten percent discount above one hundred dollars\n  ---\n  duration_ms: 0.108875\n  type: 'test'\n  ...\n# Subtest: flat shipping under the free-shipping threshold\nok 6 - flat shipping under the free-shipping threshold\n  ---\n  duration_ms: 0.052166\n  type: 'test'\n  ...\n# Subtest: free shipping from fifty dollars discounted\nok 7 - free shipping from fifty dollars discounted\n  ---\n  duration_ms: 0.103583\n  type: 'test'\n  ...\n# Subtest: empty cart is all zeros\nok 8 - empty cart is all zeros\n  ---\n  duration_ms: 0.3925\n  type: 'test'\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 6\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 56.626833\n",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        }
+      ],
+      "diffStat": "",
+      "diffCorrectness": false,
+      "worktreePath": "/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-PzXoARMEjaZN9jk0KTHbg"
+    },
+    {
+      "run": 3,
+      "cardId": "frkPtWTJ_T3YD43AjNZiX",
+      "runId": null,
+      "runCount": 1,
+      "status": "needs_attention",
+      "reviewOutcome": "needs_attention",
+      "totalWallTimeMs": 1,
+      "iterationCount": 0,
+      "totalModelTurns": 0,
+      "p50IterationTimeMs": null,
+      "p90IterationTimeMs": null,
+      "iterationWallTimesMs": [],
+      "sumPromptTokens": 0,
+      "sumCachedInputTokens": 0,
+      "sumCompletionTokens": 0,
+      "sumReasoningTokens": 0,
+      "sumCostUsd": 0,
+      "costByKind": {
+        "plan": 0
+      },
+      "criteriaPass": false,
+      "criteriaResults": [
+        {
+          "command": "node --test",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "TAP version 13\n# Subtest: subtotal sums price times quantity\nok 1 - subtotal sums price times quantity\n  ---\n  duration_ms: 0.533083\n  type: 'test'\n  ...\n# Subtest: an item with no quantity counts as one\nnot ok 2 - an item with no quantity counts as one\n  ---\n  duration_ms: 0.581708\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-Cj24TAoVytOhn_Ryo4Qhz/test/cart.test.js:15:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 20\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 20\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-Cj24TAoVytOhn_Ryo4Qhz/test/cart.test.js:17:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n# Subtest: no discount below one hundred dollars\nok 3 - no discount below one hundred dollars\n  ---\n  duration_ms: 0.139084\n  type: 'test'\n  ...\n# Subtest: ten percent discount at exactly one hundred dollars\nnot ok 4 - ten percent discount at exactly one hundred dollars\n  ---\n  duration_ms: 0.099\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-Cj24TAoVytOhn_Ryo4Qhz/test/cart.test.js:25:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 10\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 10\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-Cj24TAoVytOhn_Ryo4Qhz/test/cart.test.js:27:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: ten percent discount above one hundred dollars\nok 5 - ten percent discount above one hundred dollars\n  ---\n  duration_ms: 0.1145\n  type: 'test'\n  ...\n# Subtest: flat shipping under the free-shipping threshold\nok 6 - flat shipping under the free-shipping threshold\n  ---\n  duration_ms: 0.050792\n  type: 'test'\n  ...\n# Subtest: free shipping from fifty dollars discounted\nok 7 - free shipping from fifty dollars discounted\n  ---\n  duration_ms: 0.109042\n  type: 'test'\n  ...\n# Subtest: empty cart is all zeros\nok 8 - empty cart is all zeros\n  ---\n  duration_ms: 0.350375\n  type: 'test'\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 6\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 54.710334\n",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        }
+      ],
+      "diffStat": "",
+      "diffCorrectness": false,
+      "worktreePath": "/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-Cj24TAoVytOhn_Ryo4Qhz"
+    }
+  ],
+  "aggregated": {
+    "totalWallTimeMs": {
+      "count": 3,
+      "min": 1,
+      "max": 2,
+      "median": 1,
+      "p50": 1,
+      "p90": 2,
+      "mean": 1.3333333333333333
+    },
+    "iterationCount": {
+      "count": 3,
+      "min": 0,
+      "max": 0,
+      "median": 0,
+      "p50": 0,
+      "p90": 0,
+      "mean": 0
+    },
+    "totalModelTurns": {
+      "count": 3,
+      "min": 0,
+      "max": 0,
+      "median": 0,
+      "p50": 0,
+      "p90": 0,
+      "mean": 0
+    },
+    "p50IterationTimeMs": null,
+    "p90IterationTimeMs": null,
+    "sumPromptTokens": {
+      "count": 3,
+      "min": 0,
+      "max": 0,
+      "median": 0,
+      "p50": 0,
+      "p90": 0,
+      "mean": 0
+    },
+    "sumCachedInputTokens": {
+      "count": 3,
+      "min": 0,
+      "max": 0,
+      "median": 0,
+      "p50": 0,
+      "p90": 0,
+      "mean": 0
+    },
+    "sumCompletionTokens": {
+      "count": 3,
+      "min": 0,
+      "max": 0,
+      "median": 0,
+      "p50": 0,
+      "p90": 0,
+      "mean": 0
+    },
+    "sumReasoningTokens": {
+      "count": 3,
+      "min": 0,
+      "max": 0,
+      "median": 0,
+      "p50": 0,
+      "p90": 0,
+      "mean": 0
+    },
+    "sumCostUsd": {
+      "count": 3,
+      "min": 0,
+      "max": 0,
+      "median": 0,
+      "p50": 0,
+      "p90": 0,
+      "mean": 0
+    },
+    "criteriaPassRate": 0,
+    "diffCorrectnessRate": 0,
+    "criteriaPasses": [
+      false,
+      false,
+      false
+    ],
+    "diffCorrectnesses": [
+      false,
+      false,
+      false
+    ]
+  }
+}

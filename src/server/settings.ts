@@ -144,6 +144,14 @@ export const SETTING_DEFAULTS = {
   // an auto-approval is recorded on the `card.auto_approved` event, so the
   // decision stays reconstructable after the fact.
   autoApprove: false,
+  // YOLO mode: the operator is away, so no stage stops to ask. The planner and
+  // loop are told to decide for themselves rather than raise questions or
+  // blockers, plan review is skipped, a loop that stops for the planner
+  // re-plans straight away, and the evaluator judges a criterion whose tool is
+  // missing from the sandbox by reading instead of revising on it. A live
+  // override like `autoApprove`, read when each decision is made, and
+  // deliberately separate from it: YOLO never merges anything on its own.
+  yoloMode: false,
   // Spec 15: workspace-wide PR delivery — an approved diff is pushed to
   // `origin` and opened as a pull request instead of merged into the local
   // base branch. Live override read at approval time, OR'd with the card's own
@@ -231,6 +239,7 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "sandboxEnabled",
   "sandboxWeakerIsolationForGoTls",
   "autoApprove",
+  "yoloMode",
   "openPr",
   "alertOnReviewReady",
   "alertOnNeedsAttention",

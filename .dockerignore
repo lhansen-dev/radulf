@@ -22,6 +22,10 @@ repos
 .github
 PLAN.md
 
+# The desktop shell (make desktop) runs beside a server, never inside one, and
+# its node_modules is Electron: hundreds of MB the build would only copy.
+desktop
+
 Dockerfile
 compose.yaml
 .dockerignore

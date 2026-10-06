@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import {
   aggregateTokens,
@@ -224,5 +225,30 @@ describe.skipIf(
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("runner CLI auth", () => {
+  // A server with auth disabled has no session to hand over, so a dry run
+  // with neither --auth-cookie nor --password must still validate.
+  it("accepts no credentials for a server with auth disabled", () => {
+    const script = new URL("./run-benchmark.mjs", import.meta.url).pathname;
+    const env = { ...process.env };
+    delete env.RADULF_BENCH_AUTH_COOKIE;
+    const result = spawnSync(process.execPath, [
+      script, "--fixture", "snake-tui", "--repo", "r", "--provider", "p", "--model", "m", "--dry-run",
+    ], { env, encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("none (server auth disabled)");
+  });
+
+  it("rejects a --plan-critic value other than on or off", () => {
+    const script = new URL("./run-benchmark.mjs", import.meta.url).pathname;
+    const result = spawnSync(process.execPath, [
+      script, "--fixture", "snake-tui", "--repo", "r", "--provider", "p", "--model", "m",
+      "--plan-critic", "yes", "--dry-run",
+    ], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--plan-critic must be on or off");
   });
 });

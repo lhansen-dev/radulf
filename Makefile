@@ -27,8 +27,12 @@ HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 
 # Override with `make dev PORT=...` to match a non-default `next dev` port.
 PORT := 3000
 
+# The server `make desktop` opens. Override with `make desktop URL=...` to use
+# an install on another machine.
+URL := http://127.0.0.1:$(PORT)
+
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start web lint typecheck test check check-deps check-split check-compose login \
+.PHONY: help install dev build start web desktop lint typecheck test check check-deps check-split check-compose login \
         worker build-worker db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
@@ -95,6 +99,17 @@ start: ## Serve the production build (loopback-only unless auth is configured)
 
 web: ## Serve the production build as a web-only process (no agent work; pair with make worker)
 	NEXT_MANUAL_SIG_HANDLE=1 RADULF_ROLES=web $(BIN)/next start -H $(HOST)
+
+# The shell is its own npm package (desktop/package.json) so Electron stays out
+# of the root install: CI, the Docker build and every agent worktree, which is
+# handed a copy of this checkout's node_modules, never carry it. npm rewrites
+# node_modules/.package-lock.json on each install, so a newer lockfile (a pull
+# that bumped Electron) reinstalls before the window opens.
+desktop/node_modules/.package-lock.json: desktop/package-lock.json
+	npm --prefix desktop ci
+
+desktop: desktop/node_modules/.package-lock.json ## Open Radulf in a desktop window (Electron) on a running server; URL=... for another
+	RADULF_URL='$(URL)' desktop/node_modules/.bin/electron desktop
 
 lint: ## Lint
 	$(BIN)/eslint

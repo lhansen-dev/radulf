@@ -27,6 +27,8 @@ import { normalizeProvider } from "./providers";
 import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
+import { sandboxDeniesListen } from "./planningService";
+import { CRITIC_LIMIT_EXIT } from "./planCriticService";
 import { snapshotRepoIntegrity } from "./integrity";
 import {
   circuitOpenReason,
@@ -66,6 +68,67 @@ export function renderEvaluatorPrompt(
     .replaceAll("{{DESCRIPTION}}", () => description || "(no description)")
     .replaceAll("{{BASE_BRANCH}}", () => baseBranch)
     .replaceAll("{{CRITERIA}}", () => criteria.trim() || "(no acceptance criteria were recorded)");
+}
+
+/** Appended outside the template while YOLO mode is on: a missing tool is a
+ * fact about the sandbox, and revising on it re-plans work nobody can fix
+ * overnight. The finding keeps the gap in front of the human reviewer. */
+export const YOLO_EVALUATOR_SECTION = `
+YOLO MODE
+=========
+The operator turned on YOLO mode and is away. If an acceptance criterion's
+command cannot run in this sandbox because its tool is missing (\`command not
+found\`, a test runner that is not installed) rather than because the change is
+wrong, do not \`revise\` on that alone: judge that criterion by reading the code
+and its tests, and add an \`important\` finding naming the criterion as
+unverified so the human reviewer sees it. Everything else about your verdict
+is unchanged.
+`;
+
+const NO_LISTEN_EVALUATOR_SECTION = `
+NO LISTENING PORTS
+==================
+The sandbox on this host refuses every attempt to listen on a network port,
+localhost included, so anything that starts a server fails with \`listen EPERM\`
+before a single test runs: a dev or preview server, Playwright's \`webServer\`,
+Vitest browser mode, or a plain \`vitest run\` whose config defines a browser
+project. If a criterion fails that way, the sandbox stopped it, not the change,
+and re-planning cannot fix it, so do not \`revise\` on that alone. Judge that
+criterion by reading the code and its tests, and add an \`important\` finding
+naming it as an operator verification step, so the human reviewer runs it
+outside the sandbox.
+`;
+
+/** The evaluator's side of the planner's NO LISTENING PORTS section: the card
+ * may name a server-backed check, and only the operator can run it. */
+export function noListenEvaluatorSection(sandboxEnabled: boolean, platform = process.platform): string {
+  return sandboxDeniesListen(sandboxEnabled, platform) ? NO_LISTEN_EVALUATOR_SECTION : "";
+}
+
+/** Appended when the critic sent this plan back after the revision cap, so it
+ * was built as written: nothing has addressed that feedback yet, and the
+ * evaluator is the next reader who can. */
+export function cappedCritiqueSection(planId: string): string {
+  const critique = db
+    .select({ feedback: runs.feedback })
+    .from(runs)
+    .where(and(eq(runs.planId, planId), eq(runs.kind, "critique"), eq(runs.exitReason, CRITIC_LIMIT_EXIT)))
+    .orderBy(desc(runs.startedAt))
+    .limit(1)
+    .get();
+  if (!critique?.feedback) return "";
+  return `
+UNRESOLVED PLAN CRITIQUE
+========================
+Before the loop ran, the plan critic asked for changes to this plan, but the
+plan had reached its revision limit and was built as written. The critic's
+feedback:
+
+${critique.feedback}
+
+Check each concern against the change. One the change still has is grounds for
+\`revise\` like any other bug; one the change already handles is not.
+`;
 }
 
 export type EvaluationServiceDependencies = StageDependencies & {
@@ -234,6 +297,9 @@ export class EvaluationService {
           baseBranch,
           plan.acceptanceCriteria,
         ) +
+        (settings.yoloMode ? YOLO_EVALUATOR_SECTION : "") +
+        noListenEvaluatorSection(settings.sandboxEnabled) +
+        cappedCritiqueSection(plan.id) +
         previousSection +
         gateSection +
         EVALUATION_NOTES_SECTION +

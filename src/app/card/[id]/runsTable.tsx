@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MetricsPanel, type Iteration, type Run } from "./metricsPanel";
-import { formatDurationMs } from "../../ui/formatDuration";
+import type { Iteration, Run } from "./metricsPanel";
+import { formatDuration, formatDurationMs } from "../../ui/formatDuration";
 import { reasoningLevelForKind } from "./reasoningLevel";
 import { iterationTask, type IterationTask } from "./iterationTask";
 import type { CardDetailData, Plan } from "./useCardDetail";
@@ -41,6 +41,16 @@ const TASK_STATE_CLASS: Record<IterationTask["state"], string> = {
   "not done": "bg-foreground/10 text-foreground/60",
 };
 
+/** The verdict an evaluator row labels itself with, so approve vs revise reads
+ * without expanding it. Only a completed run reached one — a failed run's
+ * exit reason is an error, which stays in the tooltip and detail. */
+function evaluatorVerdict(run: Run): "approve" | "revise" | null {
+  if (run.kind !== "evaluate" || run.status !== "completed") return null;
+  if (run.exitReason === "approve") return "approve";
+  // "revise", or "revise — revision limit reached" when it went to review anyway.
+  return run.exitReason?.startsWith("revise") ? "revise" : null;
+}
+
 function statusClass(status: string): string {
   if (status === "completed") return "bg-green-900/60 text-green-300";
   if (status === "running") return "bg-amber-900/60 text-amber-300";
@@ -53,8 +63,8 @@ function statusClass(status: string): string {
  * Every run of a card — planning, loop, and evaluator alike — as one table,
  * with the token and cost columns each kind has always recorded but only the
  * loop used to show. Each row expands into what "summary" means for its kind:
- * a loop's per-iteration metrics, the plan a planning run wrote, the verdict
- * an evaluator reached.
+ * a loop's iterations (rows of their own, in the same columns), the plan a
+ * planning run wrote, the verdict an evaluator reached.
  */
 export function RunsTable({
   runs,
@@ -99,6 +109,16 @@ export function RunsTable({
     });
   }
 
+  const openTranscript = (run: Run, iteration: number) =>
+    onOpenTranscript({
+      runId: run.id,
+      iteration,
+      live: run.status === "running",
+      provider: run.provider,
+      model: run.model,
+      reasoningLevel: reasoningLevelForKind(run.kind, models),
+    });
+
   // The card summary is written by whichever evaluator ran last, so it is
   // shown under that run rather than repeated under every evaluate row.
   const lastEvaluateId = ordered.filter((run) => run.kind === "evaluate").at(-1)?.id;
@@ -128,24 +148,36 @@ export function RunsTable({
             const totals = perRunTotals[index];
             const isOpen = expanded.has(run.id);
             const durationMs = runDurationMs(run, nowMs);
+            const verdict = evaluatorVerdict(run);
             return [
               <tr key={run.id} className="border-b border-foreground/5 align-top">
-                <td className="py-2 pr-3">
+                <td className="pr-3">
+                  {/* One line per run: the exit reason lives in the expanded
+                      detail (and this tooltip), and the button drops the
+                      global 44px button floor — it carries the row's padding
+                      as its hit area instead. */}
                   <button
                     type="button"
                     onClick={() => toggle(run.id)}
                     aria-expanded={isOpen}
                     aria-controls={`run-detail-${run.id}`}
-                    className="flex items-start gap-1.5 text-left text-foreground/85 hover:text-foreground"
+                    title={run.exitReason ?? undefined}
+                    className="flex min-h-0! items-start gap-1.5 whitespace-nowrap py-2 text-left text-foreground/85 hover:text-foreground"
                   >
                     <span aria-hidden className="mt-px w-3 shrink-0 text-foreground/40">
                       {isOpen ? "▾" : "▸"}
                     </span>
                     <span className="font-medium">{KIND_LABEL[run.kind]}</span>
+                    {verdict && (
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-xs ${
+                          verdict === "approve" ? "bg-green-900/60 text-green-300" : "bg-amber-900/60 text-amber-300"
+                        }`}
+                      >
+                        {verdict}
+                      </span>
+                    )}
                   </button>
-                  {run.exitReason && (
-                    <p className="mt-0.5 pl-[1.125rem] text-xs text-foreground/45">{run.exitReason}</p>
-                  )}
                 </td>
                 <td className="py-2 pr-3">
                   <span className={`text-xs rounded px-1.5 py-0.5 ${statusClass(run.status)}`}>
@@ -182,6 +214,16 @@ export function RunsTable({
                   {timeAgo(run.startedAt)} ago
                 </td>
               </tr>,
+              ...(isOpen && run.kind === "loop"
+                ? run.iterations.map((it) => (
+                    <IterationRow
+                      key={`${run.id}-iter-${it.id}`}
+                      iteration={it}
+                      nowMs={nowMs}
+                      onOpen={() => openTranscript(run, it.n)}
+                    />
+                  ))
+                : []),
               isOpen ? (
                 <tr key={`${run.id}-detail`} className="border-b border-foreground/5">
                   <td id={`run-detail-${run.id}`} colSpan={9} className="pb-3">
@@ -190,9 +232,7 @@ export function RunsTable({
                         run={run}
                         plans={plans}
                         cardSummary={run.id === lastEvaluateId ? cardSummary : null}
-                        reasoningLevel={reasoningLevelForKind(run.kind, models)}
-                        nowMs={nowMs}
-                        onOpenTranscript={onOpenTranscript}
+                        onOpen={(iteration) => openTranscript(run, iteration)}
                       />
                     </div>
                   </td>
@@ -221,75 +261,97 @@ export function RunsTable({
   );
 }
 
+/**
+ * One loop iteration as a row of the runs table itself, under its loop run, so
+ * its duration, tokens, cost, and start line up with the runs' own columns
+ * instead of repeating them in a nested table. The task and outcome get a
+ * single truncated line — a real task's text runs to paragraphs — with the
+ * full text on hover and the transcript a click away.
+ */
+function IterationRow({
+  iteration: it,
+  nowMs,
+  onOpen,
+}: {
+  iteration: Iteration;
+  nowMs: number;
+  onOpen: () => void;
+}) {
+  const task = iterationTask(it);
+  return (
+    <tr className="border-b border-foreground/5 text-xs text-foreground/60">
+      {/* max-w-0 keeps the text out of the column widths: it truncates in
+          whatever room the run rows leave rather than widening the table. */}
+      <td colSpan={3} className="max-w-0 pl-[1.125rem] pr-3">
+        <button
+          type="button"
+          onClick={onOpen}
+          title={[task?.text, it.summary].filter(Boolean).join("\n\n") || undefined}
+          className="flex min-h-0! w-full items-baseline gap-2 py-1 text-left hover:text-foreground"
+        >
+          <span className="shrink-0 text-amber-400/80">iter {it.n}</span>
+          {task && (
+            <>
+              <span className="shrink-0 font-medium text-foreground/80">{task.label}</span>
+              <span className={`shrink-0 rounded px-1 ${TASK_STATE_CLASS[task.state]}`}>{task.state}</span>
+              <span className="shrink-0 text-foreground/40">
+                {task.left === 0 ? "none left" : `${task.left} left`}
+              </span>
+            </>
+          )}
+          <span className={`min-w-0 truncate ${it.status === "failed" ? "text-red-400" : ""}`}>
+            {it.summary ?? task?.text ?? it.status}
+          </span>
+        </button>
+      </td>
+      <td className="py-1 pr-3" />
+      <td className="py-1 pr-3 text-right tabular-nums">
+        {formatDuration(it.startedAt, it.endedAt, it.endedAt ? undefined : nowMs)}
+      </td>
+      <td className="py-1 pr-3 text-right font-mono">{formatTokens(it.promptTokens)}</td>
+      <td className="py-1 pr-3 text-right font-mono">{formatTokens(it.completionTokens)}</td>
+      <td className="py-1 pr-3 text-right font-mono">{formatCostUsd(it.costUsd)}</td>
+      <td className="py-1 text-right text-foreground/40">{timeAgo(it.startedAt)} ago</td>
+    </tr>
+  );
+}
+
+/** Why a run ended, which the collapsed row leaves to its tooltip. */
+function ExitReason({ run }: { run: Run }) {
+  if (!run.exitReason) return null;
+  return (
+    <p className="text-xs text-foreground/50">
+      <span className="font-medium text-foreground/70">Exit reason</span>
+      <span className="ml-2">{run.exitReason}</span>
+    </p>
+  );
+}
+
 /** What a run's expanded row shows, which is a different artifact per kind:
- * a loop has iterations, a planning run has the plan it wrote, an evaluator
- * has its verdict. All three offer the transcript, and any of them can be
- * carrying the merge review — see ReviewBlock. */
+ * a loop's iterations are rows of their own above this, a planning run has
+ * the plan it wrote, an evaluator has its verdict. All three offer the
+ * transcript, and any of them can be carrying the merge review — see
+ * ReviewBlock. */
 function RunDetail({
   run,
   plans,
   cardSummary,
-  reasoningLevel,
-  nowMs,
-  onOpenTranscript,
+  onOpen,
 }: {
   run: Run;
   plans: Plan[];
   cardSummary: string | null;
-  reasoningLevel: string | undefined;
-  nowMs: number;
-  onOpenTranscript: (target: TranscriptTarget) => void;
+  onOpen: (iteration: number) => void;
 }) {
-  const open = (iteration: number) =>
-    onOpenTranscript({
-      runId: run.id,
-      iteration,
-      live: run.status === "running",
-      provider: run.provider,
-      model: run.model,
-      reasoningLevel,
-    });
-
   if (run.kind === "loop") {
     return (
       <div className="flex flex-col gap-2">
-        {run.iterations.length > 0 ? (
-          <MetricsPanel run={run} nowMs={nowMs} />
-        ) : (
+        {run.iterations.length === 0 && (
           <p className="text-xs text-foreground/50">No iterations recorded for this run.</p>
         )}
-        <div className="flex flex-col gap-0.5">
-          {run.iterations.map((it: Iteration) => {
-            const task = iterationTask(it);
-            return (
-              <button
-                key={it.id}
-                type="button"
-                onClick={() => open(it.n)}
-                className="flex gap-2 text-left text-xs text-foreground/60 hover:text-foreground"
-              >
-                <span className="shrink-0 text-amber-400/80">iter {it.n}</span>
-                <span className="flex min-w-0 flex-col gap-0.5">
-                  {task && (
-                    <span className="flex flex-wrap items-baseline gap-x-2">
-                      <span className="font-medium text-foreground/80">{task.label}</span>
-                      <span className={`rounded px-1 ${TASK_STATE_CLASS[task.state]}`}>{task.state}</span>
-                      <span className="text-foreground/40">
-                        {task.left === 0 ? "none left" : `${task.left} left`}
-                      </span>
-                      <span className="basis-full whitespace-pre-wrap text-foreground/70">{task.text}</span>
-                    </span>
-                  )}
-                  <span className={it.status === "failed" ? "text-red-400" : ""}>
-                    {(it.summary ?? it.status).slice(0, 140)}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <ExitReason run={run} />
         <ReviewBlock run={run} />
-        <TranscriptButton run={run} onClick={() => open(run.iterations.at(-1)?.n ?? 1)} />
+        <TranscriptButton run={run} onClick={() => onOpen(run.iterations.at(-1)?.n ?? 1)} />
       </div>
     );
   }
@@ -298,6 +360,7 @@ function RunDetail({
     const plan = plans.find((p) => p.id === run.planId);
     return (
       <div className="flex flex-col gap-2">
+        <ExitReason run={run} />
         {plan ? (
           <div>
             <p className="text-xs font-medium text-foreground/70">
@@ -314,7 +377,7 @@ function RunDetail({
           </p>
         )}
         <ReviewBlock run={run} />
-        <TranscriptButton run={run} onClick={() => open(0)} />
+        <TranscriptButton run={run} onClick={() => onOpen(0)} />
       </div>
     );
   }
@@ -342,7 +405,7 @@ function RunDetail({
         </div>
       )}
       <ReviewBlock run={run} />
-      <TranscriptButton run={run} onClick={() => open(0)} />
+      <TranscriptButton run={run} onClick={() => onOpen(0)} />
     </div>
   );
 }

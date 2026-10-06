@@ -10,6 +10,8 @@ import type { RolloutTarget } from "../../server/analytics";
 import { errorMessage } from "@/shared/errorMessage";
 import { formatDurationMs } from "../ui/formatDuration";
 import { formatPercent } from "../ui/formatPercent";
+import { ModelBrowser, ModelField, useProviderModels } from "../ui/modelPicker";
+import { providerLabel } from "@/shared/providers";
 
 export default function BenchmarksPage() {
   const [data, setData] = useState<BenchmarksResponse | null>(null);
@@ -18,9 +20,17 @@ export default function BenchmarksPage() {
 
   const [fixture, setFixture] = useState("");
   const [repoId, setRepoId] = useState("");
+  // Cards carry model overrides but no provider: the orchestrator always runs
+  // a card on the providers configured in Settings, so these are read-only.
   const [provider, setProvider] = useState("");
+  const [plannerProvider, setPlannerProvider] = useState("");
+  const [evaluatorProvider, setEvaluatorProvider] = useState("");
+  const [criticProvider, setCriticProvider] = useState("");
   const [model, setModel] = useState("");
   const [plannerModel, setPlannerModel] = useState("");
+  const [evaluatorModel, setEvaluatorModel] = useState("");
+  const [criticModel, setCriticModel] = useState("");
+  const [planCritic, setPlanCritic] = useState(false);
   const [runs, setRuns] = useState(3);
   const [autoReview, setAutoReview] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -35,9 +45,20 @@ export default function BenchmarksPage() {
   useEffect(() => {
     refresh();
     api<Repo[]>("/api/repos").then(setRepos).catch(() => {});
-    api<{ plannerModel?: string; loopProvider?: string; loopModel?: string }>("/api/settings")
+    api<{
+      plannerProvider?: string; plannerModel?: string; loopProvider?: string; loopModel?: string;
+      evaluatorProvider?: string; evaluatorModel?: string; criticProvider?: string; criticModel?: string;
+      planCriticMode?: string;
+    }>("/api/settings")
       .then((s) => {
-        setProvider((p) => p || s.loopProvider || "");
+        setProvider(s.loopProvider ?? "");
+        setPlannerProvider(s.plannerProvider ?? "");
+        setEvaluatorProvider(s.evaluatorProvider ?? "");
+        setCriticProvider(s.criticProvider ?? "");
+        setEvaluatorModel((m) => m || s.evaluatorModel || "");
+        setCriticModel((m) => m || s.criticModel || "");
+        // A benchmark card is top-level, so "breakdown" mode would skip the critic.
+        setPlanCritic(s.planCriticMode === "always");
         setModel((m) => m || s.loopModel || "");
         setPlannerModel((m) => m || s.plannerModel || "");
       })
@@ -57,7 +78,7 @@ export default function BenchmarksPage() {
     setError("");
     try {
       const res = await api<{ reportFile: string; logFile: string }>("/api/benchmarks", {
-        json: { fixture, repoId, provider, model, plannerModel, runs, autoReview },
+        json: { fixture, repoId, provider, model, plannerModel, evaluatorModel, criticModel, planCritic, runs, autoReview },
       });
       setNotice(`Benchmark started — report will land in benchmarks/reports/${res.reportFile}`);
       refresh();
@@ -192,31 +213,6 @@ export default function BenchmarksPage() {
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
-            <label className="sr-only" htmlFor="bench-provider">Loop provider</label>
-            <input
-              id="bench-provider"
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              placeholder="loop provider"
-              className="w-36 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
-            <label className="sr-only" htmlFor="bench-model">Loop model</label>
-            <input
-              id="bench-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="loop model"
-              className="w-56 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
-            <label className="sr-only" htmlFor="bench-planner-model">Planner model</label>
-            <input
-              id="bench-planner-model"
-              value={plannerModel}
-              onChange={(e) => setPlannerModel(e.target.value)}
-              placeholder="planner model (defaults to loop)"
-              title="Uses the planner provider configured in Settings"
-              className="w-64 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
             <label className="flex items-center gap-2 text-sm text-foreground/60" htmlFor="bench-runs">
               Runs
               <input
@@ -237,6 +233,41 @@ export default function BenchmarksPage() {
               />
               Auto-review
             </label>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <BenchModelPicker
+              id="bench-model"
+              title="Loop model"
+              provider={provider}
+              model={model}
+              onModel={setModel}
+            />
+            <BenchModelPicker
+              id="bench-planner-model"
+              title="Planner model"
+              provider={plannerProvider}
+              model={plannerModel}
+              onModel={setPlannerModel}
+            />
+            <BenchModelPicker
+              id="bench-evaluator-model"
+              title="Evaluator model"
+              provider={evaluatorProvider}
+              model={evaluatorModel}
+              onModel={setEvaluatorModel}
+            />
+            <BenchModelPicker
+              id="bench-critic-model"
+              title="Plan critic model"
+              provider={criticProvider}
+              model={criticModel}
+              onModel={setCriticModel}
+              enabled={planCritic}
+              onEnabled={setPlanCritic}
+              enableLabel="Run the plan critic"
+            />
+          </div>
+          <div className="mt-3 flex justify-end">
             <button
               type="button"
               disabled={!canStart}
@@ -294,6 +325,11 @@ export default function BenchmarksPage() {
                       <td className="py-2 pr-4">
                         <div>{r.provider ?? "—"} / {r.model ?? "—"}</div>
                         <div className="text-xs text-foreground/40">planner: {r.plannerModel ?? "—"}</div>
+                        {r.evaluatorModel && (
+                          <div className="text-xs text-foreground/40">
+                            evaluator: {r.evaluatorModel} · critic: {r.planCritic ? r.criticModel ?? "default" : "off"}
+                          </div>
+                        )}
                       </td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.numRuns ?? "—"}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtRate(r.criteriaPassRate)}</td>
@@ -331,6 +367,55 @@ export default function BenchmarksPage() {
       </main>
     </div>
     </AppShell>
+  );
+}
+
+/** The Settings model picker, locked to the provider Settings assigns the role.
+ * With `onEnabled`, the role can be switched off and the picker hides. */
+function BenchModelPicker({ id, title, provider, model, onModel, enabled = true, onEnabled, enableLabel }: {
+  id: string;
+  title: string;
+  provider: string;
+  model: string;
+  onModel: (m: string) => void;
+  enabled?: boolean;
+  onEnabled?: (on: boolean) => void;
+  enableLabel?: string;
+}) {
+  const { models, status, setStatus, load } = useProviderModels(provider);
+  return (
+    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.02] p-3">
+      {onEnabled && (
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          <input type="checkbox" checked={enabled} onChange={(e) => onEnabled(e.target.checked)} />
+          {enableLabel}
+        </label>
+      )}
+      <p className="text-xs text-foreground/40">
+        Provider: {provider ? providerLabel(provider) : "…"} ·{" "}
+        <Link href="/settings#models" className="underline">change in Settings</Link>
+      </p>
+      {enabled && (
+        <>
+          <div className="min-w-0 text-sm text-foreground/70">
+            <ModelField
+              id={id}
+              label={title}
+              provider={provider}
+              model={model}
+              onModel={onModel}
+              models={models}
+              onLoadModels={() => {
+                setStatus("Loading models…");
+                void load(provider, true);
+              }}
+              loadTitle="Refresh available models"
+            />
+          </div>
+          <ModelBrowser model={model} onModel={onModel} models={models} status={status} />
+        </>
+      )}
+    </div>
   );
 }
 
