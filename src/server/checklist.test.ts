@@ -30,6 +30,12 @@ describe("parseChecklist", () => {
     });
   });
 
+  it("reads a plan saved with CRLF line endings, and flips its marker byte-for-byte", () => {
+    const plan = "# Plan\r\n\r\n## Tasks\r\n- [x] first\r\n- [ ] second\r\n";
+    expect(parseChecklist(plan)?.items.map((i) => [i.text, i.checked])).toEqual([["first", true], ["second", false]]);
+    expect(markChecked(plan, 2)).toBe(plan.replace("- [ ] second", "- [x] second"));
+  });
+
   it("returns null without a ## Tasks heading", () => {
     expect(parseChecklist(md("# Plan", "- [ ] Some item"))).toBeNull();
   });
