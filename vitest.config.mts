@@ -11,6 +11,9 @@ export default defineConfig({
     // is undefined and shadows jsdom's — every component test touching storage
     // then fails on a current Node while CI's pinned Node 22 stays green.
     execArgv: ["--no-experimental-webstorage"],
+    // Tests `git init` scratch repos by the dozen; each printed git's
+    // default-branch-name hint into the run log. Advice only: no git behaviour changes.
+    env: { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "advice.defaultBranchName", GIT_CONFIG_VALUE_0: "false" },
     exclude: [
       ...configDefaults.exclude,
       // Benchmark seed suites are node:test files run inside benchmark repos.
