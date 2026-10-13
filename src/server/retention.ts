@@ -5,7 +5,7 @@ import { cards, db, events, repos, runs, settings, worktrees, TRANSCRIPTS_DIR } 
 import { planStatePath } from "./bookkeeping";
 import { ClientError } from "./clientError";
 import { FINISHED_STATUSES } from "./epics";
-import { markWorktreeRemoved, removeWorktree } from "./git";
+import { isRadulfWorktreePath, markWorktreeRemoved, removeWorktree } from "./git";
 import { removeBaseline } from "./integrity";
 
 export type CleanupResult = {
@@ -175,6 +175,8 @@ export async function pruneRuntimeHistory(olderThanDays: number): Promise<Cleanu
   let worktreesRemoved = 0;
   for (const worktreePath of new Set(oldRuns.map((run) => run.worktreePath))) {
     if (retainedPaths.has(worktreePath)) continue;
+    // A row's path is data: never recurse into anything Radulf did not create.
+    if (!isRadulfWorktreePath(worktreePath)) continue;
     if (!(await removeTree(worktreePath))) continue;
     markWorktreeRemoved(worktreePath);
     worktreesRemoved += 1;
