@@ -103,6 +103,27 @@ describe("boot", () => {
     expect(mocks.resumeImprovementRuns.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 
+  it("ticks the scheduler once in every minute, however late each tick runs", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-01T00:00:30Z"));
+    installDefaults();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const minutes: number[] = [];
+    mocks.fireDueSchedules.mockImplementation(async () => {
+      minutes.push(Math.floor(Date.now() / 60_000));
+      // Each tick costs 1.5s of wall clock that the timer queue never sees,
+      // the way a busy event loop delays a callback.
+      vi.setSystemTime(Date.now() + 1_500);
+      return [];
+    });
+
+    await boot(new Set(["worker"]));
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+
+    expect(minutes.length).toBeGreaterThanOrEqual(50);
+    expect(minutes.every((m, i) => i === 0 || m === minutes[i - 1] + 1)).toBe(true);
+  });
+
   it("both roles with sandboxEnabled: runs the sandbox preflight once", async () => {
     vi.useFakeTimers();
     mocks.settings = { sandboxEnabled: true };

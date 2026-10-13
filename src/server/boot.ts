@@ -137,7 +137,9 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   // Spec 22: the scheduler. One tick a minute, aligned to the start of the
   // minute so a schedule fires when its expression says rather than
   // whenever the process happened to boot. A missed tick is missed, never
-  // replayed — see fireDueSchedules.
+  // replayed — see fireDueSchedules. Each tick re-aligns: a setInterval
+  // carries every late callback forward, and once that lateness summed to a
+  // minute the tick skipped one, along with any schedule due in it.
   const TICK_MS = 60_000;
   const tick = async () => {
     try {
@@ -148,8 +150,10 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
       console.error("[radulf] schedule tick failed:", e);
     }
   };
-  setTimeout(() => {
-    void tick();
-    setInterval(() => void tick(), TICK_MS);
-  }, TICK_MS - (Date.now() % TICK_MS));
+  const scheduleTick = () =>
+    setTimeout(() => {
+      scheduleTick();
+      void tick();
+    }, TICK_MS - (Date.now() % TICK_MS));
+  scheduleTick();
 }
