@@ -352,7 +352,7 @@ export default function WorkPage() {
                 Start improvement run
               </button>
           </DetailsMenu>
-          <button type="button" onClick={() => setShowNew(true)} className="hidden min-h-11 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-on-accent hover:bg-amber-500 lg:block">＋ New task</button>
+          <button type="button" onClick={() => setShowNew(true)} className="hidden min-h-11 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-on-accent hover:bg-amber-500 lg:block">+ New task</button>
         </header>
 
         <div className="mt-4">

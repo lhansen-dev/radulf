@@ -225,7 +225,7 @@ export function BreakdownEditor({
         </div>
       ))}
       <button type="button" onClick={() => setPieces([...pieces, { title: "", description: "" }])} disabled={busy} className={`${buttonCls} self-start bg-foreground/10`}>
-        ＋ Add a task
+        + Add a task
       </button>
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
       <div className="flex justify-end gap-2">

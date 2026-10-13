@@ -38,7 +38,7 @@ export function AppShell({
         <div className="rail-footer">
           {onNewTask && (
             <button type="button" onClick={onNewTask} className="rail-new-task">
-              <span aria-hidden="true">＋</span>
+              <span aria-hidden="true">+</span>
               <span>Task</span>
             </button>
           )}
@@ -61,7 +61,7 @@ export function AppShell({
 
       {onNewTask && (
         <button type="button" onClick={onNewTask} className="mobile-new-task" aria-label="New task">
-          <span aria-hidden="true">＋</span>
+          <span aria-hidden="true">+</span>
         </button>
       )}
       <nav className="bottom-nav" aria-label="Primary navigation">
