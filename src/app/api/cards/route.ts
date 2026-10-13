@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import { eq, max, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, cards, repos, runs, now } from "@/db";
@@ -31,7 +32,7 @@ function currentTask(cardId: string) {
 }
 
 /** Board payload: every card plus what its column badge needs. */
-export async function GET() {
+export async function GET(req?: Request) {
   const settings = getSettings();
   const allCards = db.select().from(cards).all();
   const allRepos = new Map(db.select().from(repos).all().map((r) => [r.id, r]));
@@ -76,6 +77,14 @@ export async function GET() {
       ),
     };
   });
+  // Next does not compress route-handler responses, and every open board
+  // refetches this whole list (descriptions included, for search) on each
+  // card, run and iteration event, while Done cards are never pruned.
+  if (req?.headers.get("accept-encoding")?.includes("gzip")) {
+    return new Response(gzipSync(JSON.stringify(out)), {
+      headers: { "content-type": "application/json", "content-encoding": "gzip", vary: "accept-encoding" },
+    });
+  }
   return json(out);
 }
 

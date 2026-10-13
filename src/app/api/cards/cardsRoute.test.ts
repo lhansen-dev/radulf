@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { gunzipSync } from "node:zlib";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
@@ -121,5 +122,19 @@ describe("GET /api/cards", () => {
       left: 2,
       text: "Wire the board badge",
     });
+  });
+
+  it("gzips the board payload for a client that accepts it, with the same content", async () => {
+    db.insert(cards)
+      .values({ id: "card-z", repoId: "repo-1", title: "Zip me", description: "x".repeat(2_000), createdAt: now(), updatedAt: now() })
+      .run();
+
+    const plain = await (await GET()).json();
+    const response = await GET(new Request("http://localhost/api/cards", { headers: { "accept-encoding": "gzip, br" } }));
+
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    const body = Buffer.from(await response.arrayBuffer());
+    expect(body.length).toBeLessThan(JSON.stringify(plain).length);
+    expect(JSON.parse(gunzipSync(body).toString("utf8"))).toEqual(plain);
   });
 });
