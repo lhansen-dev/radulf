@@ -238,8 +238,15 @@ html:not([data-auth]) .auth-only {
 }
 
 .bottom-nav-link-active {
-  color: var(--accent);
+  /* The label stays at full foreground (an accent label failed AA on the
+     light-accent themes); the tint and the accent icon mark the page. */
+  color: var(--foreground);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.rail-link-active > span:first-child,
+.bottom-nav-link-active > span:first-child {
+  color: var(--accent);
 }
 
 .mobile-new-task {
@@ -304,7 +311,7 @@ html:not([data-auth]) .auth-only {
   }
 
   .rail-link-active {
-    color: var(--accent);
+    color: var(--foreground);
     background: color-mix(in srgb, var(--accent) 9%, transparent);
   }
 
