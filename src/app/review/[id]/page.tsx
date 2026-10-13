@@ -305,6 +305,7 @@ export default function ReviewPage() {
           </p>
           <textarea
             autoFocus
+            aria-label="Feedback for the planner"
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={5}
