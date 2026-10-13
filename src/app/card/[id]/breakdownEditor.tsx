@@ -40,7 +40,8 @@ export function breakdownNotice(count: number, runMode: EpicRunMode): string {
 const sortedUnique = (indexes: number[]) => [...new Set(indexes)].sort((a, b) => a - b);
 
 const withDependsOn = (piece: BreakdownPiece, dependsOn: number[]): BreakdownPiece => {
-  const { dependsOn: _drop, ...rest } = piece;
+  const rest = { ...piece };
+  delete rest.dependsOn;
   return dependsOn.length ? { ...rest, dependsOn } : rest;
 };
 
