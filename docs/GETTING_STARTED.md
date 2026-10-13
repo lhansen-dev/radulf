@@ -11,7 +11,10 @@ This page takes you from a fresh clone to a merged card.
 | **A provider** | At least one. See [Providers and models](PROVIDERS.md). |
 
 Everything else is a pinned dependency — including the pi SDK and the sandbox
-runtime — so there are no global installs and no CLIs to manage.
+runtime — so there are no global installs and no CLIs to manage. The one
+exception is Linux, where the sandbox runtime shells out to three system
+packages: install `bubblewrap`, `socat` and `ripgrep` (for example
+`sudo apt-get install bubblewrap socat ripgrep`).
 
 ## Install and run
 

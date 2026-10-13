@@ -26,6 +26,11 @@ namespace. Grant `bwrap` the `userns` capability via an AppArmor profile, or set
 the sysctl to `0`, then restart Radulf. Note that Linux is
 [best-effort](SANDBOXING.md) — not release-verified.
 
+**`socat not installed`, `ripgrep (rg) not found`, or a missing `bwrap`**
+On Linux the sandbox runtime needs three system packages: `bubblewrap`, `socat`
+and `ripgrep` (`sudo apt-get install bubblewrap socat ripgrep` on Debian and
+Ubuntu). Install them and restart Radulf.
+
 **`RADULF_AUTH_SECRET is not set`**
 Authentication is on but the signing secret is missing. See
 [Authentication](AUTHENTICATION.md).
