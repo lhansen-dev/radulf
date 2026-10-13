@@ -89,6 +89,15 @@ via the JSON API plus a headless-Chrome screenshot of the page.
   PNG" as expected rather than a bug in your change. For run/card state, the
   JSON API (`GET /api/cards`, `GET /api/improvement-runs`) is faster and
   actually terminates.
+- **Driving the UI** (clicks, forms, login) — the only way to catch bugs
+  that live in browser behaviour, such as a native form POST sending
+  `Origin: null`. With no browser installed, put `chrome-headless-shell`
+  (`npx @puppeteer/browsers install chrome-headless-shell@stable --path
+  $SCRATCH/browsers`) and `puppeteer-core` (`npm i` in its own scratch dir)
+  in the scratchpad, `goto` with `waitUntil: "domcontentloaded"`, then wait
+  ~2s for hydration before clicking — a click on server-rendered markup
+  before React attaches does nothing. Pages with an event stream never reach
+  "load", so never wait for it. Assert outcomes through the JSON API.
 - Migration dry-run without touching the real DB:
   `sqlite3 "$RADULF_DATA_DIR/radulf.db" ".backup $SCRATCH/copy.db"` then run
   drizzle `migrate()` against the copy via a `node -e` snippet. Check the copy
