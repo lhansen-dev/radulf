@@ -181,7 +181,9 @@ These are literal Tailwind palette values, not theme variables, so they do not f
 ### Named Rules
 **The One Lamp Rule.** Watchfire Amber marks what is live and the single primary action on a view. One filled amber button per screen. Amber never decorates.
 
-**The Alpha Neutral Rule.** Every neutral surface, border, divider, and secondary text is Moon Gray at a fixed alpha. No new gray hex is ever introduced. This is what makes ten themes work from five variables.
+**The Alpha Neutral Rule.** Every neutral surface, border, and divider is Moon Gray at a fixed alpha. No new gray hex is ever introduced. This is what makes ten themes work from a handful of variables.
+
+**The Legible Muted Rule.** Secondary text is `text-muted`, never a hand-picked alpha below the primary. Each theme sets `--muted` to the least share of its foreground that reads at WCAG AA (4.5:1) on its background and surface, from 56% on the default theme to 98% on Solarized Dark, because no single alpha passes on every palette (spec 10 makes AA binding).
 
 **The Small Mark Rule.** Status color lives on a glyph, a pill, a section eyebrow, or a row action fill at 15%. It is never a full-width background or a lane identity.
 
