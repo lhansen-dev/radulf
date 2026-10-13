@@ -473,6 +473,7 @@ these same targets.
 | `make dev` | 🔥 Start the Next.js dev server with hot reload |
 | `make build` | 📦 Build the application for production |
 | `make start` | 🚀 Start the production server (run `build` first) |
+| `make web` | 🌐 Serve the production build as a web-only process (no agent work) — pair it with `make worker` |
 | `make desktop` | 🖥️ Open Radulf in a desktop window (Electron) on a running server — `URL=...` points it at another install |
 | `make worker` | ⚙️ Run a worker-only process (orchestrator, no HTTP) against this checkout — builds `dist/worker.mjs` first |
 | `make build-worker` | 📦 Bundle the worker entry point `src/worker.ts` into `dist/worker.mjs` |
@@ -481,9 +482,11 @@ these same targets.
 | `make test` | 🧪 Run unit, component, route, and lifecycle integration tests |
 | `make typecheck` | 🔍 Type-check without emitting files |
 | `make check` | ✅ Run tests, lint, type-checking, a production build, and the split-process check (the CI gate) |
+| `make check-compose` | 🐳 Throwaway compose run (one web, two workers) that waits for healthy and tears down — never touches your own volume or ports |
 | `make db-generate` | 🗂️ Generate a migration from schema changes |
 | `make db-migrate` | ⬆️ Apply pending migrations |
 | `make db-studio` | 🔎 Open Drizzle Studio |
+| `make db-backup` | 💾 Back up the SQLite database safely while the server is running |
 | `make clean` | 🧽 Remove build output and caches |
 | `make release VERSION=1.0.0` | 🏷️ Bump version, tag, and push — triggers the release workflow |
 
