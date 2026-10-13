@@ -313,7 +313,8 @@ export default function WorkPage() {
     restartTimeout.current = setTimeout(() => {
       if (restartPoll.current) clearInterval(restartPoll.current);
       setRestarting(false);
-      setError("Server did not return after restart.");
+      // Only `make dev` and a container restart policy bring the process back.
+      setError("The server stopped but did not come back. Under make start or next start nothing restarts it: start it again.");
     }, 60_000);
   }
 
