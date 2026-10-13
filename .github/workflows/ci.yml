@@ -11,6 +11,14 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run already going for it.
+# Pushes to main and beta each get a group of their own (the run id), so
+# none is ever cancelled or queued behind another: a shared group would
+# still drop a queued run when a newer one arrived.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
