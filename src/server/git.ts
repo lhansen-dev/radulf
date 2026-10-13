@@ -2,10 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, worktrees, WORKTREES_DIR } from "@/db";
+import { DATA_DIR, db, now, worktrees, WORKTREES_DIR } from "@/db";
 import { ClientError } from "./clientError";
 import { execBounded } from "./exec";
-import { realpathBestEffort } from "./sandbox/pathGuard";
+import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -263,8 +263,21 @@ export async function removeWorktree(
   await tryGit(repoPath, "worktree", "remove", "--force", worktreePath);
   await tryGit(repoPath, "worktree", "prune");
   await tryGit(repoPath, "branch", "-D", branch);
-  fs.rmSync(worktreePath, { recursive: true, force: true });
+  // The path comes from the database. A recursive delete of anything that is
+  // not a worktree Radulf created (the repository's own checkout, a home
+  // directory) would destroy the operator's work, so refuse it.
+  if (isRadulfWorktreePath(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true });
+  else console.error(`[radulf] refused to delete ${worktreePath}: not inside ${WORKTREES_DIR}`);
   markWorktreeRemoved(worktreePath);
+}
+
+/** Strictly inside the worktrees dir, or `data/worktrees` where runs from
+ * before spec 14 kept theirs. */
+export function isRadulfWorktreePath(target: string): boolean {
+  const resolved = path.resolve(target);
+  return [WORKTREES_DIR, path.join(DATA_DIR, "worktrees")].some(
+    (root) => resolved !== path.resolve(root) && isInsideOrEqual(resolved, path.resolve(root)),
+  );
 }
 
 // Flags shared by every review-facing diff invocation. `--no-ext-diff` and

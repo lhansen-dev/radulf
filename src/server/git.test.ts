@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { git, initScratchRepo } from "@/testUtils/gitRepo";
+import { DATA_DIR, WORKTREES_DIR } from "@/db";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -8,6 +9,7 @@ import {
   createWorktree,
   git as hostGit,
   hasCommits,
+  isRadulfWorktreePath,
   isRalphBranch,
   isValidBranchName,
   listBranches,
@@ -542,5 +544,16 @@ describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window
     expect(result.ok).toBe(false);
     expect(result.conflict).toBe(true);
     expect(called).toBe(false);
+  });
+});
+
+describe("isRadulfWorktreePath", () => {
+  it("allows only paths strictly inside the worktrees dirs, never a checkout or the dirs themselves", () => {
+    expect(isRadulfWorktreePath(path.join(WORKTREES_DIR, "card-abc"))).toBe(true);
+    expect(isRadulfWorktreePath(path.join(DATA_DIR, "worktrees", "legacy-card"))).toBe(true);
+    expect(isRadulfWorktreePath(WORKTREES_DIR)).toBe(false);
+    expect(isRadulfWorktreePath(process.cwd())).toBe(false);
+    expect(isRadulfWorktreePath(os.homedir())).toBe(false);
+    expect(isRadulfWorktreePath(path.join(WORKTREES_DIR, "..", "elsewhere"))).toBe(false);
   });
 });
