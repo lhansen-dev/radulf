@@ -4,6 +4,7 @@ import path from "node:path";
 import { and, asc, eq, gte } from "drizzle-orm";
 import { DATA_DIR, db, now, refWrites } from "@/db";
 import { privateDir, tighten } from "@/db/privateFs";
+import { ClientError } from "./clientError";
 import { tryGit } from "./git";
 import { leaseHolder } from "./repoLeases";
 
@@ -276,15 +277,30 @@ function baselinePath(runId: string): string {
 
 export function saveBaseline(runId: string, baseline: RepoIntegrityBaseline): void {
   privateDir(baselineDir());
-  fs.writeFileSync(baselinePath(runId), JSON.stringify(baseline), { mode: 0o600 });
-  tighten(baselinePath(runId));
+  // Write-then-rename: a crash mid-write must not leave a truncated baseline.
+  const temporary = `${baselinePath(runId)}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(baseline), { mode: 0o600 });
+  tighten(temporary);
+  fs.renameSync(temporary, baselinePath(runId));
 }
 
+/**
+ * The run's saved baseline, or null when it never had one (a pre-spec-14
+ * run). An unreadable file throws instead: null means "nothing to compare",
+ * and the pre-merge check must not read a corrupt baseline as that.
+ */
 export function loadBaseline(runId: string): RepoIntegrityBaseline | null {
+  let text: string;
   try {
-    return JSON.parse(fs.readFileSync(baselinePath(runId), "utf8")) as RepoIntegrityBaseline;
+    text = fs.readFileSync(baselinePath(runId), "utf8");
+  } catch (cause) {
+    if ((cause as { code?: string }).code === "ENOENT") return null;
+    throw cause;
+  }
+  try {
+    return JSON.parse(text) as RepoIntegrityBaseline;
   } catch {
-    return null; // Pre-spec-14 run — nothing to compare against.
+    throw new ClientError(`the integrity baseline for run ${runId} is unreadable, so the repo cannot be checked before merging`);
   }
 }
 
