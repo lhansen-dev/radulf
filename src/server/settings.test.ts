@@ -39,6 +39,17 @@ describe("secret settings encryption at rest", () => {
   });
 });
 
+describe("folderBrowserRoot", () => {
+  it("takes an absolute path, ~ or ~/…, and nothing browsableRoot cannot expand", () => {
+    for (const ok of ["", "/srv/repos", "~", "~/code"]) {
+      expect(validateSettingsPatch({ folderBrowserRoot: ok })).toEqual({ folderBrowserRoot: ok });
+    }
+    for (const bad of ["code", "~bob/code"]) {
+      expect(() => validateSettingsPatch({ folderBrowserRoot: bad })).toThrow(/absolute path/);
+    }
+  });
+});
+
 describe("alertWebhookUrl", () => {
   const hook = "https://hooks.slack.com/services/T000/B000/secret-token";
 

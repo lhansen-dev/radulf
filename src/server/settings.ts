@@ -351,8 +351,11 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
       // Blank is meaningful (fall back to $HOME); anything else must be
       // absolute, since a relative root would resolve against whatever the
       // server's cwd happens to be.
-      if (settingValue.trim() && !settingValue.trim().startsWith("/") && !settingValue.trim().startsWith("~")) {
-        invalid("folderBrowserRoot must be an absolute path");
+      // `~` and `~/…` are expanded by browsableRoot; `~user/…` is not, and
+      // would resolve under the cwd.
+      const root = settingValue.trim();
+      if (root && !root.startsWith("/") && root !== "~" && !root.startsWith("~/")) {
+        invalid("folderBrowserRoot must be an absolute path, ~ or ~/…");
       }
     } else if (key === "omlxBaseUrl") {
       if (typeof settingValue !== "string") invalid("omlxBaseUrl must be a URL");
