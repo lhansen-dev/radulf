@@ -170,21 +170,47 @@ const evaluator: Script = ({ step }) => {
 };
 
 /** Scoping and the improvement proposer (read-only, no pipeline role).
- * One reply serves both: prose for scoping, a JSON proposal for the
- * proposer (improvementProposer.ts parseProposals). */
-const readOnly: Script = () => [
-  say(
-    "Mock reply — no model was called.\n\n```json\n" +
-      JSON.stringify([
-        {
-          title: "Mock improvement",
-          description: "Create mock-output/improvement.md.",
-          rationale: "Scripted by the mock provider.",
-        },
-      ]) +
-      "\n```",
-  ),
-];
+ * A scoping request that wants a concrete output ends its prompt with the
+ * exact format scoping.ts parses, so each is answered in that format: a
+ * scoped card, a two-card breakdown, or the three plan artifacts. Anything
+ * else gets one reply that serves both chat and the proposer: prose, then a
+ * JSON proposal (improvementProposer.ts parseProposals). */
+const readOnly: Script = ({ prompt }) => {
+  if (prompt.includes("Now write the scoped card.")) {
+    return [say("TITLE: Mock scoped task\nDESCRIPTION:\n## Problem\nScripted by the mock provider.")];
+  }
+  if (prompt.includes("one RUN line, then one block per card")) {
+    return [
+      say(
+        "RUN: in order\n\n" +
+          "CARD 1\nTITLE: Mock piece one\nDEPENDS ON: none\nDESCRIPTION:\nCreate mock-output/piece-1.md.\n\n" +
+          "CARD 2\nTITLE: Mock piece two\nDEPENDS ON: 1\nDESCRIPTION:\nCreate mock-output/piece-2.md.",
+      ),
+    ];
+  }
+  if (prompt.includes("write this card's plan artifacts directly")) {
+    return [
+      say(
+        "```PLAN.md\n# Plan\n\n## Tasks\n- [ ] Create mock-output/task-1.md\n```\n\n" +
+          "```PROMPT.md\n" + PLAN_PROMPT_MD + "```\n\n" +
+          "```CRITERIA.md\n- [ ] Every task's file exists under mock-output/.\n```",
+      ),
+    ];
+  }
+  return [
+    say(
+      "Mock reply — no model was called.\n\n```json\n" +
+        JSON.stringify([
+          {
+            title: "Mock improvement",
+            description: "Create mock-output/improvement.md.",
+            rationale: "Scripted by the mock provider.",
+          },
+        ]) +
+        "\n```",
+    ),
+  ];
+};
 
 const HAPPY: Record<MockRole, Script> = { planner, critic, loop, evaluator, readOnly };
 

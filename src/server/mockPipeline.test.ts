@@ -25,7 +25,7 @@ const { db, cards, runs, plans, repos, events, now } = await import("@/db");
 const { patchSettings, getSettings } = await import("./settings");
 const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
-const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
+const { listScopingMessages, proposeScopedCard, proposeSplit, scopingTurn } = await import("./scoping");
 const { runTranscriptDir } = await import("./retention");
 const { recordRefWrite } = await import("./integrity");
 
@@ -540,12 +540,16 @@ describe("mock provider — outside the pipeline", () => {
     expect(thread.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(thread[1].content).toMatch(/^Mock reply/);
 
-    // The mock's reply has no TITLE line, so the card keeps its title and the
-    // whole reply becomes the description — and stays in the thread.
+    // A proposal request is answered in the format it asks for.
     const proposal = await proposeScopedCard("card-scoping");
-    expect(proposal.title).toBe("Rough ask");
-    expect(proposal.description).toMatch(/^Mock reply/);
+    expect(proposal.title).toBe("Mock scoped task");
+    expect(proposal.description).toMatch(/^## Problem/);
     expect(proposal.messages).toHaveLength(3);
+
+    // So is a breakdown, which "Create and break down" depends on.
+    const split = await proposeSplit("card-scoping");
+    expect(split.runMode).toBe("ordered");
+    expect(split.cards.map((c) => [c.title, c.dependsOn])).toEqual([["Mock piece one", []], ["Mock piece two", [0]]]);
   }, 30_000);
 
   it("without RADULF_MOCK_LLM=1, refuses to run rather than fall back to a paid provider", async () => {
