@@ -24,9 +24,13 @@ LOADENV := set -a; [ -f .env.local ] && . ./.env.local; set +a;
 # interfaces; auth off -> loopback only. Override with `make dev HOST=...`.
 HOST := $(shell $(LOADENV) [ -n "$$RADULF_AUTH_PASSWORD_HASH" ] && echo 0.0.0.0 || echo 127.0.0.1)
 
-# Override with `make dev PORT=...` (or a PORT in the environment); `dev`,
-# `start`, `web` and `desktop` all use it.
-PORT ?= 3000
+# Override with `make dev PORT=...`; `dev`, `start`, `web` and `desktop` all
+# use it. Deliberately not taken from the environment: `dev` kills whatever
+# listens on $(PORT) first, and a PORT exported for some other project must
+# not aim that at its server. `start` and `web` pass it only when given on the
+# command line, so `next start` still honours a PORT in the environment.
+PORT := 3000
+PORT_FLAG = $(if $(filter command line,$(origin PORT)),-p $(PORT))
 
 # The server `make desktop` opens. Override with `make desktop URL=...` to use
 # an install on another machine.
@@ -96,10 +100,10 @@ worker: build-worker ## Run a worker-only process (agent work, no HTTP) against 
 # NEXT_MANUAL_SIG_HANDLE: Next's own SIGTERM/SIGINT handler exits as soon as
 # open connections close and would pre-empt Radulf's drain (src/server/shutdown.ts).
 start: ## Serve the production build (loopback-only unless auth is configured)
-	NEXT_MANUAL_SIG_HANDLE=1 $(BIN)/next start -H $(HOST) -p $(PORT)
+	NEXT_MANUAL_SIG_HANDLE=1 $(BIN)/next start -H $(HOST) $(PORT_FLAG)
 
 web: ## Serve the production build as a web-only process (no agent work; pair with make worker)
-	NEXT_MANUAL_SIG_HANDLE=1 RADULF_ROLES=web $(BIN)/next start -H $(HOST) -p $(PORT)
+	NEXT_MANUAL_SIG_HANDLE=1 RADULF_ROLES=web $(BIN)/next start -H $(HOST) $(PORT_FLAG)
 
 # The shell is its own npm package (desktop/package.json) so Electron stays out
 # of the root install: CI, the Docker build and every agent worktree, which is
