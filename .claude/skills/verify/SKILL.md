@@ -15,6 +15,14 @@ via the JSON API plus a headless-Chrome screenshot of the page.
   `npm run dev` script — the Makefile is the only entry point); Next's dev
   lock refuses a second instance for this app dir, so don't try to start
   your own on another port.
+- **Isolated instance** (nothing on 3000, or you must not touch the user's
+  DB): the dev lock only blocks a second `next dev`; a production server on
+  another port with its own data dir works and never sees the user's cards
+  or settings: `make build`, then
+  `RADULF_DATA_DIR=$SCRATCH/data RADULF_MOCK_LLM=1 NEXT_MANUAL_SIG_HANDLE=1 node_modules/.bin/next start -H 127.0.0.1 -p 3100`
+  (run in background). It boots with `autoMode` on, so a card moved to Todo
+  starts at once. On a Linux host without `socat`/`rg` the sandbox preflight
+  fails, so PATCH `sandboxEnabled:false` on this scratch instance first.
 - The running server keeps one DB connection per process (`globalThis`), so
   a **new migration is not applied until restart** — new-column queries 500
   with "no such column" until then. Sanctioned restart:
@@ -41,8 +49,8 @@ via the JSON API plus a headless-Chrome screenshot of the page.
   dev-server restart. To run the build step of `make check` alongside a live
   server, build a copy instead: `rsync` the tree (minus `node_modules`,
   `.next`, `.git`, `.env.local`) into scratch, clone `node_modules` with
-  `cp -cR` (APFS copy-on-write, ~8s; Turbopack rejects a symlinked
-  `node_modules`), then `NODE_ENV=production node_modules/.bin/next build`.
+  `cp -cR` on macOS (APFS copy-on-write, ~8s) or `cp -a --reflink=auto` on
+  Linux (Turbopack rejects a symlinked `node_modules`), then `NODE_ENV=production node_modules/.bin/next build`.
 - The DB is at `$RADULF_DATA_DIR/radulf.db`, **not** `data/radulf.db` —
   `.env.local` points `RADULF_DATA_DIR` outside the repo so the dev watcher
   doesn't see WAL churn. Read the env file before reaching for sqlite. A
@@ -58,9 +66,15 @@ via the JSON API plus a headless-Chrome screenshot of the page.
 
 ## Drive
 
+- Moving a card: `POST /api/cards/<id>/move {"to":"todo"}` (new cards
+  land in `backlog`; `in_progress` only starts a `todo` card). Approving:
+  `POST /api/reviews {"runId":<the LOOP run's id>,"decision":"approved"}` —
+  the `runId` from `/diff` is the latest worktree run (usually the
+  evaluate run) and is refused.
 - Health: `GET /api/health`. Analytics: `GET /api/analytics` (filters:
   `?range=today|7d|30d&provider=&model=`).
-- Page screenshot (no Playwright in this repo; use installed Chrome):
+- Page screenshot (no Playwright in this repo; use installed Chrome — on
+  Linux, `google-chrome`/`chromium` with the same flags, if one is installed):
   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
     --headless=new --disable-gpu --window-size=1280,1600 \
     --virtual-time-budget=8000 --screenshot=out.png \
