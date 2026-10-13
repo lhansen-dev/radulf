@@ -1108,7 +1108,7 @@ function TranscriptLine({ line }: { line: StreamLine }) {
     // nothing rather than imply the turn was free.
     const cost = typeof line.costUsd === "number" ? line.costUsd : null;
     return (
-      <div className="text-foreground/30 mt-1">
+      <div className="text-muted mt-1">
         ▸ tokens: {String(line.inputTokens ?? 0)} in / {String(line.outputTokens ?? 0)} out
         {cost != null && ` · ${formatCostUsd(cost)}`}
       </div>
