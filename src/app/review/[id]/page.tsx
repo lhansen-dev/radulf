@@ -217,7 +217,7 @@ export default function ReviewPage() {
 
       {files.length > 0 && <label className="block text-sm text-foreground/60 lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className={dialogInputCls}><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
 
-      <div className="flex min-w-0 flex-col items-start gap-4 lg:flex-row">
+      <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start">
         <main className="grow min-w-0 flex flex-col gap-2">
           {files.length === 0 && (
             <p className="text-foreground/50 text-sm bg-foreground/[0.04] rounded p-4">
