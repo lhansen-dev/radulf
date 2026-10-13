@@ -33,7 +33,7 @@ PORT ?= 3000
 URL := http://127.0.0.1:$(PORT)
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start web desktop lint typecheck test check check-deps check-split check-compose login \
+.PHONY: help install dev build start web desktop lint typecheck test check check-deps check-split check-browser check-compose login \
         worker build-worker db-generate db-migrate db-studio db-backup clean release
 
 help: ## Show this help
@@ -127,7 +127,14 @@ test: ## Run the test suite once
 check-split: build ## Boot two web-only and a worker-only process against a temp data dir and drive a card through the web API (needs the production build)
 	RADULF_SPLIT_CHECK=1 $(BIN)/vitest run src/server/splitProcesses.test.ts
 
-check: check-deps test lint typecheck build check-split ## Full gate: test + lint + typecheck + build + split-process check (what CI runs)
+# A real browser against the production build, signed in with auth on: the
+# paths no route test can see, such as what Origin a browser sends on a form
+# POST. Uses an installed Chrome (CHROME_PATH to pick one); skips without one,
+# except in CI, whose runner image ships Chrome.
+check-browser: build ## Drive sign-in, a task and sign-out in headless Chrome against the production build
+	RADULF_BROWSER_CHECK=1 $(BIN)/vitest run src/browserSmoke.test.ts
+
+check: check-deps test lint typecheck build check-split check-browser ## Full gate: test + lint + typecheck + build + split-process and browser checks (what CI runs)
 
 # Runs under its own compose project name with a scratch env file so it never
 # touches the operator's `radulf` project: separate volume, separate port

@@ -79,7 +79,7 @@ tooling. Run `make help` to see every target; the ones you'll use most:
 
 | Command | What it does |
 |---|---|
-| `make check` | vitest + eslint + tsc --noEmit + production build — **the full gate** |
+| `make check` | vitest + eslint + tsc --noEmit + production build + split-process and browser checks — **the full gate** |
 | `make test` | Unit, component, route, and lifecycle tests (vitest) |
 | `make lint` | ESLint |
 | `make typecheck` | `tsc --noEmit` |
