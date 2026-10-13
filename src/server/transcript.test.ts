@@ -77,6 +77,30 @@ describe("readTranscriptChunk", () => {
     expect(completed.cursor).toBe(fs.statSync(file).size);
   });
 
+  it("steps past a line longer than a whole chunk instead of stalling on it", async () => {
+    // A tool result or written file can put one transcript line past the
+    // chunk size; the reader must not wait forever for a newline inside it.
+    const before = { t: "text", role: "assistant", content: "before" };
+    const huge = { t: "raw", line: "x".repeat(500) };
+    const after = { t: "text", role: "assistant", content: "after" };
+    fs.writeFileSync(file, [before, huge, after].map((e) => JSON.stringify(e)).join("\n") + "\n");
+
+    let cursor = 0;
+    const actual: unknown[] = [];
+    for (let reads = 0; reads < 20; reads++) {
+      const chunk = await readTranscriptChunk(file, cursor, true, 80);
+      actual.push(...chunk.lines);
+      cursor = chunk.cursor;
+      if (!chunk.hasMore) break;
+    }
+
+    expect(actual[0]).toEqual(before);
+    expect(actual.at(-1)).toEqual(after);
+    expect(actual).toHaveLength(3);
+    expect(actual[1]).toMatchObject({ t: "raw" });
+    expect(cursor).toBe(fs.statSync(file).size);
+  });
+
   it("tails a bounded window when no cursor is supplied", async () => {
     const events = Array.from({ length: 20 }, (_, index) => ({
       t: "raw",

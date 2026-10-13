@@ -70,6 +70,23 @@ export async function readTranscriptChunk(
 
     const end = start + bytesRead;
     const lastNewline = content.lastIndexOf(0x0a);
+    // One line longer than a whole chunk (a big tool result or written file)
+    // would otherwise never yield a newline, and the reader would stall on it
+    // forever. Skip to its end and say so.
+    if (lastNewline === -1 && bytesRead === maxBytes && end < size) {
+      const lineEnd = await nextNewline(handle, end, size);
+      if (lineEnd === null && running) {
+        return { lines: [], cursor: start, hasMore: false, truncated, reset: invalidCursor };
+      }
+      const cursor = lineEnd === null ? size : lineEnd + 1;
+      return {
+        lines: [{ t: "raw", line: `(a transcript line of ${cursor - start} bytes is too long to show)` }],
+        cursor,
+        hasMore: cursor < size,
+        truncated,
+        reset: invalidCursor,
+      };
+    }
     const canConsumeTrailingLine = !running && end >= size;
     const consumedContent = lastNewline >= 0
       ? content.subarray(0, lastNewline + 1)
@@ -94,6 +111,19 @@ export async function readTranscriptChunk(
   } finally {
     await handle.close();
   }
+}
+
+/** Byte offset of the first newline at or after `from`, or null before `size`. */
+async function nextNewline(handle: fs.promises.FileHandle, from: number, size: number): Promise<number | null> {
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  for (let position = from; position < size; ) {
+    const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - position), position);
+    if (bytesRead === 0) return null;
+    const index = buffer.subarray(0, bytesRead).indexOf(0x0a);
+    if (index !== -1) return position + index;
+    position += bytesRead;
+  }
+  return null;
 }
 
 /**
