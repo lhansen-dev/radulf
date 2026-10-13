@@ -65,7 +65,7 @@ describe("authentication routes", () => {
   it("does not count successful logins toward the failure limit", async () => {
     for (let attempt = 0; attempt < 6; attempt++) {
       const response = await login(loginRequest(PASSWORD));
-      expect(response.status).toBe(307);
+      expect(response.status).toBe(303);
     }
   });
 
@@ -75,7 +75,7 @@ describe("authentication routes", () => {
 
     expect((await failedLogin()).status).toBe(401);
     expect((await failedLogin()).status).toBe(401);
-    expect((await login(loginRequest(PASSWORD))).status).toBe(307);
+    expect((await login(loginRequest(PASSWORD))).status).toBe(303);
     expect(isLoginRateLimited(loginClientKey(loginRequest("x")))).toBe(false);
   });
 
@@ -134,7 +134,7 @@ describe("authentication routes", () => {
 
     const success = login(loginRequest(PASSWORD));
     await settle(20_000);
-    expect((await success).status).toBe(307);
+    expect((await success).status).toBe(303);
   });
 
   it("caps concurrent password checks instead of letting a flood pin the CPU", async () => {
@@ -152,7 +152,7 @@ describe("authentication routes", () => {
     // The slots are released: the right password gets in afterwards.
     const success = login(loginRequest(PASSWORD));
     await settle(20_000);
-    expect((await success).status).toBe(307);
+    expect((await success).status).toBe(303);
   });
 
   it("frees password-check slots before the shared bucket's escalated stall", async () => {
@@ -168,7 +168,7 @@ describe("authentication routes", () => {
 
     const success = login(loginRequest(PASSWORD));
     await settle(0);
-    expect((await success).status).toBe(307);
+    expect((await success).status).toBe(303);
 
     await settle(20_000);
     expect((await Promise.all(guesses)).map((r) => r.status)).toEqual(Array(8).fill(401));
@@ -227,7 +227,7 @@ describe("authentication routes", () => {
     const success = login(loginRequest(PASSWORD));
     await settle(20_000);
 
-    expect((await success).status).toBe(307);
+    expect((await success).status).toBe(303);
     expect((await Promise.all(stalled)).map((response) => response.status)).toEqual(
       Array(8).fill(408),
     );
@@ -290,7 +290,7 @@ describe("authentication routes", () => {
       new Request("https://radulf.example/api/auth/logout", { method: "POST" }),
     );
 
-    expect(response.status).toBe(307);
+    expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("https://radulf.example/login");
     const cookie = response.headers.get("set-cookie") ?? "";
     expect(cookie).toContain(`${SESSION_COOKIE}=`);

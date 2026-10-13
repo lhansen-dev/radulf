@@ -172,7 +172,7 @@ export async function POST(request: Request) {
   const expiresAtMs = Date.now() + SESSION_MAX_AGE_MS;
   const value = await signSession(expiresAtMs);
 
-  const response = NextResponse.redirect(new URL("/", redirectBase(request)));
+  const response = NextResponse.redirect(new URL("/", redirectBase(request)), 303);
   response.cookies.set(SESSION_COOKIE, value, {
     httpOnly: true,
     secure: requestIsSecure(request),

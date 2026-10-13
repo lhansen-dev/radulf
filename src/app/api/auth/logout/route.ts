@@ -8,7 +8,7 @@ import { redirectBase, requestIsSecure, revokeSessions, SESSION_COOKIE } from "@
  */
 export async function POST(request: Request) {
   await revokeSessions();
-  const response = NextResponse.redirect(new URL("/login", redirectBase(request)));
+  const response = NextResponse.redirect(new URL("/login", redirectBase(request)), 303);
   response.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
     secure: requestIsSecure(request),
