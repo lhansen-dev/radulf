@@ -26,7 +26,7 @@ import {
 } from "./transcriptSearch";
 import { isRenderableLine } from "./renderableLine";
 import { CHECKLIST_EXHAUSTED_EXIT, LOOP_BLOCKED_EXIT, retryableFailedStep } from "@/shared/failedStep";
-import { PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
+import { ACTIVE_STATUSES, PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
 import { parsePayload } from "@/shared/eventPayload";
 import { errorMessage } from "@/shared/errorMessage";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
@@ -275,7 +275,7 @@ export default function CardDetail() {
             <p className="mt-1 text-xs text-foreground/45">
               {isEpic
                 ? `Epic · ${epicDone} of ${epicTasks.length} tasks done`
-                : <>{plainStatus(card.status)}{card.startedAt && ` · ${timeAgo(card.startedAt)} elapsed`}</>}
+                : <>{plainStatus(card.status)}{card.startedAt && ((ACTIVE_STATUSES as readonly string[]).includes(card.status) ? ` · ${timeAgo(card.startedAt)} elapsed` : ` · started ${timeAgo(card.startedAt)} ago`)}</>}
             </p>
           </div>
         {headerActions.filter((a) => a.show).map((a) => (
