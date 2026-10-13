@@ -98,7 +98,7 @@ export function syncRunWatcher(runId: string): void {
   stopRunWatcher(runId);
   watchers.set(runId, {
     iteration: target.iteration,
-    stop: startTranscriptPush(path.join(runTranscriptDir(runId), target.file), runId, target.iteration),
+    stop: startTranscriptPush(path.join(/* turbopackIgnore: true */ runTranscriptDir(runId), target.file), runId, target.iteration),
   });
 }
 

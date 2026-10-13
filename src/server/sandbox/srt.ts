@@ -72,7 +72,7 @@ export function credentialBackstopDenylist(): string[] {
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Firefox",
     "Library/Cookies",
-  ].map((p) => path.join(HOME, p));
+  ].map((p) => path.join(/* turbopackIgnore: true */ HOME, p));
 }
 
 /** System + toolchain install roots (spec §L1 read-allow table), per platform. */

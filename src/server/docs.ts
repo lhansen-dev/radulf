@@ -170,7 +170,7 @@ export function stripLayoutHtml(content: string): string {
 export async function readDoc(slug: string): Promise<{ meta: DocMeta; content: string } | null> {
   const meta = BY_SLUG.get(slug);
   if (!meta) return null;
-  const abs = path.join(process.cwd(), meta.sourcePath);
+  const abs = path.join(/* turbopackIgnore: true */ process.cwd(), meta.sourcePath);
   const content = stripLayoutHtml(await readFile(abs, "utf8"));
   return { meta, content };
 }
