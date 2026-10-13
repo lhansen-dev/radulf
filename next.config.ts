@@ -62,7 +62,11 @@ const nextConfig: NextConfig = {
           },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
-          { key: "Referrer-Policy", value: "no-referrer" },
+          // Not no-referrer: under it a browser sends `Origin: null` on a
+          // native form POST, which the proxy's CSRF check rightly refuses,
+          // and the login form is one. same-origin still sends nothing to
+          // other sites.
+          { key: "Referrer-Policy", value: "same-origin" },
           {
             key: "Permissions-Policy",
             value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
