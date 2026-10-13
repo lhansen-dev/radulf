@@ -499,7 +499,7 @@ only via the human-facing `/api/settings` route. The disk-limit env vars
   [`src/server/sandbox/sandbox.test.ts`](../src/server/sandbox/sandbox.test.ts) —
   env allowlist, disk watchdog, apfs-quota parsing, pgid placement, reaping.
   [`src/server/sandbox/pathGuard.test.ts`](../src/server/sandbox/pathGuard.test.ts)
-  and [`guardedTools.test.ts`](../src/server/harness/guardedTools.test.ts) — L2.
+  and [`l2Acceptance.test.ts`](../src/server/harness/l2Acceptance.test.ts) — L2.
 - **Positive control** (the real proof): a full plan→loop→evaluate→review card
   with the sandbox on and `$HOME` denied, including a real dependency fetch,
   passing end to end. Verified live for **Node** (`npm install` against the real
