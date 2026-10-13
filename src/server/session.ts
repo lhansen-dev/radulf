@@ -121,12 +121,7 @@ export function isAllowedOrigin(origin: string | null, host: string): boolean {
       if (url.origin === allowed.origin) return true;
     }
 
-    const addressed = new URL(`http://${host}`);
-    const loopback =
-      addressed.hostname === "localhost" ||
-      addressed.hostname === "127.0.0.1" ||
-      addressed.hostname === "[::1]";
-    return loopback && url.host === addressed.host;
+    return isAllowedUnauthenticatedHost(host) && url.host === new URL(`http://${host}`).host;
   } catch {
     return false;
   }
