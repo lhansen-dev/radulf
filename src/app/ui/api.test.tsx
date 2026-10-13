@@ -97,11 +97,11 @@ describe("useEventStream", () => {
 describe("api", () => {
   it("sends the browser to /login once its session is gone, and still throws", async () => {
     const assign = vi.fn();
-    vi.stubGlobal("location", { assign });
+    vi.stubGlobal("location", { assign, origin: "http://localhost:3000" });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })));
     try {
       await expect(api("/api/cards")).rejects.toThrow("Unauthorized");
-      expect(assign).toHaveBeenCalledWith("/login");
+      expect(String(assign.mock.calls[0][0])).toBe("http://localhost:3000/login");
     } finally {
       vi.unstubAllGlobals();
     }
