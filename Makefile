@@ -131,7 +131,7 @@ check-split: build ## Boot two web-only and a worker-only process against a temp
 # paths no route test can see, such as what Origin a browser sends on a form
 # POST. Uses an installed Chrome (CHROME_PATH to pick one); skips without one,
 # except in CI, whose runner image ships Chrome.
-check-browser: build ## Drive sign-in, a task and sign-out in headless Chrome against the production build
+check-browser: build ## Drive sign-in, a task, an axe WCAG AA scan and sign-out in headless Chrome against the production build
 	RADULF_BROWSER_CHECK=1 $(BIN)/vitest run src/browserSmoke.test.ts
 
 check: check-deps test lint typecheck build check-split check-browser ## Full gate: test + lint + typecheck + build + split-process and browser checks (what CI runs)

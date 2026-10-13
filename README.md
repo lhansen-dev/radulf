@@ -486,7 +486,7 @@ these same targets.
 | `make test` | 🧪 Run unit, component, route, and lifecycle integration tests |
 | `make typecheck` | 🔍 Type-check without emitting files |
 | `make check` | ✅ Run tests, lint, type-checking, a production build, and the split-process and browser checks (the CI gate) |
-| `make check-browser` | 🌐 Sign in, create a task and sign out in headless Chrome against the production build (`CHROME_PATH` picks the browser; skipped locally without one) |
+| `make check-browser` | 🌐 Sign in, create a task, check WCAG 2.2 AA with axe and sign out in headless Chrome against the production build (`CHROME_PATH` picks the browser; skipped locally without one) |
 | `make check-compose` | 🐳 Throwaway compose run (one web, two workers) that waits for healthy and tears down — never touches your own volume or ports |
 | `make db-generate` | 🗂️ Generate a migration from schema changes |
 | `make db-migrate` | ⬆️ Apply pending migrations |

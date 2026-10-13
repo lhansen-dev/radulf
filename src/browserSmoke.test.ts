@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import bcrypt from "bcryptjs";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
+import { createRequire } from "node:module";
 
 const PASSWORD = "correct horse battery staple";
 
@@ -155,6 +156,24 @@ describe.runIf(enabled && chrome)("browser smoke (auth on, production build)", (
     const titles = await page.evaluate(async () => (await (await fetch("/api/cards")).json()).map((c: { title: string }) => c.title));
     expect(titles).toContain("Browser smoke task");
   }, 60_000);
+
+  it("meets WCAG 2.2 AA on the main pages (spec 10), per axe", async () => {
+    const axeSource = fs.readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
+    const cardId = await page.evaluate(async () => (await (await fetch("/api/cards")).json())[0].id as string);
+    const violations: string[] = [];
+    for (const route of ["/", `/card/${cardId}`, `/card/${cardId}?tab=activity`, "/settings", "/analytics"]) {
+      await page.goto(`${base}${route}`, { waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() => !document.body.innerText.includes("Loading"), { timeout: 15_000 });
+      await page.evaluate(axeSource);
+      const found = await page.evaluate(async () => {
+        const axe = (window as unknown as { axe: { run(ctx: Document, opts: unknown): Promise<{ violations: { id: string; nodes: { target: string[] }[] }[] }> } }).axe;
+        const result = await axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } });
+        return result.violations.map((v) => `${v.id}: ${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join(", ")}`);
+      });
+      violations.push(...found.map((v) => `${route} ${v}`));
+    }
+    expect(violations).toEqual([]);
+  }, 90_000);
 
   it("signs out everywhere from Settings, and the session stops working", async () => {
     await page.goto(`${base}/settings`);
