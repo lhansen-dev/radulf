@@ -8,6 +8,7 @@ class MockEventSource {
   onerror: ((e: Event) => void) | null = null;
   onmessage: ((e: MessageEvent) => void) | null = null;
   closed = false;
+  readyState = 0;
   static instances: MockEventSource[] = [];
   constructor() {
     MockEventSource.instances.push(this);
@@ -61,6 +62,25 @@ describe("useEventStream", () => {
     renderHook(() => useEventStream(() => {}, late));
     expect(MockEventSource.instances).toHaveLength(1);
     expect(late).toHaveBeenCalledWith(false);
+  });
+
+  it("reopens a stream the browser closed for good, such as after a proxy's 502", () => {
+    vi.useFakeTimers();
+    try {
+      const connection = vi.fn();
+      renderHook(() => useEventStream(() => {}, connection));
+      const first = MockEventSource.instances[0];
+      first.readyState = 2; // CLOSED: an HTTP error, which EventSource never retries
+      act(() => first.onerror?.(new Event("error")));
+      expect(connection).toHaveBeenLastCalledWith(false);
+
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(MockEventSource.instances).toHaveLength(2);
+      act(() => MockEventSource.instances[1].onopen?.());
+      expect(connection).toHaveBeenLastCalledWith(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("still delivers a frame to the other subscribers when one callback throws", () => {

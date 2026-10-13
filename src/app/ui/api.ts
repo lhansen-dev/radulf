@@ -84,32 +84,50 @@ function dispatch(fn: () => void): void {
   }
 }
 
+/** How long to wait before reopening a stream the browser gave up on. */
+const REOPEN_DELAY_MS = 3_000;
+let reopenTimer: ReturnType<typeof setTimeout> | null = null;
+
+function openSharedStream(): void {
+  const es = new EventSource("/api/events/stream");
+  es.onopen = () => {
+    sharedConnected = true;
+    subscribers.forEach((s) => dispatch(() => s.onConnectionChange(true)));
+  };
+  es.onerror = () => {
+    sharedConnected = false;
+    subscribers.forEach((s) => dispatch(() => s.onConnectionChange(false)));
+    // The browser retries a dropped connection itself, but not one answered
+    // with an HTTP error (a proxy's 502 mid-restart): that closes for good,
+    // and the page would stay stale until reloaded.
+    if (es.readyState === 2 /* EventSource.CLOSED */ && sharedStream === es) {
+      sharedStream = null;
+      reopenTimer = setTimeout(() => {
+        reopenTimer = null;
+        if (subscribers.size > 0 && !sharedStream) openSharedStream();
+      }, REOPEN_DELAY_MS);
+    }
+  };
+  es.onmessage = (msg) => {
+    let event: StreamEvent;
+    try {
+      event = JSON.parse(msg.data);
+    } catch {
+      return; // ignore malformed frames
+    }
+    subscribers.forEach((s) => dispatch(() => s.onEvent(event)));
+  };
+  sharedStream = es;
+}
+
 function subscribeToStream(subscriber: StreamSubscriber): () => void {
   subscribers.add(subscriber);
-  if (sharedStream) {
+  if (sharedStream || reopenTimer) {
     // A late subscriber gets the same open/error callback its own stream
     // would have fired by now.
     if (sharedConnected !== null) dispatch(() => subscriber.onConnectionChange(sharedConnected!));
   } else {
-    const es = new EventSource("/api/events/stream");
-    es.onopen = () => {
-      sharedConnected = true;
-      subscribers.forEach((s) => dispatch(() => s.onConnectionChange(true)));
-    };
-    es.onerror = () => {
-      sharedConnected = false;
-      subscribers.forEach((s) => dispatch(() => s.onConnectionChange(false)));
-    };
-    es.onmessage = (msg) => {
-      let event: StreamEvent;
-      try {
-        event = JSON.parse(msg.data);
-      } catch {
-        return; // ignore malformed frames
-      }
-      subscribers.forEach((s) => dispatch(() => s.onEvent(event)));
-    };
-    sharedStream = es;
+    openSharedStream();
   }
   return () => {
     subscribers.delete(subscriber);
@@ -117,6 +135,8 @@ function subscribeToStream(subscriber: StreamSubscriber): () => void {
       sharedStream?.close();
       sharedStream = null;
       sharedConnected = null;
+      if (reopenTimer) clearTimeout(reopenTimer);
+      reopenTimer = null;
     }
   };
 }
