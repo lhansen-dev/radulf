@@ -45,6 +45,10 @@ is a reviewable diff. You approve; it merges.
                                     └────────────────┘
 ```
 
+<p align="center">
+  <img src="docs/images/board.png" alt="The Work board: a task ready for review, one that needs attention after its loop got stuck, and two queued for the next free slot" width="820">
+</p>
+
 **Auto Mode** pulls the next queued task the moment a slot frees, so the pipeline
 keeps moving without you. **[Improvement Runs](#improvement-runs)** go further:
 Radulf proposes its own work, drives it end to end on auto-approve, and stacks
