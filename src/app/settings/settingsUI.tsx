@@ -118,7 +118,7 @@ export function ToggleRow({ title, description, checked, onChange }: {
 
 const THEMES = [
   ["default", "Default", "#0b0d10", "#d7dce2", "#fbbf24"],
-  ["default-light", "Default Light", "#f7f8fa", "#1a1d23", "#d97706"],
+  ["default-light", "Default Light", "#f7f8fa", "#1a1d23", "#b45309"],
   ["solarized-dark", "Solarized Dark", "#002b36", "#93a1a1", "#b58900"],
   ["solarized-light", "Solarized Light", "#fdf6e3", "#657b83", "#b58900"],
   ["tokyo-night", "Tokyo Night", "#1a1b26", "#a9b1d6", "#7aa2f7"],

@@ -14,7 +14,7 @@
 }
 
 [data-theme="default-light"] {
-  --background: #f7f8fa; --foreground: #1a1d23; --accent: #d97706;
+  --background: #f7f8fa; --foreground: #1a1d23; --accent: #b45309;
   --accent-strong: #b45309; --on-accent: #fff; --surface: #fff;
   --muted: color-mix(in srgb, var(--foreground) 64%, transparent);
 }
