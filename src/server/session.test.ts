@@ -1,5 +1,9 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeAll } from "vitest";
 import {
+  revokeSessions,
   SESSION_MAX_AGE_MS,
   authEnabled,
   signSession,
@@ -49,6 +53,27 @@ describe("signSession / verifySession", () => {
     const future = Date.now() + SESSION_MAX_AGE_MS;
     for (const signature of ["not-valid-base64!!", "!!!!", "%%%%", "a b c", "\u0000"]) {
       await expect(verifySession(`${future}.${signature}`)).resolves.toBe(false);
+    }
+  });
+});
+
+describe("revokeSessions", () => {
+  it("voids every session issued up to the revocation, and none after it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-revoke-"));
+    process.env.RADULF_SESSIONS_NOT_BEFORE_FILE = path.join(dir, "sessions-not-before");
+    try {
+      const issuedAt = Date.now();
+      const before = await signSession(issuedAt + SESSION_MAX_AGE_MS);
+      expect(await verifySession(before)).toBe(true);
+
+      await revokeSessions(issuedAt);
+      expect(await verifySession(before)).toBe(false);
+
+      const after = await signSession(issuedAt + 1 + SESSION_MAX_AGE_MS);
+      expect(await verifySession(after)).toBe(true);
+    } finally {
+      delete process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

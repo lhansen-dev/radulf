@@ -83,4 +83,7 @@ export function ensureAuthSecret(): void {
   tighten(secretFile);
 
   process.env.RADULF_AUTH_SECRET = secret;
+  // Where logout records "sessions issued before now are void" (session.ts).
+  // A file beside the secret, so every process on this data dir sees it.
+  process.env.RADULF_SESSIONS_NOT_BEFORE_FILE ??= join(DATA_DIR, "sessions-not-before");
 }

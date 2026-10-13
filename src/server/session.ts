@@ -1,10 +1,13 @@
 /**
- * Edge-safe session helpers (Web Crypto only — no fs, no bcrypt).
+ * Session helpers (Web Crypto for signing, no bcrypt). The proxy that calls
+ * them runs on the Node.js runtime (Next 16's default for proxy.ts).
  *
  * The HMAC secret is read from process.env.RADULF_AUTH_SECRET at runtime.
  * ensureAuthSecret() (in authSecret.ts, Node-only) populates that env var at
- * boot via instrumentation.ts.
+ * boot via instrumentation.ts, along with RADULF_SESSIONS_NOT_BEFORE_FILE,
+ * the revocation stamp logout writes.
  */
+import { readFile, writeFile } from "node:fs/promises";
 
 export const SESSION_COOKIE = "radulf_session";
 export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -35,6 +38,9 @@ export async function verifySession(value: string): Promise<boolean> {
   const sigB64 = value.slice(dot + 1);
 
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
+  // Every session is signed for exactly SESSION_MAX_AGE_MS, so its issue time
+  // is recoverable without a new cookie format.
+  if (expiresAtMs - SESSION_MAX_AGE_MS <= (await sessionsNotBefore())) return false;
 
   // A cookie whose signature is not valid base64 is an invalid session, not a
   // server error: `atob` throws on a stray character, and this runs inside the
@@ -49,6 +55,29 @@ export async function verifySession(value: string): Promise<boolean> {
   }
 
   return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), signature);
+}
+
+/**
+ * Void every session issued up to now, in every process sharing this data
+ * directory. Logout calls it: the cookie is a bearer token, so clearing it in
+ * one browser did nothing about a copy of it anywhere else, and the only
+ * other way out was deleting data/auth-secret, which also strands every
+ * stored provider key.
+ */
+export async function revokeSessions(now = Date.now()): Promise<void> {
+  const file = process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
+  if (file) await writeFile(file, String(now), { mode: 0o600 });
+}
+
+/** The revocation stamp, or 0 when nothing was ever revoked. */
+async function sessionsNotBefore(): Promise<number> {
+  const file = process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
+  if (!file) return 0;
+  try {
+    return Number(await readFile(file, "utf8")) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**

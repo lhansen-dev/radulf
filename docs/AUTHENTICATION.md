@@ -33,8 +33,9 @@ the same cookies.
 ## How it behaves
 
 Visiting any page without a valid cookie redirects you to `/login`. A successful
-login sets a signed session cookie valid for **30 days**. To clear it, `POST
-/api/auth/logout`, which redirects back to the login page.
+login sets a signed session cookie valid for **30 days**. Logging out (`POST
+/api/auth/logout`) signs you out **everywhere** and redirects back to the login
+page — see [Revoking a session](#revoking-a-session).
 
 The login endpoint throttles guessing, in one of two ways depending on whether
 it can tell clients apart:
@@ -56,11 +57,16 @@ attacker forge a fresh identity per attempt and evade the limit entirely.
 
 Cookies are HMAC-SHA256 signed against a secret generated on first boot and
 stored in `data/auth-secret` (gitignored). There is no server-side session
-store, which means there is no way to revoke one cookie individually.
+store, so one cookie cannot be revoked on its own — but all of them can.
 
-The kill switch for a leaked cookie is **rotating the secret**: delete
-`data/auth-secret` and restart. A fresh secret invalidates every outstanding
-cookie at once, including your own.
+**Logging out is the kill switch for a leaked cookie.** It writes the time to
+`data/sessions-not-before`, and every session issued up to then stops working
+in every browser and every process on that data directory, including copies
+of the cookie you never knew existed. Sign in again afterwards.
+
+Rotating the secret (delete `data/auth-secret` and restart) also invalidates
+every cookie, but it makes every stored provider key undecryptable too, so
+prefer logging out.
 
 ## Under the hood
 
