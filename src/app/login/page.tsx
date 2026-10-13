@@ -7,7 +7,7 @@ export default function LoginPage() {
         className="flex flex-col items-center gap-4 p-8 bg-surface rounded-lg shadow-lg"
       >
         <h1 className="text-2xl font-semibold">Radulf</h1>
-        <p className="text-sm text-foreground/60">
+        <p className="text-sm text-muted">
           Enter the password to sign in
         </p>
         <input

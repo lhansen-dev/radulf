@@ -82,7 +82,7 @@ function OpenTasksBar({
               type="button"
               onClick={() => onClose(id)}
               aria-label={`Close ${title}`}
-              className="min-h-9 px-2 text-foreground/40 hover:text-foreground"
+              className="min-h-9 px-2 text-muted hover:text-foreground"
             >
               ×
             </button>

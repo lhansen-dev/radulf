@@ -10,7 +10,7 @@ function statusTone(status: string): string {
   if (status === "done") return "text-green-300";
   if (RUNNING_STATUSES.includes(status as CardStatus)) return "text-amber-300";
   if (ATTENTION_STATUSES.includes(status as CardStatus)) return "text-violet-300";
-  return "text-foreground/45";
+  return "text-muted";
 }
 
 /**
@@ -44,7 +44,7 @@ export function EpicTasks({
     <section aria-labelledby="epic-tasks-title" className="flex flex-col gap-2 rounded-lg border border-foreground/10 p-3">
       <div className="flex flex-wrap items-center gap-3">
         <h2 id="epic-tasks-title" className="text-sm font-medium">
-          Tasks in this epic <span className="font-normal text-foreground/45">{done} of {tasks.length} done</span>
+          Tasks in this epic <span className="font-normal text-muted">{done} of {tasks.length} done</span>
         </h2>
         <label className="ml-auto flex items-center gap-2 text-xs text-foreground/70">
           Run mode
@@ -66,7 +66,7 @@ export function EpicTasks({
       <ol className="flex flex-col divide-y divide-foreground/[0.06]">
         {tasks.map((task, i) => (
           <li key={task.id} className="flex min-h-11 items-center gap-3 text-sm">
-            <span className="w-5 shrink-0 text-right tabular-nums text-foreground/40">{i + 1}</span>
+            <span className="w-5 shrink-0 text-right tabular-nums text-muted">{i + 1}</span>
             <Link href={`/card/${task.id}`} className="min-w-0 grow truncate hover:underline">{task.title}</Link>
             <span className={`shrink-0 text-xs ${statusTone(task.status)}`}>
               {(STATUS_LABELS as Record<string, string>)[task.status] ?? task.status}

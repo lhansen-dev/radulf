@@ -91,7 +91,7 @@ export default function BenchmarksPage() {
 
   if (!data) {
     return (
-      <AppShell><div className="flex min-h-[70dvh] items-center justify-center text-sm text-foreground/40" aria-label="Loading benchmarks">
+      <AppShell><div className="flex min-h-[70dvh] items-center justify-center text-sm text-muted" aria-label="Loading benchmarks">
         {error ? `Failed to load benchmarks: ${error}` : "Loading benchmarks…"}
       </div></AppShell>
     );
@@ -104,7 +104,7 @@ export default function BenchmarksPage() {
     <AppShell>
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col">
       <header className="border-b border-foreground/10 px-4 py-4 sm:px-6">
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground/35">Loop performance evidence</p>
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">Loop performance evidence</p>
         <h1 tabIndex={-1} className="mt-0.5 text-2xl font-semibold tracking-tight">Benchmarks</h1>
       </header>
 
@@ -117,7 +117,7 @@ export default function BenchmarksPage() {
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <h2 className="text-sm font-medium text-foreground/70">
               Rollout acceptance{" "}
-              <span className="text-foreground/40">
+              <span className="text-muted">
                 (most recent {rollout.windowSize} of {rollout.requiredSampleSize} required iterations)
               </span>
             </h2>
@@ -127,7 +127,7 @@ export default function BenchmarksPage() {
                   ? "bg-emerald-500/15 text-emerald-400"
                   : rollout.accepted === false
                     ? "bg-red-500/15 text-red-400"
-                    : "bg-foreground/10 text-foreground/50"
+                    : "bg-foreground/10 text-muted"
               }`}
             >
               {rollout.accepted === true
@@ -142,7 +142,7 @@ export default function BenchmarksPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase tracking-wider text-foreground/40">
+                <tr className="text-left text-xs uppercase tracking-wider text-muted">
                   <th className="pb-2 pr-4 font-medium">Target</th>
                   <th className="pb-2 pr-4 text-right font-medium">Measured</th>
                   <th className="pb-2 pr-4 text-right font-medium">Threshold</th>
@@ -164,7 +164,7 @@ export default function BenchmarksPage() {
                       ) : t.pass === false ? (
                         <span className="text-red-400">miss</span>
                       ) : (
-                        <span className="text-foreground/40">—</span>
+                        <span className="text-muted">—</span>
                       )}
                     </td>
                   </tr>
@@ -172,7 +172,7 @@ export default function BenchmarksPage() {
               </tbody>
             </table>
           </div>
-          <p className="mt-3 text-xs text-foreground/40">
+          <p className="mt-3 text-xs text-muted">
             Spec 11 also requires no regression in criteria-pass / review-approval rate versus the
             baseline cohort — compare cohorts on the <Link href="/analytics" className="underline">Activity</Link> screen.
           </p>
@@ -181,7 +181,7 @@ export default function BenchmarksPage() {
         {/* Launch a benchmark */}
         <section aria-label="Run a benchmark" className="rounded-lg border border-foreground/10 bg-foreground/[0.03] p-4">
           <h2 className="mb-1 text-sm font-medium text-foreground/70">Run a benchmark</h2>
-          <p className="mb-3 text-xs text-foreground/40">
+          <p className="mb-3 text-xs text-muted">
             Runs the shared runner against a fixture. Use a throwaway repo: seeded fixtures commit
             their seed into it and every run hard-resets to the pre-benchmark baseline. Parallel
             loops are disabled for the duration and restored afterwards.
@@ -213,7 +213,7 @@ export default function BenchmarksPage() {
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
-            <label className="flex items-center gap-2 text-sm text-foreground/60" htmlFor="bench-runs">
+            <label className="flex items-center gap-2 text-sm text-muted" htmlFor="bench-runs">
               Runs
               <input
                 id="bench-runs"
@@ -225,7 +225,7 @@ export default function BenchmarksPage() {
                 className="w-16 rounded-lg border border-foreground/10 bg-foreground/5 px-2 py-2 text-sm text-foreground/70"
               />
             </label>
-            <label className="flex items-center gap-2 text-sm text-foreground/60">
+            <label className="flex items-center gap-2 text-sm text-muted">
               <input
                 type="checkbox"
                 checked={autoReview}
@@ -284,10 +284,10 @@ export default function BenchmarksPage() {
           <section aria-label="Benchmarks in progress" className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-4">
             <h2 className="mb-2 text-sm font-medium text-foreground/70">In progress</h2>
             {data.active.map((a) => (
-              <div key={a.logFile} className="border-t border-foreground/5 py-2 text-sm text-foreground/60 first:border-t-0">
+              <div key={a.logFile} className="border-t border-foreground/5 py-2 text-sm text-muted first:border-t-0">
                 <span className="font-medium text-foreground/80">{a.logFile}</span>
-                <span className="ml-2 text-xs text-foreground/40">started {new Date(a.startedAt).toLocaleString()}</span>
-                {a.lastLine && <div className="mt-1 truncate font-mono text-xs text-foreground/40">{a.lastLine}</div>}
+                <span className="ml-2 text-xs text-muted">started {new Date(a.startedAt).toLocaleString()}</span>
+                {a.lastLine && <div className="mt-1 truncate font-mono text-xs text-muted">{a.lastLine}</div>}
               </div>
             ))}
           </section>
@@ -296,15 +296,15 @@ export default function BenchmarksPage() {
         {/* Reports */}
         <section aria-label="Benchmark reports" className="rounded-lg border border-foreground/10 bg-foreground/[0.03] p-4">
           <h2 className="mb-3 text-sm font-medium text-foreground/70">
-            Reports <span className="text-foreground/40">(benchmarks/reports/)</span>
+            Reports <span className="text-muted">(benchmarks/reports/)</span>
           </h2>
           {data.reports.length === 0 ? (
-            <p className="text-sm text-foreground/40">No reports yet — run a benchmark above or via the CLI runner.</p>
+            <p className="text-sm text-muted">No reports yet — run a benchmark above or via the CLI runner.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-xs uppercase tracking-wider text-foreground/40">
+                  <tr className="text-left text-xs uppercase tracking-wider text-muted">
                     <th className="pb-2 pr-4 font-medium">Fixture</th>
                     <th className="pb-2 pr-4 font-medium">Loop / planner</th>
                     <th className="pb-2 pr-4 text-right font-medium">Runs</th>
@@ -324,9 +324,9 @@ export default function BenchmarksPage() {
                       </td>
                       <td className="py-2 pr-4">
                         <div>{r.provider ?? "—"} / {r.model ?? "—"}</div>
-                        <div className="text-xs text-foreground/40">planner: {r.plannerModel ?? "—"}</div>
+                        <div className="text-xs text-muted">planner: {r.plannerModel ?? "—"}</div>
                         {r.evaluatorModel && (
-                          <div className="text-xs text-foreground/40">
+                          <div className="text-xs text-muted">
                             evaluator: {r.evaluatorModel} · critic: {r.planCritic ? r.criticModel ?? "default" : "off"}
                           </div>
                         )}
@@ -336,7 +336,7 @@ export default function BenchmarksPage() {
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtRate(r.diffCorrectnessRate)}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtMs(r.medianWallTimeMs)}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{formatCostUsd(r.medianCostUsd)}</td>
-                      <td className="py-2 text-right text-xs text-foreground/40">
+                      <td className="py-2 text-right text-xs text-muted">
                         {r.timestamp ? new Date(r.timestamp).toLocaleString() : "—"}
                       </td>
                     </tr>
@@ -350,14 +350,14 @@ export default function BenchmarksPage() {
         {/* Corpus */}
         <section aria-label="Fixture corpus" className="rounded-lg border border-foreground/10 bg-foreground/[0.03] p-4">
           <h2 className="mb-3 text-sm font-medium text-foreground/70">
-            Fixture corpus <span className="text-foreground/40">(benchmarks/)</span>
+            Fixture corpus <span className="text-muted">(benchmarks/)</span>
           </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {data.fixtures.map((f) => (
               <div key={f.name} className="rounded-lg border border-foreground/10 bg-foreground/[0.02] p-3">
                 <p className="text-sm font-medium text-foreground/80">{f.name}</p>
-                <p className="mt-0.5 text-sm text-foreground/50">{f.title}</p>
-                <p className="mt-1 text-xs text-foreground/40">
+                <p className="mt-0.5 text-sm text-muted">{f.title}</p>
+                <p className="mt-1 text-xs text-muted">
                   {f.criteriaCount} machine-checkable criteria · {f.seeded ? "seeded existing-codebase" : "greenfield"}
                 </p>
               </div>
@@ -391,7 +391,7 @@ function BenchModelPicker({ id, title, provider, model, onModel, enabled = true,
           {enableLabel}
         </label>
       )}
-      <p className="text-xs text-foreground/40">
+      <p className="text-xs text-muted">
         Provider: {provider ? providerLabel(provider) : "…"} ·{" "}
         <Link href="/settings#models" className="underline">change in Settings</Link>
       </p>

@@ -144,7 +144,7 @@ export function BreakdownEditor({
       <p className="text-sm font-medium text-cyan-300">
         Proposed breakdown into {count} task{count === 1 ? "" : "s"}. Edit anything, then queue.
       </p>
-      <p className="text-xs text-foreground/55">
+      <p className="text-xs text-muted">
         Applying makes this card the epic. The tasks are queued in this order with its settings, and the
         epic is done when they are.
       </p>
@@ -165,7 +165,7 @@ export function BreakdownEditor({
             </label>
           ))}
         </div>
-        <p className="text-xs text-foreground/50">{RUN_MODE_HELP[runMode]}</p>
+        <p className="text-xs text-muted">{RUN_MODE_HELP[runMode]}</p>
       </fieldset>
       {pieces.map((piece, i) => (
         <div key={i} className="flex flex-col gap-2 rounded-lg bg-foreground/[0.03] p-2.5">
@@ -214,10 +214,10 @@ export function BreakdownEditor({
             </label>
           )}
           <div className="flex items-center gap-1 self-end">
-            <button type="button" disabled={busy || i === 0} onClick={() => move(i, -1)} aria-label={`Move task ${i + 1} up`} className="size-11 rounded-md text-lg text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↑</button>
-            <button type="button" disabled={busy || i === count - 1} onClick={() => move(i, 1)} aria-label={`Move task ${i + 1} down`} className="size-11 rounded-md text-lg text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↓</button>
+            <button type="button" disabled={busy || i === 0} onClick={() => move(i, -1)} aria-label={`Move task ${i + 1} up`} className="size-11 rounded-md text-lg text-muted hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↑</button>
+            <button type="button" disabled={busy || i === count - 1} onClick={() => move(i, 1)} aria-label={`Move task ${i + 1} down`} className="size-11 rounded-md text-lg text-muted hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↓</button>
             {count > 1 && (
-              <button type="button" onClick={() => setPieces(dropPiece(pieces, i))} disabled={busy} className="min-h-11 px-2 text-xs text-foreground/50 hover:text-red-300">
+              <button type="button" onClick={() => setPieces(dropPiece(pieces, i))} disabled={busy} className="min-h-11 px-2 text-xs text-muted hover:text-red-300">
                 Drop this task
               </button>
             )}
@@ -229,7 +229,7 @@ export function BreakdownEditor({
       </button>
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onDiscard} disabled={busy} className={`${buttonCls} text-foreground/60`}>Discard</button>
+        <button type="button" onClick={onDiscard} disabled={busy} className={`${buttonCls} text-muted`}>Discard</button>
         <button
           type="button"
           onClick={() => void apply()}

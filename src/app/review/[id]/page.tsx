@@ -61,12 +61,12 @@ function parseDiff(diff: string): DiffFile[] {
 }
 
 function lineClass(line: string): string {
-  if (line.startsWith("+++") || line.startsWith("---")) return "text-foreground/40";
+  if (line.startsWith("+++") || line.startsWith("---")) return "text-muted";
   if (line.startsWith("@@")) return "text-sky-400/80";
   if (line.startsWith("+")) return "text-green-400 bg-green-950/40";
   if (line.startsWith("-")) return "text-red-400 bg-red-950/40";
   if (line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file"))
-    return "text-foreground/40";
+    return "text-muted";
   return "text-foreground/70";
 }
 
@@ -158,16 +158,16 @@ export default function ReviewPage() {
     }
   }
 
-  if (!detail) return <div className="p-8 text-foreground/50">{error || "Loading…"}</div>;
+  if (!detail) return <div className="p-8 text-muted">{error || "Loading…"}</div>;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 pb-28 sm:p-6 sm:pb-28">
       <header className="flex min-w-0 items-center gap-3">
-        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
+        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-muted hover:text-foreground">
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>
-        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
+        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-muted" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
           <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
           <button disabled={busy} onClick={() => { if (confirm("Abandon this task? Its worktree and branch will be deleted.")) void abandon(); }} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
         </DetailsMenu>
@@ -208,19 +208,19 @@ export default function ReviewPage() {
       {flags.length > 0 && (
         <Banner tone="amber" title="⚠️ Self-modifying / load-bearing diff"><FlagList flags={flags} tone="text-amber-400" /></Banner>
       )}
-      <div className="text-sm text-foreground/60">
+      <div className="text-sm text-muted">
         {loopRun ? `${loopRun.iterationsDone} iterations` : "no completed loop run"}
         {wallTime && ` · ${wallTime} wall time`}
         {diff && ` · ${diff.stat.trim() || "no source changes"} · branch ${diff.branch}`}
       </div>
       {error && <p className="text-red-400 text-sm">{error}</p>}
 
-      {files.length > 0 && <label className="block text-sm text-foreground/60 lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className={dialogInputCls}><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
+      {files.length > 0 && <label className="block text-sm text-muted lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className={dialogInputCls}><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
 
       <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start">
         <main className="grow min-w-0 flex flex-col gap-2">
           {files.length === 0 && (
-            <p className="text-foreground/50 text-sm bg-foreground/[0.04] rounded p-4">
+            <p className="text-muted text-sm bg-foreground/[0.04] rounded p-4">
               Empty diff — the loop made no source changes outside <code>.ralph/</code>. Reject with
               feedback or abandon.
             </p>
@@ -242,13 +242,13 @@ export default function ReviewPage() {
         </main>
 
         <aside className="flex w-full min-w-0 shrink-0 flex-col gap-3 lg:sticky lg:top-4 lg:w-80">
-          {files.length > 0 && <nav aria-label="Changed files" className="hidden max-h-52 overflow-y-auto rounded border border-foreground/10 bg-foreground/[0.03] p-2 lg:block"><h2 className="px-2 pb-1 text-xs font-semibold uppercase tracking-wider text-foreground/40">Files</h2>{files.map((file, index) => <a key={file.header} href={`#diff-file-${index}`} className="block min-h-11 truncate rounded px-2 py-3 text-xs text-foreground/65 hover:bg-foreground/[0.05]">{file.header}</a>)}</nav>}
+          {files.length > 0 && <nav aria-label="Changed files" className="hidden max-h-52 overflow-y-auto rounded border border-foreground/10 bg-foreground/[0.03] p-2 lg:block"><h2 className="px-2 pb-1 text-xs font-semibold uppercase tracking-wider text-muted">Files</h2>{files.map((file, index) => <a key={file.header} href={`#diff-file-${index}`} className="block min-h-11 truncate rounded px-2 py-3 text-xs text-foreground/65 hover:bg-foreground/[0.05]">{file.header}</a>)}</nav>}
           {plan && (
             <>
               <PlanModelBadge tag={planTag} />
               <details className="bg-foreground/[0.03] rounded border border-foreground/10" open>
                 <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
-                  CRITERIA.md <span className="text-foreground/40">(run by the evaluator)</span>
+                  CRITERIA.md <span className="text-muted">(run by the evaluator)</span>
                 </summary>
                 <pre className="whitespace-pre-wrap text-xs px-3 pb-3 text-foreground/70">
                   {plan.acceptanceCriteria}
@@ -295,11 +295,11 @@ export default function ReviewPage() {
           closeLabel="Close reject with feedback"
           onRequestClose={() => { if (!busy) setRejecting(false); }}
           footer={<>
-            <button type="button" onClick={() => setRejecting(false)} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+            <button type="button" onClick={() => setRejecting(false)} className="rounded-lg px-4 text-sm text-muted">Cancel</button>
             <button type="button" disabled={!feedback.trim() || busy} onClick={() => decide("rejected")} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">Reject &amp; re-plan</button>
           </>}
         >
-          <p className="text-xs text-foreground/50">
+          <p className="text-xs text-muted">
             The planner re-plans this task with your feedback, on top of the work already done — be
             concrete about what to change.
           </p>
@@ -322,7 +322,7 @@ function FlagList({ flags, tone }: { flags: { label: string; paths: string[] }[]
   return flags.map((flag) => (
     <div key={flag.label}>
       <span className={`${tone} font-medium`}>{flag.label}</span>
-      {flag.paths.length > 0 && <span className="text-foreground/50 ml-1">({flag.paths.join(", ")})</span>}
+      {flag.paths.length > 0 && <span className="text-muted ml-1">({flag.paths.join(", ")})</span>}
     </div>
   ));
 }

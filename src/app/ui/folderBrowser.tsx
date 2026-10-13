@@ -99,7 +99,7 @@ export function FolderBrowser({
         >
           ↑
         </button>
-        <p title={listing?.path} className="min-w-0 grow truncate font-mono text-xs text-foreground/55">
+        <p title={listing?.path} className="min-w-0 grow truncate font-mono text-xs text-muted">
           {listing?.path ?? "…"}
         </p>
         <button
@@ -152,10 +152,10 @@ export function FolderBrowser({
         </div>
       )}
       <ul aria-label="Folders" className="max-h-64 divide-y divide-foreground/[0.07] overflow-y-auto">
-        {loading && <li className="px-3 py-3 text-sm text-foreground/45">Loading…</li>}
+        {loading && <li className="px-3 py-3 text-sm text-muted">Loading…</li>}
         {!loading && error && <li role="alert" className="px-3 py-3 text-sm text-red-400">{error}</li>}
         {!loading && !error && listing && listing.entries.length === 0 && (
-          <li className="px-3 py-3 text-sm text-foreground/45">No folders here.</li>
+          <li className="px-3 py-3 text-sm text-muted">No folders here.</li>
         )}
         {!loading && !error && listing?.entries.map((entry) => (
           <li key={entry.path} className="flex items-center gap-2">
@@ -164,7 +164,7 @@ export function FolderBrowser({
               onClick={() => { setLoading(true); void load(entry.path); }}
               className="flex min-h-11 min-w-0 grow items-center gap-2 px-3 text-left text-sm hover:bg-foreground/[0.05]"
             >
-              <span aria-hidden className="text-foreground/35">/</span>
+              <span aria-hidden className="text-muted">/</span>
               <span className="min-w-0 truncate">{entry.name}</span>
               {entry.isGitRepo && (
                 <span className="shrink-0 rounded border border-amber-500/40 px-1.5 py-0.5 text-[11px] text-amber-300/90">
@@ -184,7 +184,7 @@ export function FolderBrowser({
           </li>
         ))}
         {listing?.truncated && (
-          <li className="px-3 py-2 text-xs text-foreground/40">
+          <li className="px-3 py-2 text-xs text-muted">
             Showing the first 500 folders. Narrow the browsable root in Settings if this is not enough.
           </li>
         )}

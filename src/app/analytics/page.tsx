@@ -36,7 +36,7 @@ export default function AnalyticsPage() {
     return (
       <AppShell><div className="flex min-h-[70dvh] flex-col items-center justify-center gap-3 px-4 text-center text-foreground/70">
         <p className="text-red-400">Failed to load analytics: {error}</p>
-        <Link href="/" className="touch-target flex items-center text-sm text-foreground/60 underline">
+        <Link href="/" className="touch-target flex items-center text-sm text-muted underline">
           Back to Work
         </Link>
       </div></AppShell>
@@ -45,7 +45,7 @@ export default function AnalyticsPage() {
 
   if (!data) {
     return (
-      <AppShell><div className="flex min-h-[70dvh] items-center justify-center text-sm text-foreground/40" aria-label="Loading activity">
+      <AppShell><div className="flex min-h-[70dvh] items-center justify-center text-sm text-muted" aria-label="Loading activity">
         Loading analytics…
       </div></AppShell>
     );
@@ -55,8 +55,8 @@ export default function AnalyticsPage() {
     return (
       <AppShell><div className="flex min-h-[70dvh] flex-col items-center justify-center gap-4 px-4 text-center">
         <h1 className="text-lg font-semibold tracking-tight">Activity</h1>
-        <p className="text-sm text-foreground/50">No tasks yet — create one to see run metrics.</p>
-        <Link href="/" className="touch-target flex items-center text-sm text-foreground/60 underline">
+        <p className="text-sm text-muted">No tasks yet — create one to see run metrics.</p>
+        <Link href="/" className="touch-target flex items-center text-sm text-muted underline">
           Back to Work
         </Link>
       </div></AppShell>
@@ -68,7 +68,7 @@ export default function AnalyticsPage() {
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b border-foreground/10 px-4 py-4 sm:px-6">
         <div className="min-w-full sm:min-w-0 sm:grow">
-          <p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground/35">Runs and outcomes</p>
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">Runs and outcomes</p>
           <h1 tabIndex={-1} className="mt-0.5 text-2xl font-semibold tracking-tight">Activity</h1>
         </div>
         <FilterSelect id="activity-range" label="Date range" value={range} onChange={(v) => setRange(v as typeof range)}
@@ -107,7 +107,7 @@ export default function AnalyticsPage() {
           <section aria-label="Loop performance">
             <h2 className="mb-3 text-sm font-medium text-foreground/70">
               Loop performance{" "}
-              <span className="text-foreground/40">
+              <span className="text-muted">
                 (n={data.loopKpis.sampleSize} iterations)
               </span>
             </h2>
@@ -151,12 +151,12 @@ export default function AnalyticsPage() {
             {data.loopCohorts.length > 0 && (
               <div className="mt-4 rounded-lg border border-foreground/10 bg-foreground/[0.03] p-4">
                 <h3 className="mb-3 text-sm font-medium text-foreground/70">
-                  Cohorts <span className="text-foreground/40">(actual provider/model/harness, min 10 iterations)</span>
+                  Cohorts <span className="text-muted">(actual provider/model/harness, min 10 iterations)</span>
                 </h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="text-left text-xs uppercase tracking-wider text-foreground/40">
+                      <tr className="text-left text-xs uppercase tracking-wider text-muted">
                         <th className="pb-2 pr-4 font-medium">Cohort</th>
                         <th className="pb-2 pr-4 text-right font-medium">n</th>
                         <th className="pb-2 pr-4 text-right font-medium">p50</th>
@@ -187,14 +187,14 @@ export default function AnalyticsPage() {
         {/* No-runs empty state */}
         {data.totals.runs === 0 && data.totals.cards > 0 ? (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <p className="text-foreground/50 text-sm">No runs match the current filters.</p>
+            <p className="text-muted text-sm">No runs match the current filters.</p>
             <button
               onClick={() => {
                 setRange("all");
                 setProvider("");
                 setModel("");
               }}
-              className="text-foreground/60 hover:text-foreground text-sm underline cursor-pointer"
+              className="text-muted hover:text-foreground text-sm underline cursor-pointer"
             >
               Reset filters
             </button>
@@ -237,11 +237,11 @@ export default function AnalyticsPage() {
 function KpiTile({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="min-w-0 rounded-lg border border-foreground/10 bg-foreground/[0.03] p-3 sm:p-4">
-      <p className="text-xs text-foreground/50 uppercase tracking-wider">{label}</p>
+      <p className="text-xs text-muted uppercase tracking-wider">{label}</p>
       <p className="mt-1 truncate text-xl font-semibold tabular-nums text-foreground/90 sm:text-2xl">
         {value}
       </p>
-      {hint && <p className="mt-0.5 truncate text-xs text-foreground/40">{hint}</p>}
+      {hint && <p className="mt-0.5 truncate text-xs text-muted">{hint}</p>}
     </div>
   );
 }
@@ -289,7 +289,7 @@ function ChartSection({
     <div className="rounded-lg bg-foreground/[0.03] border border-foreground/10 p-4">
       <h3 className="text-sm font-medium text-foreground/70 mb-3">
         {title}
-        {hint && <span className="ml-2 font-normal text-foreground/40">{hint}</span>}
+        {hint && <span className="ml-2 font-normal text-muted">{hint}</span>}
       </h3>
       {children}
     </div>

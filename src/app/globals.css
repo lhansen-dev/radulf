@@ -7,50 +7,63 @@
   --accent-strong: #d97706;
   --on-accent: #090b0e;
   --surface: #0e1115;
+  /* Secondary text: the least share of --foreground that still reads at
+     WCAG AA (4.5:1) on this theme's background and surface (spec 10). The
+     two palettes whose own foreground is under AA use it as is. */
+  --muted: color-mix(in srgb, var(--foreground) 56%, transparent);
 }
 
 [data-theme="default-light"] {
   --background: #f7f8fa; --foreground: #1a1d23; --accent: #d97706;
   --accent-strong: #b45309; --on-accent: #fff; --surface: #fff;
+  --muted: color-mix(in srgb, var(--foreground) 64%, transparent);
 }
 
 [data-theme="solarized-dark"] {
   --background: #002b36; --foreground: #93a1a1;
   --accent: #b58900; --accent-strong: #cb4b16; --on-accent: #002b36;
   --surface: #073642;
+  --muted: color-mix(in srgb, var(--foreground) 98%, transparent);
 }
 [data-theme="solarized-light"] {
   --background: #fdf6e3; --foreground: #657b83; --accent: #b58900;
   --accent-strong: #cb4b16; --on-accent: #fdf6e3; --surface: #eee8d5;
+  --muted: color-mix(in srgb, var(--foreground) 100%, transparent);
 }
 [data-theme="tokyo-night"] {
   --background: #1a1b26; --foreground: #a9b1d6;
   --accent: #7aa2f7; --accent-strong: #bb9af7; --on-accent: #1a1b26;
   --surface: #16161e;
+  --muted: color-mix(in srgb, var(--foreground) 72%, transparent);
 }
 [data-theme="tokyo-day"] {
   --background: #e1e2e7; --foreground: #565a6e; --accent: #34548a;
   --accent-strong: #8c4351; --on-accent: #e1e2e7; --surface: #c9d1e3;
+  --muted: color-mix(in srgb, var(--foreground) 100%, transparent);
 }
 [data-theme="nord"] {
   --background: #2e3440; --foreground: #d8dee9;
   --accent: #88c0d0; --accent-strong: #5e81ac; --on-accent: #2e3440;
   --surface: #3b4252;
+  --muted: color-mix(in srgb, var(--foreground) 73%, transparent);
 }
 [data-theme="nord-light"] {
   --background: #eceff4; --foreground: #2e3440; --accent: #5e81ac;
   --accent-strong: #88c0d0; --on-accent: #eceff4; --surface: #e5e9f0;
+  --muted: color-mix(in srgb, var(--foreground) 74%, transparent);
 }
 [data-theme="gruvbox-dark"] {
   --background: #282828; --foreground: #ebdbb2;
   --accent: #fabd2f; --accent-strong: #d79921; --on-accent: #282828;
   --surface: #3c3836;
+  --muted: color-mix(in srgb, var(--foreground) 68%, transparent);
 }
 
 [data-theme="gruvbox-light"] {
   --background: #fbf1c7; --foreground: #3c3836;
   --accent: #d79921; --accent-strong: #cc241d; --on-accent: #fbf1c7;
   --surface: #ebdbb2;
+  --muted: color-mix(in srgb, var(--foreground) 79%, transparent);
 }
 
 /* Status colours (red, green, violet, slate, …) are written for dark themes: pale
@@ -136,6 +149,7 @@
   --color-accent-strong: var(--accent-strong);
   --color-on-accent: var(--on-accent);
   --color-surface: var(--surface);
+  --color-muted: var(--muted);
   --color-amber-300: var(--accent);
   --color-amber-400: var(--accent);
   --color-amber-500: var(--accent);
@@ -212,7 +226,6 @@ html:not([data-auth]) .auth-only {
 }
 
 .bottom-nav-link {
-  /* 62%: the least that keeps these labels at WCAG AA (4.5:1) on both default themes (spec 10). */
   display: flex;
   min-height: 56px;
   flex-direction: column;
@@ -220,7 +233,7 @@ html:not([data-auth]) .auth-only {
   justify-content: center;
   gap: 2px;
   border-radius: 8px;
-  color: color-mix(in srgb, var(--foreground) 62%, transparent);
+  color: var(--muted);
   font-size: 0.7rem;
 }
 
@@ -286,7 +299,7 @@ html:not([data-auth]) .auth-only {
     justify-content: center;
     gap: 1px;
     border-radius: 9px;
-    color: color-mix(in srgb, var(--foreground) 62%, transparent);
+    color: var(--muted);
     font-size: 0.68rem;
   }
 
@@ -316,7 +329,7 @@ html:not([data-auth]) .auth-only {
     justify-content: center;
     gap: 1px;
     border-radius: 9px;
-    color: color-mix(in srgb, var(--foreground) 62%, transparent);
+    color: var(--muted);
     font-size: 0.68rem;
     text-decoration: none;
   }
@@ -425,7 +438,7 @@ html:not([data-auth]) .auth-only {
   margin: 1rem 0;
   padding: 0.2rem 0 0.2rem 1rem;
   border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  color: color-mix(in srgb, var(--foreground) 62%, transparent);
+  color: var(--muted);
 }
 .doc-prose blockquote > :first-child {
   margin-top: 0;

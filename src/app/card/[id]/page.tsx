@@ -103,7 +103,7 @@ export default function CardDetail() {
   }
 
   if (!detail)
-    return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading task…"}</div></AppShell>;
+    return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-muted">{error || "Loading task…"}</div></AppShell>;
   const { card, repo, plans, runs } = detail;
   // Spec 24: a card with pieces is an epic. It never runs itself, so its
   // actions are the set's: Start all and Pause all.
@@ -262,7 +262,7 @@ export default function CardDetail() {
     <AppShell>
     <main className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 sm:p-6 lg:py-8">
       <header className="flex min-w-0 items-center gap-3">
-        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
+        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-muted hover:text-foreground">
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">{card.title}</h1>
@@ -272,7 +272,7 @@ export default function CardDetail() {
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 grow">
             <p className="text-sm text-foreground/75">{repo?.name ?? "Unknown repository"}</p>
-            <p className="mt-1 text-xs text-foreground/45">
+            <p className="mt-1 text-xs text-muted">
               {isEpic
                 ? `Epic · ${epicDone} of ${epicTasks.length} tasks done`
                 : <>{plainStatus(card.status)}{card.startedAt && ((ACTIVE_STATUSES as readonly string[]).includes(card.status) ? ` · ${timeAgo(card.startedAt)} elapsed` : ` · started ${timeAgo(card.startedAt)} ago`)}</>}
@@ -281,7 +281,7 @@ export default function CardDetail() {
         {headerActions.filter((a) => a.show).map((a) => (
           <ActionButton key={a.label} primary={a.primary} onClick={a.run}>{a.label}</ActionButton>
         ))}
-        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="More task actions" summary="•••">
+        <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-muted" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="More task actions" summary="•••">
           {menuActions.filter((m) => m.when.includes(card.status)).map((m) => (
             m.href
               ? <a key={m.label} href={m.href} download className={menuItemCls()}>{m.label}</a>
@@ -388,7 +388,7 @@ export default function CardDetail() {
             aria-selected={tab === t}
             onClick={() => chooseTab(t)}
             className={`min-h-11 whitespace-nowrap px-3 py-2 text-sm ${
-              tab === t ? "border-b-2 border-amber-500 text-foreground" : "text-foreground/50 hover:text-foreground"
+              tab === t ? "border-b-2 border-amber-500 text-foreground" : "text-muted hover:text-foreground"
             }`}
           >
             {t}
@@ -401,10 +401,10 @@ export default function CardDetail() {
         <section className="flex flex-col gap-4">
           <div className="text-sm text-foreground/70">
             <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
-            <span className="text-foreground/40">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
+            <span className="text-muted">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
           </div>
           {card.jiraKey && (
-            <p className="text-sm text-foreground/60">
+            <p className="text-sm text-muted">
               Jira: {detail.jiraUrl ? (
                 <a href={detail.jiraUrl} target="_blank" rel="noreferrer" className="text-accent underline">{card.jiraKey}</a>
               ) : (
@@ -413,9 +413,9 @@ export default function CardDetail() {
             </p>
           )}
           {detail.parent && (
-            <p className="text-sm text-foreground/60">
+            <p className="text-sm text-muted">
               Part of <Link href={`/card/${detail.parent.id}`} className="text-amber-300 hover:underline">{detail.parent.title}</Link>
-              {detail.parent.runMode && <span className="text-foreground/40"> · its tasks run {RUN_MODE_PHRASES[detail.parent.runMode]}</span>}
+              {detail.parent.runMode && <span className="text-muted"> · its tasks run {RUN_MODE_PHRASES[detail.parent.runMode]}</span>}
             </p>
           )}
           <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
@@ -434,12 +434,12 @@ export default function CardDetail() {
             autoPropose={autoBreakdown}
             onChanged={refetch}
           />
-          <div className="text-sm text-foreground/60">
+          <div className="text-sm text-muted">
             Caps: {card.maxIterations ?? "default"} iterations · {card.timeoutMinutes ?? "default"}{" "}
             minutes
           </div>
           {detail.models && (
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-foreground/60">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted">
               {MODEL_ROLES.map(([role, label]) => {
                 const m = detail.models![role];
                 if (!m) return null;
@@ -486,7 +486,7 @@ export default function CardDetail() {
               </>
             ) : (
               card.status !== "planning" && (
-                <p className="text-foreground/50 text-sm">No plan yet — start the task to run planning.</p>
+                <p className="text-muted text-sm">No plan yet — start the task to run planning.</p>
               )
             )}
           </div>
@@ -507,7 +507,7 @@ export default function CardDetail() {
           <button
             type="button"
             onClick={() => setTranscript(null)}
-            className="touch-target flex items-center self-start text-sm text-foreground/60 hover:text-foreground"
+            className="touch-target flex items-center self-start text-sm text-muted hover:text-foreground"
           >
             ← Back to runs
           </button>
@@ -525,7 +525,7 @@ export default function CardDetail() {
               onOpenTranscript={setTranscript}
             />
           ) : (
-            <p className="text-sm text-foreground/50">No runs yet — start the task to run planning.</p>
+            <p className="text-sm text-muted">No runs yet — start the task to run planning.</p>
           )}
           <div>
             <h2 className="text-sm font-medium mb-1">Events</h2>
@@ -539,7 +539,7 @@ export default function CardDetail() {
                     data-testid="critique-decided"
                     className={`my-1 rounded border p-2 text-xs ${approved ? "border-green-800/50 bg-green-950/30" : "border-amber-800/50 bg-amber-950/40"}`}
                   >
-                    <span className="font-mono text-foreground/50">{e.createdAt.slice(11, 19)} </span>
+                    <span className="font-mono text-muted">{e.createdAt.slice(11, 19)} </span>
                     <span className={`font-medium ${approved ? "text-green-300" : "text-amber-300"}`}>
                       ⚖ Plan critic: {critique.verdict}
                     </span>
@@ -558,7 +558,7 @@ export default function CardDetail() {
                       data-testid="integrity-warning"
                       className="my-1 rounded border border-amber-800/50 bg-amber-950/40 p-2 text-xs"
                     >
-                      <span className="font-mono text-foreground/50">{e.createdAt.slice(11, 19)} </span>
+                      <span className="font-mono text-muted">{e.createdAt.slice(11, 19)} </span>
                       <span className="font-medium text-amber-300">⚠ Remote-tracking refs changed during the run</span>
                       <ul className="mt-1 font-mono text-foreground/70">
                         {refs.map((ref) => (
@@ -570,7 +570,7 @@ export default function CardDetail() {
                 }
               }
               return (
-                <div key={e.id} className="text-xs text-foreground/50 font-mono">
+                <div key={e.id} className="text-xs text-muted font-mono">
                   {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
                 </div>
               );
@@ -708,7 +708,7 @@ function WorkflowFlag({ on, label, warnWhenOn }: { on: boolean | undefined; labe
     ? warnWhenOn
       ? "border-amber-600/50 bg-amber-950/30 text-amber-300"
       : "border-foreground/15 bg-foreground/[0.06] text-foreground/75"
-    : "border-foreground/10 text-foreground/40";
+    : "border-foreground/10 text-muted";
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${tone}`}>
       <span aria-hidden>{on ? "●" : on === undefined ? "◌" : "○"}</span>
@@ -957,11 +957,11 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
     },
   );
 
-  if (!target) return <p className="text-foreground/50 text-sm">No runs yet.</p>;
+  if (!target) return <p className="text-muted text-sm">No runs yet.</p>;
 
   return (
     <section className="flex min-w-0 flex-col gap-1 font-mono text-xs">
-      <div className="mb-1 flex min-h-11 items-center gap-2 text-foreground/40">
+      <div className="mb-1 flex min-h-11 items-center gap-2 text-muted">
       <p>
         {formatProviderModel(target.provider, target.model, target.reasoningLevel)} · run {target.runId} ·{" "}
         {target.iteration ? `iteration ${target.iteration}` : "planning"}
@@ -982,7 +982,7 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
             placeholder="Filter lines…"
             className="min-h-11 min-w-0 grow rounded-lg border border-foreground/10 bg-foreground/[0.05] px-3 font-sans text-sm sm:max-w-xs"
           />
-          <span aria-live="polite" className="tabular-nums text-foreground/45">
+          <span aria-live="polite" className="tabular-nums text-muted">
             {filter.trim() ? `${visibleLines.length} of ${lines.length} lines` : `${lines.length} lines`}
           </span>
           <button
@@ -1007,11 +1007,11 @@ function TranscriptView({ target }: { target: TranscriptTarget | null }) {
         </div>
       )}
 
-      {historyTruncated && <p className="text-foreground/40">Showing the latest transcript chunk.</p>}
+      {historyTruncated && <p className="text-muted">Showing the latest transcript chunk.</p>}
       {lines.length === 0 ? (
-        <p className="text-foreground/40">No transcript output yet…</p>
+        <p className="text-muted">No transcript output yet…</p>
       ) : visibleLines.length === 0 ? (
-        <p className="font-sans text-sm text-foreground/40">No lines match “{filter.trim()}”.</p>
+        <p className="font-sans text-sm text-muted">No lines match “{filter.trim()}”.</p>
       ) : (
         <List
           listRef={listRef}
@@ -1068,12 +1068,12 @@ function TranscriptLine({ line }: { line: StreamLine }) {
   if (line.t === "reasoning") {
     const content = String(line.content ?? "");
     return (
-      <details className="my-0.5 text-foreground/50">
+      <details className="my-0.5 text-muted">
         <summary className="cursor-pointer hover:text-foreground/80">
           ✻ reasoning
-          {content && <span className="text-foreground/40 ml-2">{previewLine(content)}</span>}
+          {content && <span className="text-muted ml-2">{previewLine(content)}</span>}
         </summary>
-        <div className="whitespace-pre-wrap pl-4 pt-1 font-sans text-sm text-foreground/45 italic">
+        <div className="whitespace-pre-wrap pl-4 pt-1 font-sans text-sm text-muted italic">
           {content || "(redacted by the provider)"}
         </div>
       </details>
@@ -1082,14 +1082,14 @@ function TranscriptLine({ line }: { line: StreamLine }) {
   if (line.t === "tool") {
     const desc = describeToolCall(String(line.name ?? ""), line.input);
     return (
-      <details className="text-foreground/50">
+      <details className="text-muted">
         <summary className="cursor-pointer hover:text-foreground/80">
           ⚒ {String(line.name ?? "")}
           {desc && (
-            <span className="text-foreground/40 font-mono ml-2">{desc}</span>
+            <span className="text-muted font-mono ml-2">{desc}</span>
           )}
         </summary>
-        <pre className="whitespace-pre-wrap pl-4 text-foreground/40 overflow-x-auto">
+        <pre className="whitespace-pre-wrap pl-4 text-muted overflow-x-auto">
           {JSON.stringify(line.input, null, 2)?.slice(0, 2000)}
         </pre>
       </details>
@@ -1174,7 +1174,7 @@ function EditCardModal({
       closeLabel="Close edit task"
       onRequestClose={onClose}
       footer={<>
-        <button type="button" onClick={onClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+        <button type="button" onClick={onClose} className="rounded-lg px-4 text-sm text-muted">Cancel</button>
         <button type="button" onClick={save} disabled={busy || !title.trim()} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">Save</button>
       </>}
     >

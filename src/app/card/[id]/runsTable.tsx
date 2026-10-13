@@ -38,7 +38,7 @@ function runDurationMs(run: Run, nowMs: number): number | null {
 const TASK_STATE_CLASS: Record<IterationTask["state"], string> = {
   done: "bg-green-900/60 text-green-300",
   working: "bg-amber-900/60 text-amber-300",
-  "not done": "bg-foreground/10 text-foreground/60",
+  "not done": "bg-foreground/10 text-muted",
 };
 
 /** The verdict an evaluator row labels itself with, so approve vs revise reads
@@ -137,7 +137,7 @@ export function RunsTable({
           Every run of this task with its tokens and cost
         </caption>
         <thead>
-          <tr className="border-b border-foreground/10 text-left text-xs uppercase tracking-wider text-foreground/40">
+          <tr className="border-b border-foreground/10 text-left text-xs uppercase tracking-wider text-muted">
             {["Run", "Status", "Model", "Iters", "Duration", "Prompt", "Completion", "Cost", "Started"].map((label, i) => (
               <th key={label} scope="col" className={`py-2 font-medium ${i < 8 ? "pr-3" : ""} ${i >= 3 ? "text-right" : ""}`}>{label}</th>
             ))}
@@ -164,7 +164,7 @@ export function RunsTable({
                     title={run.exitReason ?? undefined}
                     className="flex min-h-0! items-start gap-1.5 whitespace-nowrap py-2 text-left text-foreground/85 hover:text-foreground"
                   >
-                    <span aria-hidden className="mt-px w-3 shrink-0 text-foreground/40">
+                    <span aria-hidden className="mt-px w-3 shrink-0 text-muted">
                       {isOpen ? "▾" : "▸"}
                     </span>
                     <span className="font-medium">{KIND_LABEL[run.kind]}</span>
@@ -192,7 +192,7 @@ export function RunsTable({
                     </span>
                   )}
                 </td>
-                <td className="py-2 pr-3 font-mono text-xs text-foreground/50">
+                <td className="py-2 pr-3 font-mono text-xs text-muted">
                   {formatProviderModel(run.provider, run.model, reasoningLevelForKind(run.kind, models))}
                 </td>
                 <td className="py-2 pr-3 text-right tabular-nums text-foreground/70">
@@ -210,7 +210,7 @@ export function RunsTable({
                 <td className="py-2 pr-3 text-right font-mono text-xs text-foreground/70">
                   {formatCostUsd(totals.costUsd)}
                 </td>
-                <td className="py-2 text-right text-xs text-foreground/40">
+                <td className="py-2 text-right text-xs text-muted">
                   {timeAgo(run.startedAt)} ago
                 </td>
               </tr>,
@@ -279,7 +279,7 @@ function IterationRow({
 }) {
   const task = iterationTask(it);
   return (
-    <tr className="border-b border-foreground/5 text-xs text-foreground/60">
+    <tr className="border-b border-foreground/5 text-xs text-muted">
       {/* max-w-0 keeps the text out of the column widths: it truncates in
           whatever room the run rows leave rather than widening the table. */}
       <td colSpan={3} className="max-w-0 pl-[1.125rem] pr-3">
@@ -294,7 +294,7 @@ function IterationRow({
             <>
               <span className="shrink-0 font-medium text-foreground/80">{task.label}</span>
               <span className={`shrink-0 rounded px-1 ${TASK_STATE_CLASS[task.state]}`}>{task.state}</span>
-              <span className="shrink-0 text-foreground/40">
+              <span className="shrink-0 text-muted">
                 {task.left === 0 ? "none left" : `${task.left} left`}
               </span>
             </>
@@ -311,7 +311,7 @@ function IterationRow({
       <td className="py-1 pr-3 text-right font-mono">{formatTokens(it.promptTokens)}</td>
       <td className="py-1 pr-3 text-right font-mono">{formatTokens(it.completionTokens)}</td>
       <td className="py-1 pr-3 text-right font-mono">{formatCostUsd(it.costUsd)}</td>
-      <td className="py-1 text-right text-foreground/40">{timeAgo(it.startedAt)} ago</td>
+      <td className="py-1 text-right text-muted">{timeAgo(it.startedAt)} ago</td>
     </tr>
   );
 }
@@ -320,7 +320,7 @@ function IterationRow({
 function ExitReason({ run }: { run: Run }) {
   if (!run.exitReason) return null;
   return (
-    <p className="text-xs text-foreground/50">
+    <p className="text-xs text-muted">
       <span className="font-medium text-foreground/70">Exit reason</span>
       <span className="ml-2">{run.exitReason}</span>
     </p>
@@ -347,7 +347,7 @@ function RunDetail({
     return (
       <div className="flex flex-col gap-2">
         {run.iterations.length === 0 && (
-          <p className="text-xs text-foreground/50">No iterations recorded for this run.</p>
+          <p className="text-xs text-muted">No iterations recorded for this run.</p>
         )}
         <ExitReason run={run} />
         <ReviewBlock run={run} />
@@ -365,14 +365,14 @@ function RunDetail({
           <div>
             <p className="text-xs font-medium text-foreground/70">
               Plan v{plan.version}
-              <span className="ml-2 font-normal text-foreground/40">acceptance criteria</span>
+              <span className="ml-2 font-normal text-muted">acceptance criteria</span>
             </p>
             <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-foreground/[0.04] p-2 font-mono text-xs">
               {plan.acceptanceCriteria.trim() || plan.planMd.trim()}
             </pre>
           </div>
         ) : (
-          <p className="text-xs text-foreground/50">
+          <p className="text-xs text-muted">
             This run wrote no plan — the transcript has why.
           </p>
         )}
@@ -435,7 +435,7 @@ function ReviewBlock({ run }: { run: Run }) {
           {review.decision}
         </span>
         {review.mergeCommit && (
-          <span className="ml-2 font-mono font-normal text-foreground/40">
+          <span className="ml-2 font-mono font-normal text-muted">
             merged {review.mergeCommit.slice(0, 7)}
           </span>
         )}

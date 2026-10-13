@@ -151,7 +151,7 @@ export function ScopingPanel({
     <section aria-labelledby="scoping-title" className="flex flex-col gap-3 rounded-lg border border-foreground/10 p-3">
       <div>
         <h2 id="scoping-title" className="text-sm font-medium">Scoping</h2>
-        <p className="mt-0.5 text-xs text-foreground/50">
+        <p className="mt-0.5 text-xs text-muted">
           Talk the task through with an assistant that reads this repository. The planner sees the whole thread
           {open ? ", and the assistant can write the scoped task for you." : "."}
         </p>
@@ -171,7 +171,7 @@ export function ScopingPanel({
               }`}
             >
               {m.role !== "user" && (
-                <p className={`mb-1 text-[11px] font-medium uppercase tracking-wide ${m.role === "assistant" ? "text-foreground/45" : "text-amber-300"}`}>
+                <p className={`mb-1 text-[11px] font-medium uppercase tracking-wide ${m.role === "assistant" ? "text-muted" : "text-amber-300"}`}>
                   {m.role === "planner" ? "Planner asked" : m.role === "loop" ? "Loop blocked" : "Scoping assistant"}
                 </p>
               )}
@@ -244,7 +244,7 @@ export function ScopingPanel({
             <textarea value={proposal.description} onChange={(e) => setProposal({ ...proposal, description: e.target.value })} rows={14} className={`mt-1 font-mono ${fieldCls}`} />
           </label>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setProposal(null)} disabled={running} className={`${buttonCls} text-foreground/60`}>Discard</button>
+            <button type="button" onClick={() => setProposal(null)} disabled={running} className={`${buttonCls} text-muted`}>Discard</button>
             <button type="button" onClick={apply} disabled={running || !proposal.title.trim()} className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}>
               {busy === "apply" ? "Saving…" : "Apply to task"}
             </button>

@@ -38,7 +38,7 @@ export default async function DocPage({
           <div className="sticky top-6">
             <Link
               href="/docs"
-              className="mb-4 inline-flex items-center gap-1 text-xs font-medium uppercase tracking-[0.14em] text-foreground/40 hover:text-accent"
+              className="mb-4 inline-flex items-center gap-1 text-xs font-medium uppercase tracking-[0.14em] text-muted hover:text-accent"
             >
               <span aria-hidden="true">←</span> All docs
             </Link>
@@ -49,11 +49,11 @@ export default async function DocPage({
         <article className="min-w-0 flex-1">
           <Link
             href="/docs"
-            className="mb-4 inline-flex items-center gap-1 text-xs font-medium uppercase tracking-[0.14em] text-foreground/40 hover:text-accent lg:hidden"
+            className="mb-4 inline-flex items-center gap-1 text-xs font-medium uppercase tracking-[0.14em] text-muted hover:text-accent lg:hidden"
           >
             <span aria-hidden="true">←</span> All docs
           </Link>
-          <p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground/35">
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">
             {doc.meta.group}
           </p>
           <MarkdownDoc content={doc.content} sourcePath={doc.meta.sourcePath} />
@@ -63,7 +63,7 @@ export default async function DocPage({
               href={`https://github.com/lhansen-dev/radulf/blob/main/${doc.meta.sourcePath}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-foreground/40 hover:text-accent"
+              className="text-xs text-muted hover:text-accent"
             >
               Edit this page on GitHub → {doc.meta.sourcePath}
             </a>

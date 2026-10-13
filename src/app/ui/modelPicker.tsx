@@ -124,7 +124,7 @@ export function ModelField({
           Load models
         </button>
       </div>
-      <p id={`${id}-hint`} className="mt-2 text-xs leading-relaxed text-foreground/45">{MODEL_HINTS[provider] ?? "Enter a model id."}</p>
+      <p id={`${id}-hint`} className="mt-2 text-xs leading-relaxed text-muted">{MODEL_HINTS[provider] ?? "Enter a model id."}</p>
     </>
   );
 }
@@ -146,10 +146,10 @@ export function ModelBrowser({
   return (
     <>
       {selectedModel && priceLabel(selectedModel) && (
-        <p className="text-xs text-foreground/40">{priceLabel(selectedModel)}</p>
+        <p className="text-xs text-muted">{priceLabel(selectedModel)}</p>
       )}
       {status && !status.startsWith("✓") && (
-        <p role="status" className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-foreground/40"}`}>
+        <p role="status" className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-muted"}`}>
           {status}
         </p>
       )}
@@ -160,7 +160,7 @@ export function ModelBrowser({
         titleFor={(m) => priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
         wrap={(chips) => (
           <details className="group border-t border-foreground/10 pt-3">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-muted hover:text-foreground">
               Browse {models.length} available model{models.length === 1 ? "" : "s"}
               <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
             </summary>

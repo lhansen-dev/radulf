@@ -22,7 +22,7 @@ export function plannerModelTag(
 export function PlanModelBadge({ tag }: { tag: string | null }) {
   if (!tag) return null;
   return (
-    <p className="text-xs text-foreground/50">
+    <p className="text-xs text-muted">
       Planned by: <span className="text-foreground/80 font-medium">{tag}</span>
     </p>
   );

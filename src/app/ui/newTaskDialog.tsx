@@ -201,8 +201,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       closeLabel="Close new task"
       onRequestClose={requestClose}
       footer={<>
-        <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
-        <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+        <span className="mr-auto self-center text-xs text-muted">New tasks go to Backlog</span>
+        <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-muted">Cancel</button>
         {includedChildren.length === 0 && <>
           <button type="button" onClick={() => create("breakdown")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and break down</button>
           <button type="button" onClick={() => create("scope")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and scope</button>
@@ -212,7 +212,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         </button>
       </>}
     >
-          {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} /></div> : <>
+          {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-muted">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} /></div> : <>
             <div className="flex items-end gap-2">
               <label className="block grow text-sm text-foreground/70">Import from Jira<input value={jiraRef} onChange={(e) => setJiraRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void importFromJira(); } }} placeholder="Issue link or key, e.g. DEV-123 (optional)" className={dialogInputCls} /></label>
               <button type="button" onClick={() => void importFromJira()} disabled={importing || !jiraRef.trim()} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">{importing ? "Importing…" : "Import"}</button>
@@ -220,7 +220,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
             {jiraChildren.length > 0 && (
               <fieldset className="rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3">
                 <legend className="px-1 text-sm font-medium text-cyan-300">{jiraChildren.length} child issue{jiraChildren.length === 1 ? "" : "s"} in Jira</legend>
-                <p className="text-xs text-foreground/55">Ticked issues become tasks under this one, queued in this order, and this task becomes an epic that is done when they are.</p>
+                <p className="text-xs text-muted">Ticked issues become tasks under this one, queued in this order, and this task becomes an epic that is done when they are.</p>
                 <ul className="mt-1">
                   {jiraChildren.map((child, i) => (
                     <li key={child.key}>
@@ -242,7 +242,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
               </fieldset>
             )}
             <label className="block text-sm text-foreground/70">Import an exported file<input type="file" accept="application/json,.json" disabled={importing || !repoId} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importFromFile(file); }} className={`${dialogInputCls} py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-foreground/10 file:px-2 file:py-1 file:text-sm file:text-foreground/80`} /></label>
-            <p className="-mt-1 text-xs text-foreground/45">A card exported from this or another Radulf, with its scoping thread. Its cards go straight to Backlog for the repository selected below.</p>
+            <p className="-mt-1 text-xs text-muted">A card exported from this or another Radulf, with its scoping thread. Its cards go straight to Backlog for the repository selected below.</p>
             <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={dialogInputCls} required /></label>
             <RepoSelect repos={repoList} value={repoId} onChange={(value) => { if (value === "__add__") { setAddingRepo(true); return; } setRepoId(value); setBranches([]); setSelectedBranch(""); setShowNewBranch(false); setNewBranchName(""); }}><option value="__add__">Add a repository…</option></RepoSelect>
             {addingRepo && <FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} />}
@@ -256,9 +256,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                 <RunLimitInputs maxIterations={maxIterations} setMaxIterations={setMaxIterations} timeoutMinutes={timeoutMinutes} setTimeoutMinutes={setTimeoutMinutes} />
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={reviewPlanBeforeImplementation} onChange={(e) => setReviewPlanBeforeImplementation(e.target.checked)} className="size-4 accent-amber-600" />Review plan before implementation</label>
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={grillMe} onChange={(e) => setGrillMe(e.target.checked)} className="size-4 accent-amber-600" />Grill me while scoping</label>
-                {grillMe && <p className="text-xs text-foreground/55">The scoping session maps the card as a design tree and asks every question whose prerequisites are already settled in one numbered round, each with a recommendation, until nothing is left assumed. A longer conversation than the default few questions a turn, and worth it on a vague ask.</p>}
+                {grillMe && <p className="text-xs text-muted">The scoping session maps the card as a design tree and asks every question whose prerequisites are already settled in one numbered round, each with a recommendation, until nothing is left assumed. A longer conversation than the default few questions a turn, and worth it on a vague ask.</p>}
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={scopingAuthorsPlan} onChange={(e) => setScopingAuthorsPlan(e.target.checked)} className="size-4 accent-amber-600" />Let scoping write the plan</label>
-                {scopingAuthorsPlan && <p className="text-xs text-foreground/55">The scoping session can write PLAN.md, PROMPT.md and CRITERIA.md itself and the planning stage is skipped. Worth it when the planner is the weakest model in the pipeline. Tick <em>Review plan before implementation</em> too if you want to read the result first.</p>}
+                {scopingAuthorsPlan && <p className="text-xs text-muted">The scoping session can write PLAN.md, PROMPT.md and CRITERIA.md itself and the planning stage is skipped. Worth it when the planner is the weakest model in the pipeline. Tick <em>Review plan before implementation</em> too if you want to read the result first.</p>}
                 <label className="flex items-center gap-2 text-sm text-foreground/70">
                   Plan critic
                   <select
@@ -274,8 +274,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
                 {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run. This card keeps this setting even when the workspace-wide toggle is off.</p>}
                 <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={openPr} disabled={!prDeliverable} onChange={(e) => setOpenPr(e.target.checked)} className="size-4 accent-amber-600 disabled:opacity-40" />Open a pull request instead of merging</label>
-                {prBlockedReason && <p className="text-xs text-foreground/45">{prBlockedReason}</p>}
-                {openPr && <p className="text-xs text-foreground/55">On approval the branch is pushed to <code>origin</code> and a pull request is opened against the base branch. Nothing is merged locally, and Radulf never merges the pull request.</p>}
+                {prBlockedReason && <p className="text-xs text-muted">{prBlockedReason}</p>}
+                {openPr && <p className="text-xs text-muted">On approval the branch is pushed to <code>origin</code> and a pull request is opened against the base branch. Nothing is merged locally, and Radulf never merges the pull request.</p>}
               </div>
             </details>
           </>}

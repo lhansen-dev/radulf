@@ -48,7 +48,7 @@ export function SettingsNav({ active }: { active: SettingsSection }) {
     <nav aria-label="Settings sections" className="flex gap-1 overflow-x-auto pb-2 lg:sticky lg:top-32 lg:flex-col lg:gap-6 lg:overflow-visible lg:pb-0">
       {["Workspace", "Agents", "System"].map((group) => (
         <div key={group} className="flex shrink-0 gap-1 lg:block">
-          <p className="mb-2 hidden px-3 text-[11px] font-medium uppercase tracking-[0.14em] text-foreground/40 lg:block">{group}</p>
+          <p className="mb-2 hidden px-3 text-[11px] font-medium uppercase tracking-[0.14em] text-muted lg:block">{group}</p>
           <div className="flex gap-1 lg:flex-col">
             {SETTINGS_SECTIONS.filter((section) => section.group === group).map((section) => (
               <a
@@ -66,7 +66,7 @@ export function SettingsNav({ active }: { active: SettingsSection }) {
                 }}
                 className={`touch-target flex items-center gap-3 whitespace-nowrap rounded-lg px-3 py-2.5 text-sm transition-colors ${active === section.id
                     ? "bg-accent/10 font-medium text-accent"
-                    : "text-foreground/60 hover:bg-foreground/5 hover:text-foreground"
+                    : "text-muted hover:bg-foreground/5 hover:text-foreground"
                   }`}
               >
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="size-[18px] shrink-0">
@@ -105,7 +105,7 @@ export function ToggleRow({ title, description, checked, onChange }: {
     <label className="flex cursor-pointer items-center justify-between gap-6 py-1">
       <span className="min-w-0">
         <span className="block text-sm font-medium">{title}</span>
-        {description && <span className="mt-1 block text-xs leading-relaxed text-foreground/55">{description}</span>}
+        {description && <span className="mt-1 block text-xs leading-relaxed text-muted">{description}</span>}
       </span>
       <span className="relative shrink-0">
         <input type="checkbox" aria-label={title} checked={checked} onChange={(event) => onChange(event.target.checked)} className="peer sr-only" />
