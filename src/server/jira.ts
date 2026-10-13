@@ -105,6 +105,17 @@ async function jiraGet(s: JiraSettings, root: string, path: string): Promise<Res
   }
 }
 
+/** A 2xx body as JSON. A sign-in or proxy page at a wrong base URL answers 200
+ * with HTML; a raw SyntaxError there would reach the API as "invalid JSON body",
+ * blaming the operator's request instead of the Jira URL. */
+async function jiraJson(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    throw new ClientError("Jira answered with something that is not JSON: check the Jira base URL in Settings");
+  }
+}
+
 export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<JiraIssue> {
   if (!jiraConfigured(s)) {
     throw new ClientError("Jira is not configured: add the base URL, account email and API token in Settings");
@@ -128,7 +139,7 @@ export async function fetchJiraIssue(ref: string, s: JiraSettings): Promise<Jira
     throw new ClientError(`${key} was not found in Jira, or this account cannot see it`);
   }
   if (!res.ok) throw new ClientError(`Jira responded ${res.status} for ${key}`);
-  const body = (await res.json()) as { key?: string; fields?: { summary?: unknown; description?: unknown } };
+  const body = (await jiraJson(res)) as { key?: string; fields?: { summary?: unknown; description?: unknown } };
   const resolvedKey = typeof body.key === "string" && body.key ? body.key : key;
   const summary = typeof body.fields?.summary === "string" ? body.fields.summary.trim() : "";
   return {
@@ -156,7 +167,7 @@ export async function fetchJiraChildren(key: string, s: JiraSettings): Promise<J
   const jql = encodeURIComponent(`parent = ${key} ORDER BY rank ASC`);
   const res = await jiraGet(s, root, `rest/api/2/search/jql?jql=${jql}&fields=summary,description&maxResults=100`);
   if (!res.ok) throw new ClientError(`Jira responded ${res.status} listing the child issues of ${key}`);
-  const body = (await res.json()) as {
+  const body = (await jiraJson(res)) as {
     issues?: { key?: string; fields?: { summary?: unknown; description?: unknown } }[];
   };
   return (body.issues ?? [])
