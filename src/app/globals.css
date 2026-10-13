@@ -119,7 +119,10 @@ a.touch-target {
   bottom: 0;
   left: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* One row however many destinations there are; a fixed column count wrapped
+     five links onto two rows and put the new-task button over Benchmarks. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   min-height: 64px;
   padding: 4px 8px env(safe-area-inset-bottom);
   border-top: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
