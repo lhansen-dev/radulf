@@ -136,7 +136,7 @@ it's a bug.
 
 Every card gets its own git worktree under `./worktrees` (gitignored, a
 sibling of `data/`) and its own branch, `ralph/<slug>-<runId>`
-(`src/server/git.ts:76-100`, `createWorktree`). Never assume you share a
+(`createWorktree` in `src/server/git.ts`). Never assume you share a
 working tree with another run — plan/loop/evaluate runs for the *same* card
 reuse one worktree across the cycle, but different cards never share one.
 
