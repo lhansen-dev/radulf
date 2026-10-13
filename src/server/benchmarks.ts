@@ -124,10 +124,15 @@ export function listReports(dir = REPORTS_DIR): BenchmarkReport[] {
     .sort((a, b) => (b.timestamp ?? b.file).localeCompare(a.timestamp ?? a.file));
 }
 
-export function listActiveBenchmarks(dir = REPORTS_DIR): ActiveBenchmark[] {
+/** A live runner logs every poll (5s), so a log this quiet belongs to a run
+ * that died before writing its report, not one still going. */
+const ACTIVE_LOG_QUIET_MS = 10 * 60_000;
+
+export function listActiveBenchmarks(dir = REPORTS_DIR, now = Date.now()): ActiveBenchmark[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".log") && !existsSync(path.join(dir, f.replace(/\.log$/, ".json"))))
+    .filter((f) => now - statSync(path.join(dir, f)).mtimeMs < ACTIVE_LOG_QUIET_MS)
     .map((f) => {
       const full = path.join(dir, f);
       const lines = readFileSync(full, "utf8").trimEnd().split("\n");

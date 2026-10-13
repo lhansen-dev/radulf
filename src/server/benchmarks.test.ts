@@ -1,5 +1,8 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { launchBenchmark, listFixtures, summarizeReport } from "./benchmarks";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { launchBenchmark, listActiveBenchmarks, listFixtures, summarizeReport } from "./benchmarks";
 
 const { spawn } = vi.hoisted(() => ({ spawn: vi.fn(() => ({ unref: vi.fn() })) }));
 vi.mock("node:child_process", () => ({ spawn }));
@@ -114,6 +117,24 @@ describe("summarizeReport", () => {
     expect(summary.fixture).toBe("snake-tui");
     expect(summary.error).toBe("git checkout -q main exited 1");
     expect(summary.criteriaPassRate).toBeNull();
+  });
+});
+
+describe("listActiveBenchmarks", () => {
+  it("counts a log with no report as running only while it is still being written", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-bench-reports-"));
+    try {
+      fs.writeFileSync(path.join(dir, "live.log"), "  Polling... card status: looping\n");
+      fs.writeFileSync(path.join(dir, "dead.log"), "  Polling... card status: planning\n");
+      const longAgo = new Date(Date.now() - 60 * 60_000);
+      fs.utimesSync(path.join(dir, "dead.log"), longAgo, longAgo);
+      fs.writeFileSync(path.join(dir, "done.log"), "Report written\n");
+      fs.writeFileSync(path.join(dir, "done.json"), "{}");
+
+      expect(listActiveBenchmarks(dir).map((a) => a.logFile)).toEqual(["live.log"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
