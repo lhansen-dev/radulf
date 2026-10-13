@@ -43,7 +43,9 @@ export async function cloneRepository(
   const name = requestedName || nameFromUrl(url);
   assertRepoName(name);
   const target = path.join(CLONES_DIR, name);
-  if (fs.existsSync(target)) throw new ClientError(`${target} already exists`);
+  if (fs.existsSync(target)) {
+    throw new ClientError(`${target} already exists — give the clone a different repository name`);
+  }
   try {
     privateDir(CLONES_DIR);
   } catch (cause) {

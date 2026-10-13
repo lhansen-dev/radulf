@@ -1007,7 +1007,10 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
 
   async function cloneRepo(url: string) {
     setError("");
-    await api("/api/repos/clone", { json: { url } });
+    // The name field doubles as the clone's directory name, which is the way
+    // out when the name taken from the URL is already in use.
+    await api("/api/repos/clone", { json: { url, ...(name.trim() ? { name: name.trim() } : {}) } });
+    setName("");
     setBrowsing(false);
     onChange();
   }
