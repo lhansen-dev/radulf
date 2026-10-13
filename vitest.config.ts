@@ -8,6 +8,10 @@ export default defineConfig({
     },
   },
   test: {
+    // Node 25+ ships a global `localStorage` that, without --localstorage-file,
+    // is undefined and shadows jsdom's — every component test touching storage
+    // then fails on a current Node while CI's pinned Node 22 stays green.
+    execArgv: ["--no-experimental-webstorage"],
     exclude: [
       ...configDefaults.exclude,
       // Benchmark seed suites are node:test files run inside benchmark repos.
