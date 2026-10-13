@@ -32,6 +32,9 @@ describe("browsableRoot", () => {
   it("falls back to the home directory when unset", () => {
     expect(browsableRoot("")).toBe(fs.realpathSync(os.homedir()));
     expect(browsableRoot("   ")).toBe(fs.realpathSync(os.homedir()));
+    // The setting accepts a home-relative path; it is not relative to the cwd.
+    expect(browsableRoot("~")).toBe(fs.realpathSync(os.homedir()));
+    expect(browsableRoot("~/no-such-dir")).toBe(path.join(fs.realpathSync(os.homedir()), "no-such-dir"));
   });
 
   it("resolves a configured root through symlinks", () => {
