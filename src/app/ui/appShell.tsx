@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { OpenTasksStrip } from "./openTasksStrip";
 
 const destinations = [
@@ -17,6 +17,36 @@ const destinations = [
   { href: "/docs", label: "Docs", icon: "▦" },
 ];
 
+/** The path the previous page was on, across AppShell instances: each page
+ * mounts its own shell, so component state cannot tell a navigation from a
+ * first load. Null until the first page has rendered. */
+let lastPathname: string | null = null;
+
+/** Spec 10: after navigating, focus moves to the new page's heading, so a
+ * screen reader announces where you landed instead of starting from the top.
+ * A first load keeps the browser's own focus. Pages that load their data
+ * first render the heading a moment later, so this waits for it. */
+function useFocusHeadingOnNavigation(pathname: string) {
+  useEffect(() => {
+    const navigated = lastPathname !== null && lastPathname !== pathname;
+    lastPathname = pathname;
+    if (!navigated) return;
+    let frame = 0;
+    let tries = 0;
+    const focusHeading = () => {
+      const heading = document.querySelector<HTMLElement>("main h1") ?? document.querySelector<HTMLElement>("h1");
+      if (heading) {
+        if (!heading.hasAttribute("tabindex")) heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      } else if (++tries < 120) {
+        frame = requestAnimationFrame(focusHeading);
+      }
+    };
+    frame = requestAnimationFrame(focusHeading);
+    return () => cancelAnimationFrame(frame);
+  }, [pathname]);
+}
+
 export function AppShell({
   children,
   onNewTask,
@@ -25,6 +55,7 @@ export function AppShell({
   onNewTask?: () => void;
 }) {
   const pathname = usePathname();
+  useFocusHeadingOnNavigation(pathname);
 
   return (
     <div className="app-shell min-h-dvh">
