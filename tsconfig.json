@@ -34,7 +34,7 @@
     "src/**/*.tsx",
     "drizzle.config.ts",
     "next.config.ts",
-    "vitest.config.ts",
+    "vitest.config.mts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
