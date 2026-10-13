@@ -163,14 +163,17 @@ export function DialogShell({ titleId, title, closeLabel, onRequestClose, footer
   const dialogRef = useRef<HTMLDivElement>(null);
   const requestCloseRef = useRef(onRequestClose);
   useEffect(() => { requestCloseRef.current = onRequestClose; });
+  // Read during render: a child's autoFocus moves focus into the dialog at
+  // commit, before any effect here runs, and the invoker would be lost.
+  const [invoker] = useState(() => (typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null)));
 
   useEffect(() => {
-    const invoker = document.activeElement as HTMLElement | null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const dialog = dialogRef.current;
     const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary') ?? []);
-    focusable()[0]?.focus();
+    // Leave a child's autoFocus (the field to fill in) where it put focus.
+    if (!dialog?.contains(document.activeElement)) focusable()[0]?.focus();
     const keydown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); requestCloseRef.current(); }
       if (event.key === "Tab") {
@@ -184,7 +187,7 @@ export function DialogShell({ titleId, title, closeLabel, onRequestClose, footer
     };
     document.addEventListener("keydown", keydown);
     return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", keydown); invoker?.focus(); };
-  }, []);
+  }, [invoker]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4" onMouseDown={(event) => event.target === event.currentTarget && onRequestClose()}>
