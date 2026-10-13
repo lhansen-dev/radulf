@@ -53,7 +53,7 @@
   --surface: #ebdbb2;
 }
 
-/* Status colours (red, green, violet, …) are written for dark themes: pale
+/* Status colours (red, green, violet, slate, …) are written for dark themes: pale
    100–400 text over dark 800–950 tints. On a light theme that turns into
    pale on pale, so the light themes mirror the text shades and the tints
    of each family's scale (100↔900, 200↔800, 400→600, …). 500–700 stay
@@ -119,6 +119,14 @@
   --color-amber-800: oklch(92.4% 0.12 95.746);
   --color-amber-900: oklch(96.2% 0.059 95.617);
   --color-amber-950: oklch(98.7% 0.022 95.277);
+  --color-slate-50: oklch(12.9% 0.042 264.695);
+  --color-slate-100: oklch(20.8% 0.042 265.755);
+  --color-slate-200: oklch(27.9% 0.041 260.031);
+  --color-slate-300: oklch(37.2% 0.044 257.287);
+  --color-slate-400: oklch(44.6% 0.043 257.281);
+  --color-slate-800: oklch(92.9% 0.013 255.508);
+  --color-slate-900: oklch(96.8% 0.007 247.896);
+  --color-slate-950: oklch(98.4% 0.003 247.858);
 }
 
 @theme inline {
