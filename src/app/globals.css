@@ -112,6 +112,11 @@ a.touch-target {
   display: none;
 }
 
+/* Shown only with authentication on (`data-auth` on <html>, set by the root layout). */
+html:not([data-auth]) .auth-only {
+  display: none;
+}
+
 .bottom-nav {
   position: fixed;
   z-index: 40;

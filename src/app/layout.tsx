@@ -36,6 +36,8 @@ export default async function RootLayout({
     <html
       lang="en"
       data-theme={settings.theme || "default"}
+      // Lets CSS show the sign-out control only when there is a session to end.
+      data-auth={authEnabled() ? "on" : undefined}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-screen flex flex-col">

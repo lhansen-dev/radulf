@@ -366,6 +366,15 @@ export default function SettingsPage() {
                     Test notification & sound
                   </button>
                 </section>
+                <section id="session" className={`${sectionCls} auth-only`}>
+                  <SectionHeading title="Session">
+                    Sign out of Radulf on every device. Every session issued so far stops working, including
+                    copies of the cookie you never knew existed, so this is also what to do if one leaked.
+                  </SectionHeading>
+                  <form method="post" action="/api/auth/logout" className="self-start">
+                    <button type="submit" className={secondaryButtonCls}>Sign out everywhere</button>
+                  </form>
+                </section>
               </div>
             </SettingsPanel>
 

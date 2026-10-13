@@ -33,9 +33,9 @@ the same cookies.
 ## How it behaves
 
 Visiting any page without a valid cookie redirects you to `/login`. A successful
-login sets a signed session cookie valid for **30 days**. Logging out (`POST
-/api/auth/logout`) signs you out **everywhere** and redirects back to the login
-page — see [Revoking a session](#revoking-a-session).
+login sets a signed session cookie valid for **30 days**. **Sign out everywhere**
+(Settings → General → Session, or `POST /api/auth/logout`) signs you out on every
+device and returns you to the login page — see [Revoking a session](#revoking-a-session).
 
 The login endpoint throttles guessing, in one of two ways depending on whether
 it can tell clients apart:
