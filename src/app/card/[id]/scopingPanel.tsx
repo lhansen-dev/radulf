@@ -150,7 +150,7 @@ export function ScopingPanel({
   return (
     <section aria-labelledby="scoping-title" className="flex flex-col gap-3 rounded-lg border border-foreground/10 p-3">
       <div>
-        <h3 id="scoping-title" className="text-sm font-medium">Scoping</h3>
+        <h2 id="scoping-title" className="text-sm font-medium">Scoping</h2>
         <p className="mt-0.5 text-xs text-foreground/50">
           Talk the task through with an assistant that reads this repository. The planner sees the whole thread
           {open ? ", and the assistant can write the scoped task for you." : "."}

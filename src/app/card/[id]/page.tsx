@@ -260,7 +260,7 @@ export default function CardDetail() {
 
   return (
     <AppShell>
-    <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 sm:p-6 lg:py-8">
+    <main className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 sm:p-6 lg:py-8">
       <header className="flex min-w-0 items-center gap-3">
         <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
           ← Work
@@ -466,9 +466,9 @@ export default function CardDetail() {
               duplicated into the overview during plan_review; the awaiting-
               approval case is now just a heading and an opened PLAN.md. */}
           <div className={awaitingPlanApproval ? "rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3" : undefined}>
-            <h3 className={`text-sm font-medium mb-1 ${awaitingPlanApproval ? "text-cyan-300" : ""}`}>
+            <h2 className={`text-sm font-medium mb-1 ${awaitingPlanApproval ? "text-cyan-300" : ""}`}>
               {awaitingPlanApproval ? "Generated plan — awaiting your approval" : "Plan"}
-            </h3>
+            </h2>
             {/* What the planner is doing right now, from its live transcript:
                 a re-plan shows it above the plan it is replacing. */}
             {card.status === "planning" && (
@@ -493,7 +493,7 @@ export default function CardDetail() {
 
           {card.summary && (
             <div>
-              <h3 className="text-sm font-medium mb-1">Changes summary</h3>
+              <h2 className="text-sm font-medium mb-1">Changes summary</h2>
               <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans text-green-400/80">
                 {card.summary}
               </pre>
@@ -528,7 +528,7 @@ export default function CardDetail() {
             <p className="text-sm text-foreground/50">No runs yet — start the task to run planning.</p>
           )}
           <div>
-            <h3 className="text-sm font-medium mb-1">Events</h3>
+            <h2 className="text-sm font-medium mb-1">Events</h2>
             {detail.events.map((e) => {
               const critique = e.type === "critique.decided" ? parseCritiqueDecided(e.payload) : null;
               if (critique) {
@@ -578,7 +578,7 @@ export default function CardDetail() {
           </div>
         </section>
       ))}
-    </div>
+    </main>
     </AppShell>
   );
 }

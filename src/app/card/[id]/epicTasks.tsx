@@ -43,9 +43,9 @@ export function EpicTasks({
   return (
     <section aria-labelledby="epic-tasks-title" className="flex flex-col gap-2 rounded-lg border border-foreground/10 p-3">
       <div className="flex flex-wrap items-center gap-3">
-        <h3 id="epic-tasks-title" className="text-sm font-medium">
+        <h2 id="epic-tasks-title" className="text-sm font-medium">
           Tasks in this epic <span className="font-normal text-foreground/45">{done} of {tasks.length} done</span>
-        </h3>
+        </h2>
         <label className="ml-auto flex items-center gap-2 text-xs text-foreground/70">
           Run mode
           <select

@@ -32,7 +32,7 @@ export default async function DocPage({
 
   return (
     <AppShell>
-      <div className="mx-auto flex w-full max-w-6xl gap-8 px-4 py-6 pb-24 sm:px-6 lg:py-10">
+      <main className="mx-auto flex w-full max-w-6xl gap-8 px-4 py-6 pb-24 sm:px-6 lg:py-10">
         {/* Sidebar — desktop only; mobile gets the "All docs" link below. */}
         <aside className="hidden w-56 shrink-0 lg:block">
           <div className="sticky top-6">
@@ -69,7 +69,7 @@ export default async function DocPage({
             </a>
           </footer>
         </article>
-      </div>
+      </main>
     </AppShell>
   );
 }

@@ -1,6 +1,6 @@
 export default function LoginPage() {
   return (
-    <div className="flex items-center justify-center min-h-screen">
+    <main className="flex items-center justify-center min-h-screen">
       <form
         method="post"
         action="/api/auth/login"
@@ -25,6 +25,6 @@ export default function LoginPage() {
           Sign in
         </button>
       </form>
-    </div>
+    </main>
   );
 }
