@@ -57,6 +57,6 @@ export async function POST(req: Request, { params }: Ctx) {
       return err(`cannot pull a ${card.status} card back to Backlog`);
     }
 
-    return err(`illegal move target: ${to}`);
+    return err(`illegal move target: "${to}" — "to" must be todo, in_progress or backlog`);
   });
 }
