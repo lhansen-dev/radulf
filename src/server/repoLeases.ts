@@ -51,14 +51,14 @@ export function releaseRepoLease(repoPath: string, workerId: string): void {
  * that were freed.
  */
 export function releaseStaleLeases(live: Set<string>): string[] {
-  const ids = [...live];
-  const stale = ids.length
-    ? db.select().from(repoLeases).where(notInArray(repoLeases.workerId, ids)).all()
-    : db.select().from(repoLeases).all();
-  for (const row of stale) {
-    db.delete(repoLeases).where(eq(repoLeases.repoPath, row.repoPath)).run();
-  }
-  return stale.map((r) => r.repoPath);
+  // One statement, so a lease a live worker takes over between a read and a
+  // delete is never removed by path alone.
+  return db
+    .delete(repoLeases)
+    .where(live.size ? notInArray(repoLeases.workerId, [...live]) : undefined)
+    .returning({ repoPath: repoLeases.repoPath })
+    .all()
+    .map((r) => r.repoPath);
 }
 
 /**
@@ -66,11 +66,12 @@ export function releaseStaleLeases(live: Set<string>): string[] {
  * on shutdown; returns the repo paths freed.
  */
 export function releaseLeasesHeldBy(workerId: string): string[] {
-  const held = db.select().from(repoLeases).where(eq(repoLeases.workerId, workerId)).all();
-  for (const row of held) {
-    db.delete(repoLeases).where(eq(repoLeases.repoPath, row.repoPath)).run();
-  }
-  return held.map((r) => r.repoPath);
+  return db
+    .delete(repoLeases)
+    .where(eq(repoLeases.workerId, workerId))
+    .returning({ repoPath: repoLeases.repoPath })
+    .all()
+    .map((r) => r.repoPath);
 }
 
 /** Id of the worker holding the lease on `repoPath`, or null if it is free. */
