@@ -338,7 +338,7 @@ export default function SettingsPage() {
                     </div>
                     <div className="grid grid-cols-1 gap-5 pt-4 sm:grid-cols-2">
                       {numberInput("attentionStaleMinutes", "Waiting-too-long alert (minutes)", "How long a card may sit in Needs Attention before Radulf says so. Desktop notifications only reach you with a tab open; this fires either way.")}
-                      {textInput("alertWebhookUrl", { label: "Alert webhook URL", type: "url", placeholder: "https://ntfy.sh/your-topic" })}
+                      {textInput("alertWebhookUrl", { label: "Alert webhook URL", type: "password", placeholder: "https://ntfy.sh/your-topic" })}
                     </div>
                     <fieldset className="pt-4" disabled={!settings.alertWebhookUrl.trim()}>
                       <legend className="text-sm font-medium">Send to the webhook</legend>

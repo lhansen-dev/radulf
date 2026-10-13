@@ -294,6 +294,9 @@ const SECRET_SETTINGS = new Set<keyof Settings>([
   "openrouterApiKey",
   "braveApiKey",
   "jiraApiToken",
+  // A Slack or Discord hook URL carries the token that posts to the channel,
+  // and an ntfy topic name is its own password.
+  "alertWebhookUrl",
 ]);
 
 /** Stand-in a stored secret is replaced with on the way out. Distinct from ""
@@ -371,6 +374,18 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
           invalid("jiraBaseUrl must be a URL");
         }
         if (!["http:", "https:"].includes(url.protocol)) invalid("jiraBaseUrl must use http or https");
+      }
+    } else if (key === "alertWebhookUrl") {
+      if (typeof settingValue !== "string") invalid("alertWebhookUrl must be a URL");
+      // Blank disables alerts; REDACTED is the form echoing a stored URL back.
+      if (settingValue.trim() && settingValue !== REDACTED) {
+        let url: URL;
+        try {
+          url = new URL(settingValue.trim());
+        } catch {
+          invalid("alertWebhookUrl must be a URL");
+        }
+        if (!["http:", "https:"].includes(url.protocol)) invalid("alertWebhookUrl must use http or https");
       }
     } else if (key === "omlxHeaders") {
       if (typeof settingValue !== "string") invalid("omlxHeaders must be a string");
