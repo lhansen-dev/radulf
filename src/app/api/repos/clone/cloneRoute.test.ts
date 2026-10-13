@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initScratchRepo } from "@/testUtils/gitRepo";
@@ -7,6 +8,7 @@ import { setupTestStateDir } from "@/testUtils/testDataDir";
 const root = setupTestStateDir("radulf-clone-route-");
 
 const { db, repos } = await import("@/db");
+const { patchSettings } = await import("@/server/settings");
 const { POST } = await import("./route");
 
 let source: string;
@@ -21,6 +23,7 @@ function post(body: unknown) {
 
 beforeAll(() => {
   source = initScratchRepo("radulf-clone-route-src-");
+  patchSettings({ folderBrowserRoot: os.tmpdir() });
 });
 
 afterAll(() => {

@@ -629,7 +629,9 @@ export class Orchestrator {
       if (card?.status === "done" || review) this.finishLandedDelivery(delivery, review?.mergeCommit ?? null);
       else this.failDelivery(delivery);
     }
-    releaseStaleLeases(live);
+    // Re-read liveness: a worker that registered during this pass is not in
+    // `live`, and its fresh lease must survive.
+    releaseStaleLeases(new Set([...liveWorkerIds(staleSeconds), this.workerId]));
     // The ref audit log only has to outlive the integrity checks that consult
     // it; a week is far past any run's lifetime.
     db.delete(refWrites)
