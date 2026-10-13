@@ -106,4 +106,12 @@ describe("WorkPage", () => {
 
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
+
+  it("shows a long attention reason once, on its own line", () => {
+    const reason = "loop failed: harness repeated the same tool call 4 times in a row — likely stuck";
+    work.cards = [card({ status: "needs_attention", latestRun: { ...card().latestRun!, status: "failed", exitReason: reason } })];
+    render(<WorkPage />);
+
+    expect(screen.getAllByText(reason, { exact: false })).toHaveLength(1);
+  });
 });

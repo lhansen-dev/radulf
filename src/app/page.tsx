@@ -547,6 +547,8 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   parentOf?: Map<string, BoardCard>;
 }) {
   const state = statusDetails(card);
+  // A long attention reason gets its own line below; the meta line would only clamp it.
+  const longReason = card.status === "needs_attention" && state.detail.length > 70;
   const epic = parentOf?.get(card.id);
   const repo = repos.find((r) => r.id === card.repoId);
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
@@ -587,7 +589,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {ACTIVE_STATUSES.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
-          {epic && <><span className="text-cyan-300/80">↳ {epic.title}</span> · </>}<span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>} · {position ? `Queue position ${position}` : state.detail}
+          {epic && <><span className="text-cyan-300/80">↳ {epic.title}</span> · </>}<span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>}{position ? ` · Queue position ${position}` : longReason ? null : ` · ${state.detail}`}
         </p>
         {card.status === "looping" && (currentTask ? (<>
           {/* Every task before the current one is checked off — it is the
@@ -612,7 +614,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "Ralph is working through the current iteration"}</p>
         ))}
         {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-foreground/40">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
-        {card.status === "needs_attention" && state.detail.length > 70 && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
+        {longReason && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
         {(onMove || card.status !== "todo") && (
           <div className="mt-1 flex min-h-11 items-center gap-1">
             {onMove && <>
