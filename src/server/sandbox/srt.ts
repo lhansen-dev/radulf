@@ -292,6 +292,8 @@ function apparmorRestrictsUnprivilegedUserns(): boolean | null {
   try {
     const out = execFileSync("sysctl", ["-n", "kernel.apparmor_restrict_unprivileged_userns"], {
       encoding: "utf8",
+      // A missing key is the expected case off Ubuntu; don't print sysctl's complaint at every boot.
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     return out === "1";
   } catch {
