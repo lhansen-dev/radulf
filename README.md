@@ -528,7 +528,11 @@ supersedes an earlier one, and
 
 ## Contributing
 
-Contributions are welcome! 🐺 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup,
+Contributions are welcome! 🐺 **Branch from `beta` and open your PR against `beta`, not
+`main`.** `beta` is where all work lands; `main` only moves when a release is promoted
+from `beta`, so a plain clone gets the last stable release ([Branches and releases](CONTRIBUTING.md#branches-and-releases)).
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup,
 the `make check` gate CI enforces, and PR guidelines. Please report security issues
 privately per [`SECURITY.md`](SECURITY.md) rather than in a public issue.
 
