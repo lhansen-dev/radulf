@@ -275,7 +275,7 @@ export default function ReviewPage() {
         <button
           disabled={busy || !loopRun}
           onClick={() => decide("approved")}
-          className="min-h-11 rounded bg-green-700 px-3 py-2 text-sm font-medium hover:bg-green-600 disabled:opacity-40 sm:px-4"
+          className="min-h-11 rounded bg-green-700 px-3 py-2 text-sm font-medium text-white hover:bg-green-600 disabled:opacity-40 sm:px-4"
         >
           {busy ? "Merging…" : "✓ Approve & merge"}
         </button>
