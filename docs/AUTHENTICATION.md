@@ -71,24 +71,26 @@ prefer logging out.
 ## Under the hood
 
 ```
-   Browser              Next.js proxy (edge)         Node runtime
+   Browser              Next.js proxy                Route handlers
       │                         │                          │
       │── GET /any-page ───────▶│                          │
-      │◀─ 302 → /login ─────────│  (no valid cookie)       │
+      │◀─ 307 → /login ─────────│  (no valid cookie)       │
       │                         │                          │
-      │── POST /login (password) ──────────────────────────▶│
+      │── POST /api/auth/login (password) ─────────────────▶│
       │                         │      bcrypt check +      │
-      │                         │      read auth-secret    │
-      │◀─ Set signed cookie (30 days) ──────────────────────│
+      │                         │      sign with secret    │
+      │◀─ Set signed cookie (30 days), 303 → / ─────────────│
       │                         │                          │
       │── GET /any-page (with cookie) ─▶│                   │
-      │                         │  HMAC-SHA256 verify      │
-      │◀─ 200 ──────────────────│  (Web Crypto)            │
+      │                         │  HMAC-SHA256 verify +    │
+      │                         │  issued after the last   │
+      │                         │  sign-out-everywhere?    │
+      │◀─ 200 ──────────────────│                          │
 ```
 
-The bcrypt comparison and the file I/O happen only in Node runtime modules. The
-request proxy verifies the signed cookie using Web Crypto alone, which keeps it
-edge-compatible.
+The bcrypt comparison happens only in the login route. The proxy, which runs on
+the Node.js runtime in Next 16, verifies the cookie's HMAC with Web Crypto and
+checks its issue time against `data/sessions-not-before`.
 
 ## A note on scope
 
