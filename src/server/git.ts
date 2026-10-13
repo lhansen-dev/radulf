@@ -428,9 +428,13 @@ export async function mergeBranch(
   const dirty = await git(repoPath, "status", "--porcelain");
   if (dirty) {
     await restore();
+    // Name them: an untracked scratch file blocks the merge too, and "uncommitted
+    // changes" alone sent operators looking for edits they never made.
+    const lines = dirty.split("\n");
+    const named = lines.slice(0, 5).join(", ") + (lines.length > 5 ? `, and ${lines.length - 5} more` : "");
     return {
       ok: false,
-      error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
+      error: `target checkout ${repoPath} has uncommitted or untracked files (${named}) — commit, stash or remove them there, then press Retry merge`,
     };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before

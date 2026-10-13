@@ -448,7 +448,8 @@ describe("mergeBranch recovery (half-finished merge in the parent checkout)", ()
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain(dir);
-    expect(result.error).toContain("uncommitted changes");
+    expect(result.error).toContain("uncommitted or untracked files");
+    expect(result.error).toContain("?? scratch.txt");
     expect(result.error).toContain("Retry merge");
     // No merge was started.
     expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
