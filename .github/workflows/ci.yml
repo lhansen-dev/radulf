@@ -32,3 +32,14 @@ jobs:
           cache: npm
       - run: make install
       - run: make check
+
+  # The image is built and booted, not just the code: a runtime stage that
+  # missed a file next.config.ts imports shipped containers that died at boot
+  # while every other check stayed green. One web and two workers must reach
+  # healthy; see the check-compose target.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: make check-compose
