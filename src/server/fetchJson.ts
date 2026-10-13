@@ -37,9 +37,19 @@ export async function fetchJson(
         signal: AbortSignal.timeout(10_000),
         cache: "no-store",
       });
-      if (res.ok) return res.json();
-      retryable = isRetryableStatus(res.status);
-      err = new Error(`${who} responded ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const body = await res.text();
+      if (res.ok) {
+        try {
+          return JSON.parse(body);
+        } catch {
+          // A 200 that is not JSON is usually a proxy or login page at the wrong URL; retrying won't change it.
+          retryable = false;
+          err = new Error(`${who} answered with something that is not JSON: ${body.slice(0, 300)}`);
+        }
+      } else {
+        retryable = isRetryableStatus(res.status);
+        err = new Error(`${who} responded ${res.status}: ${body.slice(0, 300)}`);
+      }
     } catch (e) {
       err = new Error(`cannot reach ${who}: ${errorMessage(e)}`);
     }

@@ -54,6 +54,13 @@ describe("fetchJson retry (via listProviderModels/omlx)", () => {
     await expect(withoutBackoff(listProviderModels("omlx", omlxSettings))).rejects.toThrow(/responded 500/);
     expect(down).toHaveBeenCalledTimes(3);
   });
+
+  it("names the endpoint, and does not retry, when a 200 is not JSON", async () => {
+    const htmlPage = vi.fn().mockResolvedValue(new Response("<!DOCTYPE html><title>Sign in</title>", { status: 200 }));
+    vi.stubGlobal("fetch", htmlPage);
+    await expect(listProviderModels("omlx", omlxSettings)).rejects.toThrow(/local endpoint.*not JSON: <!DOCTYPE html>/);
+    expect(htmlPage).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("listProviderModels caching", () => {
