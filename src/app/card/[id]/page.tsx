@@ -95,6 +95,17 @@ export default function CardDetail() {
     return () => window.removeEventListener("popstate", readTab);
   }, []);
 
+  /** The Task tab is the default, so switching to it alone did nothing:
+   * bring the summary itself into view. */
+  function openSummary() {
+    chooseTab("Task");
+    requestAnimationFrame(() => {
+      const heading = document.getElementById("changes-summary");
+      heading?.scrollIntoView({ block: "start" });
+      heading?.focus({ preventScroll: true });
+    });
+  }
+
   function chooseTab(next: (typeof TABS)[number]) {
     setTab(next);
     const query = new URLSearchParams(window.location.search);
@@ -222,7 +233,7 @@ export default function CardDetail() {
     // discarding the worktree, plan, or iterations so far.
     { label: "Edit model overrides", show: ["paused", "needs_attention"].includes(card.status), run: () => setShowEdit(true) },
     { label: "View activity", show: !isEpic && ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
-    { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
+    { label: "Open summary", show: card.status === "done" && !!card.summary, primary: true, run: openSummary },
   ];
   const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
   // `href` rather than `run` for the export: the route answers with
@@ -493,7 +504,7 @@ export default function CardDetail() {
 
           {card.summary && (
             <div>
-              <h2 className="text-sm font-medium mb-1">Changes summary</h2>
+              <h2 id="changes-summary" tabIndex={-1} className="text-sm font-medium mb-1 scroll-mt-4">Changes summary</h2>
               <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans text-green-400/80">
                 {card.summary}
               </pre>
