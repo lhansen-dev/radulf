@@ -1190,15 +1190,19 @@ function EditCardModal({
       </>}
     >
       <div className="flex flex-col gap-3">
-        <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className={fieldCls} />
+        <label className="flex flex-col gap-1 text-sm text-foreground/70">Title
+          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={fieldCls} />
+        </label>
         <RoleModelSelects providers={providers} models={models} values={roleModels} onChange={setRoleModels} idPrefix="edit-" />
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Description — include a definition of done. The planner only sees this."
-          rows={6}
-          className={`${fieldCls} font-mono`}
-        />
+        <label className="flex flex-col gap-1 text-sm text-foreground/70">Description
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Include a definition of done. The planner only sees this."
+            rows={6}
+            className={`${fieldCls} font-mono`}
+          />
+        </label>
         <label className="flex items-center gap-2 text-sm text-foreground/70">
           <input
             type="checkbox"
