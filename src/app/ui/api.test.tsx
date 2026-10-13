@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { useEventStream } from "./api";
+import { api, useEventStream } from "./api";
 
 class MockEventSource {
   onopen: (() => void) | null = null;
@@ -91,5 +91,19 @@ describe("useEventStream", () => {
     const event = { type: "card.moved", cardId: "c1" };
     act(() => es.onmessage?.({ data: JSON.stringify(event) } as MessageEvent));
     expect(second).toHaveBeenCalledWith(event);
+  });
+});
+
+describe("api", () => {
+  it("sends the browser to /login once its session is gone, and still throws", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })));
+    try {
+      await expect(api("/api/cards")).rejects.toThrow("Unauthorized");
+      expect(assign).toHaveBeenCalledWith("/login");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

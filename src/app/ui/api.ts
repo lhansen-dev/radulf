@@ -55,6 +55,9 @@ export async function api<T = unknown>(
     opts.body = JSON.stringify(init.json);
   }
   const res = await fetch(url, opts);
+  // The proxy answers 401 only with auth on and this browser's session gone:
+  // expired, or revoked by a logout elsewhere. Every call would fail from here.
+  if (res.status === 401 && !url.startsWith("/api/auth/")) location.assign("/login");
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data as { error?: string }).error ?? `${res.status} ${url}`);
   return data as T;
