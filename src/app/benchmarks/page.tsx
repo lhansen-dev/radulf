@@ -127,7 +127,7 @@ export default function BenchmarksPage() {
                   ? "bg-emerald-500/15 text-emerald-400"
                   : rollout.accepted === false
                     ? "bg-red-500/15 text-red-400"
-                    : "bg-foreground/10 text-muted"
+                    : "bg-foreground/10 text-foreground/80"
               }`}
             >
               {rollout.accepted === true
