@@ -42,10 +42,10 @@ export default async function RootLayout({
     >
       <body className="min-h-screen flex flex-col">
         {signedIn && !settings.sandboxEnabled && (
-          <div className="shrink-0 bg-red-700 px-4 py-1.5 text-center text-xs font-medium text-white">
+          <aside aria-label="Sandbox warning" className="shrink-0 bg-red-700 px-4 py-1.5 text-center text-xs font-medium text-white">
             Sandbox is OFF (Settings → sandboxEnabled) — agent bash runs unsandboxed on this
             host. Every affected run is stamped <code>sandboxed: false</code>.
-          </div>
+          </aside>
         )}
         {children}
       </body>

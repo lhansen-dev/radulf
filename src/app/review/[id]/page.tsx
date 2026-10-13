@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { api, useEventStream } from "../../ui/api";
 import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
@@ -9,6 +9,7 @@ import { DetailsMenu } from "../../ui/detailsMenu";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
+import { useFocusHeadingOnNavigation } from "../../ui/appShell";
 import { classifySelfModifying } from "./selfModifying";
 import { diffHeaderPaths, extendedHeaderPath, type DiffHeaderPaths } from "./diffHeader";
 import { classifySensitivePaths, changedIgnoreFiles } from "./sensitivePaths";
@@ -90,6 +91,8 @@ function renderDiffLineContent({ text, segments }: DiffLine) {
 export default function ReviewPage() {
   const { id } = useParams<{ id: string }>()!;
   const router = useRouter();
+  // No AppShell on this full-width page, so it takes the heading focus itself.
+  useFocusHeadingOnNavigation(usePathname());
   const [detail, setDetail] = useState<CardDetailData | null>(null);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [error, setError] = useState("");
@@ -161,7 +164,7 @@ export default function ReviewPage() {
   if (!detail) return <div className="p-8 text-muted">{error || "Loading…"}</div>;
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 pb-28 sm:p-6 sm:pb-28">
+    <main className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 pb-28 sm:p-6 sm:pb-28">
       <header className="flex min-w-0 items-center gap-3">
         <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-muted hover:text-foreground">
           ← Work
@@ -218,7 +221,7 @@ export default function ReviewPage() {
       {files.length > 0 && <label className="block text-sm text-muted lg:hidden">Jump to file<select defaultValue="" onChange={(event) => { document.getElementById(event.target.value)?.scrollIntoView({ behavior: "smooth", block: "start" }); event.target.value = ""; }} className={dialogInputCls}><option value="" disabled>Select a changed file</option>{files.map((file, index) => <option key={file.header} value={`diff-file-${index}`}>{file.header}</option>)}</select></label>}
 
       <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start">
-        <main className="grow min-w-0 flex flex-col gap-2">
+        <div className="grow min-w-0 flex flex-col gap-2">
           {files.length === 0 && (
             <p className="text-muted text-sm bg-foreground/[0.04] rounded p-4">
               Empty diff — the loop made no source changes outside <code>.ralph/</code>. Reject with
@@ -239,7 +242,7 @@ export default function ReviewPage() {
               </pre>
             </details>
           ))}
-        </main>
+        </div>
 
         <aside className="flex w-full min-w-0 shrink-0 flex-col gap-3 lg:sticky lg:top-4 lg:w-80">
           {files.length > 0 && <nav aria-label="Changed files" className="hidden max-h-52 overflow-y-auto rounded border border-foreground/10 bg-foreground/[0.03] p-2 lg:block"><h2 className="px-2 pb-1 text-xs font-semibold uppercase tracking-wider text-muted">Files</h2>{files.map((file, index) => <a key={file.header} href={`#diff-file-${index}`} className="block min-h-11 truncate rounded px-2 py-3 text-xs text-foreground/65 hover:bg-foreground/[0.05]">{file.header}</a>)}</nav>}
@@ -315,7 +318,7 @@ export default function ReviewPage() {
           />
         </DialogShell>
       )}
-    </div>
+    </main>
   );
 }
 

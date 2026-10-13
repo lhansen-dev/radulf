@@ -26,7 +26,7 @@ let lastPathname: string | null = null;
  * screen reader announces where you landed instead of starting from the top.
  * A first load keeps the browser's own focus. Pages that load their data
  * first render the heading a moment later, so this waits for it. */
-function useFocusHeadingOnNavigation(pathname: string) {
+export function useFocusHeadingOnNavigation(pathname: string) {
   useEffect(() => {
     const navigated = lastPathname !== null && lastPathname !== pathname;
     lastPathname = pathname;
