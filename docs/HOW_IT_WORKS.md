@@ -231,7 +231,9 @@ quietly. A card that sits there longer than **Waiting-too-long alert** (Settings
 once per arrival. Set an **Alert webhook URL** there and the same thing is
 POSTed as JSON, which is the only alerting that reaches you without a browser
 tab open — ntfy, a Slack incoming hook, a Discord webhook and a handler of your
-own all take it unchanged.
+own all take it unchanged. A hook URL carries the token that posts to the
+channel, so once saved it is stored encrypted and shown as `••••••••`, like the
+provider keys: leave it as shown to keep it, or replace it to change it.
 
 Two things Radulf will tell you there rather than let you discover by repeating
 them:
