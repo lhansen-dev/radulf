@@ -26,15 +26,15 @@
   --muted: color-mix(in srgb, var(--foreground) 98%, transparent);
 }
 [data-theme="solarized-light"] {
-  --background: #fdf6e3; --foreground: #657b83; --accent: #b58900;
+  --background: #fdf6e3; --foreground: #586e75; --accent: #b58900;
   --accent-strong: #cb4b16; --on-accent: #fdf6e3; --surface: #eee8d5;
   --muted: color-mix(in srgb, var(--foreground) 100%, transparent);
 }
 [data-theme="tokyo-night"] {
-  --background: #1a1b26; --foreground: #a9b1d6;
+  --background: #1a1b26; --foreground: #c0caf5;
   --accent: #7aa2f7; --accent-strong: #bb9af7; --on-accent: #1a1b26;
   --surface: #16161e;
-  --muted: color-mix(in srgb, var(--foreground) 72%, transparent);
+  --muted: color-mix(in srgb, var(--foreground) 62%, transparent);
 }
 [data-theme="tokyo-day"] {
   --background: #e1e2e7; --foreground: #565a6e; --accent: #34548a;
@@ -42,10 +42,10 @@
   --muted: color-mix(in srgb, var(--foreground) 100%, transparent);
 }
 [data-theme="nord"] {
-  --background: #2e3440; --foreground: #d8dee9;
+  --background: #2e3440; --foreground: #eceff4;
   --accent: #88c0d0; --accent-strong: #5e81ac; --on-accent: #2e3440;
   --surface: #3b4252;
-  --muted: color-mix(in srgb, var(--foreground) 73%, transparent);
+  --muted: color-mix(in srgb, var(--foreground) 66%, transparent);
 }
 [data-theme="nord-light"] {
   --background: #eceff4; --foreground: #2e3440; --accent: #5e81ac;
@@ -53,17 +53,17 @@
   --muted: color-mix(in srgb, var(--foreground) 74%, transparent);
 }
 [data-theme="gruvbox-dark"] {
-  --background: #282828; --foreground: #ebdbb2;
+  --background: #282828; --foreground: #fbf1c7;
   --accent: #fabd2f; --accent-strong: #d79921; --on-accent: #282828;
   --surface: #3c3836;
-  --muted: color-mix(in srgb, var(--foreground) 68%, transparent);
+  --muted: color-mix(in srgb, var(--foreground) 60%, transparent);
 }
 
 [data-theme="gruvbox-light"] {
-  --background: #fbf1c7; --foreground: #3c3836;
+  --background: #fbf1c7; --foreground: #282828;
   --accent: #d79921; --accent-strong: #cc241d; --on-accent: #fbf1c7;
   --surface: #ebdbb2;
-  --muted: color-mix(in srgb, var(--foreground) 79%, transparent);
+  --muted: color-mix(in srgb, var(--foreground) 71%, transparent);
 }
 
 /* Status colours (red, green, violet, slate, …) are written for dark themes: pale

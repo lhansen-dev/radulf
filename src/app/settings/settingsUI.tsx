@@ -120,13 +120,13 @@ const THEMES = [
   ["default", "Default", "#0b0d10", "#d7dce2", "#fbbf24"],
   ["default-light", "Default Light", "#f7f8fa", "#1a1d23", "#b45309"],
   ["solarized-dark", "Solarized Dark", "#002b36", "#93a1a1", "#b58900"],
-  ["solarized-light", "Solarized Light", "#fdf6e3", "#657b83", "#b58900"],
-  ["tokyo-night", "Tokyo Night", "#1a1b26", "#a9b1d6", "#7aa2f7"],
+  ["solarized-light", "Solarized Light", "#fdf6e3", "#586e75", "#b58900"],
+  ["tokyo-night", "Tokyo Night", "#1a1b26", "#c0caf5", "#7aa2f7"],
   ["tokyo-day", "Tokyo Day", "#e1e2e7", "#565a6e", "#34548a"],
-  ["nord", "Nord", "#2e3440", "#d8dee9", "#88c0d0"],
+  ["nord", "Nord", "#2e3440", "#eceff4", "#88c0d0"],
   ["nord-light", "Nord Light", "#eceff4", "#2e3440", "#5e81ac"],
-  ["gruvbox-dark", "Gruvbox Dark", "#282828", "#ebdbb2", "#fabd2f"],
-  ["gruvbox-light", "Gruvbox Light", "#fbf1c7", "#3c3836", "#d79921"],
+  ["gruvbox-dark", "Gruvbox Dark", "#282828", "#fbf1c7", "#fabd2f"],
+  ["gruvbox-light", "Gruvbox Light", "#fbf1c7", "#282828", "#d79921"],
 ] as const;
 
 export function ThemePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {

@@ -28,5 +28,13 @@ stay put.
 **3. A test holds the rule.** `src/app/designRules.test.ts` fails on any plain
 `text-foreground` alpha under 61% in `src/app`.
 
-**Open:** Tokyo Day and Solarized Light need palette changes to reach AA at
-all; that is a design decision this spec does not take.
+**4. Use each palette's own strongest text colour.** Where a theme used a
+dimmer foreground than its palette offers for text, it now uses the stronger
+one: Tokyo Night's canonical `fg` (#c0caf5), Gruvbox's `fg0` (dark #fbf1c7,
+light #282828), Nord's `nord6` (#eceff4), and Solarized Light's emphasized
+`base01` (#586e75). Failing elements across six pages fell from 168 to 1 on
+Tokyo Night and from 205 to 19 on Gruvbox Light.
+
+**Open:** Solarized (both), Tokyo Day and Nord Light still fail widely: their
+palettes hold no stronger text colour, so reaching AA there means departing
+from the palette, a design decision this spec does not take.
