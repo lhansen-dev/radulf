@@ -31,15 +31,7 @@ export interface HarnessSession {
 
 // Re-export so callers only need to import from ./harness.
 export type { TranscriptEvent, HarnessId } from "./types";
-export {
-  createRalphSession,
-  piNormalize,
-  harnessPackageVersion,
-  omlxProviderConfig,
-  getModelRuntime,
-  piAgentDir,
-  listAuthedModels,
-} from "./pi";
+export { getModelRuntime, listAuthedModels } from "./pi";
 export type { AgentRole } from "./pi";
 
 /**
