@@ -25,6 +25,17 @@ because the two record nested and optional dependencies differently. CI runs
 the pinned version, so a lockfile generated on a newer Node will pass locally
 and fail there.
 
+On Linux, `make check` runs the real sandbox suites, which need `bubblewrap`,
+`socat` and `ripgrep` on `PATH` — the same packages CI installs in
+[`.github/actions/linux-sandbox-deps`](.github/actions/linux-sandbox-deps/action.yml).
+Without them the preflight and network-policy tests in
+`src/server/sandbox/srt.test.ts` fail with `socat not installed`.
+
+`make check` also drives a headless Chrome through sign-in and a task
+(`make check-browser`). It finds an installed Chrome or Chromium, or the one
+`CHROME_PATH` names, and skips with a warning when there is none; CI's runner
+image ships one, so there it always runs.
+
 All common tasks are driven through the [`Makefile`](Makefile) — run `make` to
 see the full list. It is the source of truth; CI and the release workflow call
 the same targets you do.

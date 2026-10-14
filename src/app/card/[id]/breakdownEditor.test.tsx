@@ -33,7 +33,7 @@ describe("BreakdownEditor", () => {
     fireEvent.click(screen.getByLabelText("In parallel"));
     fireEvent.click(screen.getByRole("button", { name: "Move task 2 up" }));
     expect((screen.getByLabelText("1. Title") as HTMLInputElement).value).toBe("Surface the lockout");
-    fireEvent.click(screen.getByRole("button", { name: "＋ Add a task" }));
+    fireEvent.click(screen.getByRole("button", { name: "+ Add a task" }));
     fireEvent.change(screen.getByLabelText("3. Title"), { target: { value: "Document it" } });
     // The repository choice appears once more than one repository is known;
     // a piece kept at home sends no repoId.

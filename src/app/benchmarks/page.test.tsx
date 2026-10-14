@@ -20,7 +20,7 @@ describe("BenchmarksPage", () => {
     vi.restoreAllMocks();
   });
 
-  it("launches with an independently selected planner model", async () => {
+  it("launches with models picked from the Settings providers' listings", async () => {
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
       if (url === "/api/benchmarks" && init?.method === "POST") {
         return Promise.resolve(jsonResponse({ reportFile: "report.json", logFile: "report.log" }, 201));
@@ -52,8 +52,25 @@ describe("BenchmarksPage", () => {
         return Promise.resolve(jsonResponse({
           loopProvider: "openrouter",
           loopModel: "fast/loop",
+          plannerProvider: "anthropic",
           plannerModel: "strong/planner",
+          evaluatorProvider: "chatgpt",
+          evaluatorModel: "eval/model",
+          criticProvider: "copilot",
+          criticModel: "critic/model",
+          planCriticMode: "breakdown",
         }));
+      }
+      if (url === "/api/providers/openrouter/models") {
+        return Promise.resolve(jsonResponse({ models: [
+          { value: "fast/loop", displayName: "Fast loop", description: "" },
+          { value: "other/loop", displayName: "Other loop", description: "" },
+        ] }));
+      }
+      if (url === "/api/providers/anthropic/models") {
+        return Promise.resolve(jsonResponse({ models: [
+          { value: "strong/planner", displayName: "Strong planner", description: "" },
+        ] }));
       }
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
@@ -63,6 +80,20 @@ describe("BenchmarksPage", () => {
 
     const plannerInput = await screen.findByLabelText("Planner model");
     expect((plannerInput as HTMLInputElement).value).toBe("strong/planner");
+
+    // Each picker lists its Settings provider's models; picking one from the
+    // browser replaces the model id that would be launched.
+    expect(screen.getByText(/Provider: OpenRouter/)).toBeTruthy();
+    expect(screen.getByText(/Provider: Anthropic/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Other loop" }));
+    expect((screen.getByLabelText("Loop model") as HTMLInputElement).value).toBe("other/loop");
+
+    // "breakdown" mode skips the critic for a top-level card, so it starts off
+    // and its picker stays hidden until switched on.
+    expect((screen.getByLabelText("Evaluator model") as HTMLInputElement).value).toBe("eval/model");
+    expect(screen.queryByLabelText("Plan critic model")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Run the plan critic"));
+    expect((screen.getByLabelText("Plan critic model") as HTMLInputElement).value).toBe("critic/model");
 
     fireEvent.change(screen.getByLabelText("Fixture"), { target: { value: "small-ui-change" } });
     fireEvent.change(screen.getByLabelText("Repo"), { target: { value: "repo-1" } });
@@ -75,8 +106,11 @@ describe("BenchmarksPage", () => {
       expect(request).toBeTruthy();
       expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
         provider: "openrouter",
-        model: "fast/loop",
+        model: "other/loop",
         plannerModel: "strong/planner",
+        evaluatorModel: "eval/model",
+        criticModel: "critic/model",
+        planCritic: true,
       });
     });
   });

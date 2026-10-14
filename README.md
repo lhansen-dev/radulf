@@ -45,6 +45,10 @@ is a reviewable diff. You approve; it merges.
                                     └────────────────┘
 ```
 
+<p align="center">
+  <img src="docs/images/board.png" alt="The Work board: a task ready for review, one that needs attention after its loop got stuck, and two queued for the next free slot" width="820">
+</p>
+
 **Auto Mode** pulls the next queued task the moment a slot frees, so the pipeline
 keeps moving without you. **[Improvement Runs](#improvement-runs)** go further:
 Radulf proposes its own work, drives it end to end on auto-approve, and stacks
@@ -188,14 +192,14 @@ page (an OpenRouter API key, or the local server's base URL). See [Requirements]
 | 🖥️ **OS** | **macOS (Apple Silicon or Intel).** Linux (including WSL2) is best-effort: the sandbox has a Linux implementation, but it is not release-verified. Native Windows and WSL1 are not supported. |
 | 🟢 **Node** | 22 or newer |
 | 📦 **pi SDK** | [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) — a pinned dependency. No global install, no CLIs. |
-| 🔒 **Sandbox runtime** | [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) — a pinned dependency ([spec 14](specs/14-sandboxing.md)). Kernel-enforced containment for agent bash: Seatbelt (`sandbox-exec`) on macOS, bubblewrap + a seccomp filter on Linux. On **Ubuntu 24.04+**, the default AppArmor policy blocks bubblewrap's unprivileged user namespace — Radulf's startup preflight detects this (`kernel.apparmor_restrict_unprivileged_userns=1`) and logs the exact remediation (grant `bwrap` the `userns` capability via an AppArmor profile, or set the sysctl to `0`). The sandbox is on by default (`sandboxEnabled` in Settings); turning it off is a deliberate, logged escape hatch — see spec 14's Failure semantics. **How it's implemented:** [`SANDBOXING.md`](docs/SANDBOXING.md). |
+| 🔒 **Sandbox runtime** | [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) — a pinned dependency ([spec 14](specs/14-sandboxing.md)). Kernel-enforced containment for agent bash: Seatbelt (`sandbox-exec`) on macOS, bubblewrap + a seccomp filter on Linux, where it needs the `bubblewrap`, `socat` and `ripgrep` packages installed. On **Ubuntu 24.04+**, the default AppArmor policy blocks bubblewrap's unprivileged user namespace — Radulf's startup preflight detects this (`kernel.apparmor_restrict_unprivileged_userns=1`) and logs the exact remediation (grant `bwrap` the `userns` capability via an AppArmor profile, or set the sysctl to `0`). The sandbox is on by default (`sandboxEnabled` in Settings); turning it off is a deliberate, logged escape hatch — see spec 14's Failure semantics. **How it's implemented:** [`SANDBOXING.md`](docs/SANDBOXING.md). |
 | 🔑 **A provider** | At least one of the five below |
 
 **Provider matrix** — pick one or mix per role:
 
 | Provider | Auth | Where | Notes |
 |----------|------|-------|-------|
-| 🟣 **Claude** (default) | Settings → Sign in | Claude Pro/Max subscription | Third-party harness usage billed per token as extra usage |
+| 🟣 **Claude** (default) | Settings → Sign in | Claude Pro/Max subscription | — |
 | 🟢 **ChatGPT (Codex)** | Settings → Sign in | ChatGPT Plus/Pro subscription | — |
 | ⚫ **GitHub Copilot** | Settings → Sign in | GitHub Copilot subscription | — |
 | 🔵 **OpenRouter** | API key | remote | Bring your own model. Set in Settings — no login |
@@ -473,16 +477,21 @@ these same targets.
 | `make dev` | 🔥 Start the Next.js dev server with hot reload |
 | `make build` | 📦 Build the application for production |
 | `make start` | 🚀 Start the production server (run `build` first) |
+| `make web` | 🌐 Serve the production build as a web-only process (no agent work) — pair it with `make worker` |
+| `make desktop` | 🖥️ Open Radulf in a desktop window (Electron) on a running server — `URL=...` points it at another install |
 | `make worker` | ⚙️ Run a worker-only process (orchestrator, no HTTP) against this checkout — builds `dist/worker.mjs` first |
 | `make build-worker` | 📦 Bundle the worker entry point `src/worker.ts` into `dist/worker.mjs` |
 | `make check-split` | 🔀 Boot two web-only and a worker-only process against a temp data dir, drive a card through the web API, and assert events and live transcripts fan out across processes (runs `make build` first) |
 | `make lint` | 🧹 Run ESLint across the codebase |
 | `make test` | 🧪 Run unit, component, route, and lifecycle integration tests |
 | `make typecheck` | 🔍 Type-check without emitting files |
-| `make check` | ✅ Run tests, lint, type-checking, a production build, and the split-process check (the CI gate) |
+| `make check` | ✅ Run tests, lint, type-checking, a production build, and the split-process and browser checks (the CI gate) |
+| `make check-browser` | 🌐 Sign in, create a task, check WCAG 2.2 AA with axe and sign out in headless Chrome against the production build (`CHROME_PATH` picks the browser; skipped locally without one) |
+| `make check-compose` | 🐳 Throwaway compose run (one web, two workers) that waits for healthy and tears down — never touches your own volume or ports |
 | `make db-generate` | 🗂️ Generate a migration from schema changes |
 | `make db-migrate` | ⬆️ Apply pending migrations |
 | `make db-studio` | 🔎 Open Drizzle Studio |
+| `make db-backup` | 💾 Back up the SQLite database safely while the server is running |
 | `make clean` | 🧽 Remove build output and caches |
 | `make release VERSION=1.0.0` | 🏷️ Bump version, tag, and push — triggers the release workflow |
 
@@ -500,6 +509,7 @@ radulf/
 ├── docs/             The guides, browsable in-app under the Docs tab
 ├── specs/            Dated design decision log  → see docs/DESIGN_HISTORY.md
 ├── benchmarks/       Repeatable loop-performance fixtures and runners
+├── desktop/          Electron shell behind make desktop, an npm package of its own
 ├── data/             Gitignored runtime state (SQLite DB, transcripts, provider auth)
 └── worktrees/        Gitignored per-card git worktrees — beside data/, never inside it
 ```
@@ -518,6 +528,7 @@ supersedes an earlier one, and
 | `docs` | The guides served by the in-app Docs tab |
 | `specs` | Dated design decision log (see [`docs/DESIGN_HISTORY.md`](docs/DESIGN_HISTORY.md)) |
 | `benchmarks` | Loop-performance benchmark fixtures and runners (see [`benchmarks/snake-tui/README.md`](benchmarks/snake-tui/README.md)) |
+| `desktop` | The Electron shell behind `make desktop`. Its own npm package, so Electron stays out of the root install |
 | `data` | Gitignored runtime state (SQLite DB, transcripts, provider auth). Denied to agents wholesale by the sandbox |
 | `worktrees`, `plans` | Gitignored agent-writable dirs, siblings of `data/` so that deny needs no carve-out |
 
@@ -525,7 +536,11 @@ supersedes an earlier one, and
 
 ## Contributing
 
-Contributions are welcome! 🐺 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup,
+Contributions are welcome! 🐺 **Branch from `beta` and open your PR against `beta`, not
+`main`.** `beta` is where all work lands; `main` only moves when a release is promoted
+from `beta`, so a plain clone gets the last stable release ([Branches and releases](CONTRIBUTING.md#branches-and-releases)).
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup,
 the `make check` gate CI enforces, and PR guidelines. Please report security issues
 privately per [`SECURITY.md`](SECURITY.md) rather than in a public issue.
 

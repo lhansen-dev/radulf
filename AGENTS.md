@@ -79,7 +79,7 @@ tooling. Run `make help` to see every target; the ones you'll use most:
 
 | Command | What it does |
 |---|---|
-| `make check` | vitest + eslint + tsc --noEmit + production build — **the full gate** |
+| `make check` | vitest + eslint + tsc --noEmit + production build + split-process and browser checks — **the full gate** |
 | `make test` | Unit, component, route, and lifecycle tests (vitest) |
 | `make lint` | ESLint |
 | `make typecheck` | `tsc --noEmit` |
@@ -101,6 +101,7 @@ drizzle/          Generated SQL migration files
 docs/             Guides served by the in-app Docs tab
 specs/            Dated, append-only design decision log
 benchmarks/       Repeatable loop-performance fixtures and runners
+desktop/          Electron shell for `make desktop` (own package.json, not in the root install)
 ```
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full pipeline map
@@ -135,7 +136,7 @@ it's a bug.
 
 Every card gets its own git worktree under `./worktrees` (gitignored, a
 sibling of `data/`) and its own branch, `ralph/<slug>-<runId>`
-(`src/server/git.ts:76-100`, `createWorktree`). Never assume you share a
+(`createWorktree` in `src/server/git.ts`). Never assume you share a
 working tree with another run — plan/loop/evaluate runs for the *same* card
 reuse one worktree across the cycle, but different cards never share one.
 

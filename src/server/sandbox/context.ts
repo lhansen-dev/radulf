@@ -16,6 +16,7 @@ import {
 import { detectMacDiskMechanism } from "./diskWatchdog";
 import { buildRunSandboxConfig, resolveGitCommonDir } from "./srt";
 import { createSerialQueue } from "./serialQueue";
+import { createSeatbeltProcessMarkers, reapSeatbeltRun } from "./seatbeltReaper";
 
 /**
  * Per-run sandbox context (spec 14, resolved design question 4): ONE factory
@@ -158,6 +159,10 @@ export async function createRunSandbox(
   // depends on this being genuinely absent rather than unused.
   const sandboxEnabled = opts?.s?.sandboxEnabled ?? true;
   const weakerIsolationForGoTls = opts?.s?.sandboxWeakerIsolationForGoTls ?? false;
+  const seatbeltMarkers =
+    opts?.cwd && sandboxEnabled && process.platform === "darwin"
+      ? createSeatbeltProcessMarkers(root)
+      : undefined;
   const srtConfig =
     opts?.cwd && sandboxEnabled
       ? buildRunSandboxConfig({
@@ -171,6 +176,7 @@ export async function createRunSandbox(
             ...db.select({ path: repos.path }).from(repos).all().map((repo) => repo.path),
           ],
           cgroupProcsFile: cgroup?.procsFile,
+          processMarkers: seatbeltMarkers,
           networkAllowlistText: opts.s?.sandboxNetworkAllowlist ?? "",
           weakerIsolationForGoTls,
         })
@@ -213,6 +219,8 @@ export async function createRunSandbox(
       for (const pgid of processGroups) {
         if (!groupAlive(pgid)) processGroups.delete(pgid);
       }
+    } else if (commandStarted && seatbeltMarkers) {
+      await reapSeatbeltRun(seatbeltMarkers);
     } else if (
       commandStarted &&
       sandboxEnabled &&

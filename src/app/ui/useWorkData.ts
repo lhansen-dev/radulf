@@ -29,6 +29,7 @@ export function useWorkData() {
   const [streamConnected, setStreamConnected] = useState(true);
   const [autoMode, setAutoMode] = useState(true);
   const [autoApprove, setAutoApprove] = useState(false);
+  const [yoloMode, setYoloMode] = useState(false);
   const [openPr, setOpenPr] = useState(false);
   const [improvementRuns, setImprovementRuns] = useState<ImprovementRun[]>([]);
   const [improvementAlert, setImprovementAlert] = useState<ImprovementRunAlert | null>(null);
@@ -79,6 +80,7 @@ export function useWorkData() {
     api<{
       autoMode: boolean;
       autoApprove: boolean;
+      yoloMode: boolean;
       openPr: boolean;
       notificationsEnabled: boolean;
       soundEnabled: boolean;
@@ -86,6 +88,7 @@ export function useWorkData() {
       .then((settings) => {
         setAutoMode(settings.autoMode);
         setAutoApprove(settings.autoApprove);
+        setYoloMode(settings.yoloMode);
         setOpenPr(settings.openPr);
         notifyPrefs.current = {
           notifications: settings.notificationsEnabled,
@@ -185,6 +188,8 @@ export function useWorkData() {
     setAutoMode,
     autoApprove,
     setAutoApprove,
+    yoloMode,
+    setYoloMode,
     openPr,
     setOpenPr,
     improvementRuns,

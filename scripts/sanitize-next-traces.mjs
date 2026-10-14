@@ -8,6 +8,10 @@ export const SENSITIVE_ROOTS = [
   ".codex",
   ".git",
   "data",
+  // Planner output and clones of registered repositories: siblings of data/
+  // like worktrees/, and traced into the manifests just the same.
+  "plans",
+  "repos",
   "runtmp",
   "worktrees",
   path.join("benchmarks", "reports"),

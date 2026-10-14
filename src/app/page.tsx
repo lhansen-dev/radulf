@@ -46,7 +46,7 @@ function statusDetails(card: BoardCard): { mark: string; label: string; detail: 
 function statusMark(card: BoardCard): { mark: string; detail: string; tone: string } {
   switch (card.status) {
     case "backlog":
-      return { mark: "○", detail: "Not scheduled", tone: "text-foreground/45" };
+      return { mark: "○", detail: "Not scheduled", tone: "text-muted" };
     case "todo":
       return { mark: "◎", detail: "Waiting for auto-mode", tone: "text-slate-300" };
     case "planning":
@@ -70,7 +70,7 @@ function statusMark(card: BoardCard): { mark: string; detail: string; tone: stri
     case "done":
       return { mark: "✓", detail: `${timeAgo(card.updatedAt)} ago`, tone: "text-green-300" };
     default:
-      return { mark: "—", detail: "No longer active", tone: "text-foreground/35" };
+      return { mark: "—", detail: "No longer active", tone: "text-muted" };
   }
 }
 
@@ -87,6 +87,8 @@ export default function WorkPage() {
     setAutoMode,
     autoApprove,
     setAutoApprove,
+    yoloMode,
+    setYoloMode,
     openPr,
     setOpenPr,
     improvementRuns,
@@ -250,7 +252,7 @@ export default function WorkPage() {
    * delivery hand authority away (merge without review; code leaving the
    * machine), so turning those ON asks first; turning anything off never does. */
   async function toggleSetting(
-    key: "autoMode" | "autoApprove" | "openPr",
+    key: "autoMode" | "autoApprove" | "yoloMode" | "openPr",
     current: boolean,
     setValue: (value: boolean) => void,
     confirmOn?: string,
@@ -271,6 +273,14 @@ export default function WorkPage() {
       on: autoApprove,
       onTone: "text-amber-300",
       toggle: () => toggleSetting("autoApprove", autoApprove, setAutoApprove, "Turn on auto-approve?\n\nAn evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you."),
+    },
+    {
+      label: "YOLO mode",
+      on: yoloMode,
+      onTone: "text-amber-300",
+      // Nothing stops to ask: the agents decide for themselves, plan review is
+      // skipped, and a blocked loop re-plans. Merging stays Auto-approve's call.
+      toggle: () => toggleSetting("yoloMode", yoloMode, setYoloMode),
     },
     {
       label: "Open pull requests",
@@ -303,7 +313,8 @@ export default function WorkPage() {
     restartTimeout.current = setTimeout(() => {
       if (restartPoll.current) clearInterval(restartPoll.current);
       setRestarting(false);
-      setError("Server did not return after restart.");
+      // Only `make dev` and a container restart policy bring the process back.
+      setError("The server stopped but did not come back. Under make start or next start nothing restarts it: start it again.");
     }, 60_000);
   }
 
@@ -319,7 +330,7 @@ export default function WorkPage() {
       <main className="mx-auto w-full max-w-[800px] px-4 pb-8 pt-5 sm:px-6 lg:pt-8" aria-labelledby="work-title">
         <header className="flex items-center gap-3">
           <div className="min-w-0 grow">
-            <p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground/35">Workspace</p>
+            <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">Workspace</p>
             <h1 id="work-title" tabIndex={-1} className="mt-0.5 text-2xl font-semibold tracking-tight">Work</h1>
           </div>
           <label className="sr-only" htmlFor="repo-scope">Repository scope</label>
@@ -335,14 +346,14 @@ export default function WorkPage() {
           <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-xl text-foreground/70" menuClassName="absolute right-0 z-30 mt-2 w-60 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="Work actions" summary="•••">
               {workspaceToggles.map((t) => (
                 <button key={t.label} type="button" onClick={() => void t.toggle()} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06]">
-                  {t.label} <span className={t.on ? t.onTone : "text-foreground/40"}>{t.on ? "On" : "Off"}</span>
+                  {t.label} <span className={t.on ? t.onTone : "text-muted"}>{t.on ? "On" : "Off"}</span>
                 </button>
               ))}
               <button type="button" onClick={() => setShowImprovementRun(true)} disabled={repos.length === 0} className="min-h-11 w-full rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] disabled:opacity-40">
                 Start improvement run
               </button>
           </DetailsMenu>
-          <button type="button" onClick={() => setShowNew(true)} className="hidden min-h-11 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-on-accent hover:bg-amber-500 lg:block">＋ New task</button>
+          <button type="button" onClick={() => setShowNew(true)} className="hidden min-h-11 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-on-accent hover:bg-amber-500 lg:block">+ New task</button>
         </header>
 
         <div className="mt-4">
@@ -359,10 +370,11 @@ export default function WorkPage() {
           />
         </div>
 
-        <div className="mt-3 flex items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-xs text-foreground/55">
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-foreground/[0.07] bg-foreground/[0.025] px-3 py-2 text-xs text-muted">
           <span className={`size-2 shrink-0 rounded-full ${autoMode ? "bg-green-400" : "bg-slate-500"}`} aria-hidden="true" />
           <span>Auto Mode {autoMode ? "is on · Todo tasks run automatically" : "is off"}</span>
           {autoApprove && <span className="text-amber-300">· Auto-approve is on · approved work merges without review</span>}
+          {yoloMode && <span className="text-amber-300">· YOLO mode is on · agents decide instead of asking you</span>}
           {openPr && <span className="text-amber-300">· Approved work is delivered as a pull request{autoApprove ? " (draft)" : ""}</span>}
           {!streamConnected && <span className="ml-auto text-amber-300">Offline · updates will resume</span>}
         </div>
@@ -391,9 +403,9 @@ export default function WorkPage() {
                 key={item.key}
                 onClick={() => updateScope(repoFilter, item.key, query)}
                 aria-current={view === item.key ? "page" : undefined}
-                className={`min-h-11 whitespace-nowrap rounded-full border px-3.5 text-sm ${view === item.key ? "border-amber-500/60 bg-amber-500/12 text-amber-200" : "border-foreground/10 bg-foreground/[0.03] text-foreground/55"}`}
+                className={`min-h-11 whitespace-nowrap rounded-full border px-3.5 text-sm ${view === item.key ? "border-amber-500/60 bg-amber-500/12 text-amber-200" : "border-foreground/10 bg-foreground/[0.03] text-muted"}`}
               >
-                {item.label} <span className="ml-1 tabular-nums text-foreground/40">{counts[item.key]}</span>
+                {item.label} <span className="ml-1 tabular-nums text-muted">{counts[item.key]}</span>
               </button>
             ))}
           </div>
@@ -407,7 +419,7 @@ export default function WorkPage() {
         ) : filteredEmpty ? (
           <div className="mt-8 rounded-xl border border-foreground/10 bg-foreground/[0.025] p-6 text-center">
             <h2 className="font-medium">{query.trim() ? `No tasks match “${query.trim()}”` : "No tasks in this view"}</h2>
-            <p className="mt-1 text-sm text-foreground/50">
+            <p className="mt-1 text-sm text-muted">
               {query.trim() ? "Search covers task titles and descriptions." : "Try another repository or return to the full feed."}
             </p>
             <button type="button" onClick={() => updateScope("", "overview", "")} className="mt-4 rounded-lg bg-foreground/10 px-4 text-sm">Clear filters</button>
@@ -447,7 +459,7 @@ export default function WorkPage() {
               </WorkSection>
             )}
             {showSection("backlog") && backlog.length > 0 && (
-              <WorkSection title="Backlog" count={backlog.length} tone="text-foreground/50">
+              <WorkSection title="Backlog" count={backlog.length} tone="text-muted">
                 {backlog.map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}
               </WorkSection>
             )}
@@ -458,10 +470,10 @@ export default function WorkPage() {
               view === "overview" && !query.trim() ? (
                 <details open={needs.length + active.length + queue.length + backlog.length === 0} className="group">
                   <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold uppercase tracking-[0.12em] text-green-300/80">
-                    Recently completed <span className="text-foreground/35">{Math.min(5, done.length)}</span><span className="ml-auto normal-case tracking-normal text-foreground/40 group-open:hidden">Show</span>
+                    Recently completed <span className="text-muted">{Math.min(5, done.length)}</span><span className="ml-auto normal-case tracking-normal text-muted group-open:hidden">Show</span>
                   </summary>
                   <div className="divide-y divide-white/[0.07] border-y border-foreground/[0.08]">{done.slice(0, 5).map((card) => <TaskRow key={card.id} card={card} repos={repos} {...rowActions} />)}</div>
-                  {done.length > 5 && <button type="button" onClick={() => updateScope(repoFilter, "done", query)} className="mt-2 min-h-11 text-sm text-foreground/55 underline">View all completed tasks</button>}
+                  {done.length > 5 && <button type="button" onClick={() => updateScope(repoFilter, "done", query)} className="mt-2 min-h-11 text-sm text-muted underline">View all completed tasks</button>}
                 </details>
               ) : (
                 <WorkSection title="Completed" count={done.length} tone="text-green-300">
@@ -483,7 +495,7 @@ function WorkSection({ title, count, tone, children }: { title: string; count: n
   return (
     <section aria-labelledby={`section-${title.replaceAll(" ", "-").toLowerCase()}`}>
       <h2 id={`section-${title.replaceAll(" ", "-").toLowerCase()}`} className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] ${tone}`}>
-        {title}<span className="text-foreground/35">{count}</span>
+        {title}<span className="text-muted">{count}</span>
       </h2>
       <div className="divide-y divide-white/[0.07] border-y border-foreground/[0.08]">{children}</div>
     </section>
@@ -510,11 +522,11 @@ function ImprovementRunRow({ run, repos, cards, onStop }: { run: ImprovementRun;
       <span className="mt-1 flex size-5 shrink-0 items-center justify-center text-sm font-bold text-amber-300" aria-hidden="true">◐</span>
       <div className="min-w-0 grow">
         <div className="flex min-w-0 items-start gap-2">
-          <span className="min-w-0 grow text-[0.95rem] font-medium leading-5 text-foreground/90">Improvement run <code className="text-xs text-foreground/60">{run.featureBranch}</code></span>
+          <span className="min-w-0 grow text-[0.95rem] font-medium leading-5 text-foreground/90">Improvement run <code className="text-xs text-muted">{run.featureBranch}</code></span>
           <span className="shrink-0 text-xs tabular-nums text-amber-300">{formatCountdown(run.deadlineAt, nowMs)}</span>
           <button type="button" onClick={() => onStop(run)} className="min-h-11 shrink-0 rounded-lg bg-foreground/10 px-3 text-sm font-semibold text-foreground/80 hover:bg-foreground/15">Stop</button>
         </div>
-        <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
+        <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">
           <span className="text-foreground/65">{repo?.name ?? run.repoId}</span> · {run.tasksSucceeded} task{run.tasksSucceeded === 1 ? "" : "s"} landed · {currentCard ? `Current: ${currentCard.title}` : "Proposing the next improvement…"}
         </p>
       </div>
@@ -536,6 +548,8 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   parentOf?: Map<string, BoardCard>;
 }) {
   const state = statusDetails(card);
+  // A long attention reason gets its own line below; the meta line would only clamp it.
+  const longReason = card.status === "needs_attention" && state.detail.length > 70;
   const epic = parentOf?.get(card.id);
   const repo = repos.find((r) => r.id === card.repoId);
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
@@ -559,7 +573,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           z-10 on the content wrapper, so they receive their own clicks natively — no
           closest()/stopPropagation delegation hack needed. */}
       <Link href={href} aria-hidden="true" tabIndex={-1} className="absolute inset-0" />
-      {position !== undefined && <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.04] text-xs tabular-nums text-foreground/40">{position}</span>}
+      {position !== undefined && <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.04] text-xs tabular-nums text-muted">{position}</span>}
       <span className={`mt-1 flex size-5 shrink-0 items-center justify-center text-sm font-bold ${state.tone}`} aria-hidden="true">{state.mark}</span>
       <div className="relative z-10 min-w-0 grow">
         <div className="flex min-w-0 items-start gap-2">
@@ -575,27 +589,40 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {card.status === "paused" && <button type="button" onClick={() => { void onAction(() => api(`/api/cards/${card.id}/resume`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-sky-500/15 px-3 text-sm font-medium text-sky-200 hover:bg-sky-500/25">▶ Continue</button>}
           {ACTIVE_STATUSES.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
-        <p className="mt-1 line-clamp-2 text-xs leading-5 text-foreground/48">
-          {epic && <><span className="text-cyan-300/80">↳ {epic.title}</span> · </>}<span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>} · {position ? `Queue position ${position}` : state.detail}
+        <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">
+          {epic && <><span className="text-cyan-300/80">↳ {epic.title}</span> · </>}<span className="text-foreground/65">{card.repoName}{branchLabel ? ` → ${branchLabel}` : ""}</span> · <span className={state.tone}>{state.label}</span>{RUNNING_STATUSES.includes(card.status) && <> <ActivityDot runId={card.latestRun?.id ?? null} /></>}{position ? ` · Queue position ${position}` : longReason ? null : ` · ${state.detail}`}
         </p>
-        {card.status === "looping" && (currentTask ? (
-          <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-xs text-foreground/40">
+        {card.status === "looping" && (currentTask ? (<>
+          {/* Every task before the current one is checked off — it is the
+              first unchecked item — so `number - 1` of `count` are done. */}
+          <div
+            role="progressbar"
+            aria-label="Tasks done"
+            aria-valuemin={0}
+            aria-valuemax={currentTask.count}
+            aria-valuenow={currentTask.number - 1}
+            aria-valuetext={`${currentTask.number - 1} of ${currentTask.count} tasks done`}
+            className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/10"
+          >
+            <div className="h-full bg-amber-400" style={{ width: `${Math.round(((currentTask.number - 1) / currentTask.count) * 100)}%` }} />
+          </div>
+          <p className="mt-1.5 flex flex-wrap items-baseline gap-x-2 text-xs text-muted">
             <span className="font-medium text-foreground/70">Task {currentTask.number}/{currentTask.count}</span>
             <span>{currentTask.left === 1 ? "last one" : `${currentTask.left} left`}</span>
             <span className="basis-full truncate">{currentTask.text}</span>
           </p>
-        ) : (
-          <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "Ralph is working through the current iteration"}</p>
+        </>) : (
+          <p className="mt-0.5 truncate text-xs text-muted">Latest activity: {card.latestRun?.exitReason || "Ralph is working through the current iteration"}</p>
         ))}
-        {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-foreground/40">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
-        {card.status === "needs_attention" && state.detail.length > 70 && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
+        {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-muted">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
+        {longReason && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
         {(onMove || card.status !== "todo") && (
           <div className="mt-1 flex min-h-11 items-center gap-1">
             {onMove && <>
-              <button type="button" disabled={!canMoveUp} onClick={() => onMove(-1)} aria-label={`Move ${card.title} up`} className="size-11 rounded-md text-lg text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↑</button>
-              <button type="button" disabled={!canMoveDown} onClick={() => onMove(1)} aria-label={`Move ${card.title} down`} className="size-11 rounded-md text-lg text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↓</button>
+              <button type="button" disabled={!canMoveUp} onClick={() => onMove(-1)} aria-label={`Move ${card.title} up`} className="size-11 rounded-md text-lg text-muted hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↑</button>
+              <button type="button" disabled={!canMoveDown} onClick={() => onMove(1)} aria-label={`Move ${card.title} down`} className="size-11 rounded-md text-lg text-muted hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-20">↓</button>
             </>}
-            <DetailsMenu detailsClassName="relative ml-auto" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-md text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground" menuClassName="absolute bottom-10 right-0 z-20 w-52 rounded-lg border border-foreground/10 bg-surface p-1 shadow-xl" ariaLabel={`More actions for ${card.title}`} summary="•••">
+            <DetailsMenu detailsClassName="relative ml-auto" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-md text-muted hover:bg-foreground/[0.06] hover:text-foreground" menuClassName="absolute bottom-10 right-0 z-20 w-52 rounded-lg border border-foreground/10 bg-surface p-1 shadow-xl" ariaLabel={`More actions for ${card.title}`} summary="•••">
                 <Link href={`/card/${card.id}`} className="flex min-h-11 items-center rounded-md px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
                 {PULLBACK_STATUSES.includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
                 {["backlog", "todo", "done"].includes(card.status) && <button type="button" onClick={remove} className="w-full rounded-md px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Delete task</button>}
@@ -619,7 +646,7 @@ function EpicRow({ group }: { group: EpicGroup }) {
       <span className="mt-1 flex size-5 shrink-0 items-center justify-center text-sm font-bold text-cyan-300" aria-hidden="true">▣</span>
       <div className="relative z-10 min-w-0 grow">
         <Link href={`/card/${epic.id}`} className="text-[0.95rem] font-medium leading-5 text-foreground/90 hover:underline">{epic.title}</Link>
-        <p className="mt-1 text-xs leading-5 text-foreground/48">
+        <p className="mt-1 text-xs leading-5 text-muted">
           <span className="text-foreground/65">{epic.repoName}</span> · <span className="text-cyan-300">Epic</span> · {done} of {tasks.length} done
           {running > 0 && ` · ${running} running`}{waiting > 0 && ` · ${waiting} need you`} · runs {{ ordered: "in order", parallel: "in parallel", graph: "as a graph" }[epic.runMode ?? "ordered"]}
         </p>
@@ -630,7 +657,7 @@ function EpicRow({ group }: { group: EpicGroup }) {
           const blockers = waitingOn(task, tasks, epic.runMode);
           if (blockers.length === 0) return null;
           return (
-            <p key={task.id} className="mt-1 truncate text-xs text-foreground/40">
+            <p key={task.id} className="mt-1 truncate text-xs text-muted">
               {task.title} · waiting on {blockers.map((blocker) => blocker.title).join(", ")}
             </p>
           );

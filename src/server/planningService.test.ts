@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrecheckReport } from "./acceptanceProbe";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
@@ -12,6 +12,11 @@ describe("planningDestination", () => {
     for (const v of [1, 2, -1]) {
       expect(planningDestination({ reviewPlanBeforeImplementation: v })).toBe("plan_review");
     }
+  });
+
+  it("skips plan review while YOLO mode is on", () => {
+    mocks.yoloMode = true;
+    expect(planningDestination({ reviewPlanBeforeImplementation: 1 })).toBe("ready");
   });
 });
 
@@ -115,6 +120,7 @@ const mocks = vi.hoisted(() => ({
   // The fixture worktree is not a real checkout; the guard would otherwise
   // report it as no longer sharing the repository's git dir.
   offRunBranchReason: vi.fn().mockResolvedValue(null),
+  yoloMode: false,
 }));
 
 vi.mock("./harness", async (importOriginal) => ({
@@ -146,6 +152,7 @@ vi.mock("./settings", async (importOriginal) => ({
       // Spec 30: the routing tests below expect a plan to go straight to
       // ready; a card opts into the critic explicitly where it is tested.
       planCriticMode: "off",
+      yoloMode: mocks.yoloMode,
     }),
 }));
 
@@ -163,12 +170,17 @@ const {
   clearPlannerArtifacts,
   renderPlanPrompt,
   writePlanRow,
+  YOLO_PLANNER_SECTION,
+  noListenSection,
+  networkSection,
 } = await import("./planningService");
 const { planStatePath } = await import("./bookkeeping");
 
 // Default the pre-check spy back to the real implementation for every test in
 // this file; the cancellation tests replace it with a promise they control.
+// YOLO mode is off unless a test turns it on.
 beforeEach(async () => {
+  mocks.yoloMode = false;
   const real = await vi.importActual<typeof import("./acceptanceProbe")>("./acceptanceProbe");
   mocks.precheckAcceptance.mockImplementation((opts) => real.precheckAcceptance(opts));
 });
@@ -436,6 +448,19 @@ describe("PlanningService.runPlanning", () => {
     // Any other loop ending is a retry, not a re-plan.
     loopRun("run-stalled", "stalled", null, "2026-09-21T16:30:00.000Z");
     expect(pendingReplanFeedback("card-loop-stop")).toContain("No Atlassian session in the sandbox.");
+  });
+
+  it("closes the questions escape hatch in the planner's prompt only while YOLO mode is on", async () => {
+    for (const yolo of [false, true]) {
+      mocks.yoloMode = yolo;
+      seedCard(`card-yolo-${yolo}`);
+      mockPlannerHarness(completeArtifacts);
+
+      await new PlanningService(makeDeps()).runPlanning(`card-yolo-${yolo}`);
+
+      const prompt = mocks.runHarness.mock.calls.at(-1)![0].prompt as string;
+      expect(prompt.includes(YOLO_PLANNER_SECTION)).toBe(yolo);
+    }
   });
 
   it("hands the scoping thread to the planner", async () => {
@@ -1051,6 +1076,190 @@ describe("PlanningService.runPlanning — retries inherit the failed attempt (sp
 
     expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "timeout", "planning timed out", expect.any(Object));
     expect(deps.moveCard).toHaveBeenCalledWith("card-dead", "planning", "needs_attention", "planning timed out");
+  });
+});
+
+describe("PlanningService.runPlanning — revising a sent-back plan in place (spec 32)", () => {
+  const reviewedPlan = {
+    planMd: "## Tasks\n- [ ] the reviewed task",
+    acceptanceCriteria: "- [ ] `test -f reviewed.txt` succeeds",
+    promptMd: "The reviewed loop prompt.",
+  };
+
+  beforeEach(() => {
+    db.delete(events).run();
+    db.delete(worktrees).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    db.delete(repos).run();
+    vi.clearAllMocks();
+    mocks.tryGit.mockResolvedValue({ ok: true, out: "" });
+    seedRepo();
+  });
+
+  // These runs point at plan rows, which the next block deletes without them.
+  afterEach(() => {
+    db.delete(events).run();
+    db.delete(runs).run();
+  });
+
+  /** Plan v1 and the run that sent it back, in a worktree the re-plan reuses. */
+  function seedSentBack(cardId: string, kind: "critique" | "evaluate") {
+    seedCard(cardId);
+    db.insert(plans)
+      .values({ id: `plan-${cardId}`, cardId, version: 1, ...reviewedPlan, createdAt: now() })
+      .run();
+    const worktreePath = path.join(testDataDir, "worktrees", `sent-back-${cardId}`);
+    fs.mkdirSync(path.join(worktreePath, ".ralph"), { recursive: true });
+    db.insert(runs)
+      .values({
+        id: `run-${kind}-${cardId}`,
+        cardId,
+        planId: `plan-${cardId}`,
+        kind,
+        status: "completed",
+        worktreePath,
+        branch: `ralph/${cardId}`,
+        baseBranch: "main",
+        exitReason: "revise",
+        feedback: "Task 1 never creates reviewed.txt.",
+        startedAt: "2026-10-04T10:00:00.000Z",
+        endedAt: "2026-10-04T10:01:00.000Z",
+      })
+      .run();
+    return worktreePath;
+  }
+
+  /** The `.ralph/` artifacts as the planner session found them. */
+  function captureArtifactsAtStart(onStart: (cwd: string) => Awaited<ReturnType<typeof mocks.runHarness>>) {
+    const seen: Record<string, string | null> = {};
+    mocks.runHarness.mockImplementationOnce(async ({ cwd }: { cwd: string }) => {
+      for (const name of ["PLAN.md", "CRITERIA.md", "PROMPT.md"]) {
+        const file = path.join(cwd, ".ralph", name);
+        seen[name] = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+      }
+      return onStart(cwd);
+    });
+    return seen;
+  }
+
+  it("seeds the plan the critic reviewed and asks for a revision of it", async () => {
+    const worktreePath = seedSentBack("card-critic-seed", "critique");
+    const seen = captureArtifactsAtStart((cwd) => {
+      fs.writeFileSync(path.join(cwd, ".ralph", "PLAN.md"), "## Tasks\n- [ ] the revised task\n");
+      return { timedOut: false, error: "", code: 0, lastText: "done" };
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-critic-seed");
+
+    expect(seen).toEqual({
+      "PLAN.md": `${reviewedPlan.planMd}\n`,
+      "CRITERIA.md": `${reviewedPlan.acceptanceCriteria}\n`,
+      "PROMPT.md": `${reviewedPlan.promptMd}\n`,
+    });
+    const prompt = mocks.runHarness.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("PLAN REVISION");
+    expect(prompt).toContain("Task 1 never creates reviewed.txt.");
+    expect(prompt).not.toContain("REVIEWER FEEDBACK");
+    const v2 = db.select().from(plans).where(eq(plans.cardId, "card-critic-seed")).all().find((p) => p.version === 2);
+    expect(v2).toMatchObject({
+      planMd: "## Tasks\n- [ ] the revised task",
+      acceptanceCriteria: reviewedPlan.acceptanceCriteria,
+      promptMd: reviewedPlan.promptMd,
+    });
+    // The seeded private artifacts leave the worktree like any planner's do.
+    expect(fs.existsSync(path.join(worktreePath, ".ralph", "PLAN.md"))).toBe(false);
+    expect(fs.existsSync(path.join(worktreePath, ".ralph", "CRITERIA.md"))).toBe(false);
+  });
+
+  it("starts from an empty .ralph/ after an evaluator revise, where code has changed under the plan", async () => {
+    seedSentBack("card-eval-fresh", "evaluate");
+    const seen = captureArtifactsAtStart((cwd) => {
+      for (const [name, content] of Object.entries(completeArtifacts)) {
+        fs.writeFileSync(path.join(cwd, ".ralph", name), content);
+      }
+      return { timedOut: false, error: "", code: 0, lastText: "done" };
+    });
+
+    await new PlanningService(makeDeps()).runPlanning("card-eval-fresh");
+
+    expect(seen).toEqual({ "PLAN.md": null, "CRITERIA.md": null, "PROMPT.md": null });
+    const prompt = mocks.runHarness.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("PREVIOUS ATTEMPT — REVIEWER FEEDBACK");
+    expect(prompt).not.toContain("PLAN REVISION");
+  });
+
+  it("does not take an untouched seed for a plan recovered after a timeout", async () => {
+    seedSentBack("card-seed-timeout", "critique");
+    captureArtifactsAtStart(() => ({ timedOut: true, stalled: false, error: "", code: 1, lastText: "" }));
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-seed-timeout");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "timeout", "planning timed out", expect.any(Object));
+    expect(deps.moveCard).toHaveBeenCalledWith("card-seed-timeout", "planning", "needs_attention", "planning timed out");
+    expect(db.select().from(plans).where(eq(plans.cardId, "card-seed-timeout")).all()).toHaveLength(1);
+    expect(countOf("plan.recovered_after_timeout")).toBe(0);
+  });
+
+  it("recovers a revision the watchdog killed after it had changed the plan", async () => {
+    seedSentBack("card-seed-late", "critique");
+    captureArtifactsAtStart((cwd) => {
+      fs.writeFileSync(path.join(cwd, ".ralph", "PLAN.md"), "## Tasks\n- [ ] the revised task\n");
+      return { timedOut: true, stalled: false, error: "", code: 1, lastText: "" };
+    });
+    const deps = makeDeps();
+
+    await new PlanningService(deps).runPlanning("card-seed-late");
+
+    expect(deps.finishRun).toHaveBeenCalledWith(expect.any(String), "completed", "plan artifacts written", expect.any(Object));
+    expect(countOf("plan.recovered_after_timeout")).toBe(1);
+  });
+
+  it("keeps the seeded PLAN.md and CRITERIA.md out of a questions commit", async () => {
+    const worktreePath = seedSentBack("card-seed-questions", "critique");
+    captureArtifactsAtStart((cwd) => {
+      fs.writeFileSync(path.join(cwd, ".ralph", "QUESTIONS.md"), "Which file should hold it?");
+      return { timedOut: false, error: "", code: 0, lastText: "NEEDS ATTENTION" };
+    });
+    const stagedPrivate: boolean[] = [];
+    mocks.tryGit.mockImplementation(async (_cwd: string, ...args: string[]) => {
+      if (args[0] === "add") {
+        stagedPrivate.push(
+          ["PLAN.md", "CRITERIA.md"].some((f) => fs.existsSync(path.join(worktreePath, ".ralph", f))),
+        );
+      }
+      return { ok: true, out: "" };
+    });
+
+    await new PlanningService(makeDeps()).runPlanning("card-seed-questions");
+
+    expect(stagedPrivate).toEqual([false]);
+  });
+});
+
+describe("noListenSection", () => {
+  it("warns only a sandboxed macOS run, where Seatbelt denies every bind", () => {
+    expect(noListenSection(true, "darwin")).toContain("listen EPERM");
+    expect(noListenSection(true, "darwin")).toContain("## Operator steps");
+    expect(noListenSection(true, "linux")).toBe("");
+    expect(noListenSection(false, "darwin")).toBe("");
+  });
+});
+
+describe("networkSection", () => {
+  it("lists the hosts the sandbox actually allows, extras included", () => {
+    const section = networkSection(true, "pypi.org\n\nfiles.pythonhosted.org\n");
+    expect(section).toContain("- registry.npmjs.org\n- pypi.org\n- files.pythonhosted.org\n");
+    expect(section).toContain("## Operator steps");
+  });
+
+  it("says the network is open when the sandbox is off", () => {
+    const section = networkSection(false, "pypi.org");
+    expect(section).toContain("open\nnetwork access");
+    expect(section).not.toContain("registry.npmjs.org");
   });
 });
 

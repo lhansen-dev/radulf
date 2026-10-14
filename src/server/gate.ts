@@ -1,6 +1,4 @@
 import { exec, type ChildProcess } from "node:child_process";
-import path from "node:path";
-import { ralphDirPath } from "./bookkeeping";
 import type { RunSandboxContext } from "./sandbox/context";
 import { runSandboxedCommand } from "./sandbox/srt";
 import { errorMessage } from "@/shared/errorMessage";
@@ -70,10 +68,6 @@ export type GateResult = {
   /** The tail of stdout and stderr together. */
   output: string;
 };
-
-export function gateFilePath(worktreePath: string): string {
-  return path.join(/* turbopackIgnore: true */ ralphDirPath(worktreePath), GATE_FILE);
-}
 
 function tail(text: string): string {
   const trimmed = text.trimEnd();

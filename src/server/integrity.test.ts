@@ -354,4 +354,10 @@ describe("repo integrity check (spec 14 L3 1g)", () => {
     removeBaseline("run-abc");
     expect(loadBaseline("run-abc")).toBeNull();
   });
+
+  it("refuses a corrupt baseline rather than reading it as no baseline", () => {
+    // null skips the pre-merge check, so a half-written file must not become null.
+    fs.writeFileSync(path.join(testDataDir, "data", "integrity", "run-torn.json"), '{"configHash":"ab');
+    expect(() => loadBaseline("run-torn")).toThrow(/unreadable/);
+  });
 });

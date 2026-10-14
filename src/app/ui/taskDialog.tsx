@@ -97,7 +97,7 @@ function ModelSelect({ label, providerId, value, setValue, models, inputId, data
   return (
     <div>
       <label htmlFor={inputId} className="block text-sm text-foreground/70">{label}</label>
-      <p className="mt-0.5 text-xs text-foreground/40">Provider: {providerLabel(providerId)}</p>
+      <p className="mt-0.5 text-xs text-muted">Provider: {providerLabel(providerId)}</p>
       <input
         id={inputId}
         value={value}
@@ -131,7 +131,7 @@ export function ModelChips<M extends ModelOption>({ models, value, onPick, title
 }) {
   if (models.length === 0) return null;
   if (models.length > MODEL_CHIP_LIMIT) {
-    return <p className={`text-xs text-foreground/40 ${dense ? "mt-1" : ""}`}>Type in the model field to search the list.</p>;
+    return <p className={`text-xs text-muted ${dense ? "mt-1" : ""}`}>Type in the model field to search the list.</p>;
   }
   return wrap(
     <div className={`flex flex-wrap ${dense ? "mt-1 gap-1" : "gap-2 pt-2"}`}>
@@ -141,7 +141,7 @@ export function ModelChips<M extends ModelOption>({ models, value, onPick, title
           type="button"
           onClick={() => onPick(model.value)}
           title={titleFor?.(model)}
-          className={`border text-xs ${dense ? "rounded px-2 py-1" : "max-w-full rounded-lg px-3 py-2 text-left break-words"} ${value === model.value ? "border-amber-500 text-amber-400" : "border-foreground/10 text-foreground/60 hover:text-foreground"}`}
+          className={`border text-xs ${dense ? "rounded px-2 py-1" : "max-w-full rounded-lg px-3 py-2 text-left break-words"} ${value === model.value ? "border-amber-500 text-amber-400" : "border-foreground/10 text-muted hover:text-foreground"}`}
         >
           {model.displayName}
         </button>
@@ -163,14 +163,17 @@ export function DialogShell({ titleId, title, closeLabel, onRequestClose, footer
   const dialogRef = useRef<HTMLDivElement>(null);
   const requestCloseRef = useRef(onRequestClose);
   useEffect(() => { requestCloseRef.current = onRequestClose; });
+  // Read during render: a child's autoFocus moves focus into the dialog at
+  // commit, before any effect here runs, and the invoker would be lost.
+  const [invoker] = useState(() => (typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null)));
 
   useEffect(() => {
-    const invoker = document.activeElement as HTMLElement | null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const dialog = dialogRef.current;
     const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary') ?? []);
-    focusable()[0]?.focus();
+    // Leave a child's autoFocus (the field to fill in) where it put focus.
+    if (!dialog?.contains(document.activeElement)) focusable()[0]?.focus();
     const keydown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); requestCloseRef.current(); }
       if (event.key === "Tab") {
@@ -184,14 +187,14 @@ export function DialogShell({ titleId, title, closeLabel, onRequestClose, footer
     };
     document.addEventListener("keydown", keydown);
     return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", keydown); invoker?.focus(); };
-  }, []);
+  }, [invoker]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4" onMouseDown={(event) => event.target === event.currentTarget && onRequestClose()}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} className="flex max-h-[min(92dvh,800px)] w-full flex-col rounded-t-2xl border border-foreground/10 bg-surface shadow-2xl sm:max-w-xl sm:rounded-2xl">
         <header className="flex shrink-0 items-center border-b border-foreground/10 px-4 py-3">
           <h2 id={titleId} className="grow text-lg font-semibold">{title}</h2>
-          <button type="button" onClick={onRequestClose} aria-label={closeLabel} className="grid size-11 place-items-center rounded-lg text-xl text-foreground/55 hover:bg-foreground/[0.06]">×</button>
+          <button type="button" onClick={onRequestClose} aria-label={closeLabel} className="grid size-11 place-items-center rounded-lg text-xl text-muted hover:bg-foreground/[0.06]">×</button>
         </header>
         <div className="min-h-0 grow space-y-4 overflow-y-auto p-4 sm:p-5">{children}</div>
         <footer className="flex shrink-0 justify-end gap-2 border-t border-foreground/10 bg-surface p-3 pb-[calc(.75rem+env(safe-area-inset-bottom))] sm:p-4">{footer}</footer>

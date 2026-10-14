@@ -17,6 +17,7 @@ import { CLONES_DIR, DATA_DIR, WORKTREES_DIR } from "@/db";
 import { errorMessage } from "@/shared/errorMessage";
 import { git } from "../git";
 import { isInsideOrEqual } from "./pathGuard";
+import type { SeatbeltProcessMarkers } from "./seatbeltReaper";
 import { createSerialQueue } from "./serialQueue";
 
 /**
@@ -71,7 +72,7 @@ export function credentialBackstopDenylist(): string[] {
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Firefox",
     "Library/Cookies",
-  ].map((p) => path.join(HOME, p));
+  ].map((p) => path.join(/* turbopackIgnore: true */ HOME, p));
 }
 
 /** System + toolchain install roots (spec §L1 read-allow table), per platform. */
@@ -171,6 +172,11 @@ export function buildFilesystemConfig(opts: {
   cacheRoot: string;
   repositoryRoots?: string[];
   cgroupProcsFile?: string;
+  /** macOS: the run's Seatbelt process markers (`seatbeltReaper.ts`). Only
+   * `marker` is re-allowed for reads; their directory, the run's private
+   * root, is read-denied so `negative` stays unreadable to this run even
+   * when that root lies outside `$HOME`. */
+  processMarkers?: SeatbeltProcessMarkers;
 }): FilesystemConfig {
   // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
   // run's own shared .git is re-allowed for reads through opts.gitCommonDir.
@@ -181,7 +187,11 @@ export function buildFilesystemConfig(opts: {
   const siblingRepositoryRoots = repositoryRoots.filter(
     (root) => !isInsideOrEqual(path.resolve(opts.worktree), path.resolve(root)),
   );
-  const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
+  const denyRead = [
+    ...protectedRoots,
+    ...credentialBackstopDenylist(),
+    ...(opts.processMarkers ? [path.dirname(opts.processMarkers.marker)] : []),
+  ];
   const rawAllowRead = [
     opts.worktree,
     opts.tmpdir,
@@ -191,6 +201,7 @@ export function buildFilesystemConfig(opts: {
     ...toolchainReadRootsFromPath(undefined, protectedRoots),
     ...toolchainHomeReAllows(),
     ...sandboxHelperReadRoots(),
+    ...(opts.processMarkers ? [opts.processMarkers.marker] : []),
   ];
   return {
     denyRead,
@@ -252,6 +263,7 @@ export function buildRunSandboxConfig(opts: {
   cacheRoot: string;
   repositoryRoots?: string[];
   cgroupProcsFile?: string;
+  processMarkers?: SeatbeltProcessMarkers;
   networkAllowlistText: string;
   /** Spec 14 opt-in (default off), macOS only: allow the trustd mach service so
    * Go-family tools (go, gh, gcloud, terraform, kubectl) can verify TLS certs —
@@ -280,6 +292,8 @@ function apparmorRestrictsUnprivilegedUserns(): boolean | null {
   try {
     const out = execFileSync("sysctl", ["-n", "kernel.apparmor_restrict_unprivileged_userns"], {
       encoding: "utf8",
+      // A missing key is the expected case off Ubuntu; don't print sysctl's complaint at every boot.
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     return out === "1";
   } catch {

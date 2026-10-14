@@ -46,8 +46,9 @@ export type SelectedTask = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Regex that matches a task marker line (must start at column 0). */
-const TASK_MARKER_RE = /^-\s*\[([ xX])\]\s+(.*)$/;
+/** Regex that matches a task marker line (must start at column 0). `[^\n]`
+ * rather than `.` so a CRLF plan's trailing `\r` still matches. */
+const TASK_MARKER_RE = /^-\s*\[([ xX])\]\s+([^\n]*)$/;
 
 /**
  * Same marker as TASK_MARKER_RE, split into (prefix, char, suffix) so
@@ -55,7 +56,7 @@ const TASK_MARKER_RE = /^-\s*\[([ xX])\]\s+(.*)$/;
  * whitespace the author used — used only there, kept next to
  * TASK_MARKER_RE so the two stay in sync.
  */
-const MARKER_SPLIT_RE = /^(-\s*\[)([ xX])(\]\s+.*)$/;
+const MARKER_SPLIT_RE = /^(-\s*\[)([ xX])(\]\s+[^\n]*)$/;
 
 /** Returns true when the trimmed line is exactly `## Tasks`. */
 function isTasksHeading(line: string): boolean {

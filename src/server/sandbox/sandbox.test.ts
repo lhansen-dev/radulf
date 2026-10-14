@@ -314,7 +314,8 @@ describe("cgroup plan (spec 14 L3 1e — unit level; enforcement is checklist #9
     expect(files.join()).not.toMatch(/nproc|rlimit/i);
   });
 
-  it("returns an enforceable cgroup only after required limits verify", () => {
+  // setupRunCgroup is Linux-only and returns null everywhere else.
+  it.skipIf(process.platform !== "linux")("returns an enforceable cgroup only after required limits verify", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cgroup-"));
     const plan = cgroupPlanForRun("verified", root);
     fs.mkdirSync(plan.dir, { recursive: true });

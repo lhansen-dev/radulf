@@ -82,6 +82,8 @@ VOLUME /var/lib/radulf
 
 WORKDIR /app
 COPY --from=build --chown=node:node /app/package.json /app/next.config.ts ./
+# next start loads next.config.ts, which imports the trace sanitizer's root list.
+COPY --from=build --chown=node:node /app/scripts/sanitize-next-traces.mjs ./scripts/
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/.next ./.next
 COPY --from=build --chown=node:node /app/dist ./dist

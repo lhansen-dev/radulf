@@ -14,7 +14,7 @@ export function DocsNav({ activeSlug }: { activeSlug?: string }) {
         if (groupDocs.length === 0) return null;
         return (
           <div key={group} className="flex flex-col gap-1">
-            <p className="px-2 text-[0.68rem] font-medium uppercase tracking-[0.14em] text-foreground/35">
+            <p className="px-2 text-[0.68rem] font-medium uppercase tracking-[0.14em] text-muted">
               {group}
             </p>
             {groupDocs.map((doc) => {
@@ -28,7 +28,7 @@ export function DocsNav({ activeSlug }: { activeSlug?: string }) {
                   className={`rounded-md px-2 py-1.5 leading-snug transition-colors ${
                     active
                       ? "bg-accent/10 font-medium text-accent"
-                      : "text-foreground/60 hover:bg-foreground/5 hover:text-foreground/85"
+                      : "text-muted hover:bg-foreground/5 hover:text-foreground/85"
                   }`}
                 >
                   {doc.title}

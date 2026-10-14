@@ -1,13 +1,13 @@
 export default function LoginPage() {
   return (
-    <div className="flex items-center justify-center min-h-screen">
+    <main className="flex items-center justify-center min-h-screen">
       <form
         method="post"
         action="/api/auth/login"
         className="flex flex-col items-center gap-4 p-8 bg-surface rounded-lg shadow-lg"
       >
         <h1 className="text-2xl font-semibold">Radulf</h1>
-        <p className="text-sm text-foreground/60">
+        <p className="text-sm text-muted">
           Enter the password to sign in
         </p>
         <input
@@ -25,6 +25,6 @@ export default function LoginPage() {
           Sign in
         </button>
       </form>
-    </div>
+    </main>
   );
 }

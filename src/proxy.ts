@@ -4,7 +4,7 @@
  * When RADULF_AUTH_PASSWORD_HASH is unset, loopback requests pass without a
  * session. Foreign Host headers are rejected to block DNS rebinding.
  *
- * Uses only Web Crypto (no fs, no bcrypt) — the HMAC secret is read from
+ * Uses Web Crypto, not bcrypt — the HMAC secret is read from
  * process.env.RADULF_AUTH_SECRET, populated at boot by ensureAuthSecret().
  */
 

@@ -1,10 +1,14 @@
 /**
- * Edge-safe session helpers (Web Crypto only — no fs, no bcrypt).
+ * Session helpers (Web Crypto for signing, no bcrypt). The proxy that calls
+ * them runs on the Node.js runtime (Next 16's default for proxy.ts).
  *
  * The HMAC secret is read from process.env.RADULF_AUTH_SECRET at runtime.
  * ensureAuthSecret() (in authSecret.ts, Node-only) populates that env var at
- * boot via instrumentation.ts.
+ * boot via instrumentation.ts, along with RADULF_SESSIONS_NOT_BEFORE_FILE,
+ * the revocation stamp logout writes.
  */
+import { readFile } from "node:fs/promises";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 export const SESSION_COOKIE = "radulf_session";
 export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -35,6 +39,9 @@ export async function verifySession(value: string): Promise<boolean> {
   const sigB64 = value.slice(dot + 1);
 
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return false;
+  // Every session is signed for exactly SESSION_MAX_AGE_MS, so its issue time
+  // is recoverable without a new cookie format.
+  if (expiresAtMs - SESSION_MAX_AGE_MS <= (await sessionsNotBefore())) return false;
 
   // A cookie whose signature is not valid base64 is an invalid session, not a
   // server error: `atob` throws on a stray character, and this runs inside the
@@ -49,6 +56,55 @@ export async function verifySession(value: string): Promise<boolean> {
   }
 
   return constantTimeEqual(new Uint8Array(await hmac(expiresAtMs)), signature);
+}
+
+/**
+ * Void every session issued up to now, in every process sharing this data
+ * directory. Logout calls it: the cookie is a bearer token, so clearing it in
+ * one browser did nothing about a copy of it anywhere else, and the only
+ * other way out was deleting data/auth-secret, which also strands every
+ * stored provider key.
+ */
+export async function revokeSessions(now = Date.now()): Promise<void> {
+  const file = process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
+  if (!file) return;
+  // Reuse the crash-safe SQLite file lock: every process must read the last
+  // stamp and replace it under the same lock, so delayed logouts cannot lower it.
+  const { withMigrationLock } = await import("@/db/migrationLock");
+  withMigrationLock(`${file}.lock`, () => {
+    let previous = 0;
+    try {
+      previous = parseRevocationStamp(readFileSync(file, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, String(Math.max(previous, now)), { mode: 0o600, flag: "wx" });
+      renameSync(temporary, file);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  });
+}
+
+function parseRevocationStamp(text: string): number {
+  const stamp = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(stamp) || stamp < 0) {
+    throw new Error("invalid session revocation stamp");
+  }
+  return stamp;
+}
+
+/** Missing means nothing was revoked; corrupt or unreadable means deny all. */
+async function sessionsNotBefore(): Promise<number> {
+  const file = process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
+  if (!file) return 0;
+  try {
+    return parseRevocationStamp(await readFile(file, "utf8"));
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : Infinity;
+  }
 }
 
 /**
@@ -121,12 +177,7 @@ export function isAllowedOrigin(origin: string | null, host: string): boolean {
       if (url.origin === allowed.origin) return true;
     }
 
-    const addressed = new URL(`http://${host}`);
-    const loopback =
-      addressed.hostname === "localhost" ||
-      addressed.hostname === "127.0.0.1" ||
-      addressed.hostname === "[::1]";
-    return loopback && url.host === addressed.host;
+    return isAllowedUnauthenticatedHost(host) && url.host === new URL(`http://${host}`).host;
   } catch {
     return false;
   }

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ClientError } from "./clientError";
 import {
   fetchJiraChildren,
   fetchJiraIssue,
@@ -196,6 +197,13 @@ describe("fetchJiraIssue", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(
       `Basic ${Buffer.from("me@example.com:tok").toString("base64")}`,
     );
+  });
+
+  it("blames the base URL, not the request, when a 200 is not JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<!DOCTYPE html><title>Log in</title>")));
+    const failure = fetchJiraIssue("DEV-1", configured);
+    await expect(failure).rejects.toBeInstanceOf(ClientError);
+    await expect(failure).rejects.toThrow(/not JSON: check the Jira base URL/);
   });
 
   it("names the site when Jira is unreachable", async () => {

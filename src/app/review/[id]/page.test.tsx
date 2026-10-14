@@ -18,6 +18,7 @@ vi.mock("next/link", () => ({
 vi.mock("next/navigation", () => ({
   useParams: () => ({ id: "c1" }),
   useRouter: () => ({ push: () => {} }),
+  usePathname: () => "/review/c1",
 }));
 
 /** jsdom has no EventSource, and the page subscribes to the event stream for

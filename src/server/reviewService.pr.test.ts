@@ -481,7 +481,7 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
 
   it("8c — Retry merge from needs_attention lands a card whose PR already exists in done", async () => {
     seedCard("card-retry", 1);
-    const run = seedRun("card-retry");
+    seedRun("card-retry");
     db.update(cards)
       .set({ status: "needs_attention" })
       .where(eq(cards.id, "card-retry"))

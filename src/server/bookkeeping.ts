@@ -61,14 +61,37 @@ export function readPlanState(cardId: string): string | null {
  * task source — PLAN.md is orchestrator-private and never enters the
  * worktree, so there is nothing else to consult.  Returns `""` when
  * `firstUnchecked` returns `null` or `planMd` is empty/missing — never
- * throws.
+ * throws. With `yolo`, the operator is away: the agent decides what it can
+ * itself and blocks only on what it cannot do at all.
  */
-export function taskInjectionBlock(planMd: string): string {
+export function taskInjectionBlock(planMd: string, yolo = false): string {
   if (!planMd) return "";
   const task = firstUnchecked(planMd);
   if (task === null) return "";
 
   const lastTaskFlag = task.isLastUnchecked ? "LAST_TASK=true" : "LAST_TASK=false";
+
+  const blocker = yolo
+    ? [
+        "YOLO mode is on: the operator is away and nobody will answer until the",
+        "card is finished. Make any decision the task leaves open yourself — pick",
+        "the most conservative reasonable option and say what you chose in",
+        "`.ralph/ITERATION_DONE`. If the task's check cannot run in this sandbox",
+        "because its tool is missing (e.g. `vitest: command not found`) rather",
+        "than because your change is wrong, skip that check, say so in",
+        "`.ralph/ITERATION_DONE`, and carry on. Only if the task cannot be done at",
+        "all without credentials, network access, a logged-in session, or a",
+        "prerequisite that does not exist, write the concrete blocker into",
+        "`.ralph/BLOCKED` instead and stop. Never invent evidence.",
+      ]
+    : [
+        "If the task cannot be done for a reason outside your control — credentials,",
+        "network access, or a logged-in session you do not have, a decision only the",
+        "operator can make, a prerequisite that does not exist — do NOT write",
+        "`.ralph/ITERATION_DONE`. Write the concrete blocker and what the operator",
+        "must supply into `.ralph/BLOCKED` and stop. Never invent evidence or mark",
+        "the task complete.",
+      ];
 
   return [
     "## Your assigned task",
@@ -83,12 +106,7 @@ export function taskInjectionBlock(planMd: string): string {
     "The orchestrator tracks completion. Run only the targeted check named in",
     "your assigned task.",
     "",
-    "If the task cannot be done for a reason outside your control — credentials,",
-    "network access, or a logged-in session you do not have, a decision only the",
-    "operator can make, a prerequisite that does not exist — do NOT write",
-    "`.ralph/ITERATION_DONE`. Write the concrete blocker and what the operator",
-    "must supply into `.ralph/BLOCKED` and stop. Never invent evidence or mark",
-    "the task complete.",
+    ...blocker,
     "",
     "---",
   ].join("\n");
@@ -102,8 +120,8 @@ export function taskInjectionBlock(planMd: string): string {
  * orchestrator checks for an unchecked task before every iteration, so a
  * plan that yields no task here is a caller bug — this throws.
  */
-export function buildLoopPrompt(promptMd: string, planMd: string): string {
-  const block = taskInjectionBlock(planMd);
+export function buildLoopPrompt(promptMd: string, planMd: string, yolo = false): string {
+  const block = taskInjectionBlock(planMd, yolo);
   if (!block) {
     throw new Error(
       "buildLoopPrompt: plan checklist has no unchecked task — the orchestrator must not start an iteration without one",

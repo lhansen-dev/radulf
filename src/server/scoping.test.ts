@@ -15,6 +15,7 @@ vi.mock("./settings", () => ({
     scopingProvider: "openrouter",
     scopingModel: "scoping-model",
     scopingReasoningLevel: "high",
+    scopingTimeoutMinutes: 7,
   }),
 }));
 
@@ -262,6 +263,7 @@ describe("the scoping thread", () => {
       model: "scoping-model",
       reasoningLevel: "high",
       cwd: repoPath,
+      timeoutMs: 7 * 60 * 1000,
       readOnly: true,
     });
     expect(opts.role).toBeUndefined();

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { createWebSearchTool, MAX_QUERY_CHARS, MAX_CALLS_PER_RUN } from "./webSearch";
 
 /** The execute contract needs a ctx; the Brave tool never touches it. */
-const CTX = {} as ExtensionContext;
+const CTX = {} as ExtensionToolContext;
 
 function run(tool: ReturnType<typeof createWebSearchTool>, query: string, count?: number) {
   return tool.execute("call-1", { query, count }, undefined, undefined, CTX);

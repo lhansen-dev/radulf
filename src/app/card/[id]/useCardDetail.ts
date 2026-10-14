@@ -99,6 +99,8 @@ export type CardDetailData = {
     evaluator: { provider: string; model: string | null; reasoningLevel: string };
     /** Spec 30: the plan critic. Absent on responses cached before it existed. */
     critic?: { provider: string; model: string | null; reasoningLevel: string };
+    /** Spec 17: scoping and breakdown turns. Absent on older cached responses. */
+    scoping?: { provider: string; model: string | null; reasoningLevel: string };
   };
   /** The card's scoping thread, oldest first. Absent on older cached responses. */
   scoping?: ScopingMessage[];

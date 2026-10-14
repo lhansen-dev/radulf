@@ -15,7 +15,7 @@ import { gitRaw, offRunBranchReason, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { listScopingMessages, type ScopingMessage } from "./scoping";
-import { planningDestination } from "./planningService";
+import { networkSection, noListenSection, planningDestination } from "./planningService";
 import { PRECHECK_REVISE_EXIT } from "./acceptanceProbe";
 import {
   circuitOpenReason,
@@ -33,6 +33,10 @@ import {
  * back through planning, so letting each keep its own budget would double the
  * ping-pong the cap exists to prevent. */
 export const MAX_CRITIC_REVISIONS = 2;
+
+/** A critique run's exit reason when it said `revise` past the cap, so the
+ * plan went on unchanged. */
+export const CRITIC_LIMIT_EXIT = "revise — revision limit reached";
 
 /** Where the critic writes its verdict, relative to the worktree's .ralph/. */
 export const CRITIQUE_FILE = "CRITIQUE.md";
@@ -254,7 +258,10 @@ export class PlanCriticService {
           planMd: plan.planMd,
           criteriaMd: plan.acceptanceCriteria,
           promptMd: plan.promptMd,
-        }) + renderDeadlineSection("critic", new Date(), timeoutMs);
+        }) +
+        noListenSection(settings.sandboxEnabled) +
+        networkSection(settings.sandboxEnabled, settings.sandboxNetworkAllowlist) +
+        renderDeadlineSection("critic", new Date(), timeoutMs);
       const result = await runWithTranscript({
         runId,
         file: "critique.jsonl",
@@ -331,8 +338,13 @@ export class PlanCriticService {
       // Counted before this run's exit reason is set, so it excludes this run.
       const { critic, precheck } = consecutivePlanRevisions(cardId);
       if (critic + precheck >= MAX_CRITIC_REVISIONS) {
-        deps.finishRun(runId, "completed", "revise — revision limit reached", telemetry);
-        deps.moveCard(cardId, "planning", "plan_review", "plan critic revision limit — escalated to plan review");
+        deps.finishRun(runId, "completed", CRITIC_LIMIT_EXIT, telemetry);
+        // YOLO mode: nobody is there to review it, so the latest plan runs.
+        if (getSettings().yoloMode) {
+          deps.moveCard(cardId, "planning", "ready", "plan critic revision limit — YOLO mode runs the latest plan");
+        } else {
+          deps.moveCard(cardId, "planning", "plan_review", "plan critic revision limit — escalated to plan review");
+        }
         return;
       }
       deps.finishRun(runId, "completed", "revise", telemetry);

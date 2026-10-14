@@ -69,7 +69,7 @@ It returns a `RunSandboxContext`:
 | `commandPrefix` | Preamble prepended to every agent bash command with ulimits and the Linux cgroup join. |
 | `srtConfig` | This run's L1 filesystem + network policy — **present only when `sandboxEnabled`** and a `cwd` was passed. Its *absence* is the explicit signal "do not L1-wrap this run." |
 | `diskLimitMechanism` | The real disk bound in force, stamped on the run row. |
-| `reap()` / `cleanup()` | Kill parent-recorded process groups, sweep the Linux cgroup, then tear down the cgroup and delete `root`. |
+| `reap()` / `cleanup()` | Kill parent-recorded process groups, sweep the Linux cgroup or (macOS) every process under this run's Seatbelt profile, then tear down the cgroup and delete `root`. |
 
 The context is threaded to the harness via `RunHarnessOpts.runContext` and
 consumed in `createRalphSession` / `spawnHook` (`src/server/harness/pi.ts`).
@@ -199,6 +199,17 @@ traffic never goes through agent bash — the pi SDK calls providers in-process
 - `SSH_AUTH_SOCK` is dropped from the agent env by L3 (denying `~/.ssh` stops
   *reading* the key; the agent socket would let a process *use* it without
   reading — both are required).
+- **Listening on a port is denied on macOS, loopback included.** srt's
+  `allowLocalBinding` is not set; on macOS it would also allow outbound
+  connections to every localhost port, which includes Radulf's own API and any
+  local model server. A dev or preview server, Playwright's `webServer`, Vitest
+  browser mode, and a plain `vitest run` whose config defines a browser project
+  all fail with `listen EPERM`. On macOS, sandboxed planner and critic runs are
+  told this (`noListenSection`), so such commands go under the plan's Operator
+  steps instead of becoming checks. The evaluator is told too
+  (`noListenEvaluatorSection`): a criterion that fails this way becomes an
+  operator verification finding, not a `revise`. Linux runs get a private
+  network namespace and are not told.
 
 ---
 
@@ -319,9 +330,16 @@ Before every in-process file tool, after every gate command, and at run end,
 `ctx.reap()` kills each recorded group. On Linux it also sweeps and verifies
 the run cgroup, which catches descendants that created a new session. The
 Linux sandbox PID namespace provides the same lifecycle boundary when a
-delegated cgroup is unavailable. A protected run without either boundary
-fails closed before any privileged file tool, repository mutation, or
-artifact write after command execution. This applies to protected runs only.
+delegated cgroup is unavailable. On macOS the boundary is the Seatbelt
+profile, which every descendant inherits through `setsid` and reparenting:
+[`seatbeltReaper.ts`](../src/server/sandbox/seatbeltReaper.ts) scans every
+process with `sandbox_check` and kills those that may read the run's private
+`process-marker` but not its sibling `process-negative`. Only this run's
+profile allows that combination, and the agent can delete neither file. A
+small C helper does the scan. It is compiled on first use into `data/bin/`,
+so sandboxed runs on macOS need the Xcode Command Line Tools. A protected run
+without any of these boundaries fails closed before any privileged file tool,
+repository mutation, or artifact write after command execution. This applies to protected runs only.
 Disabling sandboxing retains the documented loss of containment.
 Gate reaping happens before trusted code writes `GATE.md`. Run-end reaping
 happens before the integrity check and merge. A surviving process could
@@ -481,7 +499,7 @@ only via the human-facing `/api/settings` route. The disk-limit env vars
   [`src/server/sandbox/sandbox.test.ts`](../src/server/sandbox/sandbox.test.ts) —
   env allowlist, disk watchdog, apfs-quota parsing, pgid placement, reaping.
   [`src/server/sandbox/pathGuard.test.ts`](../src/server/sandbox/pathGuard.test.ts)
-  and [`guardedTools.test.ts`](../src/server/harness/guardedTools.test.ts) — L2.
+  and [`l2Acceptance.test.ts`](../src/server/harness/l2Acceptance.test.ts) — L2.
 - **Positive control** (the real proof): a full plan→loop→evaluate→review card
   with the sandbox on and `$HOME` denied, including a real dependency fetch,
   passing end to end. Verified live for **Node** (`npm install` against the real

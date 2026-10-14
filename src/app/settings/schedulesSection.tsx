@@ -82,7 +82,7 @@ export function SchedulesSection({ repos }: { repos: Repo[] }) {
     <section id="schedules" className={sectionCls}>
       <div>
         <h3 className="text-base font-semibold">Schedules</h3>
-        <p className="mt-1.5 text-sm leading-relaxed text-foreground/55">
+        <p className="mt-1.5 text-sm leading-relaxed text-muted">
           Work the queue, or start an improvement run, on a cron. A schedule starts only what its
           button starts, and every firing lands on the board as an event. A tick the server was
           down for is missed rather than replayed.
@@ -90,9 +90,9 @@ export function SchedulesSection({ repos }: { repos: Repo[] }) {
       </div>
 
       {rows === null ? (
-        <p className="text-sm text-foreground/50">Loading…</p>
+        <p className="text-sm text-muted">Loading…</p>
       ) : rows.length === 0 ? (
-        <p className="text-sm text-foreground/50">
+        <p className="text-sm text-muted">
           Nothing is scheduled. Radulf starts work only when you do.
         </p>
       ) : (
@@ -101,12 +101,12 @@ export function SchedulesSection({ repos }: { repos: Repo[] }) {
             <li key={row.id} className="flex flex-col gap-2 rounded-lg border border-foreground/10 p-3">
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className="text-sm font-medium">{KIND_LABEL[row.kind]}</span>
-                <span className="text-xs text-foreground/50">{repoName(row.repoId)}</span>
+                <span className="text-xs text-muted">{repoName(row.repoId)}</span>
                 <code className="rounded bg-foreground/[0.06] px-1.5 py-0.5 text-xs">{row.cron}</code>
-                {!row.enabled && <span className="text-xs text-foreground/40">suspended</span>}
+                {!row.enabled && <span className="text-xs text-muted">suspended</span>}
               </div>
               {row.upcoming.length > 0 && (
-                <p className="text-xs text-foreground/50">
+                <p className="text-xs text-muted">
                   Next {fmt(row.upcoming[0])}
                   {row.upcoming.length > 1 && `, then ${row.upcoming.slice(1).map(fmt).join(", ")}`}
                 </p>
@@ -118,7 +118,7 @@ export function SchedulesSection({ repos }: { repos: Repo[] }) {
               )}
               {row.kind === "improvement-run" && <ConfigLine config={row.config} />}
               {row.lastFiredAt && (
-                <p className={`text-xs ${row.lastError ? "text-red-300" : "text-foreground/45"}`}>
+                <p className={`text-xs ${row.lastError ? "text-red-300" : "text-muted"}`}>
                   Last fired {fmt(row.lastFiredAt)} · {row.lastError ?? row.lastResult ?? "no result recorded"}
                 </p>
               )}
@@ -182,7 +182,7 @@ function ConfigLine({ config }: { config: string }) {
     parsed.budgetMinutes ? `${parsed.budgetMinutes} minute budget` : null,
     parsed.focusPrompt ? `focus: ${parsed.focusPrompt}` : null,
   ].filter(Boolean);
-  return parts.length > 0 ? <p className="text-xs text-foreground/50">{parts.join(" · ")}</p> : null;
+  return parts.length > 0 ? <p className="text-xs text-muted">{parts.join(" · ")}</p> : null;
 }
 
 function AddSchedule({
@@ -250,13 +250,13 @@ function AddSchedule({
             key={example.cron}
             type="button"
             onClick={() => setCron(example.cron)}
-            className="rounded-full border border-foreground/15 px-2.5 py-1 text-xs text-foreground/60 hover:text-foreground"
+            className="rounded-full border border-foreground/15 px-2.5 py-1 text-xs text-muted hover:text-foreground"
           >
             {example.label}
           </button>
         ))}
       </div>
-      <p className="text-xs text-foreground/45">
+      <p className="text-xs text-muted">
         Five fields, in this machine&rsquo;s time zone: minute, hour, day of month, month, day of
         week. The times it will fire are shown once it is saved.
       </p>

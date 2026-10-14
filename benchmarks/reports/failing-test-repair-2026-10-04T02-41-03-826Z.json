@@ -1,0 +1,321 @@
+{
+  "meta": {
+    "fixture": "failing-test-repair",
+    "seeded": true,
+    "baselineSha": "154de07e1117f298eb78f445d30bd681db45a3d8",
+    "baseUrl": "http://localhost:3000",
+    "repo": "2kICzZSihfBmNuDSJeym3",
+    "provider": "chatgpt",
+    "model": "gpt-6-luna",
+    "plannerModel": "claude-opus-5",
+    "numRuns": 3,
+    "maxIterations": null,
+    "timeoutMinutes": null,
+    "autoReview": true,
+    "timestamp": "2026-10-04T02:55:35.925Z"
+  },
+  "perRun": [
+    {
+      "run": 1,
+      "cardId": "O1bUvNM9xvvReuLcJdE52",
+      "runId": "ranR2YWuyG-TqmzCXHtJl",
+      "runCount": 3,
+      "status": "done",
+      "reviewOutcome": "done",
+      "totalWallTimeMs": 359098,
+      "iterationCount": 1,
+      "totalModelTurns": 31,
+      "p50IterationTimeMs": 15793,
+      "p90IterationTimeMs": 15793,
+      "iterationWallTimesMs": [
+        15793
+      ],
+      "sumPromptTokens": 6731,
+      "sumCachedInputTokens": 355576,
+      "sumCompletionTokens": 30827,
+      "sumReasoningTokens": 18886,
+      "sumCostUsd": 0.9921861600000002,
+      "costByKind": {
+        "evaluate": 0.1700803,
+        "loop": 0.0009253600000000001,
+        "plan": 0.8211805000000001
+      },
+      "criteriaPass": false,
+      "criteriaResults": [
+        {
+          "command": "node --test",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        }
+      ],
+      "diffStat": "git diff exited ENOENT",
+      "diffCorrectness": false,
+      "worktreePath": "/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-D0e3V50S1SwceoPxkh4zQ"
+    },
+    {
+      "run": 2,
+      "cardId": "8XHb34__Y7MYdUeJTBjoS",
+      "runId": "hMAdN37wALD5gq2-JFDMP",
+      "runCount": 3,
+      "status": "done",
+      "reviewOutcome": "done",
+      "totalWallTimeMs": 296211,
+      "iterationCount": 2,
+      "totalModelTurns": 33,
+      "p50IterationTimeMs": 11093,
+      "p90IterationTimeMs": 12090,
+      "iterationWallTimesMs": [
+        11093,
+        12090
+      ],
+      "sumPromptTokens": 15614,
+      "sumCachedInputTokens": 271788,
+      "sumCompletionTokens": 24237,
+      "sumReasoningTokens": 10950,
+      "sumCostUsd": 0.7392191100000001,
+      "costByKind": {
+        "evaluate": 0.15029720000000002,
+        "loop": 0.0020026600000000003,
+        "plan": 0.58691925
+      },
+      "criteriaPass": false,
+      "criteriaResults": [
+        {
+          "command": "node --test",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)\"",
+          "passed": false,
+          "exitCode": "ENOENT",
+          "stdout": "",
+          "stderr": ""
+        }
+      ],
+      "diffStat": "git diff exited ENOENT",
+      "diffCorrectness": false,
+      "worktreePath": "/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-uXPrbtxcUZ-2CKlWkSwnH"
+    },
+    {
+      "run": 3,
+      "cardId": "VclHyqOvGzcbTCVslzb3q",
+      "runId": null,
+      "runCount": 1,
+      "status": "needs_attention",
+      "reviewOutcome": "needs_attention",
+      "totalWallTimeMs": 202201,
+      "iterationCount": 0,
+      "totalModelTurns": 8,
+      "p50IterationTimeMs": null,
+      "p90IterationTimeMs": null,
+      "iterationWallTimesMs": [],
+      "sumPromptTokens": 10,
+      "sumCachedInputTokens": 20896,
+      "sumCompletionTokens": 15886,
+      "sumReasoningTokens": 10998,
+      "sumCostUsd": 0.5164792500000001,
+      "costByKind": {
+        "plan": 0.5164792500000001
+      },
+      "criteriaPass": false,
+      "criteriaResults": [
+        {
+          "command": "node --test",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "TAP version 13\n# Subtest: subtotal sums price times quantity\nok 1 - subtotal sums price times quantity\n  ---\n  duration_ms: 0.492333\n  type: 'test'\n  ...\n# Subtest: an item with no quantity counts as one\nnot ok 2 - an item with no quantity counts as one\n  ---\n  duration_ms: 0.522833\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-uXvlMrudby43q4reWj40I/test/cart.test.js:15:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 20\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 20\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-uXvlMrudby43q4reWj40I/test/cart.test.js:17:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n# Subtest: no discount below one hundred dollars\nok 3 - no discount below one hundred dollars\n  ---\n  duration_ms: 0.112834\n  type: 'test'\n  ...\n# Subtest: ten percent discount at exactly one hundred dollars\nnot ok 4 - ten percent discount at exactly one hundred dollars\n  ---\n  duration_ms: 0.090458\n  type: 'test'\n  location: '/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-uXvlMrudby43q4reWj40I/test/cart.test.js:25:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    0 !== 10\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 10\n  actual: 0\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-uXvlMrudby43q4reWj40I/test/cart.test.js:27:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: ten percent discount above one hundred dollars\nok 5 - ten percent discount above one hundred dollars\n  ---\n  duration_ms: 0.11275\n  type: 'test'\n  ...\n# Subtest: flat shipping under the free-shipping threshold\nok 6 - flat shipping under the free-shipping threshold\n  ---\n  duration_ms: 0.051583\n  type: 'test'\n  ...\n# Subtest: free shipping from fifty dollars discounted\nok 7 - free shipping from fifty dollars discounted\n  ---\n  duration_ms: 0.103917\n  type: 'test'\n  ...\n# Subtest: empty cart is all zeros\nok 8 - empty cart is all zeros\n  ---\n  duration_ms: 0.498875\n  type: 'test'\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 6\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 57.538375\n",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)\"",
+          "passed": false,
+          "exitCode": 1,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        },
+        {
+          "command": "node -e \"const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)\"",
+          "passed": true,
+          "exitCode": 0,
+          "stdout": "",
+          "stderr": "Error opening /private/var/select/sh: Operation not permitted\n"
+        }
+      ],
+      "diffStat": "",
+      "diffCorrectness": false,
+      "worktreePath": "/Users/h0gballs/worktrees/repair-the-failing-cart-pricing-tests-uXvlMrudby43q4reWj40I"
+    }
+  ],
+  "aggregated": {
+    "totalWallTimeMs": {
+      "count": 3,
+      "min": 202201,
+      "max": 359098,
+      "median": 296211,
+      "p50": 296211,
+      "p90": 359098,
+      "mean": 285836.6666666667
+    },
+    "iterationCount": {
+      "count": 3,
+      "min": 0,
+      "max": 2,
+      "median": 1,
+      "p50": 1,
+      "p90": 2,
+      "mean": 1
+    },
+    "totalModelTurns": {
+      "count": 3,
+      "min": 8,
+      "max": 33,
+      "median": 31,
+      "p50": 31,
+      "p90": 33,
+      "mean": 24
+    },
+    "p50IterationTimeMs": {
+      "count": 2,
+      "min": 11093,
+      "max": 15793,
+      "median": 11093,
+      "p50": 11093,
+      "p90": 15793,
+      "mean": 13443
+    },
+    "p90IterationTimeMs": {
+      "count": 2,
+      "min": 12090,
+      "max": 15793,
+      "median": 12090,
+      "p50": 12090,
+      "p90": 15793,
+      "mean": 13941.5
+    },
+    "sumPromptTokens": {
+      "count": 3,
+      "min": 10,
+      "max": 15614,
+      "median": 6731,
+      "p50": 6731,
+      "p90": 15614,
+      "mean": 7451.666666666667
+    },
+    "sumCachedInputTokens": {
+      "count": 3,
+      "min": 20896,
+      "max": 355576,
+      "median": 271788,
+      "p50": 271788,
+      "p90": 355576,
+      "mean": 216086.66666666666
+    },
+    "sumCompletionTokens": {
+      "count": 3,
+      "min": 15886,
+      "max": 30827,
+      "median": 24237,
+      "p50": 24237,
+      "p90": 30827,
+      "mean": 23650
+    },
+    "sumReasoningTokens": {
+      "count": 3,
+      "min": 10950,
+      "max": 18886,
+      "median": 10998,
+      "p50": 10998,
+      "p90": 18886,
+      "mean": 13611.333333333334
+    },
+    "sumCostUsd": {
+      "count": 3,
+      "min": 0.5164792500000001,
+      "max": 0.9921861600000002,
+      "median": 0.7392191100000001,
+      "p50": 0.7392191100000001,
+      "p90": 0.9921861600000002,
+      "mean": 0.7492948400000001
+    },
+    "criteriaPassRate": 0,
+    "diffCorrectnessRate": 0,
+    "criteriaPasses": [
+      false,
+      false,
+      false
+    ],
+    "diffCorrectnesses": [
+      false,
+      false,
+      false
+    ]
+  }
+}

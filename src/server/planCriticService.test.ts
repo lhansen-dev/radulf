@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   // The fixture worktree is not a real checkout; the guard would otherwise
   // report it as no longer sharing the repository's git dir.
   offRunBranchReason: vi.fn().mockResolvedValue(null),
+  yoloMode: false,
 }));
 
 vi.mock("./harness", async (importOriginal) => ({
@@ -32,6 +33,7 @@ vi.mock("./settings", async (importOriginal) => ({
       criticPromptTemplate: "Critique {{TITLE}}\n{{PLAN_MD}}\n.ralph/CRITIQUE.md",
       criticTimeoutMinutes: 7,
       sandboxEnabled: false,
+      yoloMode: mocks.yoloMode,
     }),
 }));
 
@@ -370,6 +372,7 @@ describe("PlanCriticService.runCritic", () => {
     db.delete(repos).run();
     vi.clearAllMocks();
     mocks.offRunBranchReason.mockResolvedValue(null);
+    mocks.yoloMode = false;
     mockGit();
     seedRepo();
   });
@@ -447,6 +450,26 @@ describe("PlanCriticService.runCritic", () => {
       "planning",
       "plan_review",
       expect.stringContaining("revision limit"),
+    );
+    expect(deps.replan).not.toHaveBeenCalled();
+  });
+
+  it("runs the latest plan instead of escalating once the limit is hit in YOLO mode", async () => {
+    mocks.yoloMode = true;
+    seedPlannedCard("card-limit-yolo", 1);
+    seedPriorRevise("card-limit-yolo", 1);
+    seedPriorRevise("card-limit-yolo", 2);
+    mockCriticHarness({ [`.ralph/${CRITIQUE_FILE}`]: "VERDICT: revise\nStill wrong.\n" });
+    const deps = makeDeps();
+
+    await new PlanCriticService(deps).runCritic("card-limit-yolo");
+
+    // Even a card that opted into plan review: nobody is there to do it.
+    expect(deps.moveCard).toHaveBeenCalledWith(
+      "card-limit-yolo",
+      "planning",
+      "ready",
+      expect.stringContaining("YOLO mode"),
     );
     expect(deps.replan).not.toHaveBeenCalled();
   });

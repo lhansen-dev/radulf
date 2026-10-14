@@ -61,15 +61,15 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
       closeLabel="Close improvement run setup"
       onRequestClose={requestClose}
       footer={<>
-        <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
+        <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-muted">Cancel</button>
         <button type="button" onClick={create} disabled={busy || !repoId || !baseBranch || !budgetValid} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Starting…" : "Start run"}</button>
       </>}
     >
-          {repos.length === 0 ? <p className="text-sm text-foreground/60">Register a repository in <Link href="/settings" className="text-amber-300 underline">Settings</Link> first.</p> : <>
-            <p className="text-sm text-foreground/60">Ralph will repeatedly propose one improvement, drive it through the pipeline with auto-approve, and accumulate every approved change on a new feature branch — until the time budget runs out or three tasks fail in a row.</p>
+          {repos.length === 0 ? <p className="text-sm text-muted">Register a repository in <Link href="/settings" className="text-amber-300 underline">Settings</Link> first.</p> : <>
+            <p className="text-sm text-muted">Ralph will repeatedly propose one improvement, drive it through the pipeline with auto-approve, and accumulate every approved change on a new feature branch — until the time budget runs out or three tasks fail in a row.</p>
             <RepoSelect repos={repos} value={repoId} onChange={(value) => { setRepoId(value); setBranches([]); }} />
             {repoId && <label className="block text-sm text-foreground/70">Base branch<select value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} className={dialogInputCls}>{branches.length === 0 && <option value="">Loading…</option>}{branches.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
-            <p className="text-xs text-foreground/40">A new branch is cut off the base branch (<code>ralph/improve-&lt;timestamp&gt;</code>) — every task in this run merges into it, never into the base branch directly.</p>
+            <p className="text-xs text-muted">A new branch is cut off the base branch (<code>ralph/improve-&lt;timestamp&gt;</code>) — every task in this run merges into it, never into the base branch directly.</p>
             <label className="block text-sm text-foreground/70">Focus (optional)<textarea value={focusPrompt} onChange={(e) => setFocusPrompt(e.target.value)} rows={4} className={`${dialogInputCls} py-2 text-sm`} placeholder="Steer what Ralph should focus on, e.g. 'improve test coverage' or 'clean up the API layer'. Leave blank to let Ralph decide." /></label>
             <div className="grid grid-cols-[1fr_auto] gap-3">
               <label className="text-sm text-foreground/70">Time budget<input type="number" min="1" value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} className={dialogInputCls} /></label>
@@ -80,7 +80,7 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
               <div className="space-y-3 border-t border-foreground/10 p-3">
                 <RoleModelSelects providers={providers} models={models} values={roleModels} onChange={setRoleModels} idPrefix="improve-" />
                 <RunLimitInputs perTask maxIterations={maxIterations} setMaxIterations={setMaxIterations} timeoutMinutes={timeoutMinutes} setTimeoutMinutes={setTimeoutMinutes} />
-                <p className="text-xs text-foreground/40">Each task&rsquo;s timeout is additionally capped at whatever time budget remains in the run.</p>
+                <p className="text-xs text-muted">Each task&rsquo;s timeout is additionally capped at whatever time budget remains in the run.</p>
               </div>
             </details>
             <p className="text-xs text-amber-400/80">Every task in this run auto-approves on evaluator pass — merges straight into the feature branch with no human review. Integrity and merge-conflict checks still run.</p>

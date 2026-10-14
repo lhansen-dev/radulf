@@ -53,7 +53,9 @@ const MAX_ENTRIES = 500;
  */
 export function browsableRoot(configured: string): string {
   const trimmed = configured.trim();
-  return realpathBestEffort(trimmed || os.homedir());
+  // Settings accepts `~/code`; path.resolve would read it as `<cwd>/~/code`.
+  const expanded = trimmed === "~" || trimmed.startsWith("~/") ? os.homedir() + trimmed.slice(1) : trimmed;
+  return realpathBestEffort(expanded || os.homedir());
 }
 
 /**

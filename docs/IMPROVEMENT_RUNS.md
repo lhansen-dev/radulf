@@ -262,13 +262,12 @@ and `tasksSucceeded` only ever move in lockstep with a card's own events.
   per-card reasoning columns — only `plannerReasoning` reaches the proposer pass.
   Loop and evaluator reasoning stay on the global Settings value. The dialog
   therefore doesn't offer these fields; the API accepts them.
-- **Pausing the in-flight card stalls the run.** The driver waits for a
-  *terminal* status (`done` / `needs_attention` / `abandoned`), and `paused`
-  isn't one — so a paused improvement card holds the run open past its deadline
-  until you continue or abandon it. (Improvement cards never hit the plan-review
-  gate: they're created with `reviewPlanBeforeImplementation = 0`.)
-- **`stopped` vs `completed` is in-process.** The stop *intent* lives in memory,
-  so a restart between Stop and the run actually ending labels it `completed`.
-  Cosmetic only — the soft-stop itself is persisted as `deadlineAt`.
+- **A card waiting on you stalls the run.** The driver waits for a *terminal*
+  status (`done` / `needs_attention` / `abandoned`), and neither `paused` nor
+  `review` is one. So a paused improvement card, or one left in In Review —
+  the evaluator hit its revision limit, raised a `critical` finding, or the
+  auto-approve merge failed — holds the run open past its deadline until you
+  approve, reject, continue or abandon it. (Improvement cards never hit the
+  plan-review gate: they're created with `reviewPlanBeforeImplementation = 0`.)
 - **Improvement cards never touch Backlog.** They're created directly as `todo`
   with `source: "agent"`, so they don't queue behind your own work.

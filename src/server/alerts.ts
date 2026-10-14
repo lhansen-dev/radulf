@@ -46,12 +46,14 @@ export async function postAlert(alert: Alert): Promise<void> {
   const url = getSettings().alertWebhookUrl.trim();
   if (!url) return;
   try {
-    await fetch(url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(alert),
       signal: AbortSignal.timeout(ALERT_TIMEOUT_MS),
     });
+    // A wrong URL or token answers 4xx, not a network error; without this it failed silently forever.
+    if (!res.ok) console.warn(`alert webhook failed: responded ${res.status}`);
   } catch (e) {
     console.warn(`alert webhook failed: ${errorMessage(e)}`);
   }

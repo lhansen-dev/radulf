@@ -664,7 +664,13 @@ describeOnHost("acceptance-test table — individual rows verified directly (spe
         cacheRoot: worktree,
         networkAllowlistText: "",
       }),
-      (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]),
+      // Agent git never reads the user's gitconfig (agentEnv in
+      // harness/types.ts). Without this, macOS Seatbelt answers git's read of
+      // ~/.gitconfig with EPERM, which git treats as fatal, so every git row
+      // here would fail before reaching the mechanism it is testing.
+      (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped], {
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+      }),
     );
   }
 

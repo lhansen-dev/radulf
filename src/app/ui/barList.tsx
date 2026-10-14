@@ -8,6 +8,8 @@ export function BarList({
   /** Render the trailing value — defaults to the raw number. */
   format?: (value: number) => string;
 }) {
+  // An empty card read as a broken chart, e.g. Cost per Run when every provider is unpriced.
+  if (data.length === 0) return <p className="text-xs text-muted">Nothing recorded in this range.</p>;
   const max = Math.max(1, ...data.map((d) => d.value));
 
   return (

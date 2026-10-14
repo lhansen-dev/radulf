@@ -10,6 +10,8 @@ import type { RolloutTarget } from "../../server/analytics";
 import { errorMessage } from "@/shared/errorMessage";
 import { formatDurationMs } from "../ui/formatDuration";
 import { formatPercent } from "../ui/formatPercent";
+import { ModelBrowser, ModelField, useProviderModels } from "../ui/modelPicker";
+import { providerLabel } from "@/shared/providers";
 
 export default function BenchmarksPage() {
   const [data, setData] = useState<BenchmarksResponse | null>(null);
@@ -18,9 +20,17 @@ export default function BenchmarksPage() {
 
   const [fixture, setFixture] = useState("");
   const [repoId, setRepoId] = useState("");
+  // Cards carry model overrides but no provider: the orchestrator always runs
+  // a card on the providers configured in Settings, so these are read-only.
   const [provider, setProvider] = useState("");
+  const [plannerProvider, setPlannerProvider] = useState("");
+  const [evaluatorProvider, setEvaluatorProvider] = useState("");
+  const [criticProvider, setCriticProvider] = useState("");
   const [model, setModel] = useState("");
   const [plannerModel, setPlannerModel] = useState("");
+  const [evaluatorModel, setEvaluatorModel] = useState("");
+  const [criticModel, setCriticModel] = useState("");
+  const [planCritic, setPlanCritic] = useState(false);
   const [runs, setRuns] = useState(3);
   const [autoReview, setAutoReview] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -35,9 +45,20 @@ export default function BenchmarksPage() {
   useEffect(() => {
     refresh();
     api<Repo[]>("/api/repos").then(setRepos).catch(() => {});
-    api<{ plannerModel?: string; loopProvider?: string; loopModel?: string }>("/api/settings")
+    api<{
+      plannerProvider?: string; plannerModel?: string; loopProvider?: string; loopModel?: string;
+      evaluatorProvider?: string; evaluatorModel?: string; criticProvider?: string; criticModel?: string;
+      planCriticMode?: string;
+    }>("/api/settings")
       .then((s) => {
-        setProvider((p) => p || s.loopProvider || "");
+        setProvider(s.loopProvider ?? "");
+        setPlannerProvider(s.plannerProvider ?? "");
+        setEvaluatorProvider(s.evaluatorProvider ?? "");
+        setCriticProvider(s.criticProvider ?? "");
+        setEvaluatorModel((m) => m || s.evaluatorModel || "");
+        setCriticModel((m) => m || s.criticModel || "");
+        // A benchmark card is top-level, so "breakdown" mode would skip the critic.
+        setPlanCritic(s.planCriticMode === "always");
         setModel((m) => m || s.loopModel || "");
         setPlannerModel((m) => m || s.plannerModel || "");
       })
@@ -57,7 +78,7 @@ export default function BenchmarksPage() {
     setError("");
     try {
       const res = await api<{ reportFile: string; logFile: string }>("/api/benchmarks", {
-        json: { fixture, repoId, provider, model, plannerModel, runs, autoReview },
+        json: { fixture, repoId, provider, model, plannerModel, evaluatorModel, criticModel, planCritic, runs, autoReview },
       });
       setNotice(`Benchmark started — report will land in benchmarks/reports/${res.reportFile}`);
       refresh();
@@ -70,7 +91,7 @@ export default function BenchmarksPage() {
 
   if (!data) {
     return (
-      <AppShell><div className="flex min-h-[70dvh] items-center justify-center text-sm text-foreground/40" aria-label="Loading benchmarks">
+      <AppShell><div className="flex min-h-[70dvh] items-center justify-center text-sm text-muted" aria-label="Loading benchmarks">
         {error ? `Failed to load benchmarks: ${error}` : "Loading benchmarks…"}
       </div></AppShell>
     );
@@ -83,7 +104,7 @@ export default function BenchmarksPage() {
     <AppShell>
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col">
       <header className="border-b border-foreground/10 px-4 py-4 sm:px-6">
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground/35">Loop performance evidence</p>
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">Loop performance evidence</p>
         <h1 tabIndex={-1} className="mt-0.5 text-2xl font-semibold tracking-tight">Benchmarks</h1>
       </header>
 
@@ -96,7 +117,7 @@ export default function BenchmarksPage() {
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <h2 className="text-sm font-medium text-foreground/70">
               Rollout acceptance{" "}
-              <span className="text-foreground/40">
+              <span className="text-muted">
                 (most recent {rollout.windowSize} of {rollout.requiredSampleSize} required iterations)
               </span>
             </h2>
@@ -106,7 +127,7 @@ export default function BenchmarksPage() {
                   ? "bg-emerald-500/15 text-emerald-400"
                   : rollout.accepted === false
                     ? "bg-red-500/15 text-red-400"
-                    : "bg-foreground/10 text-foreground/50"
+                    : "bg-foreground/10 text-foreground/80"
               }`}
             >
               {rollout.accepted === true
@@ -121,7 +142,7 @@ export default function BenchmarksPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase tracking-wider text-foreground/40">
+                <tr className="text-left text-xs uppercase tracking-wider text-muted">
                   <th className="pb-2 pr-4 font-medium">Target</th>
                   <th className="pb-2 pr-4 text-right font-medium">Measured</th>
                   <th className="pb-2 pr-4 text-right font-medium">Threshold</th>
@@ -143,7 +164,7 @@ export default function BenchmarksPage() {
                       ) : t.pass === false ? (
                         <span className="text-red-400">miss</span>
                       ) : (
-                        <span className="text-foreground/40">—</span>
+                        <span className="text-muted">—</span>
                       )}
                     </td>
                   </tr>
@@ -151,7 +172,7 @@ export default function BenchmarksPage() {
               </tbody>
             </table>
           </div>
-          <p className="mt-3 text-xs text-foreground/40">
+          <p className="mt-3 text-xs text-muted">
             Spec 11 also requires no regression in criteria-pass / review-approval rate versus the
             baseline cohort — compare cohorts on the <Link href="/analytics" className="underline">Activity</Link> screen.
           </p>
@@ -160,7 +181,7 @@ export default function BenchmarksPage() {
         {/* Launch a benchmark */}
         <section aria-label="Run a benchmark" className="rounded-lg border border-foreground/10 bg-foreground/[0.03] p-4">
           <h2 className="mb-1 text-sm font-medium text-foreground/70">Run a benchmark</h2>
-          <p className="mb-3 text-xs text-foreground/40">
+          <p className="mb-3 text-xs text-muted">
             Runs the shared runner against a fixture. Use a throwaway repo: seeded fixtures commit
             their seed into it and every run hard-resets to the pre-benchmark baseline. Parallel
             loops are disabled for the duration and restored afterwards.
@@ -192,32 +213,7 @@ export default function BenchmarksPage() {
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
-            <label className="sr-only" htmlFor="bench-provider">Loop provider</label>
-            <input
-              id="bench-provider"
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              placeholder="loop provider"
-              className="w-36 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
-            <label className="sr-only" htmlFor="bench-model">Loop model</label>
-            <input
-              id="bench-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="loop model"
-              className="w-56 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
-            <label className="sr-only" htmlFor="bench-planner-model">Planner model</label>
-            <input
-              id="bench-planner-model"
-              value={plannerModel}
-              onChange={(e) => setPlannerModel(e.target.value)}
-              placeholder="planner model (defaults to loop)"
-              title="Uses the planner provider configured in Settings"
-              className="w-64 rounded-lg border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/70"
-            />
-            <label className="flex items-center gap-2 text-sm text-foreground/60" htmlFor="bench-runs">
+            <label className="flex items-center gap-2 text-sm text-muted" htmlFor="bench-runs">
               Runs
               <input
                 id="bench-runs"
@@ -229,7 +225,7 @@ export default function BenchmarksPage() {
                 className="w-16 rounded-lg border border-foreground/10 bg-foreground/5 px-2 py-2 text-sm text-foreground/70"
               />
             </label>
-            <label className="flex items-center gap-2 text-sm text-foreground/60">
+            <label className="flex items-center gap-2 text-sm text-muted">
               <input
                 type="checkbox"
                 checked={autoReview}
@@ -237,6 +233,41 @@ export default function BenchmarksPage() {
               />
               Auto-review
             </label>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <BenchModelPicker
+              id="bench-model"
+              title="Loop model"
+              provider={provider}
+              model={model}
+              onModel={setModel}
+            />
+            <BenchModelPicker
+              id="bench-planner-model"
+              title="Planner model"
+              provider={plannerProvider}
+              model={plannerModel}
+              onModel={setPlannerModel}
+            />
+            <BenchModelPicker
+              id="bench-evaluator-model"
+              title="Evaluator model"
+              provider={evaluatorProvider}
+              model={evaluatorModel}
+              onModel={setEvaluatorModel}
+            />
+            <BenchModelPicker
+              id="bench-critic-model"
+              title="Plan critic model"
+              provider={criticProvider}
+              model={criticModel}
+              onModel={setCriticModel}
+              enabled={planCritic}
+              onEnabled={setPlanCritic}
+              enableLabel="Run the plan critic"
+            />
+          </div>
+          <div className="mt-3 flex justify-end">
             <button
               type="button"
               disabled={!canStart}
@@ -253,10 +284,10 @@ export default function BenchmarksPage() {
           <section aria-label="Benchmarks in progress" className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-4">
             <h2 className="mb-2 text-sm font-medium text-foreground/70">In progress</h2>
             {data.active.map((a) => (
-              <div key={a.logFile} className="border-t border-foreground/5 py-2 text-sm text-foreground/60 first:border-t-0">
+              <div key={a.logFile} className="border-t border-foreground/5 py-2 text-sm text-muted first:border-t-0">
                 <span className="font-medium text-foreground/80">{a.logFile}</span>
-                <span className="ml-2 text-xs text-foreground/40">started {new Date(a.startedAt).toLocaleString()}</span>
-                {a.lastLine && <div className="mt-1 truncate font-mono text-xs text-foreground/40">{a.lastLine}</div>}
+                <span className="ml-2 text-xs text-muted">started {new Date(a.startedAt).toLocaleString()}</span>
+                {a.lastLine && <div className="mt-1 truncate font-mono text-xs text-muted">{a.lastLine}</div>}
               </div>
             ))}
           </section>
@@ -265,15 +296,15 @@ export default function BenchmarksPage() {
         {/* Reports */}
         <section aria-label="Benchmark reports" className="rounded-lg border border-foreground/10 bg-foreground/[0.03] p-4">
           <h2 className="mb-3 text-sm font-medium text-foreground/70">
-            Reports <span className="text-foreground/40">(benchmarks/reports/)</span>
+            Reports <span className="text-muted">(benchmarks/reports/)</span>
           </h2>
           {data.reports.length === 0 ? (
-            <p className="text-sm text-foreground/40">No reports yet — run a benchmark above or via the CLI runner.</p>
+            <p className="text-sm text-muted">No reports yet — run a benchmark above or via the CLI runner.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-xs uppercase tracking-wider text-foreground/40">
+                  <tr className="text-left text-xs uppercase tracking-wider text-muted">
                     <th className="pb-2 pr-4 font-medium">Fixture</th>
                     <th className="pb-2 pr-4 font-medium">Loop / planner</th>
                     <th className="pb-2 pr-4 text-right font-medium">Runs</th>
@@ -293,14 +324,19 @@ export default function BenchmarksPage() {
                       </td>
                       <td className="py-2 pr-4">
                         <div>{r.provider ?? "—"} / {r.model ?? "—"}</div>
-                        <div className="text-xs text-foreground/40">planner: {r.plannerModel ?? "—"}</div>
+                        <div className="text-xs text-muted">planner: {r.plannerModel ?? "—"}</div>
+                        {r.evaluatorModel && (
+                          <div className="text-xs text-muted">
+                            evaluator: {r.evaluatorModel} · critic: {r.planCritic ? r.criticModel ?? "default" : "off"}
+                          </div>
+                        )}
                       </td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.numRuns ?? "—"}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtRate(r.criteriaPassRate)}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtRate(r.diffCorrectnessRate)}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{fmtMs(r.medianWallTimeMs)}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{formatCostUsd(r.medianCostUsd)}</td>
-                      <td className="py-2 text-right text-xs text-foreground/40">
+                      <td className="py-2 text-right text-xs text-muted">
                         {r.timestamp ? new Date(r.timestamp).toLocaleString() : "—"}
                       </td>
                     </tr>
@@ -314,14 +350,14 @@ export default function BenchmarksPage() {
         {/* Corpus */}
         <section aria-label="Fixture corpus" className="rounded-lg border border-foreground/10 bg-foreground/[0.03] p-4">
           <h2 className="mb-3 text-sm font-medium text-foreground/70">
-            Fixture corpus <span className="text-foreground/40">(benchmarks/)</span>
+            Fixture corpus <span className="text-muted">(benchmarks/)</span>
           </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {data.fixtures.map((f) => (
               <div key={f.name} className="rounded-lg border border-foreground/10 bg-foreground/[0.02] p-3">
                 <p className="text-sm font-medium text-foreground/80">{f.name}</p>
-                <p className="mt-0.5 text-sm text-foreground/50">{f.title}</p>
-                <p className="mt-1 text-xs text-foreground/40">
+                <p className="mt-0.5 text-sm text-muted">{f.title}</p>
+                <p className="mt-1 text-xs text-muted">
                   {f.criteriaCount} machine-checkable criteria · {f.seeded ? "seeded existing-codebase" : "greenfield"}
                 </p>
               </div>
@@ -331,6 +367,55 @@ export default function BenchmarksPage() {
       </main>
     </div>
     </AppShell>
+  );
+}
+
+/** The Settings model picker, locked to the provider Settings assigns the role.
+ * With `onEnabled`, the role can be switched off and the picker hides. */
+function BenchModelPicker({ id, title, provider, model, onModel, enabled = true, onEnabled, enableLabel }: {
+  id: string;
+  title: string;
+  provider: string;
+  model: string;
+  onModel: (m: string) => void;
+  enabled?: boolean;
+  onEnabled?: (on: boolean) => void;
+  enableLabel?: string;
+}) {
+  const { models, status, setStatus, load } = useProviderModels(provider);
+  return (
+    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.02] p-3">
+      {onEnabled && (
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          <input type="checkbox" checked={enabled} onChange={(e) => onEnabled(e.target.checked)} />
+          {enableLabel}
+        </label>
+      )}
+      <p className="text-xs text-muted">
+        Provider: {provider ? providerLabel(provider) : "…"} ·{" "}
+        <Link href="/settings#models" className="underline">change in Settings</Link>
+      </p>
+      {enabled && (
+        <>
+          <div className="min-w-0 text-sm text-foreground/70">
+            <ModelField
+              id={id}
+              label={title}
+              provider={provider}
+              model={model}
+              onModel={onModel}
+              models={models}
+              onLoadModels={() => {
+                setStatus("Loading models…");
+                void load(provider, true);
+              }}
+              loadTitle="Refresh available models"
+            />
+          </div>
+          <ModelBrowser model={model} onModel={onModel} models={models} status={status} />
+        </>
+      )}
+    </div>
   );
 }
 

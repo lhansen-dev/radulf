@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import { eq, max, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, cards, repos, runs, now } from "@/db";
@@ -31,7 +32,7 @@ function currentTask(cardId: string) {
 }
 
 /** Board payload: every card plus what its column badge needs. */
-export async function GET() {
+export async function GET(req?: Request) {
   const settings = getSettings();
   const allCards = db.select().from(cards).all();
   const allRepos = new Map(db.select().from(repos).all().map((r) => [r.id, r]));
@@ -76,7 +77,23 @@ export async function GET() {
       ),
     };
   });
-  return json(out);
+  // Next does not compress route-handler responses, and every open board
+  // refetches this whole list (descriptions included, for search) on each
+  // card, run and iteration event, while Done cards are never pruned.
+  const encodings = req?.headers.get("accept-encoding")?.split(",").map((entry) => {
+    const [name, ...parameters] = entry.trim().toLowerCase().split(";");
+    const quality = parameters.find((parameter) => parameter.trim().startsWith("q="));
+    return { name: name.trim(), quality: quality === undefined ? 1 : Number(quality.trim().slice(2)) };
+  }) ?? [];
+  const gzip = encodings.find((encoding) => encoding.name === "gzip") ?? encodings.find((encoding) => encoding.name === "*");
+  if (gzip && gzip.quality > 0 && gzip.quality <= 1) {
+    return new Response(gzipSync(JSON.stringify(out)), {
+      headers: { "content-type": "application/json", "content-encoding": "gzip", vary: "accept-encoding" },
+    });
+  }
+  const response = json(out);
+  response.headers.set("vary", "accept-encoding");
+  return response;
 }
 
 export async function POST(req: Request) {

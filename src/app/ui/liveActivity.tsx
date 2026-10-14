@@ -41,15 +41,15 @@ export function LiveActivity({
   return (
     <p
       role="status"
-      className={`flex flex-wrap items-center gap-x-2 text-xs ${quiet ? "text-amber-300/80" : "text-foreground/60"} ${className}`}
+      className={`flex flex-wrap items-center gap-x-2 text-xs ${quiet ? "text-amber-300/80" : "text-muted"} ${className}`}
     >
       <span
         aria-hidden="true"
         className={`inline-block size-2 shrink-0 rounded-full ${quiet ? "bg-amber-400" : "animate-pulse bg-emerald-400"}`}
       />
       <span className="truncate font-mono">{label ?? idleLabel}</span>
-      {sinceLast !== null && <span className="text-foreground/45">{formatDurationMs(sinceLast)} ago</span>}
-      {elapsed && <span className="text-foreground/45">· {elapsed} in</span>}
+      {sinceLast !== null && <span className="text-muted">{formatDurationMs(sinceLast)} ago</span>}
+      {elapsed && <span className="text-muted">· {elapsed} in</span>}
     </p>
   );
 }

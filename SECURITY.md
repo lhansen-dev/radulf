@@ -87,10 +87,12 @@ a volume backup taken without the secret. Rows written before that encryption
 existed stay readable and are re-encrypted on their next write.
 
 Session cookies are HMAC-signed with the secret in `data/auth-secret`. There is
-no server-side session store, so the kill switch for a leaked cookie is rotating
-that secret: delete `data/auth-secret` and restart — every outstanding session
-becomes invalid at once. **That also makes every stored provider key
-undecryptable**, because both uses derive from the same file. Radulf then logs
+no server-side session store; the kill switch for a leaked cookie is **logging
+out**, which records the time in `data/sessions-not-before` and invalidates
+every session issued up to then, in every browser. Rotating the secret (delete
+`data/auth-secret` and restart) invalidates them too, but **also makes every
+stored provider key undecryptable**, because both uses derive from the same
+file. Radulf then logs
 `could not be decrypted` for each affected key and reads it as unset; re-enter
 the keys in Settings afterwards.
 

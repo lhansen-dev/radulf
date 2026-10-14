@@ -53,6 +53,10 @@ function waitForSecret(file: string): string {
 }
 
 export function ensureAuthSecret(): void {
+  // Where logout records "sessions issued before now are void" (session.ts).
+  // A file beside the secret, so every process on this data dir sees it; set
+  // even when the secret itself came from the environment.
+  process.env.RADULF_SESSIONS_NOT_BEFORE_FILE ??= join(DATA_DIR, "sessions-not-before");
   if (process.env.RADULF_AUTH_SECRET) {
     return; // already set (e.g. by a test or previous call)
   }

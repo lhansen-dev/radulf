@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CLONES_DIR } from "@/db";
 import { privateDir } from "@/db/privateFs";
 import { ClientError } from "./clientError";
+import { assertInsideBrowsableRoot } from "./folderBrowser";
 import { assertUsableRepo, cloneRemote, tryGit } from "./git";
 import { assertRepoName } from "./repoInit";
 import { errorMessage } from "@/shared/errorMessage";
@@ -22,14 +24,28 @@ const CLONE_URL = /^(https?:\/\/|ssh:\/\/|git@[^\s/:]+:|file:\/\/)\S+$/;
 export async function cloneRepository(
   url: string,
   requestedName: string,
+  configuredRoot: string,
 ): Promise<{ name: string; path: string; defaultBranch: string }> {
   if (!CLONE_URL.test(url)) {
     throw new ClientError("clone URL must start with https://, http://, ssh://, git@host:, or file://");
   }
+  // A file:// clone reads a path on this machine, so it gets the same
+  // browsable-root confinement as registering that path directly.
+  if (url.startsWith("file://")) {
+    let local: string;
+    try {
+      local = fileURLToPath(url);
+    } catch {
+      throw new ClientError("that file:// URL does not name a local path");
+    }
+    assertInsideBrowsableRoot(local, configuredRoot);
+  }
   const name = requestedName || nameFromUrl(url);
   assertRepoName(name);
   const target = path.join(CLONES_DIR, name);
-  if (fs.existsSync(target)) throw new ClientError(`${target} already exists`);
+  if (fs.existsSync(target)) {
+    throw new ClientError(`${target} already exists — give the clone a different repository name`);
+  }
   try {
     privateDir(CLONES_DIR);
   } catch (cause) {

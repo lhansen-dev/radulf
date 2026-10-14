@@ -74,13 +74,21 @@ export async function GET(_req: Request, { params }: Ctx) {
   const settings = getSettings();
   // Where the card's Jira issue lives, when it has one and Jira is configured.
   const jiraBase = settings.jiraBaseUrl.trim().replace(/\/+$/, "");
-  const models = Object.fromEntries(
-    (["planner", "loop", "evaluator", "critic"] as const).map((role) => [role, {
-      provider: settings[`${role}Provider`],
-      model: card[`${role}Model`] || settings[`${role}Model`] || null,
-      reasoningLevel: settings[`${role}ReasoningLevel`],
-    }]),
-  );
+  const models = {
+    ...Object.fromEntries(
+      (["planner", "loop", "evaluator", "critic"] as const).map((role) => [role, {
+        provider: settings[`${role}Provider`],
+        model: card[`${role}Model`] || settings[`${role}Model`] || null,
+        reasoningLevel: settings[`${role}ReasoningLevel`],
+      }]),
+    ),
+    // Scoping and breakdown turns have no per-card override (spec 17).
+    scoping: {
+      provider: settings.scopingProvider,
+      model: settings.scopingModel || null,
+      reasoningLevel: settings.scopingReasoningLevel,
+    },
+  };
   // The orchestrator-private checklist the loop is ticking off — the latest
   // plan version as it stands right now, which its plan row can't show.
   const planPath = planStatePath(id);

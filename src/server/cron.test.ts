@@ -41,6 +41,8 @@ describe("parseCron", () => {
     expect(cronError("*/0 * * * *")).toMatch(/positive whole number/);
     expect(cronError("0 1-2-3 * * *")).toMatch(/too many dashes/);
     expect(cronError("x * * * *")).toMatch(/not a minute value/);
+    expect(cronError("-5 * * * *")).toMatch(/not a minute value/);
+    expect(cronError("0x1f * * * *")).toMatch(/not a minute value/);
     expect(cronError("0 0 * * mon")).toBeNull();
   });
 });
@@ -64,6 +66,14 @@ describe("cronMatches", () => {
     expect(matches(expression, "2026-10-01T00:00:00")).toBe(true); // a Thursday
     expect(matches(expression, "2026-09-21T00:00:00")).toBe(true); // a Monday
     expect(matches(expression, "2026-09-22T00:00:00")).toBe(false); // neither
+  });
+
+  it("ANDs them when a day field is a stepped star, as crontab does", () => {
+    // Every other day of the month that is also a Monday.
+    const expression = "0 0 */2 * 1";
+    expect(matches(expression, "2026-09-21T00:00:00")).toBe(true); // Monday the 21st
+    expect(matches(expression, "2026-09-28T00:00:00")).toBe(false); // Monday the 28th
+    expect(matches(expression, "2026-09-23T00:00:00")).toBe(false); // Wednesday the 23rd
   });
 });
 

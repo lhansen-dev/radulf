@@ -46,7 +46,7 @@ export function PlanVersions({
         </div>
       )}
 
-      <p className="text-xs text-foreground/50">
+      <p className="text-xs text-muted">
         Plan v{plan.version} · written {timeAgo(plan.createdAt)} ago
         {plan.origin === "scoping" && " · by the scoping session, skipping the planner"}
       </p>
@@ -62,7 +62,7 @@ export function PlanVersions({
 
       {live && live.total > 0 && (
         <div>
-          <p className="text-xs text-foreground/60">
+          <p className="text-xs text-muted">
             {live.done} of {live.total} tasks done · {live.total - live.done} left
           </p>
           <div
@@ -88,7 +88,7 @@ export function PlanVersions({
         <details key={`${plan.id}-${name}`} open={name === "PLAN.md"}>
           <summary className="cursor-pointer text-sm font-medium text-foreground/80">
             {name}{" "}
-            <span className="text-foreground/40">
+            <span className="text-muted">
               (plan v{plan.version}
               {note && `, ${note}`})
             </span>

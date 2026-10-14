@@ -2,10 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, now, worktrees, WORKTREES_DIR } from "@/db";
+import { DATA_DIR, db, now, worktrees, WORKTREES_DIR } from "@/db";
 import { ClientError } from "./clientError";
 import { execBounded } from "./exec";
-import { realpathBestEffort } from "./sandbox/pathGuard";
+import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -260,11 +260,23 @@ export async function removeWorktree(
   worktreePath: string,
   branch: string
 ): Promise<void> {
+  if (!isRadulfWorktreePath(worktreePath)) {
+    throw new ClientError(`refused to delete ${worktreePath}: not inside ${WORKTREES_DIR}`);
+  }
   await tryGit(repoPath, "worktree", "remove", "--force", worktreePath);
   await tryGit(repoPath, "worktree", "prune");
   await tryGit(repoPath, "branch", "-D", branch);
   fs.rmSync(worktreePath, { recursive: true, force: true });
   markWorktreeRemoved(worktreePath);
+}
+
+/** Strictly inside the worktrees dir, or `data/worktrees` where runs from
+ * before spec 14 kept theirs. Resolve symlinks before trusting a database path. */
+export function isRadulfWorktreePath(target: string): boolean {
+  const resolved = realpathBestEffort(target);
+  return [WORKTREES_DIR, path.join(DATA_DIR, "worktrees")].some(
+    (root) => resolved !== realpathBestEffort(root) && isInsideOrEqual(resolved, realpathBestEffort(root)),
+  );
 }
 
 // Flags shared by every review-facing diff invocation. `--no-ext-diff` and
@@ -428,9 +440,13 @@ export async function mergeBranch(
   const dirty = await git(repoPath, "status", "--porcelain");
   if (dirty) {
     await restore();
+    // Name them: an untracked scratch file blocks the merge too, and "uncommitted
+    // changes" alone sent operators looking for edits they never made.
+    const lines = dirty.split("\n");
+    const named = lines.slice(0, 5).join(", ") + (lines.length > 5 ? `, and ${lines.length - 5} more` : "");
     return {
       ok: false,
-      error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
+      error: `target checkout ${repoPath} has uncommitted or untracked files (${named}) — commit, stash or remove them there, then press Retry merge`,
     };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before

@@ -124,7 +124,7 @@ export function ProviderLoginSection({ onChanged }: { onChanged?: () => void }) 
     );
   }
 
-  if (providers === null) return <p className="text-sm text-foreground/50">Loading providers…</p>;
+  if (providers === null) return <p className="text-sm text-muted">Loading providers…</p>;
 
   const subscriptions = providers.filter((p) => p.oauth?.subscription);
   const rest = providers.filter((p) => !p.oauth?.subscription);
@@ -142,7 +142,7 @@ export function ProviderLoginSection({ onChanged }: { onChanged?: () => void }) 
           <button
             type="button"
             onClick={() => setShowAll((v) => !v)}
-            className="text-sm text-foreground/60 hover:text-foreground"
+            className="text-sm text-muted hover:text-foreground"
           >
             {showAll ? "Hide" : `Show ${rest.length} more providers`}
           </button>
@@ -156,7 +156,7 @@ export function ProviderLoginSection({ onChanged }: { onChanged?: () => void }) 
         </div>
       )}
 
-      <p className="text-xs leading-relaxed text-foreground/45">
+      <p className="text-xs leading-relaxed text-muted">
         Logins established here belong to Radulf, not to your personal pi or Claude directory.
         A terminal still works if you prefer one: <code className="text-foreground/70">make login</code> on
         a host, <code className="text-foreground/70">radulf-login</code> in the container.
@@ -186,7 +186,7 @@ function ProviderRow({
           connected{provider.connected.source ? ` · ${provider.connected.source}` : ""}
         </span>
       ) : (
-        <span className="text-xs text-foreground/40">not connected</span>
+        <span className="text-xs text-muted">not connected</span>
       )}
       <span className="ml-auto flex gap-2">
         {provider.oauth && (
@@ -258,7 +258,7 @@ function LoginFlow({
                 <a href={event.url} target="_blank" rel="noreferrer" className="text-accent underline">
                   Open this link to authorize
                 </a>
-                {event.instructions && <span className="text-xs text-foreground/55">{event.instructions}</span>}
+                {event.instructions && <span className="text-xs text-muted">{event.instructions}</span>}
               </span>
             )}
             {event.type === "device_code" && (
@@ -273,7 +273,7 @@ function LoginFlow({
                     {event.verificationUri}
                   </a>
                 </span>
-                <span className="text-xs text-foreground/55">Waiting for you to authorize…</span>
+                <span className="text-xs text-muted">Waiting for you to authorize…</span>
               </span>
             )}
             {event.type === "info" && (
@@ -286,7 +286,7 @@ function LoginFlow({
                 ))}
               </span>
             )}
-            {event.type === "progress" && <span className="text-foreground/55">{event.message}</span>}
+            {event.type === "progress" && <span className="text-muted">{event.message}</span>}
           </li>
         ))}
       </ol>
@@ -317,7 +317,7 @@ function LoginFlow({
             )}
           </label>
           {prompt.kind === "manual_code" && (
-            <p className="text-xs text-foreground/50">
+            <p className="text-xs text-muted">
               Paste either the authorization code or the whole URL your browser was redirected to, even
               if that page failed to load. It will have done, if your browser is not on this machine.
             </p>

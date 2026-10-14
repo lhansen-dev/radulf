@@ -62,7 +62,7 @@ const CREATE_BOOLEANS = [
 /** A card's Jira issue key, upper-cased so it matches what Jira itself shows.
  * Null means "no issue linked", which is also the default. A pasted link is
  * rejected: the stored value is always the bare key the comment API needs. */
-function jiraKey(value: unknown, field = "jiraKey"): string | null {
+function jiraKey(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "string" && isJiraIssueKey(value)) return value.trim().toUpperCase();
   return invalid("jiraKey must be a Jira issue key like DEV-123, or null");

@@ -58,7 +58,8 @@ export function parseCron(expression: string): Cron {
     daysOfMonth,
     months,
     daysOfWeek,
-    bothDayFieldsRestricted: fields[2] !== "*" && fields[4] !== "*",
+    // Vixie cron counts a day field starting with `*` (so `*/2` too) as unrestricted.
+    bothDayFieldsRestricted: !fields[2].startsWith("*") && !fields[4].startsWith("*"),
   };
 }
 
@@ -152,7 +153,8 @@ function namedValue(text: string, index: number): number {
     const named = names.indexOf(text);
     if (named !== -1) return index === 3 ? named + 1 : named;
   }
-  const value = Number(text);
+  // Digits only: Number() also takes "" (an open range like "-5"), "0x1f" and "1e1".
+  const value = /^\d+$/.test(text) ? Number(text) : NaN;
   if (!Number.isInteger(value)) {
     throw new CronError(`"${text}" is not a ${FIELD_NAMES[index]} value`);
   }

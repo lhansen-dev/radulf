@@ -4,7 +4,7 @@ import { api, type Repo } from "../ui/api";
 import { FolderBrowser } from "../ui/folderBrowser";
 import { playAlertSound, requestNotificationPermission, showCardNotification } from "../ui/notify";
 import { AppShell } from "../ui/appShell";
-import { ModelChips } from "../ui/taskDialog";
+import { ModelBrowser, ModelField, formatPricePerMillion, useProviderModels } from "../ui/modelPicker";
 import { ProviderLoginSection } from "./providerLogin";
 import { SchedulesSection } from "./schedulesSection";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
@@ -69,7 +69,7 @@ function GithubSection() {
     <section id="github" className={sectionCls}>
       <div>
         <h3 className="font-medium">GitHub connection</h3>
-        <p className="mt-1 text-sm leading-relaxed text-foreground/55">
+        <p className="mt-1 text-sm leading-relaxed text-muted">
           Deliver approved work as a pull request using your GitHub CLI account.
         </p>
       </div>
@@ -94,7 +94,7 @@ function GithubSection() {
         </button>
       </div>
       {status && !status.ok && (
-        <p className="text-xs text-foreground/45">
+        <p className="text-xs text-muted">
           {status.reason === "missing"
             ? <>Install it, then re-check. Pull-request delivery stays unavailable until then; everything else is unaffected.</>
             : <>Run <code>gh auth login</code> in a terminal on this machine, then re-check.</>}
@@ -102,21 +102,6 @@ function GithubSection() {
       )}
     </section>
   );
-}
-
-/** $3.00 for typical prices, $0.075 for very cheap ones — 2 decimals loses
- * sub-cent-per-million models (e.g. Haiku-class) by rounding them to $0.00. */
-function formatPricePerMillion(usd: number): string {
-  if (usd === 0) return "$0.00";
-  return usd < 1 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
-}
-
-/** "$3.00 / 1M input · $15.00 / 1M output", or "" when the provider reports no pricing. */
-function priceLabel(m: ProviderModel, input = " / 1M input", output = " / 1M output", sep = " · "): string {
-  return [
-    m.costPerMillionInput != null && `${formatPricePerMillion(m.costPerMillionInput)}${input}`,
-    m.costPerMillionOutput != null && `${formatPricePerMillion(m.costPerMillionOutput)}${output}`,
-  ].filter(Boolean).join(sep);
 }
 
 /**
@@ -138,15 +123,6 @@ function availableReasoningLevels(
   allowed.add(current);
   return REASONING_LEVELS.filter((level) => allowed.has(level));
 }
-
-const MODEL_HINTS: Record<string, string> = {
-  anthropic: "Leave blank to use your subscription's default model.",
-  chatgpt: "Leave blank to use your subscription's default model.",
-  copilot: "Leave blank to use your subscription's default model.",
-  omlx: "Use the id of a model your server reports at /v1/models; it must support tool use.",
-  openrouter: "Type a model id to search the available models.",
-  mock: "The model id picks a scripted scenario. Leave blank for happy-path.",
-};
 
 type NumberKey = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
 type StringKey = { [K in keyof Settings]: Settings[K] extends string ? K : never }[keyof Settings];
@@ -243,7 +219,7 @@ function SectionHeading({ title, children }: { title: string; children?: React.R
   return (
     <div>
       <h3 className="font-medium">{title}</h3>
-      {children && <p className="mt-1 text-sm leading-relaxed text-foreground/55">{children}</p>}
+      {children && <p className="mt-1 text-sm leading-relaxed text-muted">{children}</p>}
     </div>
   );
 }
@@ -281,7 +257,7 @@ export default function SettingsPage() {
     }
   }
 
-  if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
+  if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-muted">{error || "Loading settings…"}</div></AppShell>;
 
   const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
   const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished" | "jiraCommentOnDone") =>
@@ -302,7 +278,7 @@ export default function SettingsPage() {
     <label className={className}>
       {label}
       <input type="number" min={min} value={settings[key]} onChange={(e) => set({ [key]: Number(e.target.value) || min })} className={inputCls} />
-      {hint && <span className="mt-1 block text-xs text-foreground/40">{hint}</span>}
+      {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}
     </label>
   );
 
@@ -322,10 +298,10 @@ export default function SettingsPage() {
         <header className="sticky top-0 z-20 -mx-4 flex items-center justify-between gap-4 border-b border-foreground/10 bg-background/95 px-4 py-5 backdrop-blur-xl sm:-mx-8 sm:px-8 lg:-mx-10 lg:px-10 lg:py-7">
           <div>
             <h1 tabIndex={-1} className="text-2xl font-semibold tracking-tight">Settings</h1>
-            <p className="mt-1 hidden text-sm text-foreground/50 sm:block">Workspace preferences and agent configuration.</p>
+            <p className="mt-1 hidden text-sm text-muted sm:block">Workspace preferences and agent configuration.</p>
           </div>
           <div className="flex flex-col-reverse items-end gap-1 sm:flex-row sm:items-center sm:gap-4">
-            <span role="status" aria-live="polite" className="text-[11px] text-foreground/55 sm:text-xs">
+            <span role="status" aria-live="polite" className="text-[11px] text-muted sm:text-xs">
               {saving ? "Saving changes…" : dirty ? "Unsaved changes" : saved ? "Settings saved ✓" : "All changes saved"}
             </span>
             <button
@@ -343,7 +319,7 @@ export default function SettingsPage() {
           <div className="flex min-w-0 flex-col gap-5">
             <div className="mb-1">
               <h2 className="text-xl font-semibold tracking-tight">{currentSection.label}</h2>
-              <p className="mt-1.5 text-sm leading-relaxed text-foreground/55">{currentSection.description}</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-muted">{currentSection.description}</p>
             </div>
             {error && <p role="alert" className="rounded-lg border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-400">{error}</p>}
 
@@ -362,11 +338,11 @@ export default function SettingsPage() {
                     </div>
                     <div className="grid grid-cols-1 gap-5 pt-4 sm:grid-cols-2">
                       {numberInput("attentionStaleMinutes", "Waiting-too-long alert (minutes)", "How long a card may sit in Needs Attention before Radulf says so. Desktop notifications only reach you with a tab open; this fires either way.")}
-                      {textInput("alertWebhookUrl", { label: "Alert webhook URL", type: "url", placeholder: "https://ntfy.sh/your-topic" })}
+                      {textInput("alertWebhookUrl", { label: "Alert webhook URL", type: "password", placeholder: "https://ntfy.sh/your-topic" })}
                     </div>
                     <fieldset className="pt-4" disabled={!settings.alertWebhookUrl.trim()}>
                       <legend className="text-sm font-medium">Send to the webhook</legend>
-                      <p className="mt-1 mb-3 text-xs leading-relaxed text-foreground/55">
+                      <p className="mt-1 mb-3 text-xs leading-relaxed text-muted">
                         {settings.alertWebhookUrl.trim()
                           ? "A card going stale in Needs Attention is always sent. These are the events that reach you the moment they happen."
                           : "Set an alert webhook URL above to choose which events leave this machine."}
@@ -389,6 +365,15 @@ export default function SettingsPage() {
                   >
                     Test notification & sound
                   </button>
+                </section>
+                <section id="session" className={`${sectionCls} auth-only`}>
+                  <SectionHeading title="Session">
+                    Sign out of Radulf on every device. Every session issued so far stops working, including
+                    copies of the cookie you never knew existed, so this is also what to do if one leaked.
+                  </SectionHeading>
+                  <form method="post" action="/api/auth/logout" className="self-start">
+                    <button type="submit" className={secondaryButtonCls}>Sign out everywhere</button>
+                  </form>
                 </section>
               </div>
             </SettingsPanel>
@@ -446,13 +431,13 @@ export default function SettingsPage() {
                     {textInput("omlxApiKey", { label: "Local server API key", type: "password", placeholder: "optional; many local servers need none" })}
                   </div>
                   {textArea("omlxHeaders", { label: "Extra request headers (one per line)", rows: 2, placeholder: "kong-api-key: …" })}
-                  <p className="text-xs text-foreground/40">
+                  <p className="text-xs text-muted">
                     For a gateway in front of the server that authenticates on a header of its own.
                     Sent with every request alongside the API key; a header named Authorization
                     replaces the key&apos;s bearer token.
                   </p>
                   {textArea("omlxContextWindows", { label: "Context windows (one model per line)", rows: 2, placeholder: "Qwen/Qwen3-8B: 131072" })}
-                  <p className="text-xs text-foreground/40">
+                  <p className="text-xs text-muted">
                     For a server that does not report a context length at /v1/models. An entry here
                     wins over what the server reports; a model with neither runs on a 32,768-token
                     window, so compaction fires early and the loop loses work to it.
@@ -463,7 +448,7 @@ export default function SettingsPage() {
                   {textInput("openrouterApiKey", { label: "OpenRouter API key", type: "password", placeholder: "sk-or-…" })}
                   {textInput("braveApiKey", { label: "Brave Search API key", type: "password", placeholder: "Brave Search API key" })}
                 </section>
-                <p className="px-1 text-xs leading-relaxed text-foreground/50">
+                <p className="px-1 text-xs leading-relaxed text-muted">
                   Saved keys and headers are hidden as <code>••••••••</code>. Leave them as shown to keep them, replace to update, or clear and save to remove.
                 </p>
               </div>
@@ -511,7 +496,7 @@ export default function SettingsPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="font-medium">Agent instructions</h3>
-                    <p className="mt-1 max-w-3xl text-xs text-foreground/45">
+                    <p className="mt-1 max-w-3xl text-xs text-muted">
                       These templates are used for future agent runs. The planning template controls
                       how <code>PLAN.md</code>, <code>CRITERIA.md</code>, and <code>PROMPT.md</code> are produced;
                       existing card artifacts are not rewritten.
@@ -537,6 +522,7 @@ export default function SettingsPage() {
                   <SectionHeading title="Planning" />
                   {numberInput("plannerTimeoutMinutes", "Timeout (minutes)", "Caps each card's planning pass.", 1, "max-w-xs text-sm text-foreground/70")}
                   {numberInput("criticTimeoutMinutes", "Critic timeout (minutes)", "Caps each plan critique pass.", 1)}
+                  {numberInput("scopingTimeoutMinutes", "Scoping timeout (minutes)", "Caps each scoping turn: a reply, a proposal or a breakdown.", 1)}
                   <label className="block max-w-xs text-sm text-foreground/70">
                     Plan critic
                     <select
@@ -548,7 +534,7 @@ export default function SettingsPage() {
                       <option value="always">On for every card</option>
                       <option value="off">Off</option>
                     </select>
-                    <span className="mt-1 block text-xs text-foreground/45">
+                    <span className="mt-1 block text-xs text-muted">
                       Which cards get a read-only critique of their plan before the loop starts.
                     </span>
                   </label>
@@ -581,13 +567,13 @@ export default function SettingsPage() {
               <section id="sandbox" className={sectionCls}>
                 <SectionHeading title="Agent isolation">Restrict agent commands to their worktree and allowed network destinations.</SectionHeading>
                 <ToggleRow title="Sandbox enabled" {...toggle("sandboxEnabled")} />
-                <p className="text-xs text-foreground/40">
+                <p className="text-xs text-muted">
                   Turning this off runs agent bash unsandboxed on this host — a persistent warning
                   banner appears everywhere, and every affected run is stamped{" "}
                   <code>sandboxed: false</code> in its run detail and in analytics.
                 </p>
                 {textArea("sandboxNetworkAllowlist", { label: "Extra network allowlist (one domain per line)", rows: 3, placeholder: "pypi.org" })}
-                <p className="text-xs text-foreground/40">
+                <p className="text-xs text-muted">
                   Package registries (registry.npmjs.org) are always reachable. Every domain added here
                   widens egress: the proxy allows by requested hostname and does not terminate TLS, so a
                   permitted domain is a potential domain-fronting path — add only what a run genuinely
@@ -596,7 +582,7 @@ export default function SettingsPage() {
                 <div className="border-t border-foreground/10 pt-5">
                   <ToggleRow title="Allow Go/TLS toolchains" description="Weaker isolation · macOS only" {...toggle("sandboxWeakerIsolationForGoTls")} />
                 </div>
-                <p className="text-xs text-foreground/40">
+                <p className="text-xs text-muted">
                   Off by default. Go-based tools (go, gh, gcloud, terraform, kubectl) verify TLS via the
                   macOS <code>trustd</code> daemon, which the sandbox blocks — so their HTTPS fetches fail
                   even for an allowlisted domain. Enabling this permits <code>trustd</code>. Residual:{" "}
@@ -657,12 +643,12 @@ function PromptTemplateEditor({
       <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4">
         <span>
           <span className="block text-sm font-medium">{title}</span>
-          <span className="mt-1 block text-xs leading-relaxed text-foreground/50">{description}</span>
+          <span className="mt-1 block text-xs leading-relaxed text-muted">{description}</span>
         </span>
-        <span aria-hidden="true" className="text-foreground/40 transition-transform group-open:rotate-180">⌄</span>
+        <span aria-hidden="true" className="text-muted transition-transform group-open:rotate-180">⌄</span>
       </summary>
       <div className="flex flex-col gap-3 border-t border-foreground/10 p-4">
-        <p className="text-xs leading-relaxed text-foreground/55">
+        <p className="text-xs leading-relaxed text-muted">
           Available placeholders:{" "}
           {placeholders.map((placeholder, index) => (
             <span key={placeholder}>
@@ -744,7 +730,7 @@ function ProviderHealthPanel() {
     <section aria-labelledby="provider-health-title" className={sectionCls}>
       <div>
         <h3 id="provider-health-title" className="font-medium">Provider usage and health</h3>
-        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-foreground/55">
+        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-muted">
           What Radulf has spent through each provider in the last {windowHours} hours, and whether
           any of them is currently refusing work. Subscriptions publish no remaining-allowance
           figure, so these are Radulf&rsquo;s own totals, not a quota reading.
@@ -752,7 +738,7 @@ function ProviderHealthPanel() {
       </div>
       {error && <p role="status" className="text-sm text-red-400">{error}</p>}
       {!error && interesting.length === 0 && (
-        <p className="text-sm text-foreground/45">No runs in the last {windowHours} hours.</p>
+        <p className="text-sm text-muted">No runs in the last {windowHours} hours.</p>
       )}
       {interesting.map((row) => (
         <div key={row.provider} className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-t border-foreground/10 pt-3 first-of-type:border-t-0 first-of-type:pt-0">
@@ -761,7 +747,7 @@ function ProviderHealthPanel() {
               {providerLabel(row.provider)}
             </p>
             {row.rateLimit && (
-              <p className="mt-1 text-xs leading-relaxed text-foreground/55">
+              <p className="mt-1 text-xs leading-relaxed text-muted">
                 {row.rateLimit.windows
                   .filter((w) => w.utilization !== null)
                   .map((w) => `${w.label} ${Math.round((w.utilization ?? 0) * 100)}% used`)
@@ -784,7 +770,7 @@ function ProviderHealthPanel() {
               </p>
             )}
           </div>
-          <p className="text-xs tabular-nums text-foreground/50">
+          <p className="text-xs tabular-nums text-muted">
             {row.runs} run{row.runs === 1 ? "" : "s"}
             {row.failedRuns > 0 && `, ${row.failedRuns} failed`}
             {" · "}
@@ -810,13 +796,13 @@ function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string
     <section aria-labelledby="role-fit-title" className={`${sectionCls} border-accent/25 bg-accent/[0.04]`}>
       <div>
         <h3 id="role-fit-title" className="font-medium">Suggested model split</h3>
-        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-foreground/60">
+        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-muted">
           The planner and evaluator run once per card; the looper runs every iteration. Spending a
           strong model on the two that run once, and a local or low-cost model on the one that
           repeats, is the split this pipeline is built around. The planner even writes its plan for
           &ldquo;a much smaller local model&rdquo; to execute.
         </p>
-        <p className="mt-2 text-xs text-foreground/45">
+        <p className="mt-2 text-xs text-muted">
           Currently off that split: {misfitRoles.join(", ")}.
         </p>
       </div>
@@ -824,7 +810,7 @@ function RoleFitSummary({ misfitRoles, onApply }: { misfitRoles: readonly string
         <button type="button" onClick={onApply} className={secondaryButtonCls}>
           Use Claude for planning and review, local for the loop
         </button>
-        <p className="mt-2 text-xs text-foreground/40">
+        <p className="mt-2 text-xs text-muted">
           Sets the scoping, planner and evaluator roles to your Anthropic subscription and the
           looper to your self-hosted endpoint, each on its default model. Adjust any of them afterwards.
         </p>
@@ -866,36 +852,7 @@ function AgentSection({
    * provider+model. Never blocks saving. */
   warnings: string[];
 }) {
-  const [models, setModels] = useState<ProviderModel[]>([]);
-  const [status, setStatus] = useState("");
-
-  // setState only happens in the promise callbacks, never synchronously,
-  // so this is safe to call from the effect below.
-  // `force` is only ever set by the "Load models" button — see the route.
-  const load = useCallback((p: string, force = false, isLive: () => boolean = () => true) => {
-    return api<{ models: ProviderModel[] }>(`/api/providers/${p}/models${force ? "?refresh=1" : ""}`)
-      .then((r) => {
-        if (!isLive()) return;
-        setModels(r.models);
-        setStatus(r.models.length > 0
-          ? `✓ ${r.models.length} model${r.models.length === 1 ? "" : "s"}`
-          : "No models found. Check your provider connection or enter a model id.");
-      })
-      .catch((e) => {
-        if (!isLive()) return;
-        setModels([]);
-        setStatus(`✗ ${errorMessage(e)}`);
-      });
-  }, []);
-
-  // Refresh the picker whenever the provider changes. Guard against a slow
-  // provider's listing (e.g. openrouter's hundreds of models) landing after
-  // the user has already switched this role to a different provider.
-  useEffect(() => {
-    let live = true;
-    void load(provider, false, () => live);
-    return () => { live = false; };
-  }, [provider, load]);
+  const { models, status, setStatus, load } = useProviderModels(provider);
 
   const selectedModel = models.find((m) => m.value === model);
   const reasoningOptions = availableReasoningLevels(selectedModel, reasoningLevel);
@@ -910,8 +867,8 @@ function AgentSection({
     <section aria-labelledby={`${datalistId}-title`} className={sectionCls}>
       <div>
         <h3 id={`${datalistId}-title`} className="font-medium">{title}</h3>
-        <p className="mt-1 text-sm text-foreground/55">{subtitle}</p>
-        <p className="mt-2 max-w-3xl text-xs leading-relaxed text-foreground/45">{demand}</p>
+        <p className="mt-1 text-sm text-muted">{subtitle}</p>
+        <p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted">{demand}</p>
       </div>
       <div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
         <label className="min-w-0 text-sm text-foreground/70">
@@ -931,36 +888,18 @@ function AgentSection({
           </select>
         </label>
         <div className="min-w-0 text-sm text-foreground/70 sm:col-span-2 sm:row-start-2">
-          <label htmlFor={`${datalistId}-input`}>Model</label>
-          <div className="flex gap-2">
-            <input
-              id={`${datalistId}-input`}
-              aria-describedby={`${datalistId}-hint`}
-              value={model}
-              onChange={(e) => onModel(e.target.value)}
-              placeholder={provider === "anthropic" ? "e.g. opus" : "model id"}
-              className={inputCls}
-              list={datalistId}
-            />
-            <datalist id={datalistId}>
-              {models.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.displayName}
-                </option>
-              ))}
-            </datalist>
-            <button
-              onClick={() => {
-                setStatus("Loading models…");
-                saveFirst().then(() => load(provider, true)).catch(() => setStatus(""));
-              }}
-              title="Save settings and refresh available models"
-              className={`${secondaryButtonCls} mt-2 shrink-0 whitespace-nowrap`}
-            >
-              Load models
-            </button>
-          </div>
-          <p id={`${datalistId}-hint`} className="mt-2 text-xs leading-relaxed text-foreground/45">{MODEL_HINTS[provider] ?? "Enter a model id."}</p>
+          <ModelField
+            id={datalistId}
+            provider={provider}
+            model={model}
+            onModel={onModel}
+            models={models}
+            onLoadModels={() => {
+              setStatus("Loading models…");
+              saveFirst().then(() => load(provider, true)).catch(() => setStatus(""));
+            }}
+            loadTitle="Save settings and refresh available models"
+          />
         </div>
         <label className="min-w-0 text-sm text-foreground/70 sm:col-start-2 sm:row-start-1">
           Reasoning
@@ -987,29 +926,7 @@ function AgentSection({
       {warnings.map((warning) => (
         <p key={warning} className="rounded-lg border border-accent/15 bg-accent/5 px-3 py-2.5 text-xs leading-relaxed text-accent/85">{warning}</p>
       ))}
-      {selectedModel && priceLabel(selectedModel) && (
-        <p className="text-xs text-foreground/40">{priceLabel(selectedModel)}</p>
-      )}
-      {status && !status.startsWith("✓") && (
-        <p role="status" className={`text-sm ${status.startsWith("✗") ? "text-red-400" : "text-foreground/40"}`}>
-          {status}
-        </p>
-      )}
-      <ModelChips
-        models={models}
-        value={model}
-        onPick={onModel}
-        titleFor={(m) => priceLabel(m, "/1M in", "/1M out", ", ") ? `${m.description || m.value} — ${priceLabel(m, "/1M in", "/1M out", ", ")}` : m.description || m.value}
-        wrap={(chips) => (
-          <details className="group border-t border-foreground/10 pt-3">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-foreground/55 hover:text-foreground">
-              Browse {models.length} available model{models.length === 1 ? "" : "s"}
-              <span aria-hidden="true" className="transition-transform group-open:rotate-180">⌄</span>
-            </summary>
-            {chips}
-          </details>
-        )}
-      />
+      <ModelBrowser model={model} onModel={onModel} models={models} status={status} />
     </section>
   );
 }
@@ -1037,7 +954,7 @@ function GateCommandField({ repo, onChange }: { repo: Repo; onChange: () => void
 
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2">
-      <label className="flex min-w-0 grow items-center gap-2 text-xs text-foreground/60">
+      <label className="flex min-w-0 grow items-center gap-2 text-xs text-muted">
         <span className="shrink-0">Gate command</span>
         <input
           aria-label={`Gate command for ${repo.name}`}
@@ -1090,7 +1007,10 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
 
   async function cloneRepo(url: string) {
     setError("");
-    await api("/api/repos/clone", { json: { url } });
+    // The name field doubles as the clone's directory name, which is the way
+    // out when the name taken from the URL is already in use.
+    await api("/api/repos/clone", { json: { url, ...(name.trim() ? { name: name.trim() } : {}) } });
+    setName("");
     setBrowsing(false);
     onChange();
   }
@@ -1113,18 +1033,18 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
     <section id="repos" className={sectionCls}>
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-medium">Connected repositories</h3>
-        <span className="rounded-full bg-foreground/5 px-2.5 py-1 text-xs text-foreground/55">{repos.length}</span>
+        <span className="rounded-full bg-foreground/5 px-2.5 py-1 text-xs text-muted">{repos.length}</span>
       </div>
-      {repos.length === 0 && <p className="text-sm text-foreground/55">Add your first repository to give your agents a place to work.</p>}
+      {repos.length === 0 && <p className="text-sm text-muted">Add your first repository to give your agents a place to work.</p>}
       <div className="divide-y divide-foreground/10">
         {repos.map((r) => (
           <div key={r.id} className="flex min-w-0 items-center gap-4 py-4 first:pt-0 last:pb-0">
             <div className="min-w-0 grow">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">{r.name}</span>
-                <span className="rounded border border-foreground/10 px-1.5 py-0.5 font-mono text-[11px] text-foreground/50">{r.defaultBranch}</span>
+                <span className="rounded border border-foreground/10 px-1.5 py-0.5 font-mono text-[11px] text-muted">{r.defaultBranch}</span>
               </div>
-              <p title={r.path} className="mt-1.5 truncate font-mono text-xs text-foreground/45">{r.path}</p>
+              <p title={r.path} className="mt-1.5 truncate font-mono text-xs text-muted">{r.path}</p>
               <GateCommandField key={r.gateCommand ?? ""} repo={r} onChange={onChange} />
               {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
             </div>
@@ -1187,8 +1107,8 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
                   title={path || undefined}
                   className={`${inputCls} flex items-center gap-2 text-left hover:bg-foreground/10`}
                 >
-                  <span aria-hidden className="text-foreground/50">↳</span>
-                  <span className={`min-w-0 truncate ${path ? "font-mono" : "text-foreground/40"}`}>
+                  <span aria-hidden className="text-muted">↳</span>
+                  <span className={`min-w-0 truncate ${path ? "font-mono" : "text-muted"}`}>
                     {path || "Browse folders…"}
                   </span>
                 </button>
@@ -1212,12 +1132,12 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
           <button
             type="button"
             onClick={() => setTypePath(true)}
-            className="mt-3 text-xs text-foreground/50 underline underline-offset-4 hover:text-foreground/80"
+            className="mt-3 text-xs text-muted underline underline-offset-4 hover:text-foreground/80"
           >
             Type the path instead
           </button>
         )}
-        <p className="mt-2 text-xs text-foreground/45">The folder picker opens on the machine running Radulf.</p>
+        <p className="mt-2 text-xs text-muted">The folder picker opens on the machine running Radulf.</p>
       </details>
       {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
     </section>

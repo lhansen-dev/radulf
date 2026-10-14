@@ -25,7 +25,7 @@ const { db, cards, runs, plans, repos, events, now } = await import("@/db");
 const { patchSettings, getSettings } = await import("./settings");
 const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runHarness } = await import("./harness");
-const { listScopingMessages, proposeScopedCard, scopingTurn } = await import("./scoping");
+const { listScopingMessages, proposeScopedCard, proposeSplit, scopingTurn } = await import("./scoping");
 const { runTranscriptDir } = await import("./retention");
 const { recordRefWrite } = await import("./integrity");
 
@@ -320,6 +320,44 @@ describe("mock provider — full pipeline", () => {
     expect(replan?.feedback).toContain("Mock blocker");
   }, 30_000);
 
+  it("planner-questions in YOLO mode: re-plans once for the planner to answer itself, then parks", async () => {
+    patchSettings({ yoloMode: true });
+    try {
+      const { cardId } = await runScenario("planner-questions", seedRepo("planner-questions-yolo"), {
+        cardId: "card-planner-questions-yolo",
+      });
+      expect(cardStatus(cardId)).toBe("needs_attention");
+      expect(cardRuns(cardId).map((r) => r.exitReason)).toEqual([
+        "planner raised follow-up questions",
+        "planner raised follow-up questions",
+      ]);
+      expect(cardEvents(cardId, "card.yolo_replanned")).toHaveLength(1);
+    } finally {
+      patchSettings({ yoloMode: false });
+    }
+  }, 30_000);
+
+  it("loop-blocked in YOLO mode: re-plans around the blocker without a human, up to the cap", async () => {
+    patchSettings({ yoloMode: true });
+    try {
+      const { cardId } = await runScenario("loop-blocked", seedRepo("loop-blocked-yolo"), {
+        cardId: "card-loop-blocked-yolo",
+      });
+      expect(cardStatus(cardId)).toBe("needs_attention");
+      // Every loop run blocks: two automatic re-plans, then the card waits.
+      expect(cardRuns(cardId, "loop").map((r) => r.exitReason)).toEqual(["loop blocked", "loop blocked", "loop blocked"]);
+      expect(cardRuns(cardId, "plan")).toHaveLength(3);
+      const replan = db.select().from(plans).where(and(eq(plans.cardId, cardId), eq(plans.version, 2))).get();
+      expect(replan?.feedback).toContain("Mock blocker");
+      expect(cardEvents(cardId, "card.yolo_replanned")).toHaveLength(2);
+      // The card went straight from looping to planning: no stop in Needs
+      // Attention, so no alert, until the cap.
+      expect(cardEvents<{ to: string }>(cardId, "card.moved").filter((m) => m.to === "needs_attention")).toHaveLength(1);
+    } finally {
+      patchSettings({ yoloMode: false });
+    }
+  }, 60_000);
+
   it("provider-error: the planner fails with the provider's message", async () => {
     const { cardId } = await runScenario("provider-error");
     expect(cardStatus(cardId)).toBe("needs_attention");
@@ -502,12 +540,16 @@ describe("mock provider — outside the pipeline", () => {
     expect(thread.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(thread[1].content).toMatch(/^Mock reply/);
 
-    // The mock's reply has no TITLE line, so the card keeps its title and the
-    // whole reply becomes the description — and stays in the thread.
+    // A proposal request is answered in the format it asks for.
     const proposal = await proposeScopedCard("card-scoping");
-    expect(proposal.title).toBe("Rough ask");
-    expect(proposal.description).toMatch(/^Mock reply/);
+    expect(proposal.title).toBe("Mock scoped task");
+    expect(proposal.description).toMatch(/^## Problem/);
     expect(proposal.messages).toHaveLength(3);
+
+    // So is a breakdown, which "Create and break down" depends on.
+    const split = await proposeSplit("card-scoping");
+    expect(split.runMode).toBe("ordered");
+    expect(split.cards.map((c) => [c.title, c.dependsOn])).toEqual([["Mock piece one", []], ["Mock piece two", [0]]]);
   }, 30_000);
 
   it("without RADULF_MOCK_LLM=1, refuses to run rather than fall back to a paid provider", async () => {

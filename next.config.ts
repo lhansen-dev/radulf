@@ -39,6 +39,10 @@ function sharedNodeModulesRoot(projectDir: string): string | undefined {
 
 const nodeModulesRoot = sharedNodeModulesRoot(process.cwd());
 
+// React uses eval() in development to rebuild server error stacks in the
+// browser; production never does, so the built app keeps it blocked.
+const isDev = process.env.NODE_ENV === "development";
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
@@ -54,11 +58,15 @@ const nextConfig: NextConfig = {
             value:
               "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; " +
               "form-action 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
-              "script-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self' blob:",
+              `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}; connect-src 'self'; worker-src 'self' blob:`,
           },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
-          { key: "Referrer-Policy", value: "no-referrer" },
+          // Not no-referrer: under it a browser sends `Origin: null` on a
+          // native form POST, which the proxy's CSRF check rightly refuses,
+          // and the login form is one. same-origin still sends nothing to
+          // other sites.
+          { key: "Referrer-Policy", value: "same-origin" },
           {
             key: "Permissions-Policy",
             value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",

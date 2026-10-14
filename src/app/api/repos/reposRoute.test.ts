@@ -44,7 +44,9 @@ describe("POST /api/repos", () => {
     const response = await POST(post({ name: "inside", path: inside }));
 
     expect(response.status).toBe(201);
-    expect(await response.json()).toMatchObject({ name: "inside", path: inside, defaultBranch: "main" });
+    // Stored resolved through symlinks — on macOS the temp dir under /var is
+    // really /private/var.
+    expect(await response.json()).toMatchObject({ name: "inside", path: fs.realpathSync(inside), defaultBranch: "main" });
     expect(db.select().from(repos).all()).toHaveLength(1);
   });
 

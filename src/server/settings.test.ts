@@ -6,7 +6,7 @@ process.env.RADULF_AUTH_SECRET =
   "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
 
 const { db, settings: settingsTable } = await import("@/db");
-const { getSettings, patchSettings, validateSettingsPatch, SETTING_DEFAULTS } = await import("./settings");
+const { getSettings, patchSettings, redactSettings, validateSettingsPatch, SETTING_DEFAULTS, REDACTED } = await import("./settings");
 
 afterAll(() => {
   delete process.env.RADULF_AUTH_SECRET;
@@ -36,6 +36,37 @@ describe("secret settings encryption at rest", () => {
     // check and the setting silently falls back to blank.
     patchSettings({ omlxHeaders: "kong-api-key: abc123" });
     expect(getSettings().omlxHeaders).toBe("kong-api-key: abc123");
+  });
+});
+
+describe("folderBrowserRoot", () => {
+  it("takes an absolute path, ~ or ~/…, and nothing browsableRoot cannot expand", () => {
+    for (const ok of ["", "/srv/repos", "~", "~/code"]) {
+      expect(validateSettingsPatch({ folderBrowserRoot: ok })).toEqual({ folderBrowserRoot: ok });
+    }
+    for (const bad of ["code", "~bob/code"]) {
+      expect(() => validateSettingsPatch({ folderBrowserRoot: bad })).toThrow(/absolute path/);
+    }
+  });
+});
+
+describe("alertWebhookUrl", () => {
+  const hook = "https://hooks.slack.com/services/T000/B000/secret-token";
+
+  it("is a secret: encrypted at rest, redacted on the way out, kept when echoed back", () => {
+    patchSettings({ alertWebhookUrl: hook });
+    const row = db.select().from(settingsTable).all().find((r) => r.key === "alertWebhookUrl");
+    expect(row!.value).not.toContain("secret-token");
+    expect(redactSettings(getSettings()).alertWebhookUrl).toBe(REDACTED);
+
+    patchSettings({ alertWebhookUrl: REDACTED });
+    expect(getSettings().alertWebhookUrl).toBe(hook);
+  });
+
+  it("accepts blank or http(s) only", () => {
+    expect(validateSettingsPatch({ alertWebhookUrl: "" })).toEqual({ alertWebhookUrl: "" });
+    expect(() => validateSettingsPatch({ alertWebhookUrl: "file:///etc/passwd" })).toThrow(/http or https/);
+    expect(() => validateSettingsPatch({ alertWebhookUrl: "not a url" })).toThrow(/must be a URL/);
   });
 });
 

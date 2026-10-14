@@ -1,0 +1,59 @@
+Seeding /Users/h0gballs/radulf-bench-scratch from /Users/h0gballs/Development/lhansen-dev/radulf/benchmarks/failing-test-repair/seed/
+Baseline commit: 154de07e1117f298eb78f445d30bd681db45a3d8
+
+--- Run 1/3 ---
+  Reset repo to baseline 154de07e
+  Created card Erl7prW0gn0sVJNK8Fds_: "Repair the failing cart-pricing tests"
+  Queued card Erl7prW0gn0sVJNK8Fds_ to todo
+  Moved card Erl7prW0gn0sVJNK8Fds_ to in_progress
+  Card reached terminal status: needs_attention
+  Card ran 1 runs (0 loop, 0 evaluate), 0 loop iterations
+  Criteria: FAIL `node --test`
+  Criteria: PASS `node -e "const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)"`
+  Criteria: FAIL `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)"`
+  Criteria: FAIL `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)"`
+  Criteria: PASS `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)"`
+
+--- Run 2/3 ---
+  Reset repo to baseline 154de07e
+  Created card 4-90aCKZ0KFZPzOp7chOT: "Repair the failing cart-pricing tests"
+  Queued card 4-90aCKZ0KFZPzOp7chOT to todo
+  Moved card 4-90aCKZ0KFZPzOp7chOT to in_progress
+  Card reached terminal status: needs_attention
+  Card ran 1 runs (0 loop, 0 evaluate), 0 loop iterations
+  Criteria: FAIL `node --test`
+  Criteria: PASS `node -e "const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)"`
+  Criteria: FAIL `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)"`
+  Criteria: FAIL `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)"`
+  Criteria: PASS `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)"`
+
+--- Run 3/3 ---
+  Reset repo to baseline 154de07e
+  Created card frkPtWTJ_T3YD43AjNZiX: "Repair the failing cart-pricing tests"
+  Queued card frkPtWTJ_T3YD43AjNZiX to todo
+  Moved card frkPtWTJ_T3YD43AjNZiX to in_progress
+  Card reached terminal status: needs_attention
+  Card ran 1 runs (0 loop, 0 evaluate), 0 loop iterations
+  Criteria: FAIL `node --test`
+  Criteria: PASS `node -e "const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('test/cart.test.js')).digest('hex');if(h!=='82a37b7e930755c4497e8425424f9bbdb2d220eb17ad3513e46f8e83ee246f79')process.exit(1)"`
+  Criteria: FAIL `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:100,quantity:1}]);if(t.discount!==10||t.total!==90)process.exit(1)"`
+  Criteria: FAIL `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:20}]);if(t.subtotal!==20)process.exit(1)"`
+  Criteria: PASS `node -e "const {computeTotals}=require('./src/cart.js');const t=computeTotals([{price:10,quantity:2}]);if(t.shipping!==7.5||t.total!==27.5)process.exit(1)"`
+
+Report written to /Users/h0gballs/Development/lhansen-dev/radulf/benchmarks/reports/failing-test-repair-2026-10-04T02-59-34-532Z.json
+
+=== BENCHMARK SUMMARY ===
+Fixture:    failing-test-repair
+Loop:       chatgpt/gpt-6-luna
+Planner:    claude-sonnet-5-5
+Evaluator:  anthropic/claude-sonnet-5-5
+Critic:     anthropic/claude-sonnet-5-5
+Runs:       3
+Criteria pass rate: 0%
+Diff correctness:   0%
+Total wall time:    median 1ms
+Iterations:         median 0
+Model turns:        median 0
+Cost (USD):         median $0.0000
+========================
+

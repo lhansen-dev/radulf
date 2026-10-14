@@ -129,7 +129,7 @@ no bash) and the post-run check rejects any change other than `.ralph/CRITIQUE.m
 
 | Role | Module | Entry point | Timeout |
 |---|---|---|---|
-| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)`, `proposeSplit(cardId)`, `proposeScopedPlan(cardId)` | 5 min per turn |
+| Scoping | `src/server/scoping.ts` | `scopingTurn(cardId, content)`, `proposeScopedCard(cardId)`, `proposeSplit(cardId)`, `proposeScopedPlan(cardId)` | `scopingTimeoutMinutes` setting, 5 min default per turn |
 | Planner | `src/server/planningService.ts` | `runPlanning(cardId)` | `plannerTimeoutMinutes` setting, 30 min default |
 | Plan critic | `src/server/planCriticService.ts` | `runCritic(cardId)` | `criticTimeoutMinutes` setting, 10 min default; read-only review of a finished plan (spec 30), run when `planCriticMode` or the card's `planCritic` override says so |
 | Loop | `src/server/orchestrator.ts` | `runLoop(cardId)` (private) | per-card, default 60 min |

@@ -11,7 +11,10 @@ This page takes you from a fresh clone to a merged card.
 | **A provider** | At least one. See [Providers and models](PROVIDERS.md). |
 
 Everything else is a pinned dependency — including the pi SDK and the sandbox
-runtime — so there are no global installs and no CLIs to manage.
+runtime — so there are no global installs and no CLIs to manage. The one
+exception is Linux, where the sandbox runtime shells out to three system
+packages: install `bubblewrap`, `socat` and `ripgrep` (for example
+`sudo apt-get install bubblewrap socat ripgrep`).
 
 ## Install and run
 
@@ -23,6 +26,13 @@ make dev
 ```
 
 Then open <http://localhost:3000>.
+
+Rather have a window of its own than a browser tab? `make desktop` opens the
+running server in an Electron window. Start it before or after the server: the
+window waits for the server to answer. Links that lead off the app open in your
+browser. To use a Radulf on another machine, pass its address:
+`make desktop URL=https://radulf.example.com`. The first run downloads Electron,
+a few hundred MB kept in `desktop/node_modules`.
 
 The SQLite database and every runtime directory are created for you on first run
 — `./data`, plus `./worktrees`, `./plans` and `./runtmp` beside it, all

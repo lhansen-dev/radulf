@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { git, initScratchRepo } from "@/testUtils/gitRepo";
+import { DATA_DIR, WORKTREES_DIR } from "@/db";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -8,10 +9,12 @@ import {
   createWorktree,
   git as hostGit,
   hasCommits,
+  isRadulfWorktreePath,
   isRalphBranch,
   isValidBranchName,
   listBranches,
   mergeBranch,
+  removeWorktree,
   offRunBranchReason,
   worktreeIsDirty,
   worktreeDiff,
@@ -448,7 +451,8 @@ describe("mergeBranch recovery (half-finished merge in the parent checkout)", ()
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain(dir);
-    expect(result.error).toContain("uncommitted changes");
+    expect(result.error).toContain("uncommitted or untracked files");
+    expect(result.error).toContain("?? scratch.txt");
     expect(result.error).toContain("Retry merge");
     // No merge was started.
     expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
@@ -541,5 +545,69 @@ describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window
     expect(result.ok).toBe(false);
     expect(result.conflict).toBe(true);
     expect(called).toBe(false);
+  });
+});
+
+describe("isRadulfWorktreePath", () => {
+  it("allows only paths strictly inside the worktrees dirs, never a checkout or the dirs themselves", () => {
+    expect(isRadulfWorktreePath(path.join(WORKTREES_DIR, "card-abc"))).toBe(true);
+    expect(isRadulfWorktreePath(path.join(DATA_DIR, "worktrees", "legacy-card"))).toBe(true);
+    expect(isRadulfWorktreePath(WORKTREES_DIR)).toBe(false);
+    expect(isRadulfWorktreePath(process.cwd())).toBe(false);
+    expect(isRadulfWorktreePath(os.homedir())).toBe(false);
+    expect(isRadulfWorktreePath(path.join(WORKTREES_DIR, "..", "elsewhere"))).toBe(false);
+  });
+
+  it("refuses an external worktree before deleting its files or branch", async () => {
+    const repo = initScratchRepo("radulf-cleanup-repo-");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cleanup-outside-"));
+    const wt = path.join(root, "wt");
+    git(repo, "worktree", "add", "-q", wt, "-b", "operator-work");
+    const file = path.join(wt, "uncommitted.txt");
+    fs.writeFileSync(file, "operator work");
+    try {
+      await expect(removeWorktree(repo, wt, "operator-work")).rejects.toThrow("refused to delete");
+      expect(fs.readFileSync(file, "utf8")).toBe("operator work");
+      expect(git(repo, "branch", "--list", "operator-work")).toContain("operator-work");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects paths escaping through an intermediate symlink, including absent children", async () => {
+    fs.mkdirSync(WORKTREES_DIR, { recursive: true });
+    const root = fs.mkdtempSync(path.join(WORKTREES_DIR, "cleanup-test-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-cleanup-outside-"));
+    const file = path.join(outside, "child", "operator.txt");
+    fs.mkdirSync(path.dirname(file));
+    fs.writeFileSync(file, "operator work");
+    fs.symlinkSync(outside, path.join(root, "pivot"));
+    const target = path.join(root, "pivot", "child");
+    try {
+      expect(isRadulfWorktreePath(target)).toBe(false);
+      expect(isRadulfWorktreePath(path.join(root, "pivot", "missing"))).toBe(false);
+      await expect(removeWorktree(outside, target, "operator-work")).rejects.toThrow("refused to delete");
+      expect(fs.readFileSync(file, "utf8")).toBe("operator work");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("still removes a managed worktree and its branch", async () => {
+    const repo = initScratchRepo("radulf-cleanup-repo-");
+    fs.mkdirSync(WORKTREES_DIR, { recursive: true });
+    const root = fs.mkdtempSync(path.join(WORKTREES_DIR, "cleanup-test-"));
+    const wt = path.join(root, "wt");
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/cleanup-test");
+    try {
+      await removeWorktree(repo, wt, "ralph/cleanup-test");
+      expect(fs.existsSync(wt)).toBe(false);
+      expect(git(repo, "branch", "--list", "ralph/cleanup-test")).toBe("");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

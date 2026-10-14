@@ -33,8 +33,9 @@ the same cookies.
 ## How it behaves
 
 Visiting any page without a valid cookie redirects you to `/login`. A successful
-login sets a signed session cookie valid for **30 days**. To clear it, `POST
-/api/auth/logout`, which redirects back to the login page.
+login sets a signed session cookie valid for **30 days**. **Sign out everywhere**
+(Settings → General → Session, or `POST /api/auth/logout`) signs you out on every
+device and returns you to the login page — see [Revoking a session](#revoking-a-session).
 
 The login endpoint throttles guessing, in one of two ways depending on whether
 it can tell clients apart:
@@ -56,33 +57,40 @@ attacker forge a fresh identity per attempt and evade the limit entirely.
 
 Cookies are HMAC-SHA256 signed against a secret generated on first boot and
 stored in `data/auth-secret` (gitignored). There is no server-side session
-store, which means there is no way to revoke one cookie individually.
+store, so one cookie cannot be revoked on its own — but all of them can.
 
-The kill switch for a leaked cookie is **rotating the secret**: delete
-`data/auth-secret` and restart. A fresh secret invalidates every outstanding
-cookie at once, including your own.
+**Logging out is the kill switch for a leaked cookie.** It writes the time to
+`data/sessions-not-before`, and every session issued up to then stops working
+in every browser and every process on that data directory, including copies
+of the cookie you never knew existed. Sign in again afterwards.
+
+Rotating the secret (delete `data/auth-secret` and restart) also invalidates
+every cookie, but it makes every stored provider key undecryptable too, so
+prefer logging out.
 
 ## Under the hood
 
 ```
-   Browser              Next.js proxy (edge)         Node runtime
+   Browser              Next.js proxy                Route handlers
       │                         │                          │
       │── GET /any-page ───────▶│                          │
-      │◀─ 302 → /login ─────────│  (no valid cookie)       │
+      │◀─ 307 → /login ─────────│  (no valid cookie)       │
       │                         │                          │
-      │── POST /login (password) ──────────────────────────▶│
+      │── POST /api/auth/login (password) ─────────────────▶│
       │                         │      bcrypt check +      │
-      │                         │      read auth-secret    │
-      │◀─ Set signed cookie (30 days) ──────────────────────│
+      │                         │      sign with secret    │
+      │◀─ Set signed cookie (30 days), 303 → / ─────────────│
       │                         │                          │
       │── GET /any-page (with cookie) ─▶│                   │
-      │                         │  HMAC-SHA256 verify      │
-      │◀─ 200 ──────────────────│  (Web Crypto)            │
+      │                         │  HMAC-SHA256 verify +    │
+      │                         │  issued after the last   │
+      │                         │  sign-out-everywhere?    │
+      │◀─ 200 ──────────────────│                          │
 ```
 
-The bcrypt comparison and the file I/O happen only in Node runtime modules. The
-request proxy verifies the signed cookie using Web Crypto alone, which keeps it
-edge-compatible.
+The bcrypt comparison happens only in the login route. The proxy, which runs on
+the Node.js runtime in Next 16, verifies the cookie's HMAC with Web Crypto and
+checks its issue time against `data/sessions-not-before`.
 
 ## A note on scope
 

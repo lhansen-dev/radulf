@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -7,7 +6,7 @@ import { setupTestDataDir } from "@/testUtils/testDataDir";
 
 setupTestDataDir("radulf-retention-");
 
-const { db, settings, cards, repos, runs, worktrees, now, DATA_DIR } = await import("@/db");
+const { db, settings, cards, repos, runs, worktrees, now, DATA_DIR, WORKTREES_DIR } = await import("@/db");
 const { saveBaseline } = await import("./integrity");
 const { claimDailySweep, removeFinishedWorktrees, sweepDayKey, RETENTION_SWEEP_MARKER_KEY } = await import("./retention");
 const { git, initScratchRepo } = await import("@/testUtils/gitRepo");
@@ -51,7 +50,8 @@ describe("sweepDayKey", () => {
 
 describe("removeFinishedWorktrees", () => {
   function seed(cardId: string, status: "done" | "abandoned" | "review", repoPath: string) {
-    const worktreePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ralph-abandoned-wt-")), "wt");
+    fs.mkdirSync(WORKTREES_DIR, { recursive: true });
+    const worktreePath = path.join(fs.mkdtempSync(path.join(WORKTREES_DIR, "ralph-abandoned-wt-")), "wt");
     const branch = `ralph/${cardId}`;
     git(repoPath, "worktree", "add", worktreePath, "-b", branch);
     db.insert(cards)

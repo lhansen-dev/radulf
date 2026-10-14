@@ -107,6 +107,9 @@ export const SETTING_DEFAULTS = {
   evaluatorTimeoutMinutes: 10,
   // Spec 30: one critic pass is one harness invocation.
   criticTimeoutMinutes: 10,
+  // Spec 17: one scoping turn is one read-only harness invocation while the
+  // operator waits. Big repositories can need more than the default to read.
+  scopingTimeoutMinutes: 5,
   // Spec 30 — `breakdown` = on for cards that are pieces of an epic, `always`,
   // `off`; a card's own `planCritic` column overrides.
   planCriticMode: "breakdown",
@@ -141,6 +144,14 @@ export const SETTING_DEFAULTS = {
   // an auto-approval is recorded on the `card.auto_approved` event, so the
   // decision stays reconstructable after the fact.
   autoApprove: false,
+  // YOLO mode: the operator is away, so no stage stops to ask. The planner and
+  // loop are told to decide for themselves rather than raise questions or
+  // blockers, plan review is skipped, a loop that stops for the planner
+  // re-plans straight away, and the evaluator judges a criterion whose tool is
+  // missing from the sandbox by reading instead of revising on it. A live
+  // override like `autoApprove`, read when each decision is made, and
+  // deliberately separate from it: YOLO never merges anything on its own.
+  yoloMode: false,
   // Spec 15: workspace-wide PR delivery — an approved diff is pushed to
   // `origin` and opened as a pull request instead of merged into the local
   // base branch. Live override read at approval time, OR'd with the card's own
@@ -228,6 +239,7 @@ const BOOLEAN_SETTINGS = new Set<keyof Settings>([
   "sandboxEnabled",
   "sandboxWeakerIsolationForGoTls",
   "autoApprove",
+  "yoloMode",
   "openPr",
   "alertOnReviewReady",
   "alertOnNeedsAttention",
@@ -244,6 +256,7 @@ const INTEGER_SETTINGS: Partial<Record<keyof Settings, [number, number]>> = {
   iterationHardTimeoutMinutes: [1, 1_440],
   evaluatorTimeoutMinutes: [1, 10_080],
   criticTimeoutMinutes: [1, 10_080],
+  scopingTimeoutMinutes: [1, 1_440],
   gateTimeoutMinutes: [1, 1_440],
   stallTimeoutSeconds: [30, 86_400],
   workerStaleSeconds: [15, 86_400],
@@ -281,6 +294,9 @@ const SECRET_SETTINGS = new Set<keyof Settings>([
   "openrouterApiKey",
   "braveApiKey",
   "jiraApiToken",
+  // A Slack or Discord hook URL carries the token that posts to the channel,
+  // and an ntfy topic name is its own password.
+  "alertWebhookUrl",
 ]);
 
 /** Stand-in a stored secret is replaced with on the way out. Distinct from ""
@@ -335,8 +351,11 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
       // Blank is meaningful (fall back to $HOME); anything else must be
       // absolute, since a relative root would resolve against whatever the
       // server's cwd happens to be.
-      if (settingValue.trim() && !settingValue.trim().startsWith("/") && !settingValue.trim().startsWith("~")) {
-        invalid("folderBrowserRoot must be an absolute path");
+      // `~` and `~/…` are expanded by browsableRoot; `~user/…` is not, and
+      // would resolve under the cwd.
+      const root = settingValue.trim();
+      if (root && !root.startsWith("/") && root !== "~" && !root.startsWith("~/")) {
+        invalid("folderBrowserRoot must be an absolute path, ~ or ~/…");
       }
     } else if (key === "omlxBaseUrl") {
       if (typeof settingValue !== "string") invalid("omlxBaseUrl must be a URL");
@@ -358,6 +377,18 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
           invalid("jiraBaseUrl must be a URL");
         }
         if (!["http:", "https:"].includes(url.protocol)) invalid("jiraBaseUrl must use http or https");
+      }
+    } else if (key === "alertWebhookUrl") {
+      if (typeof settingValue !== "string") invalid("alertWebhookUrl must be a URL");
+      // Blank disables alerts; REDACTED is the form echoing a stored URL back.
+      if (settingValue.trim() && settingValue !== REDACTED) {
+        let url: URL;
+        try {
+          url = new URL(settingValue.trim());
+        } catch {
+          invalid("alertWebhookUrl must be a URL");
+        }
+        if (!["http:", "https:"].includes(url.protocol)) invalid("alertWebhookUrl must use http or https");
       }
     } else if (key === "omlxHeaders") {
       if (typeof settingValue !== "string") invalid("omlxHeaders must be a string");
