@@ -260,23 +260,22 @@ export async function removeWorktree(
   worktreePath: string,
   branch: string
 ): Promise<void> {
+  if (!isRadulfWorktreePath(worktreePath)) {
+    throw new ClientError(`refused to delete ${worktreePath}: not inside ${WORKTREES_DIR}`);
+  }
   await tryGit(repoPath, "worktree", "remove", "--force", worktreePath);
   await tryGit(repoPath, "worktree", "prune");
   await tryGit(repoPath, "branch", "-D", branch);
-  // The path comes from the database. A recursive delete of anything that is
-  // not a worktree Radulf created (the repository's own checkout, a home
-  // directory) would destroy the operator's work, so refuse it.
-  if (isRadulfWorktreePath(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true });
-  else console.error(`[radulf] refused to delete ${worktreePath}: not inside ${WORKTREES_DIR}`);
+  fs.rmSync(worktreePath, { recursive: true, force: true });
   markWorktreeRemoved(worktreePath);
 }
 
 /** Strictly inside the worktrees dir, or `data/worktrees` where runs from
- * before spec 14 kept theirs. */
+ * before spec 14 kept theirs. Resolve symlinks before trusting a database path. */
 export function isRadulfWorktreePath(target: string): boolean {
-  const resolved = path.resolve(target);
+  const resolved = realpathBestEffort(target);
   return [WORKTREES_DIR, path.join(DATA_DIR, "worktrees")].some(
-    (root) => resolved !== path.resolve(root) && isInsideOrEqual(resolved, path.resolve(root)),
+    (root) => resolved !== realpathBestEffort(root) && isInsideOrEqual(resolved, realpathBestEffort(root)),
   );
 }
 
