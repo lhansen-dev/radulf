@@ -7,7 +7,8 @@
  * boot via instrumentation.ts, along with RADULF_SESSIONS_NOT_BEFORE_FILE,
  * the revocation stamp logout writes.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 export const SESSION_COOKIE = "radulf_session";
 export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -66,17 +67,43 @@ export async function verifySession(value: string): Promise<boolean> {
  */
 export async function revokeSessions(now = Date.now()): Promise<void> {
   const file = process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
-  if (file) await writeFile(file, String(now), { mode: 0o600 });
+  if (!file) return;
+  // Reuse the crash-safe SQLite file lock: every process must read the last
+  // stamp and replace it under the same lock, so delayed logouts cannot lower it.
+  const { withMigrationLock } = await import("@/db/migrationLock");
+  withMigrationLock(`${file}.lock`, () => {
+    let previous = 0;
+    try {
+      previous = parseRevocationStamp(readFileSync(file, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, String(Math.max(previous, now)), { mode: 0o600, flag: "wx" });
+      renameSync(temporary, file);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  });
 }
 
-/** The revocation stamp, or 0 when nothing was ever revoked. */
+function parseRevocationStamp(text: string): number {
+  const stamp = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(stamp) || stamp < 0) {
+    throw new Error("invalid session revocation stamp");
+  }
+  return stamp;
+}
+
+/** Missing means nothing was revoked; corrupt or unreadable means deny all. */
 async function sessionsNotBefore(): Promise<number> {
   const file = process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
   if (!file) return 0;
   try {
-    return Number(await readFile(file, "utf8")) || 0;
-  } catch {
-    return 0;
+    return parseRevocationStamp(await readFile(file, "utf8"));
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : Infinity;
   }
 }
 

@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   revokeSessions,
   SESSION_MAX_AGE_MS,
@@ -58,22 +60,84 @@ describe("signSession / verifySession", () => {
 });
 
 describe("revokeSessions", () => {
+  let dir: string;
+  let file: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-revoke-"));
+    file = path.join(dir, "sessions-not-before");
+    process.env.RADULF_SESSIONS_NOT_BEFORE_FILE = file;
+  });
+  afterEach(() => {
+    delete process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("voids every session issued up to the revocation, and none after it", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-revoke-"));
-    process.env.RADULF_SESSIONS_NOT_BEFORE_FILE = path.join(dir, "sessions-not-before");
+    const issuedAt = Date.now();
+    const before = await signSession(issuedAt + SESSION_MAX_AGE_MS);
+    expect(await verifySession(before)).toBe(true);
+
+    await revokeSessions(issuedAt);
+    expect(await verifySession(before)).toBe(false);
+
+    const after = await signSession(issuedAt + 1 + SESSION_MAX_AGE_MS);
+    expect(await verifySession(after)).toBe(true);
+  });
+
+  it.each(["", "garbage", "NaN", "-1", "1.5", "9007199254740992"])("rejects sessions when the stamp is invalid: %j", async (stamp) => {
+    const cookie = await signSession(Date.now() + SESSION_MAX_AGE_MS);
+    fs.writeFileSync(file, stamp);
+    expect(await verifySession(cookie)).toBe(false);
+    await expect(revokeSessions()).rejects.toThrow("invalid session revocation stamp");
+  });
+
+  it("rejects sessions when the stamp cannot be read", async () => {
+    fs.mkdirSync(file);
+    expect(await verifySession(await signSession(Date.now() + SESSION_MAX_AGE_MS))).toBe(false);
+  });
+
+  it("never lowers the stamp when an older logout finishes later", async () => {
+    const issuedAt = Date.now();
+    const cookie = await signSession(issuedAt + SESSION_MAX_AGE_MS);
+    await revokeSessions(issuedAt + 1);
+    await revokeSessions(issuedAt - 1);
+    expect(await verifySession(cookie)).toBe(false);
+    expect(fs.readFileSync(file, "utf8")).toBe(String(issuedAt + 1));
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("replaces the stamp without truncating the file a reader already opened", async () => {
+    const issuedAt = Date.now();
+    await revokeSessions(issuedAt);
+    const reader = fs.openSync(file, "r");
     try {
-      const issuedAt = Date.now();
-      const before = await signSession(issuedAt + SESSION_MAX_AGE_MS);
-      expect(await verifySession(before)).toBe(true);
-
-      await revokeSessions(issuedAt);
-      expect(await verifySession(before)).toBe(false);
-
-      const after = await signSession(issuedAt + 1 + SESSION_MAX_AGE_MS);
-      expect(await verifySession(after)).toBe(true);
+      await revokeSessions(issuedAt + 1);
+      expect(fs.readFileSync(reader, "utf8")).toBe(String(issuedAt));
+      expect(fs.readFileSync(file, "utf8")).toBe(String(issuedAt + 1));
     } finally {
-      delete process.env.RADULF_SESSIONS_NOT_BEFORE_FILE;
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.closeSync(reader);
+    }
+  });
+
+  it("serializes concurrent logout processes without exposing an empty stamp", async () => {
+    const issuedAt = Date.now();
+    const cookie = await signSession(issuedAt + SESSION_MAX_AGE_MS);
+    await revokeSessions(issuedAt);
+    // Run the actual module in independent Node processes, sharing only disk.
+    const source = fs.readFileSync(path.join(process.cwd(), "src/server/session.ts"), "utf8")
+      .replace('import("@/db/migrationLock")', `import(${JSON.stringify(path.join(process.cwd(), "src/db/migrationLock.ts"))})`);
+    const sessionModule = path.join(process.cwd(), `.session-test-${process.pid}.ts`);
+    fs.writeFileSync(sessionModule, source);
+    try {
+      const run = promisify(execFile);
+      const writers = [issuedAt + 20, issuedAt + 10, issuedAt + 30].map((stamp) =>
+        run(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `import { revokeSessions } from ${JSON.stringify(sessionModule)}; await revokeSessions(${stamp});`]),
+      );
+      for (let i = 0; i < 30; i++) expect(await verifySession(cookie)).toBe(false);
+      await Promise.all(writers);
+      expect(fs.readFileSync(file, "utf8")).toBe(String(issuedAt + 30));
+    } finally {
+      fs.rmSync(sessionModule, { force: true });
     }
   });
 });
