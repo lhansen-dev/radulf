@@ -80,12 +80,20 @@ export async function GET(req?: Request) {
   // Next does not compress route-handler responses, and every open board
   // refetches this whole list (descriptions included, for search) on each
   // card, run and iteration event, while Done cards are never pruned.
-  if (req?.headers.get("accept-encoding")?.includes("gzip")) {
+  const encodings = req?.headers.get("accept-encoding")?.split(",").map((entry) => {
+    const [name, ...parameters] = entry.trim().toLowerCase().split(";");
+    const quality = parameters.find((parameter) => parameter.trim().startsWith("q="));
+    return { name: name.trim(), quality: quality === undefined ? 1 : Number(quality.trim().slice(2)) };
+  }) ?? [];
+  const gzip = encodings.find((encoding) => encoding.name === "gzip") ?? encodings.find((encoding) => encoding.name === "*");
+  if (gzip && gzip.quality > 0 && gzip.quality <= 1) {
     return new Response(gzipSync(JSON.stringify(out)), {
       headers: { "content-type": "application/json", "content-encoding": "gzip", vary: "accept-encoding" },
     });
   }
-  return json(out);
+  const response = json(out);
+  response.headers.set("vary", "accept-encoding");
+  return response;
 }
 
 export async function POST(req: Request) {

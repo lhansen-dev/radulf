@@ -137,4 +137,17 @@ describe("GET /api/cards", () => {
     expect(body.length).toBeLessThan(JSON.stringify(plain).length);
     expect(JSON.parse(gunzipSync(body).toString("utf8"))).toEqual(plain);
   });
+
+  it.each(["gzip;q=0, identity;q=1", "*;q=1, gzip;q=0", "x-gzip", "br", "gzip;q=invalid"])("does not gzip when the client excludes it: %s", async (encoding) => {
+    const response = await GET(new Request("http://localhost/api/cards", { headers: { "accept-encoding": encoding } }));
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("vary")).toBe("accept-encoding");
+    expect(await response.json()).toEqual([]);
+  });
+
+  it.each(["GZIP; q=0.5, br", "*;q=1"])("gzips when a token or wildcard permits it: %s", async (encoding) => {
+    const response = await GET(new Request("http://localhost/api/cards", { headers: { "accept-encoding": encoding } }));
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(JSON.parse(gunzipSync(Buffer.from(await response.arrayBuffer())).toString("utf8"))).toEqual([]);
+  });
 });
