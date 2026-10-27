@@ -1,5 +1,6 @@
 import { cloneRepository } from "@/server/repoClone";
 import { registerRepo } from "@/server/repos";
+import { getSettings } from "@/server/settings";
 import { record } from "@/server/requestValidation";
 import { json, err, handle } from "../../_lib";
 
@@ -10,7 +11,7 @@ export async function POST(req: Request) {
     const url = typeof values.url === "string" ? values.url.trim() : "";
     const name = typeof values.name === "string" ? values.name.trim() : "";
     if (!url) return err("url is required");
-    const cloned = await cloneRepository(url, name);
+    const cloned = await cloneRepository(url, name, getSettings().folderBrowserRoot);
     return json(registerRepo(cloned.name, cloned.path, cloned.defaultBranch), 201);
   });
 }
