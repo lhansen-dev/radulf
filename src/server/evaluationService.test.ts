@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 const mocks = vi.hoisted(() => ({
   runHarness: vi.fn(),
   tryGit: vi.fn(),
+  stageAll: vi.fn(async () => ({ droppedGitlinks: [] })),
   gitRaw: vi.fn(),
   offRunBranchReason: vi.fn(),
   // Mutable so the Phase 18.1 regression test below can flip sandboxing on
@@ -48,6 +49,7 @@ vi.mock("./harness", async (importOriginal) => ({
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
   tryGit: mocks.tryGit,
+  stageAll: mocks.stageAll,
   gitRaw: mocks.gitRaw,
   offRunBranchReason: mocks.offRunBranchReason,
 }));

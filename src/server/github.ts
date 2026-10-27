@@ -17,6 +17,7 @@
  * module depends on.
  */
 import { execBounded } from "./exec";
+import { hostGitConfigEnv } from "./git";
 
 const GH_TIMEOUT_MS = 30_000;
 const GH_PR_TIMEOUT_MS = 2 * 60_000;
@@ -41,6 +42,9 @@ async function run(
     ...(options.cwd ? { cwd: options.cwd } : {}),
     env: {
       ...process.env,
+      // gh runs git itself in the worktree (`pr create` checks its state), so
+      // it carries the same pins every host-side git call in git.ts does.
+      ...hostGitConfigEnv(),
       // gh renders progress and colour differently under a TTY; force the
       // plain, parseable form regardless of how the server was started.
       NO_COLOR: "1",

@@ -320,7 +320,10 @@ host-side call pins `core.hooksPath=/dev/null` and `core.fsmonitor=false`:
 these run unsandboxed in a worktree the agent has just written to, and a
 relative `core.hooksPath` (husky's) resolves against that worktree. Your own
 hooks therefore do not run on Radulf's merge commits; the reviewed diff is the
-gate. `offRunBranchReason` refuses to commit into a worktree that has left its
+gate. The same calls pin `diff.ignoreSubmodules=all` and
+`submodule.recurse=false`, so host git never steps into a nested repository
+the agent created, whose config it would otherwise execute, and `stageAll`
+drops any such gitlink before every commit Radulf makes. `offRunBranchReason` refuses to commit into a worktree that has left its
 run branch or whose `.git` pointer no longer leads to the repository.
 
 `mergeBranch` is the one write to the user's repo. Before touching anything it
