@@ -432,6 +432,30 @@ describe("mergeBranch recovery (half-finished merge in the parent checkout)", ()
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("refuses a merge that would overwrite an ignored file in the checkout", async () => {
+    // The operator ignores .env.local and keeps a real one. The run branch
+    // un-ignores the name and tracks its own copy, which git's merge would
+    // silently write over the operator's file.
+    fs.writeFileSync(path.join(dir, ".gitignore"), ".env.local\n");
+    git(dir, "add", ".gitignore");
+    git(dir, "commit", "-m", "ignore env");
+    git(dir, "checkout", "-b", "ralph/env");
+    fs.writeFileSync(path.join(dir, ".gitignore"), "");
+    fs.writeFileSync(path.join(dir, ".env.local"), "AGENT=1\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", "track env");
+    git(dir, "checkout", defaultBranch);
+    fs.writeFileSync(path.join(dir, ".env.local"), "OPERATOR_SECRET=real\n");
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/env", "ralph: merge env");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(".env.local");
+    expect(fs.readFileSync(path.join(dir, ".env.local"), "utf8")).toBe("OPERATOR_SECRET=real\n");
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+    expect(git(dir, "rev-parse", "--abbrev-ref", "HEAD")).toBe(defaultBranch);
+  });
+
   it("aborts Radulf's own abandoned merge of the run branch and redoes it", async () => {
     // A dead worker left `merge --no-commit ralph/x` half-done in the parent.
     git(dir, "merge", "--no-ff", "--no-commit", "ralph/x");

@@ -413,6 +413,33 @@ async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }
   return removed;
 }
 
+/** Paths `branch` adds relative to `baseBranch` that already exist in the
+ * checkout. With a clean tree those can only be ignored files. */
+async function ignoredPathsTheBranchAdds(
+  repoPath: string,
+  baseBranch: string,
+  branch: string
+): Promise<string[]> {
+  const added = await gitRaw(
+    repoPath,
+    "diff",
+    "--name-only",
+    "-z",
+    "--no-renames",
+    "--diff-filter=A",
+    baseBranch,
+    branch
+  );
+  return added.split("\0").filter(Boolean).filter((p) => {
+    try {
+      fs.lstatSync(path.join(repoPath, p));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** Merge the ralph branch into the repo's base branch. Always restores the
  * checkout the user's repo was on before the merge — merging must never
  * leave their working copy switched to the base branch.
@@ -445,7 +472,7 @@ export async function mergeBranch(
   const restore = async () => {
     // A detached HEAD ("HEAD") has no branch to restore.
     if (original !== baseBranch && original !== "HEAD") {
-      await tryGit(repoPath, "checkout", original);
+      await tryGit(repoPath, "checkout", "--no-overwrite-ignore", original);
     }
   };
   // A delivery worker can die between `merge --no-commit` and `commit` below,
@@ -488,7 +515,7 @@ export async function mergeBranch(
     return { ok: true, mergeCommit, alreadyMerged: true };
   }
   if (original !== baseBranch) {
-    const co = await tryGit(repoPath, "checkout", baseBranch);
+    const co = await tryGit(repoPath, "checkout", "--no-overwrite-ignore", baseBranch);
     if (!co.ok) return { ok: false, error: `cannot checkout ${baseBranch}: ${co.out}` };
   }
   const dirty = await git(repoPath, "status", "--porcelain");
@@ -497,6 +524,21 @@ export async function mergeBranch(
     return {
       ok: false,
       error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
+    };
+  }
+  // The merge writes into the operator's working tree, and git's default
+  // merge strategy overwrites an ignored file when the branch starts tracking
+  // a path of that name (it disregards --no-overwrite-ignore; only checkout
+  // honours it). A run can un-ignore `.env.local` or `data/` and commit its
+  // own copy, and an improvement run merges with no human review. The tree
+  // is clean at this point, so whatever sits on disk at a path the branch
+  // adds is ignored and the operator's. Refuse rather than overwrite.
+  const clobbered = await ignoredPathsTheBranchAdds(repoPath, baseBranch, branch);
+  if (clobbered.length > 0) {
+    await restore();
+    return {
+      ok: false,
+      error: `merging ${branch} would overwrite ignored files in ${repoPath}: ${clobbered.join(", ")} — move them aside, or take the branch's changes to them out, then press Retry merge`,
     };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before
