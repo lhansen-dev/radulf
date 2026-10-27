@@ -3,6 +3,7 @@
 // (a plain Node process) can run the same code. Which parts run depends on the
 // roles the process was given — see ./roles.
 import { ensureAuthSecret } from "./authSecret";
+import { authEnabled, isAllowedUnauthenticatedHost } from "./session";
 import { getSettings } from "./settings";
 import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
 import { getOrchestrator } from "./orchestrator";
@@ -14,10 +15,33 @@ import { startEventsTail } from "./eventsTail";
 import { startTranscriptWatchers } from "./transcriptWatchers";
 import type { Role } from "./roles";
 
+/**
+ * The compose deployment's half of SECURITY.md's loopback-without-auth rule.
+ * A host install gets it from the Makefile, which derives the bind address
+ * from RADULF_AUTH_PASSWORD_HASH; the container always binds every interface
+ * and relies on compose publishing the port on RADULF_BIND, which nothing
+ * checked. compose.yaml hands that value to the web container so a publish
+ * beyond loopback with the login gate off fails here instead of serving. The
+ * proxy's loopback Host check is no substitute: it stops a browser reaching
+ * the API through a rebinding hostname, not a client that sets the header
+ * itself.
+ */
+function assertPublishedBindIsAuthenticated(): void {
+  const bind = process.env.RADULF_BIND?.trim();
+  if (!bind || authEnabled() || isAllowedUnauthenticatedHost(bind)) return;
+  throw new Error(
+    `RADULF_BIND=${bind} publishes the web port beyond loopback with no RADULF_AUTH_PASSWORD_HASH set. ` +
+      "Set the hash in .env.local (docs/AUTHENTICATION.md), or leave RADULF_BIND unset to publish on 127.0.0.1 only.",
+  );
+}
+
 export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   console.log(`[radulf] roles: ${[...roles].join(",")}`);
 
   ensureAuthSecret();
+  // A published port exposes only the HTTP server; a worker listens on
+  // nothing.
+  if (roles.has("web")) assertPublishedBindIsAuthenticated();
 
   // Opens and migrates the database at boot for every role rather than on
   // the first request.

@@ -50,6 +50,8 @@ function installDefaults() {
 }
 
 const originalPumpInterval = process.env.RADULF_PUMP_INTERVAL_MS;
+const originalBind = process.env.RADULF_BIND;
+const originalPasswordHash = process.env.RADULF_AUTH_PASSWORD_HASH;
 
 describe("boot", () => {
   beforeEach(() => {
@@ -60,6 +62,10 @@ describe("boot", () => {
     vi.useRealTimers();
     if (originalPumpInterval === undefined) delete process.env.RADULF_PUMP_INTERVAL_MS;
     else process.env.RADULF_PUMP_INTERVAL_MS = originalPumpInterval;
+    if (originalBind === undefined) delete process.env.RADULF_BIND;
+    else process.env.RADULF_BIND = originalBind;
+    if (originalPasswordHash === undefined) delete process.env.RADULF_AUTH_PASSWORD_HASH;
+    else process.env.RADULF_AUTH_PASSWORD_HASH = originalPasswordHash;
     mocks.settings = { sandboxEnabled: false };
     vi.clearAllMocks();
   });
@@ -115,5 +121,34 @@ describe("boot", () => {
     expect(mocks.getOrchestrator).toHaveBeenCalledTimes(1);
     expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
     expect(mocks.startTranscriptWatchers).toHaveBeenCalledTimes(1);
+  });
+
+  it("web: refuses a bind published beyond loopback while auth is off, and takes it once the hash is set", async () => {
+    installDefaults();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    delete process.env.RADULF_AUTH_PASSWORD_HASH;
+    process.env.RADULF_BIND = "0.0.0.0";
+
+    await expect(boot(new Set(["web"]))).rejects.toThrow(/RADULF_AUTH_PASSWORD_HASH/);
+    expect(mocks.startEventsTail).not.toHaveBeenCalled();
+
+    process.env.RADULF_AUTH_PASSWORD_HASH = "$2a$12$abc123";
+    await boot(new Set(["web"]));
+    expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
+  });
+
+  it("web: a loopback bind needs no auth; a worker never checks the bind", async () => {
+    vi.useFakeTimers();
+    installDefaults();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    delete process.env.RADULF_AUTH_PASSWORD_HASH;
+
+    process.env.RADULF_BIND = "127.0.0.1";
+    await boot(new Set(["web"]));
+    expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
+
+    process.env.RADULF_BIND = "0.0.0.0";
+    await boot(new Set(["worker"]));
+    expect(mocks.getOrchestrator).toHaveBeenCalledTimes(1);
   });
 });

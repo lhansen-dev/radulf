@@ -310,6 +310,11 @@ authentication. To serve the LAN or sit behind a reverse proxy:
 2. Set `RADULF_BIND=0.0.0.0` in `.env`, or the proxy's own address.
 3. `docker compose up -d`.
 
+The `web` container refuses to start while `RADULF_BIND` names anything but
+loopback and the hash is unset, so step 2 without step 1 fails at `up` with
+the reason in `docker compose logs web` rather than serving the LAN without a
+login.
+
 Running the image with a bare `docker run -p 3000:3000` skips step 1's
 guard entirely and exposes the no-auth default to every interface. Publish on
 `127.0.0.1:3000:3000` or configure auth first.
