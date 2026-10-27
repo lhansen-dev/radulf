@@ -428,8 +428,9 @@ The human diff review is the last gate, so it is treated as a security control
   --text -c core.excludesFile=/dev/null` so a `.gitattributes` marker or a local
   diff-driver hijack can't hide content; `.gitignore`/`.gitattributes` changes
   get their own loud banner.
-- Sensitive-path diffs (sandbox/harness/integrity/install-gate, settings, auth,
-  merge path) get a distinct red banner —
+- Sensitive-path diffs (sandbox and containment code, settings, auth, the
+  merge path, repository access, and the build, dependency and deployment
+  files) get a distinct red banner —
   [`src/app/review/[id]/sensitivePaths.ts`](../src/app/review/[id]/sensitivePaths.ts).
   Self-target cards land here by design.
 
