@@ -3,7 +3,9 @@
  *
  * The HMAC secret is read from process.env.RADULF_AUTH_SECRET at runtime.
  * ensureAuthSecret() (in authSecret.ts, Node-only) populates that env var at
- * boot via instrumentation.ts.
+ * boot via instrumentation.ts. The revocation epoch every cookie is signed
+ * under is read from process.env.RADULF_SESSION_EPOCH the same way, kept by
+ * sessionEpoch.ts.
  */
 
 export const SESSION_COOKIE = "radulf_session";
@@ -17,7 +19,11 @@ export function authEnabled(): boolean {
 /**
  * Sign an expiry timestamp into a session cookie value.
  *
- * Format: `<expiresAtMs>.<base64url(hmac_sha256(expiresAtMs))>`
+ * Format: `<expiresAtMs>.<base64url(hmac_sha256(<expiresAtMs>.<epoch>))>`
+ *
+ * The epoch is not in the cookie, only under the signature: moving it leaves
+ * every outstanding cookie signed over a message this process no longer
+ * produces, which is how a logout revokes them all (sessionEpoch.ts).
  */
 export async function signSession(expiresAtMs: number): Promise<string> {
   return `${expiresAtMs}.${base64url(await hmac(expiresAtMs))}`;
@@ -201,12 +207,13 @@ async function importHmacKey(secret: string): Promise<CryptoKey> {
  * while still following a rotated RADULF_AUTH_SECRET. */
 let cachedKey: { secret: string; key: CryptoKey } | undefined;
 
-/** HMAC-SHA256 of the expiry timestamp — what signSession writes and
- * verifySession recomputes. */
+/** HMAC-SHA256 over the expiry timestamp and the revocation epoch in force,
+ * which is what signSession writes and verifySession recomputes. */
 async function hmac(expiresAtMs: number): Promise<ArrayBuffer> {
   const secret = getSecret();
   if (cachedKey?.secret !== secret) cachedKey = { secret, key: await importHmacKey(secret) };
-  return crypto.subtle.sign("HMAC", cachedKey.key, new TextEncoder().encode(String(expiresAtMs)));
+  const message = `${expiresAtMs}.${process.env.RADULF_SESSION_EPOCH ?? ""}`;
+  return crypto.subtle.sign("HMAC", cachedKey.key, new TextEncoder().encode(message));
 }
 
 /** Base64url-encode an ArrayBuffer (no padding). */

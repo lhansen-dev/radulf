@@ -430,16 +430,18 @@ sequenceDiagram
 ```
 
 - **Logging in:** Visit any page → redirected to `/login`. On success you get a signed
-  session cookie valid for **30 days**. To clear it, `POST /api/auth/logout` (redirects back to `/login`).
+  session cookie valid for **30 days**. `POST /api/auth/logout` ends it, along with every other
+  session, and redirects back to `/login`.
 - **Rate limiting:** With `RADULF_TRUSTED_PROXY_IP_HEADER` set, each client address gets
   **5 failed attempts per minute**, then `429 Too Many Requests`. Without it every direct
   request shares one budget, so a hard cutoff would be an operator lockout — that mode
   escalates delay instead (2s per recent failure, capped at 15s) and never refuses the
   correct password. See [Authentication](docs/AUTHENTICATION.md).
-- **Revoking sessions:** Cookies are HMAC-signed with the secret in `data/auth-secret`;
-  there's no server-side session store. The kill switch for a leaked cookie is **rotating
-  the secret** — delete `data/auth-secret` and restart; a fresh secret invalidates every
-  outstanding cookie at once.
+- **Revoking sessions:** Cookies are HMAC-signed with the secret in `data/auth-secret` and a
+  revocation epoch in `data/session-epoch`; there's no server-side session store. The kill
+  switch for a leaked cookie is **logging out**: `POST /api/auth/logout` moves the epoch and
+  invalidates every outstanding cookie at once, on every web process, without touching the
+  secret the stored provider keys are encrypted under.
 - **Cross-origin requests:** Local mutating requests are accepted only from the exact loopback
   host and port the request was addressed to. Non-loopback deployments must set the full public
   origin in `RADULF_ALLOWED_ORIGIN`, such as `RADULF_ALLOWED_ORIGIN=https://radulf.example.com`.

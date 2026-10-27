@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   settings: { sandboxEnabled: false } as { sandboxEnabled: boolean },
   pump: vi.fn(),
   ensureAuthSecret: vi.fn(),
+  trackSessionEpoch: vi.fn(),
   getSettings: vi.fn(),
   initializeSandboxRuntimeOnce: vi.fn(),
   getOrchestrator: vi.fn(),
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./authSecret", () => ({ ensureAuthSecret: mocks.ensureAuthSecret }));
+vi.mock("./sessionEpoch", () => ({ trackSessionEpoch: mocks.trackSessionEpoch }));
 vi.mock("./settings", () => ({ getSettings: mocks.getSettings }));
 vi.mock("./sandbox/srt", () => ({
   initializeSandboxRuntimeOnce: mocks.initializeSandboxRuntimeOnce,
@@ -77,6 +79,7 @@ describe("boot", () => {
     await boot(new Set(["web"]));
 
     expect(mocks.ensureAuthSecret).toHaveBeenCalledTimes(1);
+    expect(mocks.trackSessionEpoch).toHaveBeenCalledTimes(1);
     expect(mocks.getSettings).toHaveBeenCalledTimes(1);
     expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
     expect(mocks.startTranscriptWatchers).toHaveBeenCalledTimes(1);
@@ -98,6 +101,7 @@ describe("boot", () => {
     expect(mocks.resumeImprovementRuns).toHaveBeenCalledTimes(1);
     expect(mocks.startEventsTail).toHaveBeenCalledTimes(1);
     expect(mocks.startTranscriptWatchers).not.toHaveBeenCalled();
+    expect(mocks.trackSessionEpoch).not.toHaveBeenCalled();
     const orchestrator = mocks.getOrchestrator.mock.results[0]!.value;
     expect(mocks.registerShutdownHandlers).toHaveBeenCalledWith(orchestrator);
 

@@ -33,8 +33,9 @@ the same cookies.
 ## How it behaves
 
 Visiting any page without a valid cookie redirects you to `/login`. A successful
-login sets a signed session cookie valid for **30 days**. To clear it, `POST
-/api/auth/logout`, which redirects back to the login page.
+login sets a signed session cookie valid for **30 days**. `POST
+/api/auth/logout` ends it, along with every other session, and redirects back
+to the login page.
 
 The login endpoint throttles guessing, in one of two ways depending on whether
 it can tell clients apart:
@@ -52,15 +53,24 @@ with the real client IP (e.g. `x-forwarded-for`) when you deploy behind one.
 Leave it unset otherwise — trusting a client-settable header would let an
 attacker forge a fresh identity per attempt and evade the limit entirely.
 
-## Revoking a session
+## Revoking sessions
 
 Cookies are HMAC-SHA256 signed against a secret generated on first boot and
-stored in `data/auth-secret` (gitignored). There is no server-side session
-store, which means there is no way to revoke one cookie individually.
+stored in `data/auth-secret`, which is gitignored. There is no server-side
+session store, so no cookie can be revoked on its own. Every session belongs
+to the one operator, and a cookie that leaked looks exactly like your own.
 
-The kill switch for a leaked cookie is **rotating the secret**: delete
-`data/auth-secret` and restart. A fresh secret invalidates every outstanding
-cookie at once, including your own.
+The kill switch for a leaked cookie is therefore **logging out**. `POST
+/api/auth/logout` moves a revocation epoch, stored in `data/session-epoch`,
+that every cookie is signed under. Every outstanding cookie stops verifying
+at once, on every web process, including the one that sent the request. Log
+in from any browser, log out, and the leaked cookie is dead while the
+password still works.
+
+Rotating `data/auth-secret` has the same effect, but it is no longer the way
+to get it: the settings encryption derives its key from the same file, so a
+rotation also makes every stored provider key unreadable until it is entered
+again.
 
 ## Under the hood
 

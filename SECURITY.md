@@ -86,13 +86,15 @@ access to it wholesale. What it does cover is a copy of the database alone: a
 a volume backup taken without the secret. Rows written before that encryption
 existed stay readable and are re-encrypted on their next write.
 
-Session cookies are HMAC-signed with the secret in `data/auth-secret`. There is
-no server-side session store, so the kill switch for a leaked cookie is rotating
-that secret: delete `data/auth-secret` and restart — every outstanding session
-becomes invalid at once. **That also makes every stored provider key
-undecryptable**, because both uses derive from the same file. Radulf then logs
-`could not be decrypted` for each affected key and reads it as unset; re-enter
-the keys in Settings afterwards.
+Session cookies are HMAC-signed with the secret in `data/auth-secret` and a
+revocation epoch in `data/session-epoch`. There is no server-side session
+store, so the kill switch for a leaked cookie is `POST /api/auth/logout`: it
+moves the epoch, and every outstanding session becomes invalid at once, on
+every web process. Rotating `data/auth-secret` does the same but **also makes
+every stored provider key undecryptable**, because the settings encryption
+derives its key from the same file. Radulf then logs `could not be decrypted`
+for each affected key and reads it as unset; re-enter the keys in Settings
+afterwards.
 
 `data/auth-secret` and `data/radulf.db` are written `0600`, and an install that
 predates that is tightened in place at boot. Both files were previously created

@@ -14,6 +14,9 @@ import {
 import { POST as login } from "./login/route";
 import { POST as logout } from "./logout/route";
 
+const mocks = vi.hoisted(() => ({ revokeAllSessions: vi.fn() }));
+vi.mock("@/server/sessionEpoch", () => ({ revokeAllSessions: mocks.revokeAllSessions }));
+
 const PASSWORD = "correct horse battery staple";
 const SECRET = "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
 
@@ -285,11 +288,12 @@ describe("authentication routes", () => {
     expect(isLoginRateLimited("client", 61_001)).toBe(false);
   });
 
-  it("builds logout redirects from the incoming origin and expires the cookie", async () => {
+  it("logout ends every session, redirects from the incoming origin and expires the cookie", async () => {
     const response = await logout(
       new Request("https://radulf.example/api/auth/logout", { method: "POST" }),
     );
 
+    expect(mocks.revokeAllSessions).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://radulf.example/login");
     const cookie = response.headers.get("set-cookie") ?? "";

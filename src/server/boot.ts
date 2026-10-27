@@ -4,6 +4,7 @@
 // roles the process was given — see ./roles.
 import { ensureAuthSecret } from "./authSecret";
 import { authEnabled, isAllowedUnauthenticatedHost } from "./session";
+import { trackSessionEpoch } from "./sessionEpoch";
 import { getSettings } from "./settings";
 import { initializeSandboxRuntimeOnce } from "./sandbox/srt";
 import { getOrchestrator } from "./orchestrator";
@@ -39,9 +40,12 @@ export async function boot(roles: ReadonlySet<Role>): Promise<void> {
   console.log(`[radulf] roles: ${[...roles].join(",")}`);
 
   ensureAuthSecret();
-  // A published port exposes only the HTTP server; a worker listens on
-  // nothing.
-  if (roles.has("web")) assertPublishedBindIsAuthenticated();
+  // A published port exposes only the HTTP server, and only the HTTP server
+  // verifies sessions; a worker listens on nothing.
+  if (roles.has("web")) {
+    assertPublishedBindIsAuthenticated();
+    trackSessionEpoch();
+  }
 
   // Opens and migrates the database at boot for every role rather than on
   // the first request.

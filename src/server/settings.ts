@@ -419,8 +419,8 @@ export function getSettings(): Settings {
           plain = decryptSecret(stored);
         } catch (e) {
           // The row is encrypted under a key derived from `data/auth-secret`,
-          // and SECURITY.md documents deleting that file as the kill switch
-          // for a leaked session cookie. Doing it also makes every stored
+          // and SECURITY.md once documented deleting that file as the kill
+          // switch for a leaked session cookie. Doing it also makes every stored
           // provider key undecryptable, and the catch-all below used to
           // swallow that: the key read as unset, the next run failed with "no
           // API key", and nothing connected the two. Say it instead — the row
