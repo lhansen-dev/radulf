@@ -50,6 +50,9 @@ it can tell clients apart:
 
 Set `RADULF_TRUSTED_PROXY_IP_HEADER` to the header your reverse proxy populates
 with the real client IP (e.g. `x-forwarded-for`) when you deploy behind one.
+Only the header's last comma-separated value counts, the one your proxy itself
+wrote; anything a client put in front of it is ignored. That assumes a proxy
+which appends to or overwrites the header, never one that passes it through.
 Leave it unset otherwise — trusting a client-settable header would let an
 attacker forge a fresh identity per attempt and evade the limit entirely.
 

@@ -272,14 +272,16 @@ describe("authentication routes", () => {
     expect(viaForwarded.headers.get("set-cookie")).toContain("Secure");
   });
 
-  it("uses forwarded addresses only through an explicitly trusted proxy header", () => {
+  it("uses forwarded addresses only through an explicitly trusted proxy header, and only its own entry", () => {
     const request = new Request("http://localhost", {
       headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" },
     });
     expect(loginClientKey(request)).toBe("direct-client");
 
+    // An appending proxy leaves the client's own entries in front of the one
+    // it wrote, so a forged first entry must not buy a fresh bucket.
     process.env.RADULF_TRUSTED_PROXY_IP_HEADER = "x-forwarded-for";
-    expect(loginClientKey(request)).toBe("203.0.113.7");
+    expect(loginClientKey(request)).toBe("10.0.0.1");
   });
 
   it("expires old failure windows", () => {

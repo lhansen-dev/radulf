@@ -433,7 +433,8 @@ sequenceDiagram
   session cookie valid for **30 days**. `POST /api/auth/logout` ends it, along with every other
   session, and redirects back to `/login`.
 - **Rate limiting:** With `RADULF_TRUSTED_PROXY_IP_HEADER` set, each client address gets
-  **5 failed attempts per minute**, then `429 Too Many Requests`. Without it every direct
+  **5 failed attempts per minute**, then `429 Too Many Requests`. The header's last
+  value is the client address, since that is the one the proxy wrote. Without it every direct
   request shares one budget, so a hard cutoff would be an operator lockout — that mode
   escalates delay instead (2s per recent failure, capped at 15s) and never refuses the
   correct password. See [Authentication](docs/AUTHENTICATION.md).
