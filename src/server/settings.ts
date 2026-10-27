@@ -360,17 +360,19 @@ export function validateSettingsPatch(value: unknown): Partial<Settings> {
         invalid("omlxBaseUrl must be a URL");
       }
       if (!["http:", "https:"].includes(url.protocol)) invalid("omlxBaseUrl must use http or https");
-    } else if (key === "jiraBaseUrl") {
-      if (typeof settingValue !== "string") invalid("jiraBaseUrl must be a URL");
-      // Blank disables the import; anything else must be a site URL.
+    } else if (key === "jiraBaseUrl" || key === "alertWebhookUrl") {
+      if (typeof settingValue !== "string") invalid(`${key} must be a URL`);
+      // Blank disables the feature; anything else must be an http(s) URL. The
+      // webhook is where postAlert POSTs whatever the orchestrator reports, so
+      // it gets the same check as the site the Jira import reads from.
       if (settingValue.trim()) {
         let url: URL;
         try {
           url = new URL(settingValue.trim());
         } catch {
-          invalid("jiraBaseUrl must be a URL");
+          invalid(`${key} must be a URL`);
         }
-        if (!["http:", "https:"].includes(url.protocol)) invalid("jiraBaseUrl must use http or https");
+        if (!["http:", "https:"].includes(url.protocol)) invalid(`${key} must use http or https`);
       }
     } else if (key === "omlxHeaders") {
       if (typeof settingValue !== "string") invalid("omlxHeaders must be a string");
