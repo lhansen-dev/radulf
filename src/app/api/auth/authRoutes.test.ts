@@ -177,6 +177,33 @@ describe("authentication routes", () => {
     expect((await Promise.all(guesses)).map((r) => r.status)).toEqual(Array(8).fill(401));
   });
 
+  it("sends a browser form back to the login page with the reason, and API clients JSON", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+    const form = (password: string) =>
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password }).toString(),
+      });
+
+    // A wrong password typed into the page: a JSON body in place of the page
+    // is a dead end, so the browser is sent back to the page with the reason.
+    const refused = login(form("wrong"));
+    await settle(20_000);
+    expect((await refused).status).toBe(303);
+    expect((await refused).headers.get("location")).toBe("http://localhost/login?error=invalid");
+
+    // The same mistake over JSON keeps the status an API client checks for.
+    expect((await failedLogin()).status).toBe(401);
+
+    // The right password from the form signs in as before.
+    const accepted = login(form(PASSWORD));
+    await settle(20_000);
+    expect((await accepted).status).toBe(307);
+    expect((await accepted).headers.get("set-cookie")).toContain(`${SESSION_COOKIE}=`);
+  });
+
   it("rejects a declared oversized login body before parsing it", async () => {
     const response = await login(
       new Request("http://localhost/api/auth/login", {
