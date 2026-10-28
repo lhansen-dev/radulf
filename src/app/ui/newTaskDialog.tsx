@@ -1,10 +1,10 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CreateCardRequest } from "@/shared/cardRequests";
 import { api, type Repo } from "./api";
-import { DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
+import { DeliveryOptions, DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
 import { FolderBrowser } from "./folderBrowser";
 import type { EpicRunMode } from "@/shared/epics";
 import { errorMessage } from "@/shared/errorMessage";
@@ -109,46 +109,18 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [planCritic, setPlanCritic] = useState<boolean | null>(null);
   const [autoApprove, setAutoApprove] = useState(false);
   const [openPr, setOpenPr] = useState(false);
-  // Spec 15: PR delivery is only offerable when `gh` is installed and
-  // authenticated AND the selected repo has an `origin`. Tagged with the repo
-  // it describes, so a stale answer for the previously selected repo reads as
-  // "unknown" rather than as permission to tick the box.
-  const [prReady, setPrReady] = useState<{ repoId: string; ok: boolean; detail: string | null; hasRemote: boolean | null } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [branches, setBranches] = useBranches(repoId);
   const [selectedBranch, setSelectedBranch] = useState("");
   const [showNewBranch, setShowNewBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
-  const prStatus = prReady && prReady.repoId === repoId ? prReady : null;
-  const prDeliverable = Boolean(prStatus?.ok && prStatus.hasRemote);
-  // Say which of the three preconditions is missing — install a tool, run a
-  // login, and add a remote are three different next actions.
-  const prBlockedReason = prStatus === null || prDeliverable
-    ? null
-    : prStatus.ok
-      ? "This repo has no `origin` remote to open a pull request against."
-      : prStatus.detail;
   const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || planCritic !== null || autoApprove || openPr || jiraKey !== null || jiraChildren.length > 0;
 
   const requestClose = useCallback(() => {
     if (dirty && !confirm("Discard your unsaved task?")) return;
     onClose();
   }, [dirty, onClose]);
-  useEffect(() => {
-    if (!repoId) return;
-    let live = true;
-    api<{ ok: boolean; detail: string | null; hasRemote: boolean | null }>(`/api/github/status?repoId=${encodeURIComponent(repoId)}`)
-      .then((status) => {
-        if (!live) return;
-        setPrReady({ repoId, ...status });
-        // Never leave the box ticked for a target that cannot deliver.
-        if (!status.ok || !status.hasRemote) setOpenPr(false);
-      })
-      .catch(() => {});
-    return () => { live = false; };
-  }, [repoId]);
-
   // Spec 17: a rough ask is enough — "Create and scope" opens the card on
   // its scoping thread, where an assistant that reads the repo sharpens it.
   // Spec 24: "Create and break down" opens it asking that thread for the
@@ -271,11 +243,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                     <option value="off">Off</option>
                   </select>
                 </label>
-                <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
-                {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run. This card keeps this setting even when the workspace-wide toggle is off.</p>}
-                <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={openPr} disabled={!prDeliverable} onChange={(e) => setOpenPr(e.target.checked)} className="size-4 accent-amber-600 disabled:opacity-40" />Open a pull request instead of merging</label>
-                {prBlockedReason && <p className="text-xs text-foreground/45">{prBlockedReason}</p>}
-                {openPr && <p className="text-xs text-foreground/55">On approval the branch is pushed to <code>origin</code> and a pull request is opened against the base branch. Nothing is merged locally, and Radulf never merges the pull request.</p>}
+                <DeliveryOptions repoId={repoId} autoApprove={autoApprove} setAutoApprove={setAutoApprove} openPr={openPr} setOpenPr={setOpenPr} />
               </div>
             </details>
           </>}

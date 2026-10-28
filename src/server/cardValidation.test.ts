@@ -26,6 +26,18 @@ describe("parseCreateCard plan critic override (spec 30)", () => {
   });
 });
 
+describe("parseUpdateCard workflow flags", () => {
+  it("stores the flags the New task dialog sets as 1/0, so Edit task can change them too", () => {
+    expect(parseUpdateCard({ reviewPlanBeforeImplementation: true, autoApprove: false, openPr: true })).toEqual({
+      reviewPlanBeforeImplementation: 1, autoApprove: 0, openPr: 1,
+    });
+  });
+
+  it("rejects a non-boolean flag", () => {
+    expect(() => parseUpdateCard({ openPr: "yes" })).toThrow();
+  });
+});
+
 describe("parseUpdateCard plan critic override (spec 30)", () => {
   it("stores null to clear the override", () => {
     expect(parseUpdateCard({ planCritic: null })).toEqual({ planCritic: null });

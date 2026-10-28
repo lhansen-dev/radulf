@@ -16,7 +16,7 @@ import { describeToolCall, previewLine } from "../../ui/toolDescription";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
-import { DialogShell, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
+import { DeliveryOptions, DialogShell, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import {
@@ -1135,6 +1135,9 @@ function EditCardModal({
   });
   const [grillMe, setGrillMe] = useState(Boolean(detail.card.grillMe));
   const [scopingAuthorsPlan, setScopingAuthorsPlan] = useState(Boolean(detail.card.scopingAuthorsPlan));
+  const [reviewPlanBeforeImplementation, setReviewPlanBeforeImplementation] = useState(Boolean(detail.card.reviewPlanBeforeImplementation));
+  const [autoApprove, setAutoApprove] = useState(Boolean(detail.card.autoApprove));
+  const [openPr, setOpenPr] = useState(Boolean(detail.card.openPr));
   const [planCritic, setPlanCritic] = useState<boolean | null>(
     detail.card.planCritic == null ? null : Boolean(detail.card.planCritic),
   );
@@ -1158,6 +1161,9 @@ function EditCardModal({
           grillMe,
           scopingAuthorsPlan,
           planCritic,
+          reviewPlanBeforeImplementation,
+          autoApprove,
+          openPr,
         },
       });
       onSaved();
@@ -1191,6 +1197,15 @@ function EditCardModal({
         <label className="flex items-center gap-2 text-sm text-foreground/70">
           <input
             type="checkbox"
+            checked={reviewPlanBeforeImplementation}
+            onChange={(e) => setReviewPlanBeforeImplementation(e.target.checked)}
+            className="size-4 accent-amber-600"
+          />
+          Review plan before implementation
+        </label>
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          <input
+            type="checkbox"
             checked={grillMe}
             onChange={(e) => setGrillMe(e.target.checked)}
             className="size-4 accent-amber-600"
@@ -1218,6 +1233,7 @@ function EditCardModal({
             <option value="off">Off</option>
           </select>
         </label>
+        <DeliveryOptions repoId={detail.repo?.id ?? ""} autoApprove={autoApprove} setAutoApprove={setAutoApprove} openPr={openPr} setOpenPr={setOpenPr} />
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>
     </DialogShell>

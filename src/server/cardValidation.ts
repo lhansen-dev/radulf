@@ -42,6 +42,9 @@ export type UpdateCardInput = {
   /** Stored as SQLite's 0/1, so the PATCH route can spread these straight in. */
   grillMe?: number;
   scopingAuthorsPlan?: number;
+  reviewPlanBeforeImplementation?: number;
+  autoApprove?: number;
+  openPr?: number;
   /** Spec 24: how an epic's pieces are scheduled. */
   runMode?: EpicRunMode | null;
   /** The Jira issue this card mirrors; null clears it. */
@@ -103,7 +106,8 @@ export function parseCreateCard(value: unknown): CreateCardInput {
 
 const UPDATE_FIELDS = new Set([
   "title", "description", "maxIterations", "timeoutMinutes", "position", "plannerModel", "loopModel",
-  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "runMode", "planCritic", "criticModel", "jiraKey",
+  "evaluatorModel", "grillMe", "scopingAuthorsPlan", "reviewPlanBeforeImplementation", "autoApprove",
+  "openPr", "runMode", "planCritic", "criticModel", "jiraKey",
 ]);
 
 function runMode(value: unknown): EpicRunMode {
@@ -140,7 +144,7 @@ export function parseUpdateCard(value: unknown): UpdateCardInput {
     else if (typeof body.planCritic === "boolean") patch.planCritic = body.planCritic ? 1 : 0;
     else invalid("planCritic must be a boolean or null");
   }
-  for (const field of ["grillMe", "scopingAuthorsPlan"] as const) {
+  for (const field of ["grillMe", "scopingAuthorsPlan", "reviewPlanBeforeImplementation", "autoApprove", "openPr"] as const) {
     if (!(field in body)) continue;
     if (typeof body[field] !== "boolean") invalid(`${field} must be a boolean`);
     patch[field] = body[field] ? 1 : 0;

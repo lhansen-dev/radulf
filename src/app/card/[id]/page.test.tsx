@@ -68,10 +68,12 @@ let cardChildren: Array<Record<string, unknown>> = [];
 let cardParent: Record<string, unknown> | null = null;
 let cardJiraKey: string | null = null;
 let cardJiraUrl: string | null = null;
+let cardRepo: Record<string, unknown> | null = null;
 
 beforeEach(() => {
   cleanup();
   cardStatus = "plan_review";
+  cardRepo = null;
   cardEvents = [];
   cardScoping = [];
   cardChildren = [];
@@ -144,13 +146,14 @@ beforeEach(() => {
               planCritic: null,
               criticModel: null,
               autoApprove: 0,
+              openPr: 0,
               summary: null,
               startedAt: null,
               createdAt: "",
               baseBranch: null,
               jiraKey: cardJiraKey,
             },
-            repo: null,
+            repo: cardRepo,
             plans: cardPlans,
             runs: cardRuns,
             events: cardEvents,
@@ -408,6 +411,41 @@ describe("CardDetail", () => {
 
     await vi.waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]).toMatchObject({ plannerModel: null, loopModel: null, evaluatorModel: "haiku" });
+  });
+
+  it("lets Edit task change the flags New task set: plan review, auto-approve and pull-request delivery", async () => {
+    cardStatus = "backlog";
+    cardRepo = { id: "r1", name: "Repo", path: "/r", defaultBranch: "main" };
+    const baseFetch = globalThis.fetch;
+    const patches: unknown[] = [];
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/github/status?repoId=r1") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ ok: true, detail: null, hasRemote: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/api/cards/c1" && init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)));
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      return baseFetch(url, init);
+    }) as unknown as typeof fetch;
+
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit task" }));
+    const openPr = (await screen.findByLabelText("Open a pull request instead of merging")) as HTMLInputElement;
+    // Enabled once the GitHub check for this repo comes back deliverable.
+    await waitFor(() => expect(openPr.disabled).toBe(false));
+    fireEvent.click(openPr);
+    fireEvent.click(screen.getByLabelText("Auto-approve on evaluator pass (skip human review)"));
+    fireEvent.click(screen.getByLabelText("Review plan before implementation"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({ openPr: true, autoApprove: true, reviewPlanBeforeImplementation: true });
   });
 
   it("shows an epic's tasks and progress, offers Start all and Pause all, and changes the run mode", async () => {
