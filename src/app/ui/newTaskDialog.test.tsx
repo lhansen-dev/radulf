@@ -261,6 +261,8 @@ describe("NewTaskDialog", () => {
       />
     );
     await user.type(screen.getByLabelText("Title"), "Rough ask");
+    // The rough-start creates sit behind the primary button's menu.
+    await user.click(screen.getByLabelText("More ways to create"));
     await user.click(screen.getByRole("button", { name: "Create and scope" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
     expect(push).toHaveBeenCalledWith("/card/card-1");
@@ -289,6 +291,7 @@ describe("NewTaskDialog", () => {
       />
     );
     await user.type(screen.getByLabelText("Title"), "Big ask");
+    await user.click(screen.getByLabelText("More ways to create"));
     await user.click(screen.getByRole("button", { name: "Create and break down" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(3));
     expect(push).toHaveBeenLastCalledWith("/card/card-1?breakdown=propose");
