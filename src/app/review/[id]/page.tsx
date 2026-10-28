@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, useEventStream } from "../../ui/api";
+import { AppShell } from "../../ui/appShell";
 import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
@@ -169,10 +170,12 @@ export default function ReviewPage() {
     }
   }
 
-  if (!detail) return <div className="p-8 text-foreground/50">{error || "Loading…"}</div>;
+  if (!detail)
+    return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading…"}</div></AppShell>;
   const deliversPr = Boolean(detail.card.openPr) || workspaceOpenPr === true;
 
   return (
+    <AppShell>
     <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 pb-28 sm:p-6 sm:pb-28">
       <header className="flex min-w-0 items-center gap-3">
         <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
@@ -283,7 +286,7 @@ export default function ReviewPage() {
         </aside>
       </div>
 
-      <footer className="fixed bottom-0 left-0 right-0 z-40 grid grid-cols-2 gap-2 border-t border-foreground/10 bg-surface/95 p-3 pb-[calc(.75rem+env(safe-area-inset-bottom))] backdrop-blur sm:flex sm:justify-center">
+      <footer className="review-footer grid grid-cols-2 gap-2 border-t border-foreground/10 bg-surface/95 p-3 backdrop-blur sm:flex sm:justify-center">
         <button
           disabled={busy || !loopRun}
           onClick={() => decide("approved")}
@@ -329,6 +332,7 @@ export default function ReviewPage() {
         </DialogShell>
       )}
     </div>
+    </AppShell>
   );
 }
 

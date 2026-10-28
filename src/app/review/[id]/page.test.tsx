@@ -18,6 +18,7 @@ vi.mock("next/link", () => ({
 vi.mock("next/navigation", () => ({
   useParams: () => ({ id: "c1" }),
   useRouter: () => ({ push: () => {} }),
+  usePathname: () => "/review/c1",
 }));
 
 /** jsdom has no EventSource, and the page subscribes to the event stream for
@@ -128,6 +129,13 @@ describe("ReviewPage", () => {
     expect(screen.getByText("claude-subscription/sonnet")).toBeTruthy();
     expect(screen.getByText(/Evaluator approved this change/)).toBeTruthy();
     expect(screen.getByText("All acceptance criteria passed.")).toBeTruthy();
+  });
+
+  it("keeps the app shell around the review, so the nav and open tasks stay in reach", async () => {
+    render(<ReviewPage />);
+    await screen.findByText(/Planned by/);
+    expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Open tasks" })).toBeTruthy();
   });
 
   it("names where approval sends the branch: a merge, or a pull request when either flag is on", async () => {
