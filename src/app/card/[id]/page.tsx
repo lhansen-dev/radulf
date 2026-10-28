@@ -198,7 +198,7 @@ export default function CardDetail() {
   const post = (path: string, json: object = {}) => action(() => api(`/api/cards/${id}/${path}`, { json }));
 
   const statusAction: Record<string, { label: string; run: () => void }> = {
-    backlog: { label: "Add to Todo", run: () => post("move", { to: "todo" }) },
+    backlog: { label: "Add to queue", run: () => post("move", { to: "todo" }) },
     todo: { label: "Start now", run: () => post("move", { to: "in_progress" }) },
     needs_attention: canRetryMerge
       ? { label: "Retry merge", run: () => post("retry-merge") }

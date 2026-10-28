@@ -48,7 +48,7 @@ function statusMark(card: BoardCard): { mark: string; detail: string; tone: stri
     case "backlog":
       return { mark: "○", detail: "Not scheduled", tone: "text-foreground/45" };
     case "todo":
-      return { mark: "◎", detail: "Waiting for auto-mode", tone: "text-slate-300" };
+      return { mark: "◎", detail: "Waiting for Auto Mode", tone: "text-slate-300" };
     case "planning":
       return { mark: "◔", detail: `${timeAgo(card.latestRun?.startedAt ?? card.startedAt)} elapsed`, tone: "text-amber-300" };
     case "ready":
@@ -442,7 +442,7 @@ export default function WorkPage() {
               </WorkSection>
             )}
             {showSection("queue") && queue.length > 0 && (
-              <WorkSection title="Up next" count={queue.length} tone="text-slate-300">
+              <WorkSection title="Queue" count={queue.length} tone="text-slate-300">
                 {queue.map((card, index) => (
                   <TaskRow
                     key={card.id}
@@ -609,7 +609,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
             <span className="basis-full truncate">{currentTask.text}</span>
           </p>
         </>) : (
-          <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "Ralph is working through the current iteration"}</p>
+          <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "The loop is working through the current iteration"}</p>
         ))}
         {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-foreground/40">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
         {card.status === "needs_attention" && state.detail.length > 70 && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
@@ -672,11 +672,11 @@ function Onboarding({ repos, onNew }: { repos: Repo[]; onNew: () => void }) {
   return (
     <section className="mt-8 rounded-2xl border border-foreground/10 bg-foreground/[0.03] p-6">
       <p className="text-xs font-medium uppercase tracking-widest text-amber-300">Get started</p>
-      <h2 className="mt-2 text-xl font-semibold">Give Ralph its first task</h2>
+      <h2 className="mt-2 text-xl font-semibold">Give Radulf its first task</h2>
       <ol className="mt-5 space-y-4 text-sm text-foreground/65">
         <li className="flex gap-3"><span className="text-amber-300">1</span>{repos.length ? "Repository registered." : <span>Register a repository in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</span>}</li>
         <li className="flex gap-3"><span className="text-amber-300">2</span>Create a task with a clear definition of done.</li>
-        <li className="flex gap-3"><span className="text-amber-300">3</span>Add it to Todo when it is ready. Auto Mode will pick it up.</li>
+        <li className="flex gap-3"><span className="text-amber-300">3</span>Add it to the queue when it is ready. Auto Mode will pick it up.</li>
       </ol>
       <button type="button" onClick={onNew} disabled={!repos.length} className="mt-6 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-on-accent disabled:opacity-40">Create task</button>
     </section>

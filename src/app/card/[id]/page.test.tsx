@@ -441,7 +441,7 @@ describe("CardDetail", () => {
     expect(screen.getByRole("link", { name: "Surface the lockout" }).getAttribute("href")).toBe("/card/b");
     expect(screen.getByText("Running")).toBeTruthy();
     // The epic never runs itself: the set's actions replace the card's.
-    expect(screen.queryByRole("button", { name: "Add to Todo" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add to queue" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Start all" }));
     await waitFor(() => expect(posts).toContain("/api/cards/c1/start-all"));
     fireEvent.click(screen.getByRole("button", { name: "Pause all" }));
