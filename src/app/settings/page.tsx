@@ -215,6 +215,35 @@ const TEMPLATES = [
   { key: "improvePromptTemplate", title: "Self-improvement", description: "Instructions used by an improvement run to propose the next change from a repository review.", placeholders: ["{{EXISTING_CARDS}}", "{{FOCUS}}"] },
 ] as const;
 
+/**
+ * The one way out of a signed-in browser. Only offered when a password is
+ * configured: without one the login gate is a no-op and there is no session
+ * to end. The logout route revokes every session, not only this browser's,
+ * which the copy says so a shared machine's other tabs are no surprise.
+ */
+function SessionSection() {
+  const [authEnabled, setAuthEnabled] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api<{ authEnabled?: boolean }>("/api/health")
+      .then((health) => { if (live) setAuthEnabled(Boolean(health.authEnabled)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+  if (!authEnabled) return null;
+  return (
+    <section id="session" className={sectionCls}>
+      <SectionHeading title="Session">
+        Signing out ends every signed-in browser, not only this one, so a cookie
+        that leaked somewhere else stops working too.
+      </SectionHeading>
+      <form method="post" action="/api/auth/logout">
+        <button type="submit" className={secondaryButtonCls}>Sign out</button>
+      </form>
+    </section>
+  );
+}
+
 function SectionHeading({ title, children }: { title: string; children?: React.ReactNode }) {
   return (
     <div>
@@ -366,6 +395,7 @@ export default function SettingsPage() {
                     Test notification & sound
                   </button>
                 </section>
+                <SessionSection />
               </div>
             </SettingsPanel>
 

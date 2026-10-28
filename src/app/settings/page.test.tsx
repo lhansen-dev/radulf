@@ -27,8 +27,10 @@ describe("SettingsPage", () => {
   let savedSettings: Settings;
   let repositories: Repo[];
   let patch: (settings: Settings) => Response | Promise<Response>;
+  let authEnabled = false;
 
   beforeEach(() => {
+    authEnabled = false;
     window.history.replaceState(null, "", "/settings");
     vi.stubGlobal("scrollTo", vi.fn());
     savedSettings = { ...initialSettings };
@@ -85,6 +87,7 @@ describe("SettingsPage", () => {
         ]
       });
       if (url.startsWith("/api/github/status")) return json({ ok: true, account: "test-user", reason: null, detail: null });
+      if (url === "/api/health") return json({ ok: true, authEnabled });
       throw new Error(`Unexpected request: ${url}`);
     }));
   });
@@ -120,6 +123,19 @@ describe("SettingsPage", () => {
     expect(savedSettings).toMatchObject({ theme: "nord", plannerModel: "custom/planner" });
     expect(document.documentElement.dataset.theme).toBe("nord");
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers Sign out only when a password gates the app", async () => {
+    render(<SettingsPage />);
+    await screen.findByText("Appearance");
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    cleanup();
+
+    authEnabled = true;
+    render(<SettingsPage />);
+    const signOut = await screen.findByRole("button", { name: "Sign out" });
+    // A plain form post, so the route's redirect to /login lands in the browser.
+    expect(signOut.closest("form")?.getAttribute("action")).toBe("/api/auth/logout");
   });
 
   it("shows a repository removal conflict on that repository's row", async () => {
