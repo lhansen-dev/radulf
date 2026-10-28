@@ -104,6 +104,8 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("heading", { name: "Planner agent" })).toBeNull();
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Nord" }));
+    // The pick previews at once, before anything is saved.
+    expect(document.documentElement.dataset.theme).toBe("nord");
 
     section("Agents & models");
     const planner = within(screen.getByRole("region", { name: "Planner agent" }));
@@ -123,6 +125,15 @@ describe("SettingsPage", () => {
     expect(savedSettings).toMatchObject({ theme: "nord", plannerModel: "custom/planner" });
     expect(document.documentElement.dataset.theme).toBe("nord");
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("puts the saved theme back when Settings is left with an unsaved pick", async () => {
+    render(<SettingsPage />);
+    await screen.findByText("Appearance");
+    fireEvent.click(screen.getByRole("radio", { name: "Nord" }));
+    expect(document.documentElement.dataset.theme).toBe("nord");
+    cleanup();
+    expect(document.documentElement.dataset.theme).toBe(savedSettings.theme);
   });
 
   it("saves the workflow switches the Work page's menu flips", async () => {

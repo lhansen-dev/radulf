@@ -356,8 +356,8 @@ export default function SettingsPage() {
             <SettingsPanel active={activeSection} section="general">
               <div className="flex flex-col gap-5">
                 <section id="appearance" className={sectionCls}>
-                  <SectionHeading title="Appearance">Pick a color theme. Save your changes to apply it across Radulf.</SectionHeading>
-                  <ThemePicker value={settings.theme} onChange={(theme) => set({ theme })} />
+                  <SectionHeading title="Appearance">Pick a color theme. It shows at once; Save keeps it.</SectionHeading>
+                  <ThemePicker value={settings.theme} onChange={(theme) => { set({ theme }); document.documentElement.dataset.theme = theme; }} />
                 </section>
                 {/* The same four switches as the Work page's ••• menu, which
                     writes them straight away; here they save with the rest.
