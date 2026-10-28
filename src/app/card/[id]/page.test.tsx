@@ -69,11 +69,15 @@ let cardParent: Record<string, unknown> | null = null;
 let cardJiraKey: string | null = null;
 let cardJiraUrl: string | null = null;
 let cardRepo: Record<string, unknown> | null = null;
+let cardDescription = "";
 
 beforeEach(() => {
   cleanup();
+  // The page reads its tab from the URL, which jsdom keeps between tests.
+  window.history.replaceState(null, "", "/card/c1");
   cardStatus = "plan_review";
   cardRepo = null;
+  cardDescription = "";
   cardEvents = [];
   cardScoping = [];
   cardChildren = [];
@@ -135,7 +139,7 @@ beforeEach(() => {
             card: {
               id: "c1",
               title: "T",
-              description: "",
+              description: cardDescription,
               status: cardStatus,
               maxIterations: null,
               timeoutMinutes: null,
@@ -411,6 +415,31 @@ describe("CardDetail", () => {
 
     await vi.waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]).toMatchObject({ plannerModel: null, loopModel: null, evaluatorModel: "haiku" });
+  });
+
+  it("renders the description as Markdown and keeps a typed line break", async () => {
+    cardDescription = "Fix the widget\nkeep the API\n\n- [ ] tests pass\n- `make check`";
+    render(<CardDetail />);
+    await screen.findByText("tests pass");
+    expect(screen.getByRole("list")).toBeTruthy();
+    expect(screen.getByText("make check").tagName).toBe("CODE");
+    // A paragraph keeps its newline rather than folding two lines into one.
+    expect(screen.getByText(/Fix the widget/).textContent).toBe("Fix the widget\nkeep the API");
+  });
+
+  it("folds an event's payload behind its type on the timeline", async () => {
+    cardEvents = [
+      { id: 1, runId: "r1", type: "run.started", payload: "{}", createdAt: "2026-07-17T10:00:00.000Z" },
+      { id: 2, runId: "r1", type: "plan.written", payload: JSON.stringify({ version: 2 }), createdAt: "2026-07-17T10:01:00.000Z" },
+    ];
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Activity" }));
+    expect(await screen.findByText("plan.written")).toBeTruthy();
+    // No payload, no details to open.
+    expect(screen.getByText("run.started").parentElement?.querySelector("details")).toBeNull();
+    const folded = screen.getByText("plan.written").parentElement?.querySelector("details");
+    expect(folded).not.toBeNull();
+    expect(folded?.textContent).toContain('"version": 2');
   });
 
   it("lets Edit task change the flags New task set: plan review, auto-approve and pull-request delivery", async () => {

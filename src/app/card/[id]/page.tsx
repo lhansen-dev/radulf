@@ -13,6 +13,7 @@ import { ScopingPanel } from "./scopingPanel";
 import { LiveActivity } from "../../ui/liveActivity";
 import { EpicTasks } from "./epicTasks";
 import { describeToolCall, previewLine } from "../../ui/toolDescription";
+import { Markdown } from "../../ui/markdown";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
@@ -418,9 +419,11 @@ export default function CardDetail() {
               {detail.parent.runMode && <span className="text-foreground/40"> · its tasks run {RUN_MODE_PHRASES[detail.parent.runMode]}</span>}
             </p>
           )}
-          <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
-            {card.description || "(no description)"}
-          </pre>
+          {/* Markdown like the scoping thread, with a typed line break kept
+              as one: a definition of done is often a bare list of lines. */}
+          <div className="rounded bg-foreground/[0.04] p-3 text-sm [&_p]:whitespace-pre-wrap">
+            {card.description ? <Markdown>{card.description}</Markdown> : <p className="text-foreground/50">(no description)</p>}
+          </div>
           {isEpic && (
             <EpicTasks cardId={id} runMode={card.runMode ?? null} tasks={epicTasks} onChanged={refetch} onError={setError} />
           )}
@@ -569,17 +572,39 @@ export default function CardDetail() {
                   );
                 }
               }
-              return (
-                <div key={e.id} className="text-xs text-foreground/50 font-mono">
-                  {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
-                </div>
-              );
+              return <EventLine key={e.id} event={e} />;
             })}
           </div>
         </section>
       ))}
     </div>
     </AppShell>
+  );
+}
+
+/** One timeline event: when, what, and its payload folded away. The raw
+ * JSON used to run on after the type on every line, so the column read as
+ * noise; now the type is the line and the payload is a click away. */
+function EventLine({ event }: { event: CardDetailData["events"][number] }) {
+  let payload: string | null = null;
+  if (event.payload && event.payload !== "{}") {
+    try {
+      payload = JSON.stringify(JSON.parse(event.payload), null, 2);
+    } catch {
+      payload = event.payload;
+    }
+  }
+  return (
+    <div className="flex min-w-0 items-baseline gap-2 py-0.5 text-xs">
+      <span className="shrink-0 font-mono text-foreground/40">{event.createdAt.slice(11, 19)}</span>
+      <span className="shrink-0 font-mono text-foreground/70">{event.type}</span>
+      {payload && (
+        <details className="min-w-0 grow">
+          <summary className="cursor-pointer text-foreground/40 hover:text-foreground/70">details</summary>
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-foreground/[0.04] p-2 font-mono text-foreground/60">{payload}</pre>
+        </details>
+      )}
+    </div>
   );
 }
 
