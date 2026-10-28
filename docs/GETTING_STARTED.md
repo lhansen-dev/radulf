@@ -106,7 +106,7 @@ OpenRouter and a local server need no login at all — set an API key or a base 
    gateway, which accepts both kinds. Radulf reads from Jira, and writes back
    only the optional Done comment described under **Jira Done comment** in
    [How it works](HOW_IT_WORKS.md).
-3. **Move it to Todo.** This is the ordered execution queue. With Auto Mode on
+3. **Add it to the queue.** Todo is the ordered execution queue. With Auto Mode on
    (the default) the card starts when its turn arrives; **Start now** claims the
    slot immediately.
 4. **Watch it work.** The card shows its live sub-state as it plans, loops, and
