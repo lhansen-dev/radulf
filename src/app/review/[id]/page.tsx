@@ -96,6 +96,17 @@ export default function ReviewPage() {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
+  // Where approval sends the branch is decided at approval time from the
+  // card's own flag or the workspace toggle (reviewService), so the button
+  // says which it will be instead of promising a merge either way.
+  const [workspaceOpenPr, setWorkspaceOpenPr] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    api<{ openPr?: boolean }>("/api/settings")
+      .then((settings) => { if (live) setWorkspaceOpenPr(Boolean(settings.openPr)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const refetch = useCallback(() => {
     api<CardDetailData>(`/api/cards/${id}`).then(setDetail).catch((e) => setError(String(e)));
@@ -159,6 +170,7 @@ export default function ReviewPage() {
   }
 
   if (!detail) return <div className="p-8 text-foreground/50">{error || "Loading…"}</div>;
+  const deliversPr = Boolean(detail.card.openPr) || workspaceOpenPr === true;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 pb-28 sm:p-6 sm:pb-28">
@@ -277,7 +289,9 @@ export default function ReviewPage() {
           onClick={() => decide("approved")}
           className="min-h-11 rounded bg-green-700 px-3 py-2 text-sm font-medium hover:bg-green-600 disabled:opacity-40 sm:px-4"
         >
-          {busy ? "Merging…" : "✓ Approve & merge"}
+          {busy
+            ? deliversPr ? "Opening pull request…" : "Merging…"
+            : deliversPr ? "✓ Approve & open pull request" : "✓ Approve & merge"}
         </button>
         <button
           disabled={busy || !loopRun}

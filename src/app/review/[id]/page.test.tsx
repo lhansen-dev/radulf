@@ -96,11 +96,29 @@ beforeEach(() => {
         ),
       );
     }
+    if (url === "/api/settings") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ openPr: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
   });
 
   globalThis.fetch = mockFetch as unknown as typeof fetch;
 });
+
+/** The base mock with one URL's JSON body swapped. */
+function answering(url: string, body: unknown) {
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = vi.fn((requested: string, init?: RequestInit) =>
+    requested === url
+      ? Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }))
+      : baseFetch(requested, init),
+  ) as unknown as typeof fetch;
+}
 
 describe("ReviewPage", () => {
   it("renders the Planned by badge with the model tag", async () => {
@@ -110,6 +128,29 @@ describe("ReviewPage", () => {
     expect(screen.getByText("claude-subscription/sonnet")).toBeTruthy();
     expect(screen.getByText(/Evaluator approved this change/)).toBeTruthy();
     expect(screen.getByText("All acceptance criteria passed.")).toBeTruthy();
+  });
+
+  it("names where approval sends the branch: a merge, or a pull request when either flag is on", async () => {
+    render(<ReviewPage />);
+    expect(await screen.findByRole("button", { name: "✓ Approve & merge" })).toBeTruthy();
+    cleanup();
+
+    // The workspace-wide toggle, read at approval time like reviewService does.
+    answering("/api/settings", { openPr: true });
+    render(<ReviewPage />);
+    expect(await screen.findByRole("button", { name: "✓ Approve & open pull request" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "✓ Approve & merge" })).toBeNull();
+    cleanup();
+
+    // The card's own flag holds even when the workspace toggle is off.
+    answering("/api/settings", { openPr: false });
+    answering("/api/cards/c1", {
+      card: { id: "c1", title: "T", status: "review", openPr: 1 },
+      plans: [],
+      runs: [{ id: "r2", kind: "loop", status: "completed", iterationsDone: 1, startedAt: "", endedAt: null, iterations: [] }],
+    });
+    render(<ReviewPage />);
+    expect(await screen.findByRole("button", { name: "✓ Approve & open pull request" })).toBeTruthy();
   });
 
   it("shows why an abandon failed instead of dropping the rejection", async () => {
