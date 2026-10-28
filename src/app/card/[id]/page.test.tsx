@@ -500,7 +500,6 @@ describe("CardDetail", () => {
       }
       return baseFetch(url, init);
     }) as unknown as typeof fetch;
-    vi.stubGlobal("confirm", () => true);
 
     render(<CardDetail />);
 
@@ -512,6 +511,8 @@ describe("CardDetail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start all" }));
     await waitFor(() => expect(posts).toContain("/api/cards/c1/start-all"));
     fireEvent.click(screen.getByRole("button", { name: "Pause all" }));
+    // Nothing is posted until the page's own dialog is answered.
+    fireEvent.click(await screen.findByRole("button", { name: "Pause all tasks" }));
     await waitFor(() => expect(posts).toContain("/api/cards/c1/pause-all"));
     fireEvent.change(screen.getByLabelText("Run mode"), { target: { value: "parallel" } });
     await waitFor(() => expect(patches).toEqual([{ runMode: "parallel" }]));

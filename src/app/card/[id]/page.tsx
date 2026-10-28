@@ -7,6 +7,7 @@ import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
+import { useConfirm, type ConfirmRequest } from "../../ui/confirmDialog";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
@@ -75,6 +76,7 @@ export default function CardDetail() {
   const [configBusy, setConfigBusy] = useState(false);
   // Spec 24: Create and break down lands here with ?breakdown=propose.
   const [autoBreakdown, setAutoBreakdown] = useState(false);
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
 
   useEffect(() => {
     const readTab = () => {
@@ -198,6 +200,7 @@ export default function CardDetail() {
   }
   const post = (path: string, json: object = {}) => action(() => api(`/api/cards/${id}/${path}`, { json }));
 
+  const confirmThen = (request: ConfirmRequest, fn: () => void) => async () => { if (await confirmWith(request)) fn(); };
   const statusAction: Record<string, { label: string; run: () => void }> = {
     backlog: { label: "Add to queue", run: () => post("move", { to: "todo" }) },
     todo: { label: "Start now", run: () => post("move", { to: "in_progress" }) },
@@ -216,8 +219,8 @@ export default function CardDetail() {
     }) },
     { ...statusAction[card.status], show: !isEpic && card.status in statusAction, primary: true },
     { label: "Start all", show: isEpic && epicTasks.some((task) => task.status === "backlog" || task.status === "todo"), primary: true, run: () => post("start-all") },
-    { label: "Pause all", show: isEpic && epicTasks.some((task) => task.status === "looping"), run: () => confirm("Pause every running task in this epic after its current iteration?") && post("pause-all") },
-    { label: "Pause", show: card.status === "looping", run: () => confirm("Pause this task after the current iteration?") && post("pause") },
+    { label: "Pause all", show: isEpic && epicTasks.some((task) => task.status === "looping"), run: confirmThen({ title: "Pause every running task?", body: "Each task in this epic pauses after its current iteration.", action: "Pause all tasks" }, () => post("pause-all")) },
+    { label: "Pause", show: card.status === "looping", run: confirmThen({ title: "Pause this task?", body: "It pauses after the current iteration finishes.", action: "Pause after this iteration" }, () => post("pause")) },
     // Every stage reads the card's model override when it starts, so a change
     // made here takes effect on Continue / Retry failed step without
     // discarding the worktree, plan, or iterations so far.
@@ -225,7 +228,6 @@ export default function CardDetail() {
     { label: "View activity", show: !isEpic && ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
     { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
   ];
-  const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
   // `href` rather than `run` for the export: the route answers with
   // Content-Disposition, so a download anchor saves the file and leaves the
   // page where it is. Navigating there through the router would instead ask
@@ -240,22 +242,27 @@ export default function CardDetail() {
     {
       label: "Move to backlog",
       when: PULLBACK_STATUSES,
-      run: () => {
-        if (!(RUNNING_STATUSES as readonly string[]).includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
+      run: async () => {
+        if (!(RUNNING_STATUSES as readonly string[]).includes(card.status) || await confirmWith({ title: "Cancel the active run?", body: "The run stops and the card goes back to Backlog.", action: "Cancel the run", danger: true })) {
           post("move", { to: "backlog" });
         }
       },
     },
-    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen("Abandon this task? Its worktree and branch will be deleted.", () => post("abandon")) },
-    { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen("Reset all progress? This deletes the branch, worktree, and plan, and moves the card back to Backlog.", () => post("reset")) },
+    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }, () => post("abandon")) },
+    { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Reset all progress?", body: "This deletes the branch, worktree and plan, and moves the card back to Backlog.", action: "Reset", danger: true }, () => post("reset")) },
     {
       label: "Delete task",
       danger: true,
       when: ["backlog", "todo", "done", "abandoned", "needs_attention"],
-      run: confirmThen(isEpic ? "Delete this epic? Its tasks stay, as standalone tasks." : "Delete this task and all its history?", () => action(async () => {
+      run: confirmThen(
+        isEpic
+          ? { title: "Delete this epic?", body: "Its tasks stay, as standalone tasks.", action: "Delete", danger: true }
+          : { title: "Delete this task?", body: "All its history goes with it.", action: "Delete", danger: true },
+        () => action(async () => {
         await api(`/api/cards/${id}`, { method: "DELETE" });
         router.push("/");
-      })),
+      }),
+      ),
     },
   ];
 
@@ -325,6 +332,7 @@ export default function CardDetail() {
         </DialogShell>
       )}
       {error && <p className="text-red-400 text-sm">{error}</p>}
+      {confirmDialog}
       {unretryableRun && (
         <Banner tone="red" title={`${unretryableRun.provider ?? "The provider"} rejected the request itself`}>
           <pre className="whitespace-pre-wrap text-sm text-red-100/80 font-sans">

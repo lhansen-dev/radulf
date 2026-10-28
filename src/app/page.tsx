@@ -22,6 +22,7 @@ import { ActivityDot } from "./ui/liveActivity";
 import { NewTaskDialog } from "./ui/newTaskDialog";
 import { ImprovementRunDialog } from "./ui/improvementRunDialog";
 import { DetailsMenu } from "./ui/detailsMenu";
+import { useConfirm, type ConfirmRequest } from "./ui/confirmDialog";
 import { useWorkData } from "./ui/useWorkData";
 import { useNow } from "./ui/useNow";
 import { cardMatches } from "./ui/cardSearch";
@@ -100,6 +101,7 @@ export default function WorkPage() {
     refetchCards,
     refetchImprovementRuns,
   } = useWorkData();
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
   const [repoFilter, setRepoFilter] = useState("");
   const [view, setView] = useState<View>("overview");
   const [query, setQuery] = useState("");
@@ -255,9 +257,9 @@ export default function WorkPage() {
     key: "autoMode" | "autoApprove" | "yoloMode" | "openPr",
     current: boolean,
     setValue: (value: boolean) => void,
-    confirmOn?: string,
+    confirmOn?: ConfirmRequest,
   ) {
-    if (!current && confirmOn && !confirm(confirmOn)) return;
+    if (!current && confirmOn && !(await confirmWith(confirmOn))) return;
     setValue(!current);
     try {
       await api("/api/settings", { method: "PATCH", json: { [key]: !current } });
@@ -272,7 +274,11 @@ export default function WorkPage() {
       label: "Auto-approve",
       on: autoApprove,
       onTone: "text-amber-300",
-      toggle: () => toggleSetting("autoApprove", autoApprove, setAutoApprove, "Turn on auto-approve?\n\nAn evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you."),
+      toggle: () => toggleSetting("autoApprove", autoApprove, setAutoApprove, {
+        title: "Turn on auto-approve?",
+        body: "An evaluator \u201Capprove\u201D will merge straight to the base branch with no human review. Integrity and merge-conflict checks still run, and a card that hits the evaluator's revision limit is still escalated to you.",
+        action: "Turn on",
+      }),
     },
     {
       label: "YOLO mode",
@@ -287,18 +293,26 @@ export default function WorkPage() {
       on: openPr,
       onTone: "text-amber-300",
       // Spec 15: every approval's delivery becomes a pushed branch + pull request.
-      toggle: () => toggleSetting("openPr", openPr, setOpenPr, "Deliver approved work as pull requests?\n\nApproving a card will push its branch to \u201Corigin\u201D and open a pull request instead of merging into the local base branch. Requires the GitHub CLI (`gh`) to be installed and logged in. Radulf never merges the pull request it opens."),
+      toggle: () => toggleSetting("openPr", openPr, setOpenPr, {
+        title: "Deliver approved work as pull requests?",
+        body: "Approving a card will push its branch to \u201Corigin\u201D and open a pull request instead of merging into the local base branch. Requires the GitHub CLI (gh) to be installed and logged in. Radulf never merges the pull request it opens.",
+        action: "Turn on",
+      }),
     },
   ];
 
   async function stopImprovementRun(run: ImprovementRun) {
-    if (!confirm(`Stop the improvement run on “${run.featureBranch}”? The current task finishes, then the run ends.`)) return;
+    if (!(await confirmWith({ title: "Stop this improvement run?", body: `The current task on ${run.featureBranch} finishes, then the run ends.`, action: "Stop run" }))) return;
     await runAction(() => api(`/api/improvement-runs/${run.id}/stop`, { method: "POST" }));
   }
 
   async function restartServer() {
     const inProgress = cards.filter((card) => ACTIVE_STATUSES.includes(card.status)).length;
-    if (!confirm(`Restart the server?${inProgress ? ` ${inProgress} active task${inProgress === 1 ? "" : "s"} will return to the backlog.` : ""}`)) return;
+    if (!(await confirmWith({
+      title: "Restart the server?",
+      body: inProgress ? `${inProgress} active task${inProgress === 1 ? "" : "s"} will return to the backlog.` : undefined,
+      action: "Restart",
+    }))) return;
     setRestarting(true);
     await api("/api/restart", { method: "POST" }).catch(() => {});
     restartPoll.current = setInterval(async () => {
@@ -317,7 +331,7 @@ export default function WorkPage() {
     }, 60_000);
   }
 
-  const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction, parentOf };
+  const rowActions = { onStart: start, onQueue: addToQueue, onAction: runAction, onConfirm: confirmWith, parentOf };
   const showSection = (section: View) => view === "overview" || view === section;
   // Keyed off the unfiltered set, not `scoped`: a repo filter or a search that
   // matches nothing leaves `scoped` empty too, and that is exactly when the
@@ -486,6 +500,7 @@ export default function WorkPage() {
 
       {showNew && <NewTaskDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refetchCards(); }} />}
       {showImprovementRun && <ImprovementRunDialog repos={repos} defaultRepoId={repoFilter} onClose={() => setShowImprovementRun(false)} onCreated={() => { setShowImprovementRun(false); refetchImprovementRuns(); }} />}
+      {confirmDialog}
     </AppShell>
   );
 }
@@ -533,13 +548,15 @@ function ImprovementRunRow({ run, repos, cards, onStop }: { run: ImprovementRun;
   );
 }
 
-function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, canMoveUp, canMoveDown, parentOf }: {
+function TaskRow({ card, position, repos, onStart, onQueue, onAction, onConfirm, onMove, canMoveUp, canMoveDown, parentOf }: {
   card: BoardCard;
   position?: number;
   repos: Repo[];
   onStart: (card: BoardCard) => Promise<void>;
   onQueue: (card: BoardCard) => Promise<void>;
   onAction: (fn: () => Promise<unknown>) => Promise<void>;
+  /** The page's one confirm dialog, asked before anything is lost. */
+  onConfirm: (request: ConfirmRequest) => Promise<boolean>;
   onMove?: (direction: -1 | 1) => void;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
@@ -552,14 +569,18 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
   const branchLabel = card.baseBranch ?? repo?.defaultBranch ?? null;
   const currentTask = card.latestRun?.currentTask ?? null;
   const href = card.status === "review" ? `/review/${card.id}` : `/card/${card.id}`;
-  const pullBack = () => {
+  const pullBack = async () => {
     const active = RUNNING_STATUSES.includes(card.status);
-    if (active && !confirm(`Cancel the active run for “${card.title}” and return it to the backlog?`)) return;
+    if (active && !(await onConfirm({ title: "Cancel the active run?", body: `“${card.title}” goes back to the backlog and its run stops.`, action: "Cancel the run", danger: true }))) return;
     void onAction(() => api(`/api/cards/${card.id}/move`, { json: { to: "backlog" } }));
   };
-  const remove = () => {
-    if (!confirm(`Delete “${card.title}” and all its history?`)) return;
+  const remove = async () => {
+    if (!(await onConfirm({ title: "Delete this task?", body: `“${card.title}” and all its history will be deleted.`, action: "Delete", danger: true }))) return;
     void onAction(() => api(`/api/cards/${card.id}`, { method: "DELETE" }));
+  };
+  const pause = async () => {
+    if (!(await onConfirm({ title: "Pause this task?", body: `“${card.title}” pauses after the current iteration finishes.`, action: "Pause after this iteration" }))) return;
+    void onAction(() => api(`/api/cards/${card.id}/pause`, { json: {} }));
   };
 
   return (
@@ -582,7 +603,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
           {card.status === "review" && <Link href={`/review/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-violet-500/15 px-3 text-sm font-medium text-violet-200">Review</Link>}
           {card.status === "plan_review" && <Link href={`/card/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-cyan-500/15 px-3 text-sm font-medium text-cyan-200">Approve plan</Link>}
           {card.status === "needs_attention" && <Link href={`/card/${card.id}`} className="touch-target flex shrink-0 items-center rounded-lg bg-red-500/15 px-3 text-sm font-medium text-red-200">Resolve</Link>}
-          {card.status === "looping" && <button type="button" onClick={() => { if (!confirm(`Pause “${card.title}” after the current iteration finishes?`)) return; void onAction(() => api(`/api/cards/${card.id}/pause`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 hover:bg-foreground/[0.10]">⏸ Pause</button>}
+          {card.status === "looping" && <button type="button" onClick={() => void pause()} className="touch-target flex shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 hover:bg-foreground/[0.10]">⏸ Pause</button>}
           {card.status === "paused" && <button type="button" onClick={() => { void onAction(() => api(`/api/cards/${card.id}/resume`, { json: {} })); }} className="touch-target flex shrink-0 items-center rounded-lg bg-sky-500/15 px-3 text-sm font-medium text-sky-200 hover:bg-sky-500/25">▶ Continue</button>}
           {ACTIVE_STATUSES.includes(card.status) && <Link href={`/card/${card.id}?tab=activity`} className="touch-target hidden shrink-0 items-center rounded-lg bg-foreground/[0.06] px-3 text-sm text-foreground/70 sm:flex">View activity</Link>}
         </div>
@@ -621,8 +642,8 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onMove, ca
             </>}
             <DetailsMenu detailsClassName="relative ml-auto" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-md text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground" menuClassName="absolute bottom-10 right-0 z-20 w-52 rounded-lg border border-foreground/10 bg-surface p-1 shadow-xl" ariaLabel={`More actions for ${card.title}`} summary="•••">
                 <Link href={`/card/${card.id}`} className="flex min-h-11 items-center rounded-md px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-                {PULLBACK_STATUSES.includes(card.status) && <button type="button" onClick={pullBack} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
-                {["backlog", "todo", "done"].includes(card.status) && <button type="button" onClick={remove} className="w-full rounded-md px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Delete task</button>}
+                {PULLBACK_STATUSES.includes(card.status) && <button type="button" onClick={() => void pullBack()} className="w-full rounded-md px-3 text-left text-sm hover:bg-foreground/[0.06]">Move to backlog</button>}
+                {["backlog", "todo", "done"].includes(card.status) && <button type="button" onClick={() => void remove()} className="w-full rounded-md px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Delete task</button>}
             </DetailsMenu>
           </div>
         )}

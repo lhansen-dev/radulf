@@ -15,7 +15,6 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 beforeEach(() => {
   push.mockClear();
-  vi.stubGlobal("confirm", () => false);
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => ({
     ok: true,
     json: async () => {
@@ -231,6 +230,29 @@ describe("NewTaskDialog", () => {
     expect(screen.queryByRole("list", { name: "Folders" })).toBeNull();
     await user.selectOptions(screen.getByLabelText("Repository"), "__add__");
     expect(await screen.findByRole("list", { name: "Folders" })).toBeTruthy();
+    cleanup();
+  });
+
+  it("asks in its own footer before discarding typed work", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
+        onClose={onClose}
+        onCreated={() => {}}
+      />
+    );
+    await user.type(screen.getByLabelText("Title"), "Half an idea");
+    await user.click(screen.getByLabelText("Close new task"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard your unsaved task?")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByText("Discard your unsaved task?")).toBeNull();
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Half an idea");
+    await user.click(screen.getByLabelText("Close new task"));
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
     cleanup();
   });
 

@@ -6,6 +6,7 @@ import { playAlertSound, requestNotificationPermission, showCardNotification } f
 import { AppShell } from "../ui/appShell";
 import { ModelBrowser, ModelField, formatPricePerMillion, useProviderModels } from "../ui/modelPicker";
 import { ProviderLoginSection } from "./providerLogin";
+import { useConfirm } from "../ui/confirmDialog";
 import { SchedulesSection } from "./schedulesSection";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
@@ -1032,6 +1033,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   // Typing an absolute path stays available: the browser is confined to one
   // root, and a repo kept outside it has to be reachable some other way.
   const [typePath, setTypePath] = useState(false);
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
 
   function pickFolder(picked: string) {
     setPath(picked);
@@ -1088,13 +1090,13 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
               {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
             </div>
             <button
-              onClick={() => {
-                if (!confirm(`Remove "${r.name}"? Its tasks and history will be deleted.`)) return;
+              onClick={() => void confirmWith({ title: `Remove “${r.name}”?`, body: "Its tasks and history will be deleted.", action: "Remove repository", danger: true }).then((ok) => {
+                if (!ok) return;
                 setRemoveError(null);
                 api(`/api/repos/${r.id}`, { method: "DELETE" })
                   .then(onChange)
                   .catch((cause) => setRemoveError({ repoId: r.id, message: errorMessage(cause) }));
-              }}
+              })}
               className="min-h-11 px-2 text-xs text-red-400/70 hover:text-red-400"
             >
               Remove
@@ -1179,6 +1181,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
         <p className="mt-2 text-xs text-foreground/45">The folder picker opens on the machine running Radulf.</p>
       </details>
       {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
+      {confirmDialog}
     </section>
   );
 }

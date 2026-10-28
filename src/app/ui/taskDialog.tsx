@@ -207,6 +207,19 @@ export function ModelChips<M extends ModelOption>({ models, value, onPick, title
   );
 }
 
+/** A dialog's own "throw this away?", shown in place of its footer: a
+ * dialog cannot open another dialog over itself (see useConfirm), so it asks
+ * where its buttons were and keeps everything typed until the answer. */
+export function DiscardPrompt({ question, onKeep, onDiscard }: { question: string; onKeep: () => void; onDiscard: () => void }) {
+  return (
+    <>
+      <span role="status" className="mr-auto self-center text-sm text-foreground/80">{question}</span>
+      <button type="button" onClick={onKeep} className="rounded-lg px-4 text-sm text-foreground/60">Keep editing</button>
+      <button type="button" onClick={onDiscard} className="rounded-lg bg-red-700 px-5 text-sm font-semibold text-white hover:bg-red-600">Discard</button>
+    </>
+  );
+}
+
 /** Bottom-sheet / centered modal with a focus trap, Escape to close, body
  * scroll lock, and focus restored to the invoker on unmount. */
 export function DialogShell({ titleId, title, closeLabel, onRequestClose, footer, children }: {

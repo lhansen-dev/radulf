@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import type { CreateImprovementRunRequest } from "@/shared/improvementRunRequests";
 import { api, type Repo } from "./api";
-import { DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
+import { DialogShell, DiscardPrompt, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
 import { errorMessage } from "@/shared/errorMessage";
 
 type BudgetUnit = "minutes" | "hours";
@@ -27,8 +27,9 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
   const [busy, setBusy] = useState(false);
   const dirty = Boolean(focusPrompt || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || budgetAmount !== "30" || budgetUnit !== "minutes");
 
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const requestClose = useCallback(() => {
-    if (dirty && !confirm("Discard this improvement run setup?")) return;
+    if (dirty) { setConfirmingDiscard(true); return; }
     onClose();
   }, [dirty, onClose]);
   async function create() {
@@ -60,7 +61,7 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
       title="Start improvement run"
       closeLabel="Close improvement run setup"
       onRequestClose={requestClose}
-      footer={<>
+      footer={confirmingDiscard ? <DiscardPrompt question="Discard this improvement run setup?" onKeep={() => setConfirmingDiscard(false)} onDiscard={onClose} /> : <>
         <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
         <button type="button" onClick={create} disabled={busy || !repoId || !baseBranch || !budgetValid} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Starting…" : "Start run"}</button>
       </>}

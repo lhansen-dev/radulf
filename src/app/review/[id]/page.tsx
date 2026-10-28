@@ -7,6 +7,7 @@ import { AppShell } from "../../ui/appShell";
 import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
+import { useConfirm } from "../../ui/confirmDialog";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
@@ -101,6 +102,7 @@ export default function ReviewPage() {
   // card's own flag or the workspace toggle (reviewService), so the button
   // says which it will be instead of promising a merge either way.
   const [workspaceOpenPr, setWorkspaceOpenPr] = useState<boolean | null>(null);
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
   useEffect(() => {
     let live = true;
     api<{ openPr?: boolean }>("/api/settings")
@@ -184,7 +186,7 @@ export default function ReviewPage() {
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>
         <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
           <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-          <button disabled={busy} onClick={() => { if (confirm("Abandon this task? Its worktree and branch will be deleted.")) void abandon(); }} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
+          <button disabled={busy} onClick={() => void confirmWith({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }).then((ok) => { if (ok) void abandon(); })} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
         </DetailsMenu>
       </header>
 
@@ -331,6 +333,7 @@ export default function ReviewPage() {
           />
         </DialogShell>
       )}
+      {confirmDialog}
     </div>
     </AppShell>
   );

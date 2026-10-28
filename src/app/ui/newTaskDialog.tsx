@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CreateCardRequest } from "@/shared/cardRequests";
 import { api, type Repo } from "./api";
-import { DeliveryOptions, DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
+import { DeliveryOptions, DialogShell, DiscardPrompt, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
 import { FolderBrowser } from "./folderBrowser";
 import { DetailsMenu } from "./detailsMenu";
 import type { EpicRunMode } from "@/shared/epics";
@@ -51,6 +51,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [description, setDescription] = useState("");
   const [jiraRef, setJiraRef] = useState("");
   const [importing, setImporting] = useState(false);
+  // What a file import had to say, kept on screen until Done: the dialog
+  // used to close behind a browser alert.
+  const [importNotice, setImportNotice] = useState<string[]>([]);
   // Spec 24 decision 8: the imported issue's child issues, each ticked to
   // become a task under this one, and how those tasks should run.
   const [jiraChildren, setJiraChildren] = useState<JiraChild[]>([]);
@@ -71,10 +74,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         json: { ...payload, repoId },
       });
       onCreated();
-      if (result.notes.length > 0) {
-        alert(`Imported ${result.cardIds.length} card(s).\n\n${result.notes.join("\n")}`);
-      }
-      onClose();
+      if (result.notes.length === 0) { onClose(); return; }
+      setImportNotice([`Imported ${result.cardIds.length} card${result.cardIds.length === 1 ? "" : "s"}.`, ...result.notes]);
     } catch (e) {
       setError(e instanceof SyntaxError ? "that file is not JSON Radulf can read" : errorMessage(e));
     } finally {
@@ -118,8 +119,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [newBranchName, setNewBranchName] = useState("");
   const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || planCritic !== null || autoApprove || openPr || jiraKey !== null || jiraChildren.length > 0;
 
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const requestClose = useCallback(() => {
-    if (dirty && !confirm("Discard your unsaved task?")) return;
+    if (dirty) { setConfirmingDiscard(true); return; }
     onClose();
   }, [dirty, onClose]);
   // Spec 17: a rough ask is enough — "Create and scope" opens the card on
@@ -173,7 +175,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       title="New task"
       closeLabel="Close new task"
       onRequestClose={requestClose}
-      footer={<>
+      footer={confirmingDiscard ? <DiscardPrompt question="Discard your unsaved task?" onKeep={() => setConfirmingDiscard(false)} onDiscard={onClose} /> : <>
         <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
         <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
         <button type="button" onClick={() => create()} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">
@@ -190,6 +192,12 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       </>}
     >
           {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} /></div> : <>
+            {importNotice.length > 0 && (
+              <div role="status" className="flex flex-col gap-1.5 rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3 text-sm">
+                {importNotice.map((line, index) => <p key={index} className={index === 0 ? "font-medium text-cyan-300" : "text-foreground/75"}>{line}</p>)}
+                <button type="button" onClick={onClose} className="mt-1 self-start rounded-lg bg-foreground/10 px-3 text-sm">Done</button>
+              </div>
+            )}
             <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={dialogInputCls} required /></label>
             {/* Folded: most tasks are typed, and the title is where typing
                 starts. An import fills the title and description above. */}

@@ -174,13 +174,11 @@ describe("ReviewPage", () => {
       }
       return baseFetch(url, init);
     }) as unknown as typeof fetch;
-    vi.stubGlobal("confirm", () => true);
-
     render(<ReviewPage />);
     fireEvent.click(await screen.findByText("Abandon task"));
+    fireEvent.click(await screen.findByRole("button", { name: "Abandon" }));
 
     expect(await screen.findByText("worktree is locked")).toBeTruthy();
-    vi.unstubAllGlobals();
   });
 });
 

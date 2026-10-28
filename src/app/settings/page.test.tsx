@@ -155,12 +155,12 @@ describe("SettingsPage", () => {
     repositories = [
       { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-12" },
     ];
-    vi.stubGlobal("confirm", vi.fn(() => true));
     window.history.replaceState(null, "", "/settings#repos");
     render(<SettingsPage />);
     await screen.findByText("Busy repo");
 
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove repository" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe(
       "cannot remove a repository while one of its tasks is running or merging",
