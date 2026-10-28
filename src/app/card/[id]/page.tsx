@@ -8,6 +8,7 @@ import { AppShell } from "../../ui/appShell";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
 import { useConfirm, type ConfirmRequest } from "../../ui/confirmDialog";
+import { useWorkHref } from "../../ui/workHref";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
@@ -77,6 +78,7 @@ export default function CardDetail() {
   // Spec 24: Create and break down lands here with ?breakdown=propose.
   const [autoBreakdown, setAutoBreakdown] = useState(false);
   const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
+  const workHref = useWorkHref();
 
   useEffect(() => {
     const readTab = () => {
@@ -270,7 +272,7 @@ export default function CardDetail() {
     <AppShell>
     <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 sm:p-6 lg:py-8">
       <header className="flex min-w-0 items-center gap-3">
-        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
+        <Link href={workHref} className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">{card.title}</h1>

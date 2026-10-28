@@ -8,6 +8,7 @@ import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
 import { useConfirm } from "../../ui/confirmDialog";
+import { useWorkHref } from "../../ui/workHref";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
@@ -103,6 +104,7 @@ export default function ReviewPage() {
   // says which it will be instead of promising a merge either way.
   const [workspaceOpenPr, setWorkspaceOpenPr] = useState<boolean | null>(null);
   const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
+  const workHref = useWorkHref();
   useEffect(() => {
     let live = true;
     api<{ openPr?: boolean }>("/api/settings")
@@ -180,7 +182,7 @@ export default function ReviewPage() {
     <AppShell>
     <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 pb-28 sm:p-6 sm:pb-28">
       <header className="flex min-w-0 items-center gap-3">
-        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
+        <Link href={workHref} className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>

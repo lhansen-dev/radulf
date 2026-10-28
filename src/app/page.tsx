@@ -26,6 +26,7 @@ import { useConfirm, type ConfirmRequest } from "./ui/confirmDialog";
 import { useWorkData } from "./ui/useWorkData";
 import { useNow } from "./ui/useNow";
 import { cardMatches } from "./ui/cardSearch";
+import { rememberWorkHref } from "./ui/workHref";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, PULLBACK_STATUSES, RUNNING_STATUSES, STATUS_LABELS } from "@/shared/cardStatus";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -132,6 +133,7 @@ export default function WorkPage() {
       setRepoFilter(urlRepo ?? localStorage.getItem("radulf.repo") ?? "");
       setView(views.some((item) => item.key === urlView) ? urlView! : "overview");
       setQuery(params.get("q") ?? "");
+      rememberWorkHref(`${window.location.pathname}${window.location.search}`);
     };
     readUrl();
     window.addEventListener("popstate", readUrl);
@@ -152,6 +154,7 @@ export default function WorkPage() {
     if (nextQuery.trim()) params.set("q", nextQuery);
     const href = params.size ? `/?${params}` : "/";
     window.history[push ? "pushState" : "replaceState"]({}, "", href);
+    rememberWorkHref(href);
   }, []);
 
   // "/" jumps to search the way it does in a forge, but only when the operator
