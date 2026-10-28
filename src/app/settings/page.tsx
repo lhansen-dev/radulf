@@ -289,7 +289,7 @@ export default function SettingsPage() {
   if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
 
   const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
-  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished" | "jiraCommentOnDone") =>
+  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished" | "jiraCommentOnDone" | "autoMode" | "autoApprove" | "yoloMode" | "openPr") =>
     ({ checked: settings[key], onChange: (value: boolean) => set({ [key]: value }) });
   const textInput = (key: StringKey, props: { label: string; type?: string; placeholder?: string }) => (
     <label className="text-sm text-foreground/70">
@@ -357,6 +357,27 @@ export default function SettingsPage() {
                 <section id="appearance" className={sectionCls}>
                   <SectionHeading title="Appearance">Pick a color theme. Save your changes to apply it across Radulf.</SectionHeading>
                   <ThemePicker value={settings.theme} onChange={(theme) => set({ theme })} />
+                </section>
+                {/* The same four switches as the Work page's ••• menu, which
+                    writes them straight away; here they save with the rest.
+                    Listed because a menu behind three dots is where the
+                    highest-consequence settings were hardest to find. */}
+                <section id="workflow" className={sectionCls}>
+                  <SectionHeading title="Workflow">
+                    How much the pipeline does on its own. The Work page&rsquo;s <code>•••</code> menu flips the same switches.
+                  </SectionHeading>
+                  <div className="flex flex-col gap-4 divide-y divide-foreground/10">
+                    <ToggleRow title="Auto Mode" description="Start queued tasks on their own, in queue order, as slots free up." {...toggle("autoMode")} />
+                    <div className="pt-4">
+                      <ToggleRow title="Auto-approve" description="Merge an evaluator approve straight into the base branch with no human review. A critical finding or a card past the evaluator's revision limit still comes to you." {...toggle("autoApprove")} />
+                    </div>
+                    <div className="pt-4">
+                      <ToggleRow title="YOLO mode" description="Stop the pipeline asking you anything: the agents decide the open questions, plan review is skipped, and a blocked loop re-plans. Merging stays Auto-approve's call." {...toggle("yoloMode")} />
+                    </div>
+                    <div className="pt-4">
+                      <ToggleRow title="Open pull requests" description="Deliver approved work by pushing the branch and opening a pull request instead of merging locally. Needs the GitHub CLI signed in and a repository with an origin." {...toggle("openPr")} />
+                    </div>
+                  </div>
                 </section>
                 <section id="notifications" className={sectionCls}>
                   <SectionHeading title="Notifications & sounds" />

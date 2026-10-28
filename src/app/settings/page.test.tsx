@@ -125,6 +125,19 @@ describe("SettingsPage", () => {
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("saves the workflow switches the Work page's menu flips", async () => {
+    render(<SettingsPage />);
+    await screen.findByText("Workflow");
+    const yolo = screen.getByRole("checkbox", { name: "YOLO mode" }) as HTMLInputElement;
+    expect(yolo.checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: "Auto Mode" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(yolo);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Auto Mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Settings saved ✓");
+    expect(savedSettings).toMatchObject({ yoloMode: true, autoMode: false, autoApprove: false, openPr: false });
+  });
+
   it("offers Sign out only when a password gates the app", async () => {
     render(<SettingsPage />);
     await screen.findByText("Appearance");
