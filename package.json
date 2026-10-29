@@ -61,7 +61,7 @@
     "jsdom": "^30.1.1",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {
