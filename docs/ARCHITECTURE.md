@@ -320,7 +320,10 @@ host-side call pins `core.hooksPath=/dev/null` and `core.fsmonitor=false`:
 these run unsandboxed in a worktree the agent has just written to, and a
 relative `core.hooksPath` (husky's) resolves against that worktree. Your own
 hooks therefore do not run on Radulf's merge commits; the reviewed diff is the
-gate. `offRunBranchReason` refuses to commit into a worktree that has left its
+gate. The same calls pin `diff.ignoreSubmodules=all` and
+`submodule.recurse=false`, so host git never steps into a nested repository
+the agent created, whose config it would otherwise execute, and `stageAll`
+drops any such gitlink before every commit Radulf makes. `offRunBranchReason` refuses to commit into a worktree that has left its
 run branch or whose `.git` pointer no longer leads to the repository.
 
 `mergeBranch` is the one write to the user's repo. Before touching anything it
@@ -332,8 +335,11 @@ ancestor of the base (the worker committed but died before the DB write) it
 returns `alreadyMerged: true` with the existing merge commit and moves no ref.
 Otherwise it checks out the base branch, refuses a dirty tree (the error names
 the repo path and tells the operator to commit or stash and press Retry merge),
-merges `--no-ff --no-commit` so `.ralph/` can be dropped before committing, and
-restores your original branch on every path including failure. It distinguishes a content conflict (`conflict: true`,
+refuses a branch that starts tracking a path an ignored file already occupies in
+the checkout, since git's merge would silently overwrite it and the error names
+the file, merges `--no-ff --no-commit` so `.ralph/` can be dropped before
+committing, and restores your original branch on every path including failure.
+Both checkouts pass `--no-overwrite-ignore` for the same reason. It distinguishes a content conflict (`conflict: true`,
 recoverable — the card goes back to the loop via `mergeBaseIntoWorktree`) from
 an unrecoverable failure. It carries no lock of its own: the caller holds the
 repo's `repo_leases` row (`src/server/repoLeases.ts`), which serializes merges

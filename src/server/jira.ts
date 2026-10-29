@@ -16,6 +16,12 @@ type JiraSettings = Pick<Settings, "jiraBaseUrl" | "jiraEmail" | "jiraApiToken">
 
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]*-\d+$/i;
 
+/** A Jira Cloud id is a UUID. It is spliced into the gateway path below, so
+ * anything that is not one path segment of those characters is refused: the
+ * site answering `_edge/tenant_info` is whatever `jiraBaseUrl` names, and its
+ * answer must not be able to steer the token to another path. */
+const CLOUD_ID = /^[A-Za-z0-9-]+$/;
+
 /** Whether the value is a bare Jira issue key (`DEV-123`, any case, surrounding
  * space allowed). A pasted link is not a key — use parseJiraIssueRef for that. */
 export function isJiraIssueKey(value: string): boolean {
@@ -74,7 +80,7 @@ export async function restRoot(s: JiraSettings): Promise<string> {
   try {
     const res = await fetch(`${base}/_edge/tenant_info`, { signal: AbortSignal.timeout(10_000), cache: "no-store" });
     const { cloudId } = (await res.json()) as { cloudId?: unknown };
-    if (typeof cloudId === "string" && cloudId) return `https://api.atlassian.com/ex/jira/${cloudId}`;
+    if (typeof cloudId === "string" && CLOUD_ID.test(cloudId)) return `https://api.atlassian.com/ex/jira/${cloudId}`;
   } catch {
     // Not Jira Cloud, or the site is down: jiraGet against the site says which.
   }

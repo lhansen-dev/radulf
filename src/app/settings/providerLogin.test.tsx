@@ -47,7 +47,6 @@ beforeEach(() => {
   calls = [];
   loginState = { id: "s1", providerId: "anthropic", status: "waiting", events: [], prompt: null, error: null };
   stubFetch();
-  vi.stubGlobal("confirm", () => true);
 });
 
 const body = (index: number) => JSON.parse(String(calls[index].init?.body));
@@ -253,6 +252,7 @@ describe("ProviderLoginSection", () => {
     render(<ProviderLoginSection />);
 
     await clickIn("GitHub Copilot", "Disconnect");
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect provider" }));
 
     await waitFor(() => expect(calls.some((c) => c.init?.method !== undefined)).toBe(true));
     const post = calls.findIndex((c) => c.init?.body !== undefined);

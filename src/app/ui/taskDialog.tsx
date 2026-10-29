@@ -69,6 +69,63 @@ export function RoleModelSelects({ providers, models, values, onChange, idPrefix
   ));
 }
 
+/**
+ * Spec 15: whether approval can deliver a pull request for `repoId` — `gh`
+ * installed and signed in AND the repo has an `origin`. Tagged with the repo
+ * it describes, so a stale answer for the previously selected repo reads as
+ * "unknown" rather than as permission to tick the box. `onUndeliverable` runs
+ * when the answer is no, for the caller to untick a box it cannot honour.
+ */
+function usePrDelivery(repoId: string, onUndeliverable: () => void) {
+  const [status, setStatus] = useState<{ repoId: string; ok: boolean; detail: string | null; hasRemote: boolean | null } | null>(null);
+  const onUndeliverableRef = useRef(onUndeliverable);
+  useEffect(() => { onUndeliverableRef.current = onUndeliverable; });
+  useEffect(() => {
+    if (!repoId) return;
+    let live = true;
+    api<{ ok: boolean; detail: string | null; hasRemote: boolean | null }>(`/api/github/status?repoId=${encodeURIComponent(repoId)}`)
+      .then((next) => {
+        if (!live) return;
+        setStatus({ repoId, ...next });
+        if (!next.ok || !next.hasRemote) onUndeliverableRef.current();
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [repoId]);
+  const current = status && status.repoId === repoId ? status : null;
+  const deliverable = Boolean(current?.ok && current.hasRemote);
+  // Say which of the three preconditions is missing — install a tool, run a
+  // login, and add a remote are three different next actions.
+  const blockedReason = current === null || deliverable
+    ? null
+    : current.ok
+      ? "This repo has no `origin` remote to open a pull request against."
+      : current.detail;
+  return { deliverable, blockedReason };
+}
+
+/** Where an approved card's work goes: merged without a human (auto-approve)
+ * and/or as a pull request instead of a local merge. The same two choices on
+ * creation and on edit, with the same warnings. */
+export function DeliveryOptions({ repoId, autoApprove, setAutoApprove, openPr, setOpenPr }: {
+  repoId: string;
+  autoApprove: boolean;
+  setAutoApprove: (value: boolean) => void;
+  openPr: boolean;
+  setOpenPr: (value: boolean) => void;
+}) {
+  const { deliverable, blockedReason } = usePrDelivery(repoId, () => setOpenPr(false));
+  return (
+    <>
+      <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
+      {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run. This card keeps this setting even when the workspace-wide toggle is off.</p>}
+      <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={openPr} disabled={!deliverable} onChange={(e) => setOpenPr(e.target.checked)} className="size-4 accent-amber-600 disabled:opacity-40" />Open a pull request instead of merging</label>
+      {blockedReason && <p className="text-xs text-foreground/45">{blockedReason}</p>}
+      {openPr && <p className="text-xs text-foreground/55">On approval the branch is pushed to <code>origin</code> and a pull request is opened against the base branch. Nothing is merged locally, and Radulf never merges the pull request.</p>}
+    </>
+  );
+}
+
 /** The "Repository" picker both dialogs open with; `children` adds trailing options. */
 export function RepoSelect({ repos, value, onChange, children }: { repos: Repo[]; value: string; onChange: (repoId: string) => void; children?: ReactNode }) {
   return (
@@ -147,6 +204,19 @@ export function ModelChips<M extends ModelOption>({ models, value, onPick, title
         </button>
       ))}
     </div>
+  );
+}
+
+/** A dialog's own "throw this away?", shown in place of its footer: a
+ * dialog cannot open another dialog over itself (see useConfirm), so it asks
+ * where its buttons were and keeps everything typed until the answer. */
+export function DiscardPrompt({ question, onKeep, onDiscard }: { question: string; onKeep: () => void; onDiscard: () => void }) {
+  return (
+    <>
+      <span role="status" className="mr-auto self-center text-sm text-foreground/80">{question}</span>
+      <button type="button" onClick={onKeep} className="rounded-lg px-4 text-sm text-foreground/60">Keep editing</button>
+      <button type="button" onClick={onDiscard} className="rounded-lg bg-red-700 px-5 text-sm font-semibold text-white hover:bg-red-600">Discard</button>
+    </>
   );
 }
 

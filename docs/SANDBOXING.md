@@ -143,7 +143,7 @@ Read is **deny-then-allow-back**; write is **allow-only**.
 | **write allow** | the worktree; the run's `$TMPDIR`; the run's cache root; the parent repo's shared `.git` (resolved via `git rev-parse --git-common-dir`, so a linked worktree's pointer file isn't mistaken for it) |
 | **write deny** | every sibling registered repository; `<git>/hooks`, `<git>/config`, `<git>/worktrees/*/config` — the code-execution and redirection vectors inside the shared git dir. `<git>/refs`, `<git>/packed-refs`, `<git>/HEAD`, `<git>/worktrees/*/HEAD` — every ref and checkout pointer, so agent git cannot commit, move a branch, or check the worktree out onto another branch. The orchestrator makes every commit from the host. |
 | **read allow** | worktree, `$TMPDIR`, cache root, the shared `.git`; system roots (`/usr /bin /sbin /opt /etc`, plus `/Library/Developer /nix /System` on macOS); toolchain roots derived from `PATH` (each entry, plus its parent unless that parent is inside `$HOME` or a Radulf root — `~/.cargo/bin` stays readable, `~/.cargo` does not); three named `$HOME` re-allows: `~/.nvm`, `~/.rustup/toolchains`, `~/.cargo/registry` |
-| **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, the configured repository browser root, every registered repository root, `/repos` when mounted, plus a backstop credential denylist |
+| **read deny** | **`$HOME` in full**, Radulf's `DATA_DIR` and `WORKTREES_DIR`, the run scratch root `runtmp` with only this run's own `tmp/` and `cache/` re-allowed, the server's working directory, the configured repository browser root, every registered repository root, `/repos` when mounted, plus a backstop credential denylist |
 
 **Backstop credential denylist** (`credentialBackstopDenylist`) is unioned into
 `denyRead` on every run even though `$HOME` is already denied: `~/.ssh`,
@@ -428,8 +428,9 @@ The human diff review is the last gate, so it is treated as a security control
   --text -c core.excludesFile=/dev/null` so a `.gitattributes` marker or a local
   diff-driver hijack can't hide content; `.gitignore`/`.gitattributes` changes
   get their own loud banner.
-- Sensitive-path diffs (sandbox/harness/integrity/install-gate, settings, auth,
-  merge path) get a distinct red banner —
+- Sensitive-path diffs (sandbox and containment code, settings, auth, the
+  merge path, repository access, and the build, dependency and deployment
+  files) get a distinct red banner —
   [`src/app/review/[id]/sensitivePaths.ts`](../src/app/review/[id]/sensitivePaths.ts).
   Self-target cards land here by design.
 

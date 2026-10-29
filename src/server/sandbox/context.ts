@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { db, DATA_DIR, repos, type DiskLimitMechanism } from "@/db";
+import { db, repos, type DiskLimitMechanism } from "@/db";
 import { sleep } from "@/shared/sleep";
 import type { Settings } from "../settings";
 import { browsableRoot } from "../folderBrowser";
@@ -14,7 +14,7 @@ import {
   type RunCgroup,
 } from "./cgroup";
 import { detectMacDiskMechanism } from "./diskWatchdog";
-import { buildRunSandboxConfig, resolveGitCommonDir } from "./srt";
+import { buildRunSandboxConfig, resolveGitCommonDir, runScratchRoot } from "./srt";
 import { createSerialQueue } from "./serialQueue";
 import { createSeatbeltProcessMarkers, reapSeatbeltRun } from "./seatbeltReaper";
 
@@ -26,11 +26,7 @@ import { createSeatbeltProcessMarkers, reapSeatbeltRun } from "./seatbeltReaper"
  * evaluator) calls the factory once and `cleanup()`s in a `finally`.
  */
 
-/** Root for per-run private dirs — a sibling of data/ like worktrees/, so the
- * L1 policy's blanket "deny data/" needs no carve-outs. */
-export function runScratchRoot(): string {
-  return path.join(path.dirname(DATA_DIR), "runtmp");
-}
+export { runScratchRoot };
 
 export type RunSandboxContext = {
   runId: string;

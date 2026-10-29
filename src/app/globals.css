@@ -119,7 +119,7 @@ a.touch-target {
   bottom: 0;
   left: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   min-height: 64px;
   padding: 4px 8px env(safe-area-inset-bottom);
   border-top: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
@@ -161,7 +161,24 @@ a.touch-target {
   font-weight: 600;
 }
 
+/* The review page's approve/reject bar. It sits above the bottom nav on a
+   phone and beside the rail on a desktop, where the bar itself takes the
+   safe-area inset the nav otherwise absorbs. */
+.review-footer {
+  position: fixed;
+  z-index: 40;
+  right: 0;
+  bottom: calc(64px + env(safe-area-inset-bottom));
+  left: 0;
+}
+
 @media (min-width: 1024px) {
+  .review-footer {
+    bottom: 0;
+    left: 88px;
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+
   .app-shell {
     display: grid;
     grid-template-columns: 88px minmax(0, 1fr);

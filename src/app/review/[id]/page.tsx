@@ -3,9 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, useEventStream } from "../../ui/api";
+import { AppShell } from "../../ui/appShell";
 import { formatDuration } from "../../ui/formatDuration";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
+import { useConfirm } from "../../ui/confirmDialog";
+import { useWorkHref } from "../../ui/workHref";
 import { parseEvaluation } from "@/shared/evaluation";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
 import { DialogShell, dialogInputCls } from "../../ui/taskDialog";
@@ -96,6 +99,19 @@ export default function ReviewPage() {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
+  // Where approval sends the branch is decided at approval time from the
+  // card's own flag or the workspace toggle (reviewService), so the button
+  // says which it will be instead of promising a merge either way.
+  const [workspaceOpenPr, setWorkspaceOpenPr] = useState<boolean | null>(null);
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
+  const workHref = useWorkHref();
+  useEffect(() => {
+    let live = true;
+    api<{ openPr?: boolean }>("/api/settings")
+      .then((settings) => { if (live) setWorkspaceOpenPr(Boolean(settings.openPr)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const refetch = useCallback(() => {
     api<CardDetailData>(`/api/cards/${id}`).then(setDetail).catch((e) => setError(String(e)));
@@ -158,18 +174,21 @@ export default function ReviewPage() {
     }
   }
 
-  if (!detail) return <div className="p-8 text-foreground/50">{error || "Loading…"}</div>;
+  if (!detail)
+    return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading…"}</div></AppShell>;
+  const deliversPr = Boolean(detail.card.openPr) || workspaceOpenPr === true;
 
   return (
+    <AppShell>
     <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 pb-28 sm:p-6 sm:pb-28">
       <header className="flex min-w-0 items-center gap-3">
-        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
+        <Link href={workHref} className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>
         <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
           <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-          <button disabled={busy} onClick={() => { if (confirm("Abandon this task? Its worktree and branch will be deleted.")) void abandon(); }} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
+          <button disabled={busy} onClick={() => void confirmWith({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }).then((ok) => { if (ok) void abandon(); })} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
         </DetailsMenu>
       </header>
 
@@ -271,13 +290,15 @@ export default function ReviewPage() {
         </aside>
       </div>
 
-      <footer className="fixed bottom-0 left-0 right-0 z-40 grid grid-cols-2 gap-2 border-t border-foreground/10 bg-surface/95 p-3 pb-[calc(.75rem+env(safe-area-inset-bottom))] backdrop-blur sm:flex sm:justify-center">
+      <footer className="review-footer grid grid-cols-2 gap-2 border-t border-foreground/10 bg-surface/95 p-3 backdrop-blur sm:flex sm:justify-center">
         <button
           disabled={busy || !loopRun}
           onClick={() => decide("approved")}
           className="min-h-11 rounded bg-green-700 px-3 py-2 text-sm font-medium hover:bg-green-600 disabled:opacity-40 sm:px-4"
         >
-          {busy ? "Merging…" : "✓ Approve & merge"}
+          {busy
+            ? deliversPr ? "Opening pull request…" : "Merging…"
+            : deliversPr ? "✓ Approve & open pull request" : "✓ Approve & merge"}
         </button>
         <button
           disabled={busy || !loopRun}
@@ -314,7 +335,9 @@ export default function ReviewPage() {
           />
         </DialogShell>
       )}
+      {confirmDialog}
     </div>
+    </AppShell>
   );
 }
 

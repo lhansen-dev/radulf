@@ -25,7 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "@/db";
 import { firstUnchecked, markChecked } from "./checklist";
-import { tryGit } from "./git";
+import { stageAll, tryGit } from "./git";
 import { isInsideOrEqual, realpathBestEffort } from "./sandbox/pathGuard";
 
 // ---------------------------------------------------------------------------
@@ -466,7 +466,7 @@ export async function performIterationBookkeeping(opts: {
   fs.rmSync(/* turbopackIgnore: true */ iterationDonePath(ralphDir), { force: true });
 
   // Stage everything and commit.
-  await tryGit(worktreePath, "add", "-A");
+  await stageAll(worktreePath);
   await tryGit(
     worktreePath,
     "commit",
@@ -523,7 +523,7 @@ export async function performDoneBookkeeping(opts: {
     fs.writeFileSync(/* turbopackIgnore: true */ planPath, updated);
 
     // Stage and commit.
-    await tryGit(worktreePath, "add", "-A");
+    await stageAll(worktreePath);
     await tryGit(
       worktreePath,
       "commit",

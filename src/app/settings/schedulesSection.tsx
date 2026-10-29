@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { useConfirm } from "../ui/confirmDialog";
 import { api, type Repo } from "../ui/api";
 import { inputCls, secondaryButtonCls, sectionCls } from "./settingsUI";
 import type { ScheduleKind } from "@/db/schema";
@@ -50,6 +51,7 @@ const fmt = (iso: string) =>
  * because the operator wrote one.
  */
 export function SchedulesSection({ repos }: { repos: Repo[] }) {
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
   const [rows, setRows] = useState<Schedule[] | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -134,10 +136,9 @@ export function SchedulesSection({ repos }: { repos: Repo[] }) {
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => {
-                    if (!confirm(`Delete this schedule? ${KIND_LABEL[row.kind]} on ${row.cron}.`)) return;
-                    void act(() => api(`/api/schedules/${row.id}`, { method: "DELETE" }));
-                  }}
+                  onClick={() => void confirmWith({ title: "Delete this schedule?", body: `${KIND_LABEL[row.kind]} on ${row.cron}.`, action: "Delete schedule", danger: true }).then((ok) => {
+                    if (ok) void act(() => api(`/api/schedules/${row.id}`, { method: "DELETE" }));
+                  })}
                   className={`${secondaryButtonCls} text-red-300`}
                 >
                   Delete
@@ -165,6 +166,7 @@ export function SchedulesSection({ repos }: { repos: Repo[] }) {
       )}
 
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+      {confirmDialog}
     </section>
   );
 }

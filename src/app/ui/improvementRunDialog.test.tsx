@@ -15,7 +15,6 @@ vi.mock("next/link", () => ({
 const repo = { id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" };
 
 beforeEach(() => {
-  vi.stubGlobal("confirm", () => false);
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     const requestPath = String(url);
     if (requestPath === "/api/settings") {

@@ -66,6 +66,10 @@
   "overrides": {
     "@esbuild-kit/core-utils": {
       "esbuild": "^0.28.2"
-    }
+    },
+    "@anthropic-ai/sandbox-runtime": {
+      "zod": "^4.6.6"
+    },
+    "undici": "^8.12.2"
   }
 }

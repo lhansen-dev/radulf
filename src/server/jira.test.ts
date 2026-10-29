@@ -189,6 +189,21 @@ describe("fetchJiraIssue", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("https://example.atlassian.net/rest/api/2/issue/DEV-1?fields=summary,description");
   });
 
+  it("calls the site itself when its cloud id is not one path segment", async () => {
+    // The id goes into the gateway path with the token attached, so a site
+    // that answers with a path of its own is treated as having no id.
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith("/_edge/tenant_info")
+        ? new Response(JSON.stringify({ cloudId: "../../oauth/token?x=" }))
+        : new Response(JSON.stringify({ key: "DEV-1", fields: { summary: "s" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchJiraIssue("DEV-1", configured);
+
+    expect(fetchMock.mock.calls[1][0]).toBe("https://example.atlassian.net/rest/api/2/issue/DEV-1?fields=summary,description");
+  });
+
   it("trims a token pasted with whitespace around it", async () => {
     const fetchMock = stubFetch(200, { key: "DEV-1", fields: { summary: "s" } });
     await fetchJiraIssue("DEV-1", { ...configured, jiraApiToken: "  tok\n" });

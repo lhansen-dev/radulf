@@ -13,6 +13,7 @@ import {
   listBranches,
   mergeBranch,
   offRunBranchReason,
+  stageAll,
   worktreeIsDirty,
   worktreeDiff,
   worktreeDiffStat,
@@ -128,6 +129,48 @@ describe("repository inspection", () => {
       git(repo, "config", "--unset", "core.fsmonitor");
       git(repo, "worktree", "remove", "--force", wt);
       git(repo, "branch", "-D", "ralph/run-hooks");
+      fs.rmSync(marker, { force: true });
+    }
+  });
+
+  it("host-side git never runs a nested repository the agent planted, and stageAll leaves it out", async () => {
+    const wt = path.join(os.tmpdir(), `ralph-nested-wt-${process.pid}`);
+    const marker = path.join(os.tmpdir(), `ralph-nested-ran-${process.pid}`);
+    fs.rmSync(marker, { force: true });
+    git(repo, "worktree", "add", "-q", wt, "-b", "ralph/run-nested");
+    try {
+      // All of this is within reach of sandboxed bash: a checkout inside the
+      // worktree whose own config names a clean filter, plus a file for the
+      // filter to clean. Its git dir sits beside it, so nothing touches the
+      // worktree's .git and no `.git/config` deny applies.
+      const sub = path.join(wt, "sub");
+      git(wt, "init", "-q", "--separate-git-dir=.x", "sub");
+      fs.writeFileSync(path.join(sub, "a"), "a");
+      fs.writeFileSync(path.join(sub, ".gitattributes"), "* filter=p\n");
+      git(sub, "add", "a");
+      git(sub, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "nested");
+      git(sub, "config", "filter.p.clean", `touch '${marker}'; cat`);
+      fs.writeFileSync(path.join(sub, "f"), "f");
+
+      // Staged as a gitlink the way a plain `git add -A` leaves it: the pins
+      // alone must keep status and the review diff from asking the nested
+      // repository whether it is dirty, since that question runs the filter.
+      git(wt, "add", "-A");
+      expect(await worktreeIsDirty(wt)).toBe(true);
+      await worktreeDiff(wt, "main");
+      expect(fs.existsSync(marker)).toBe(false);
+
+      // And Radulf's own staging never records the gitlink at all.
+      git(wt, "reset", "-q");
+      expect(await stageAll(wt)).toEqual({ droppedGitlinks: ["sub"] });
+      expect(git(wt, "ls-files", "--stage", "--", "sub")).toBe("");
+      expect(git(wt, "ls-files", "--stage", "--", ".x/config")).toMatch(/^100644/);
+      await hostGit(wt, "commit", "-m", "host commit");
+      expect(await worktreeIsDirty(wt)).toBe(true); // sub/ stays untracked
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      git(repo, "worktree", "remove", "--force", wt);
+      git(repo, "branch", "-D", "ralph/run-nested");
       fs.rmSync(marker, { force: true });
     }
   });
@@ -387,6 +430,30 @@ describe("mergeBranch recovery (half-finished merge in the parent checkout)", ()
 
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses a merge that would overwrite an ignored file in the checkout", async () => {
+    // The operator ignores .env.local and keeps a real one. The run branch
+    // un-ignores the name and tracks its own copy, which git's merge would
+    // silently write over the operator's file.
+    fs.writeFileSync(path.join(dir, ".gitignore"), ".env.local\n");
+    git(dir, "add", ".gitignore");
+    git(dir, "commit", "-m", "ignore env");
+    git(dir, "checkout", "-b", "ralph/env");
+    fs.writeFileSync(path.join(dir, ".gitignore"), "");
+    fs.writeFileSync(path.join(dir, ".env.local"), "AGENT=1\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", "track env");
+    git(dir, "checkout", defaultBranch);
+    fs.writeFileSync(path.join(dir, ".env.local"), "OPERATOR_SECRET=real\n");
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/env", "ralph: merge env");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(".env.local");
+    expect(fs.readFileSync(path.join(dir, ".env.local"), "utf8")).toBe("OPERATOR_SECRET=real\n");
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+    expect(git(dir, "rev-parse", "--abbrev-ref", "HEAD")).toBe(defaultBranch);
   });
 
   it("aborts Radulf's own abandoned merge of the run branch and redoes it", async () => {

@@ -40,7 +40,55 @@ describe("classifySensitivePaths", () => {
   });
 
   it("does not flag unrelated server files", () => {
-    expect(classifySensitivePaths(["src/server/bookkeeping.ts"])).toEqual([]);
+    expect(classifySensitivePaths(["src/server/analytics.ts", "src/app/ui/api.ts"])).toEqual([]);
+  });
+
+  it("flags what runs commands under the run's policy as containment, and auto-approval as the merge path", () => {
+    const result = classifySensitivePaths([
+      "src/server/gate.ts",
+      "src/server/acceptanceProbe.ts",
+      "src/server/worktreeDeps.ts",
+      "src/server/bookkeeping.ts",
+      "src/server/evaluationService.ts",
+      "src/server/improvementRuns.ts",
+      "src/server/github.ts",
+    ]);
+    expect(result.map((r) => [r.label, r.paths.length])).toEqual([
+      ["sandbox / containment policy", 4],
+      ["merge / review path", 3],
+    ]);
+  });
+
+  it("flags repository access and the build, dependency and deployment files", () => {
+    const result = classifySensitivePaths([
+      "src/server/repoClone.ts",
+      "src/app/api/repos/clone/route.ts",
+      "package.json",
+      "package-lock.json",
+      "Makefile",
+      "Dockerfile",
+      "compose.override.yaml",
+      "next.config.ts",
+      ".github/workflows/ci.yml",
+      "scripts/sanitize-next-traces.mjs",
+      "docs/compose.yaml",
+    ]);
+    expect(result.map((r) => [r.label, r.paths])).toEqual([
+      ["repository access", ["src/server/repoClone.ts", "src/app/api/repos/clone/route.ts"]],
+      [
+        "build / dependencies / deployment",
+        [
+          "package.json",
+          "package-lock.json",
+          "Makefile",
+          "Dockerfile",
+          "compose.override.yaml",
+          "next.config.ts",
+          ".github/workflows/ci.yml",
+          "scripts/sanitize-next-traces.mjs",
+        ],
+      ],
+    ]);
   });
 });
 

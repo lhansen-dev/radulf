@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   mergeBranch: vi.fn(),
   removeWorktree: vi.fn(),
   tryGit: vi.fn(),
+  stageAll: vi.fn(async () => ({ droppedGitlinks: [] })),
   gitRaw: vi.fn(),
   offRunBranchReason: vi.fn(),
   rebuildPackages: vi.fn(),
@@ -86,6 +87,7 @@ vi.mock("./git", async (importOriginal) => ({
   mergeBranch: mocks.mergeBranch,
   removeWorktree: mocks.removeWorktree,
   tryGit: mocks.tryGit,
+  stageAll: mocks.stageAll,
   gitRaw: mocks.gitRaw,
   offRunBranchReason: mocks.offRunBranchReason,
 }));
@@ -2505,7 +2507,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       await vi.waitFor(() => expect(getCard("doc-summary").status).toBe("review"));
 
       // The doc edits were committed onto the review branch, not merged to base.
-      expect(mocks.tryGit).toHaveBeenCalledWith(expect.any(String), "add", "-A");
+      expect(mocks.stageAll).toHaveBeenCalledWith(expect.any(String));
       expect(mocks.tryGit).toHaveBeenCalledWith(
         expect.any(String),
         "commit",
@@ -2559,7 +2561,7 @@ describe("Orchestrator cancellation lifecycle", () => {
       );
 
       // No verdict commit, no advance to review.
-      expect(mocks.tryGit).not.toHaveBeenCalledWith(expect.any(String), "add", "-A");
+      expect(mocks.stageAll).not.toHaveBeenCalled();
       const evaluateRun = db
         .select()
         .from(runs)

@@ -7,16 +7,19 @@ import { api, timeAgo, useEventStream } from "../../ui/api";
 import { AppShell } from "../../ui/appShell";
 import { Banner } from "../../ui/banner";
 import { DetailsMenu } from "../../ui/detailsMenu";
+import { useConfirm, type ConfirmRequest } from "../../ui/confirmDialog";
+import { useWorkHref } from "../../ui/workHref";
 import { RunsTable, type TranscriptTarget } from "./runsTable";
 import { PlanVersions } from "./planVersions";
 import { ScopingPanel } from "./scopingPanel";
 import { LiveActivity } from "../../ui/liveActivity";
 import { EpicTasks } from "./epicTasks";
 import { describeToolCall, previewLine } from "../../ui/toolDescription";
+import { Markdown } from "../../ui/markdown";
 import { formatCostUsd } from "../../ui/formatCost";
 import { formatProviderModel } from "../../ui/formatProviderModel";
 import { plannerModelTag, PlanModelBadge } from "../../ui/planModelBadge";
-import { DialogShell, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
+import { DeliveryOptions, DialogShell, RoleModelSelects, useRoleModelOptions, type RoleModels } from "../../ui/taskDialog";
 import { useCardDetail, type CardDetailData } from "./useCardDetail";
 import { transcriptPushDecision } from "./transcriptPushDecision";
 import {
@@ -74,6 +77,8 @@ export default function CardDetail() {
   const [configBusy, setConfigBusy] = useState(false);
   // Spec 24: Create and break down lands here with ?breakdown=propose.
   const [autoBreakdown, setAutoBreakdown] = useState(false);
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
+  const workHref = useWorkHref();
 
   useEffect(() => {
     const readTab = () => {
@@ -197,8 +202,9 @@ export default function CardDetail() {
   }
   const post = (path: string, json: object = {}) => action(() => api(`/api/cards/${id}/${path}`, { json }));
 
+  const confirmThen = (request: ConfirmRequest, fn: () => void) => async () => { if (await confirmWith(request)) fn(); };
   const statusAction: Record<string, { label: string; run: () => void }> = {
-    backlog: { label: "Add to Todo", run: () => post("move", { to: "todo" }) },
+    backlog: { label: "Add to queue", run: () => post("move", { to: "todo" }) },
     todo: { label: "Start now", run: () => post("move", { to: "in_progress" }) },
     needs_attention: canRetryMerge
       ? { label: "Retry merge", run: () => post("retry-merge") }
@@ -215,8 +221,8 @@ export default function CardDetail() {
     }) },
     { ...statusAction[card.status], show: !isEpic && card.status in statusAction, primary: true },
     { label: "Start all", show: isEpic && epicTasks.some((task) => task.status === "backlog" || task.status === "todo"), primary: true, run: () => post("start-all") },
-    { label: "Pause all", show: isEpic && epicTasks.some((task) => task.status === "looping"), run: () => confirm("Pause every running task in this epic after its current iteration?") && post("pause-all") },
-    { label: "Pause", show: card.status === "looping", run: () => confirm("Pause this task after the current iteration?") && post("pause") },
+    { label: "Pause all", show: isEpic && epicTasks.some((task) => task.status === "looping"), run: confirmThen({ title: "Pause every running task?", body: "Each task in this epic pauses after its current iteration.", action: "Pause all tasks" }, () => post("pause-all")) },
+    { label: "Pause", show: card.status === "looping", run: confirmThen({ title: "Pause this task?", body: "It pauses after the current iteration finishes.", action: "Pause after this iteration" }, () => post("pause")) },
     // Every stage reads the card's model override when it starts, so a change
     // made here takes effect on Continue / Retry failed step without
     // discarding the worktree, plan, or iterations so far.
@@ -224,7 +230,6 @@ export default function CardDetail() {
     { label: "View activity", show: !isEpic && ["planning", "ready", "looping", "evaluating", "paused", "plan_review"].includes(card.status), primary: true, run: () => chooseTab("Activity") },
     { label: "Open summary", show: card.status === "done", primary: true, run: () => chooseTab("Task") },
   ];
-  const confirmThen = (message: string, fn: () => void) => () => { if (confirm(message)) fn(); };
   // `href` rather than `run` for the export: the route answers with
   // Content-Disposition, so a download anchor saves the file and leaves the
   // page where it is. Navigating there through the router would instead ask
@@ -239,22 +244,27 @@ export default function CardDetail() {
     {
       label: "Move to backlog",
       when: PULLBACK_STATUSES,
-      run: () => {
-        if (!(RUNNING_STATUSES as readonly string[]).includes(card.status) || confirm("Cancel the active run and pull back to Backlog?")) {
+      run: async () => {
+        if (!(RUNNING_STATUSES as readonly string[]).includes(card.status) || await confirmWith({ title: "Cancel the active run?", body: "The run stops and the card goes back to Backlog.", action: "Cancel the run", danger: true })) {
           post("move", { to: "backlog" });
         }
       },
     },
-    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen("Abandon this task? Its worktree and branch will be deleted.", () => post("abandon")) },
-    { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen("Reset all progress? This deletes the branch, worktree, and plan, and moves the card back to Backlog.", () => post("reset")) },
+    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }, () => post("abandon")) },
+    { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Reset all progress?", body: "This deletes the branch, worktree and plan, and moves the card back to Backlog.", action: "Reset", danger: true }, () => post("reset")) },
     {
       label: "Delete task",
       danger: true,
       when: ["backlog", "todo", "done", "abandoned", "needs_attention"],
-      run: confirmThen(isEpic ? "Delete this epic? Its tasks stay, as standalone tasks." : "Delete this task and all its history?", () => action(async () => {
+      run: confirmThen(
+        isEpic
+          ? { title: "Delete this epic?", body: "Its tasks stay, as standalone tasks.", action: "Delete", danger: true }
+          : { title: "Delete this task?", body: "All its history goes with it.", action: "Delete", danger: true },
+        () => action(async () => {
         await api(`/api/cards/${id}`, { method: "DELETE" });
         router.push("/");
-      })),
+      }),
+      ),
     },
   ];
 
@@ -262,7 +272,7 @@ export default function CardDetail() {
     <AppShell>
     <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4 overflow-x-hidden p-4 sm:p-6 lg:py-8">
       <header className="flex min-w-0 items-center gap-3">
-        <Link href="/" className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
+        <Link href={workHref} className="touch-target flex shrink-0 items-center text-sm text-foreground/50 hover:text-foreground">
           ← Work
         </Link>
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">{card.title}</h1>
@@ -324,6 +334,7 @@ export default function CardDetail() {
         </DialogShell>
       )}
       {error && <p className="text-red-400 text-sm">{error}</p>}
+      {confirmDialog}
       {unretryableRun && (
         <Banner tone="red" title={`${unretryableRun.provider ?? "The provider"} rejected the request itself`}>
           <pre className="whitespace-pre-wrap text-sm text-red-100/80 font-sans">
@@ -418,9 +429,11 @@ export default function CardDetail() {
               {detail.parent.runMode && <span className="text-foreground/40"> · its tasks run {RUN_MODE_PHRASES[detail.parent.runMode]}</span>}
             </p>
           )}
-          <pre className="whitespace-pre-wrap text-sm bg-foreground/[0.04] rounded p-3 font-sans">
-            {card.description || "(no description)"}
-          </pre>
+          {/* Markdown like the scoping thread, with a typed line break kept
+              as one: a definition of done is often a bare list of lines. */}
+          <div className="rounded bg-foreground/[0.04] p-3 text-sm [&_p]:whitespace-pre-wrap">
+            {card.description ? <Markdown>{card.description}</Markdown> : <p className="text-foreground/50">(no description)</p>}
+          </div>
           {isEpic && (
             <EpicTasks cardId={id} runMode={card.runMode ?? null} tasks={epicTasks} onChanged={refetch} onError={setError} />
           )}
@@ -569,17 +582,39 @@ export default function CardDetail() {
                   );
                 }
               }
-              return (
-                <div key={e.id} className="text-xs text-foreground/50 font-mono">
-                  {e.createdAt.slice(11, 19)} {e.type} {e.payload !== "{}" ? e.payload : ""}
-                </div>
-              );
+              return <EventLine key={e.id} event={e} />;
             })}
           </div>
         </section>
       ))}
     </div>
     </AppShell>
+  );
+}
+
+/** One timeline event: when, what, and its payload folded away. The raw
+ * JSON used to run on after the type on every line, so the column read as
+ * noise; now the type is the line and the payload is a click away. */
+function EventLine({ event }: { event: CardDetailData["events"][number] }) {
+  let payload: string | null = null;
+  if (event.payload && event.payload !== "{}") {
+    try {
+      payload = JSON.stringify(JSON.parse(event.payload), null, 2);
+    } catch {
+      payload = event.payload;
+    }
+  }
+  return (
+    <div className="flex min-w-0 items-baseline gap-2 py-0.5 text-xs">
+      <span className="shrink-0 font-mono text-foreground/40">{event.createdAt.slice(11, 19)}</span>
+      <span className="shrink-0 font-mono text-foreground/70">{event.type}</span>
+      {payload && (
+        <details className="min-w-0 grow">
+          <summary className="cursor-pointer text-foreground/40 hover:text-foreground/70">details</summary>
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-foreground/[0.04] p-2 font-mono text-foreground/60">{payload}</pre>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -1135,6 +1170,9 @@ function EditCardModal({
   });
   const [grillMe, setGrillMe] = useState(Boolean(detail.card.grillMe));
   const [scopingAuthorsPlan, setScopingAuthorsPlan] = useState(Boolean(detail.card.scopingAuthorsPlan));
+  const [reviewPlanBeforeImplementation, setReviewPlanBeforeImplementation] = useState(Boolean(detail.card.reviewPlanBeforeImplementation));
+  const [autoApprove, setAutoApprove] = useState(Boolean(detail.card.autoApprove));
+  const [openPr, setOpenPr] = useState(Boolean(detail.card.openPr));
   const [planCritic, setPlanCritic] = useState<boolean | null>(
     detail.card.planCritic == null ? null : Boolean(detail.card.planCritic),
   );
@@ -1158,6 +1196,9 @@ function EditCardModal({
           grillMe,
           scopingAuthorsPlan,
           planCritic,
+          reviewPlanBeforeImplementation,
+          autoApprove,
+          openPr,
         },
       });
       onSaved();
@@ -1191,6 +1232,15 @@ function EditCardModal({
         <label className="flex items-center gap-2 text-sm text-foreground/70">
           <input
             type="checkbox"
+            checked={reviewPlanBeforeImplementation}
+            onChange={(e) => setReviewPlanBeforeImplementation(e.target.checked)}
+            className="size-4 accent-amber-600"
+          />
+          Review plan before implementation
+        </label>
+        <label className="flex items-center gap-2 text-sm text-foreground/70">
+          <input
+            type="checkbox"
             checked={grillMe}
             onChange={(e) => setGrillMe(e.target.checked)}
             className="size-4 accent-amber-600"
@@ -1218,6 +1268,7 @@ function EditCardModal({
             <option value="off">Off</option>
           </select>
         </label>
+        <DeliveryOptions repoId={detail.repo?.id ?? ""} autoApprove={autoApprove} setAutoApprove={setAutoApprove} openPr={openPr} setOpenPr={setOpenPr} />
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>
     </DialogShell>

@@ -23,6 +23,7 @@ import {
   toolchainHomeReAllows,
   toolchainReadRootsFromPath,
   runSandboxedCommand,
+  runScratchRoot,
 } from "./srt";
 import { insideRadulfSandbox } from "@/testUtils/insideRadulfSandbox";
 
@@ -192,6 +193,21 @@ describe("buildFilesystemConfig", () => {
       "/data/runtmp/run-1/tmp",
       "/data/runtmp/run-1/cache",
     ]);
+  });
+
+  it("read-denies the scratch root and the server's cwd, re-allowing only this run's own scratch", () => {
+    const own = path.join(runScratchRoot(), "run-2");
+    const scoped = buildFilesystemConfig({
+      worktree: "/data/worktrees/run-2",
+      gitCommonDir: "/data/repo/.git",
+      tmpdir: path.join(own, "tmp"),
+      cacheRoot: path.join(own, "cache"),
+    });
+    expect(scoped.denyRead).toEqual(expect.arrayContaining([runScratchRoot(), process.cwd()]));
+    expect(scoped.allowRead).toEqual(
+      expect.arrayContaining([path.join(own, "tmp"), path.join(own, "cache")]),
+    );
+    expect(scoped.allowRead).not.toContain(runScratchRoot());
   });
 
   it("allows only the cgroup membership file when a verified cgroup exists", () => {

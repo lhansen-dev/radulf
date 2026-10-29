@@ -6,6 +6,7 @@ import { playAlertSound, requestNotificationPermission, showCardNotification } f
 import { AppShell } from "../ui/appShell";
 import { ModelBrowser, ModelField, formatPricePerMillion, useProviderModels } from "../ui/modelPicker";
 import { ProviderLoginSection } from "./providerLogin";
+import { useConfirm } from "../ui/confirmDialog";
 import { SchedulesSection } from "./schedulesSection";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
@@ -215,6 +216,35 @@ const TEMPLATES = [
   { key: "improvePromptTemplate", title: "Self-improvement", description: "Instructions used by an improvement run to propose the next change from a repository review.", placeholders: ["{{EXISTING_CARDS}}", "{{FOCUS}}"] },
 ] as const;
 
+/**
+ * The one way out of a signed-in browser. Only offered when a password is
+ * configured: without one the login gate is a no-op and there is no session
+ * to end. The logout route revokes every session, not only this browser's,
+ * which the copy says so a shared machine's other tabs are no surprise.
+ */
+function SessionSection() {
+  const [authEnabled, setAuthEnabled] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api<{ authEnabled?: boolean }>("/api/health")
+      .then((health) => { if (live) setAuthEnabled(Boolean(health.authEnabled)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+  if (!authEnabled) return null;
+  return (
+    <section id="session" className={sectionCls}>
+      <SectionHeading title="Session">
+        Signing out ends every signed-in browser, not only this one, so a cookie
+        that leaked somewhere else stops working too.
+      </SectionHeading>
+      <form method="post" action="/api/auth/logout">
+        <button type="submit" className={secondaryButtonCls}>Sign out</button>
+      </form>
+    </section>
+  );
+}
+
 function SectionHeading({ title, children }: { title: string; children?: React.ReactNode }) {
   return (
     <div>
@@ -260,7 +290,7 @@ export default function SettingsPage() {
   if (!settings) return <AppShell><div className="flex min-h-[70dvh] items-center justify-center p-8 text-foreground/50">{error || "Loading settings…"}</div></AppShell>;
 
   const set = (patch: Partial<Settings>) => setSettings({ ...settings, ...patch });
-  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished" | "jiraCommentOnDone") =>
+  const toggle = (key: "notificationsEnabled" | "soundEnabled" | "minimalToolset" | "sandboxEnabled" | "sandboxWeakerIsolationForGoTls" | "alertOnReviewReady" | "alertOnNeedsAttention" | "alertOnImprovementRunFinished" | "jiraCommentOnDone" | "autoMode" | "autoApprove" | "yoloMode" | "openPr") =>
     ({ checked: settings[key], onChange: (value: boolean) => set({ [key]: value }) });
   const textInput = (key: StringKey, props: { label: string; type?: string; placeholder?: string }) => (
     <label className="text-sm text-foreground/70">
@@ -326,8 +356,29 @@ export default function SettingsPage() {
             <SettingsPanel active={activeSection} section="general">
               <div className="flex flex-col gap-5">
                 <section id="appearance" className={sectionCls}>
-                  <SectionHeading title="Appearance">Pick a color theme. Save your changes to apply it across Radulf.</SectionHeading>
-                  <ThemePicker value={settings.theme} onChange={(theme) => set({ theme })} />
+                  <SectionHeading title="Appearance">Pick a color theme. It shows at once; Save keeps it.</SectionHeading>
+                  <ThemePicker value={settings.theme} onChange={(theme) => { set({ theme }); document.documentElement.dataset.theme = theme; }} />
+                </section>
+                {/* The same four switches as the Work page's ••• menu, which
+                    writes them straight away; here they save with the rest.
+                    Listed because a menu behind three dots is where the
+                    highest-consequence settings were hardest to find. */}
+                <section id="workflow" className={sectionCls}>
+                  <SectionHeading title="Workflow">
+                    How much the pipeline does on its own. The Work page&rsquo;s <code>•••</code> menu flips the same switches.
+                  </SectionHeading>
+                  <div className="flex flex-col gap-4 divide-y divide-foreground/10">
+                    <ToggleRow title="Auto Mode" description="Start queued tasks on their own, in queue order, as slots free up." {...toggle("autoMode")} />
+                    <div className="pt-4">
+                      <ToggleRow title="Auto-approve" description="Merge an evaluator approve straight into the base branch with no human review. A critical finding or a card past the evaluator's revision limit still comes to you." {...toggle("autoApprove")} />
+                    </div>
+                    <div className="pt-4">
+                      <ToggleRow title="YOLO mode" description="Stop the pipeline asking you anything: the agents decide the open questions, plan review is skipped, and a blocked loop re-plans. Merging stays Auto-approve's call." {...toggle("yoloMode")} />
+                    </div>
+                    <div className="pt-4">
+                      <ToggleRow title="Open pull requests" description="Deliver approved work by pushing the branch and opening a pull request instead of merging locally. Needs the GitHub CLI signed in and a repository with an origin." {...toggle("openPr")} />
+                    </div>
+                  </div>
                 </section>
                 <section id="notifications" className={sectionCls}>
                   <SectionHeading title="Notifications & sounds" />
@@ -366,6 +417,7 @@ export default function SettingsPage() {
                     Test notification & sound
                   </button>
                 </section>
+                <SessionSection />
               </div>
             </SettingsPanel>
 
@@ -981,6 +1033,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
   // Typing an absolute path stays available: the browser is confined to one
   // root, and a repo kept outside it has to be reachable some other way.
   const [typePath, setTypePath] = useState(false);
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
 
   function pickFolder(picked: string) {
     setPath(picked);
@@ -1037,13 +1090,13 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
               {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
             </div>
             <button
-              onClick={() => {
-                if (!confirm(`Remove "${r.name}"? Its tasks and history will be deleted.`)) return;
+              onClick={() => void confirmWith({ title: `Remove “${r.name}”?`, body: "Its tasks and history will be deleted.", action: "Remove repository", danger: true }).then((ok) => {
+                if (!ok) return;
                 setRemoveError(null);
                 api(`/api/repos/${r.id}`, { method: "DELETE" })
                   .then(onChange)
                   .catch((cause) => setRemoveError({ repoId: r.id, message: errorMessage(cause) }));
-              }}
+              })}
               className="min-h-11 px-2 text-xs text-red-400/70 hover:text-red-400"
             >
               Remove
@@ -1128,6 +1181,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
         <p className="mt-2 text-xs text-foreground/45">The folder picker opens on the machine running Radulf.</p>
       </details>
       {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
+      {confirmDialog}
     </section>
   );
 }

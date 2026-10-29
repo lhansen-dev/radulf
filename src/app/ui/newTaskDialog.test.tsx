@@ -15,7 +15,6 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 beforeEach(() => {
   push.mockClear();
-  vi.stubGlobal("confirm", () => false);
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => ({
     ok: true,
     json: async () => {
@@ -234,6 +233,29 @@ describe("NewTaskDialog", () => {
     cleanup();
   });
 
+  it("asks in its own footer before discarding typed work", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <NewTaskDialog
+        repos={[{ id: "r", name: "Repo", path: "/r", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "" }]}
+        onClose={onClose}
+        onCreated={() => {}}
+      />
+    );
+    await user.type(screen.getByLabelText("Title"), "Half an idea");
+    await user.click(screen.getByLabelText("Close new task"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard your unsaved task?")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByText("Discard your unsaved task?")).toBeNull();
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Half an idea");
+    await user.click(screen.getByLabelText("Close new task"));
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
   it("keeps focus in the Title input while typing", async () => {
     const user = userEvent.setup();
     render(
@@ -261,6 +283,8 @@ describe("NewTaskDialog", () => {
       />
     );
     await user.type(screen.getByLabelText("Title"), "Rough ask");
+    // The rough-start creates sit behind the primary button's menu.
+    await user.click(screen.getByLabelText("More ways to create"));
     await user.click(screen.getByRole("button", { name: "Create and scope" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
     expect(push).toHaveBeenCalledWith("/card/card-1");
@@ -289,6 +313,7 @@ describe("NewTaskDialog", () => {
       />
     );
     await user.type(screen.getByLabelText("Title"), "Big ask");
+    await user.click(screen.getByLabelText("More ways to create"));
     await user.click(screen.getByRole("button", { name: "Create and break down" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(3));
     expect(push).toHaveBeenLastCalledWith("/card/card-1?breakdown=propose");
