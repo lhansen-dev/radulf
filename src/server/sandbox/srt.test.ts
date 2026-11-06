@@ -280,7 +280,8 @@ describe("buildFilesystemConfig", () => {
     // runs it if the guard ever regresses.
     expect(cfg.allowRead).not.toContain("/");
     const home = os.homedir();
-    for (const root of cfg.allowRead ?? []) {
+    for (const entry of cfg.allowRead ?? []) {
+      const root = typeof entry === "string" ? entry : entry.path;
       expect(home === root || home.startsWith(root.endsWith("/") ? root : root + "/")).toBe(false);
     }
   });
