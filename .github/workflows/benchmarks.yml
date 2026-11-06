@@ -22,7 +22,8 @@ permissions:
 
 jobs:
   benchmark:
-    runs-on: ubuntu-latest
+    # shortcut: pinned — 26.04 runners block bwrap's nested userns (apply-seccomp: setgroups EPERM); unpin once linux-sandbox-deps handles 26.04.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     # A full n=3 pass over all four fixtures is many real card runs end to
