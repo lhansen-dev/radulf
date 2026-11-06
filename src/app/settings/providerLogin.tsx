@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useConfirm } from "../ui/confirmDialog";
 import { api } from "../ui/api";
 import { inputCls, secondaryButtonCls } from "./settingsUI";
 import type { LoggableProvider, LoginView } from "@/server/providerLogin";
@@ -24,6 +25,7 @@ const POLL_MS = 1_500;
  * back to pi, which writes its own auth.json.
  */
 export function ProviderLoginSection({ onChanged }: { onChanged?: () => void }) {
+  const { confirm: confirmWith, dialog: confirmDialog } = useConfirm();
   const [providers, setProviders] = useState<LoggableProvider[] | null>(null);
   const [login, setLogin] = useState<LoginView | null>(null);
   const [answer, setAnswer] = useState("");
@@ -101,13 +103,14 @@ export function ProviderLoginSection({ onChanged }: { onChanged?: () => void }) 
       setAnswer("");
     });
 
-  const logout = (provider: LoggableProvider) =>
-    act(async () => {
-      if (!confirm(`Disconnect ${provider.name}? Agents using it will stop working until you reconnect.`)) return;
+  const logout = async (provider: LoggableProvider) => {
+    if (!(await confirmWith({ title: `Disconnect ${provider.name}?`, body: "Agents using it will stop working until you reconnect.", action: "Disconnect provider", danger: true }))) return;
+    await act(async () => {
       await api("/api/provider-login", { json: { providerId: provider.id, logout: true } });
       refetch();
       onChanged?.();
     });
+  };
 
   if (login) {
     return (
@@ -131,6 +134,7 @@ export function ProviderLoginSection({ onChanged }: { onChanged?: () => void }) 
 
   return (
     <div className="flex flex-col gap-4">
+      {confirmDialog}
       <ul className="flex flex-col gap-2">
         {subscriptions.map((p) => (
           <ProviderRow key={p.id} provider={p} busy={busy} onStart={start} onLogout={logout} />

@@ -109,6 +109,12 @@ describe("omlxProviderConfig", () => {
     expect(config.headers).toEqual({ "kong-api-key": "abc$$123", "X-Note": "$!literal" });
     expect(omlxProviderConfig("m", testSettings()).headers).toEqual({});
   });
+
+  it("escapes the api key the same way, so a pasted key is never a command or an env reference", () => {
+    expect(omlxProviderConfig("m", testSettings({ omlxApiKey: "!cat /etc/passwd" })).apiKey).toBe("$!cat /etc/passwd");
+    expect(omlxProviderConfig("m", testSettings({ omlxApiKey: "$RADULF_AUTH_SECRET" })).apiKey).toBe("$$RADULF_AUTH_SECRET");
+    expect(omlxProviderConfig("m", testSettings({ omlxApiKey: "plain-key" })).apiKey).toBe("plain-key");
+  });
 });
 
 describe("piNormalize", () => {

@@ -349,6 +349,24 @@ describe("performIterationBookkeeping", () => {
     expect(await commitCount(dir)).toBe(2);
   });
 
+  it("leaves a repository the agent created out of the commit", async () => {
+    const dir = await initRepo();
+    const sub = path.join(dir, "sub");
+    await tryGit(dir, "init", "-q", "sub");
+    fs.writeFileSync(path.join(sub, "a"), "a");
+    await tryGit(sub, "add", "a");
+    await tryGit(sub, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "nested");
+    fs.writeFileSync(path.join(dir, "ITERATION_DONE"), "vendored a checkout");
+
+    expect(await performIterationBookkeeping(bookkeepingOpts(dir))).toMatchObject({
+      advanced: true,
+      taskNumber: 1,
+    });
+    expect(await commitCount(dir)).toBe(2);
+    expect((await tryGit(dir, "ls-files", "--stage", "--", "sub")).out).toBe("");
+    expect((await tryGit(dir, "status", "--porcelain")).out).toContain("?? sub/");
+  });
+
   it("rejects a phantom completion: signal removed, checklist not advanced, no commit", async () => {
     const dir = await initRepo();
     const pre = await captureIterationState(dir);

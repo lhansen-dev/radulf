@@ -14,6 +14,9 @@ import {
 import { POST as login } from "./login/route";
 import { POST as logout } from "./logout/route";
 
+const mocks = vi.hoisted(() => ({ revokeAllSessions: vi.fn() }));
+vi.mock("@/server/sessionEpoch", () => ({ revokeAllSessions: mocks.revokeAllSessions }));
+
 const PASSWORD = "correct horse battery staple";
 const SECRET = "4e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f";
 
@@ -174,6 +177,33 @@ describe("authentication routes", () => {
     expect((await Promise.all(guesses)).map((r) => r.status)).toEqual(Array(8).fill(401));
   });
 
+  it("sends a browser form back to the login page with the reason, and API clients JSON", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+    const form = (password: string) =>
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password }).toString(),
+      });
+
+    // A wrong password typed into the page: a JSON body in place of the page
+    // is a dead end, so the browser is sent back to the page with the reason.
+    const refused = login(form("wrong"));
+    await settle(20_000);
+    expect((await refused).status).toBe(303);
+    expect((await refused).headers.get("location")).toBe("http://localhost/login?error=invalid");
+
+    // The same mistake over JSON keeps the status an API client checks for.
+    expect((await failedLogin()).status).toBe(401);
+
+    // The right password from the form signs in as before.
+    const accepted = login(form(PASSWORD));
+    await settle(20_000);
+    expect((await accepted).status).toBe(307);
+    expect((await accepted).headers.get("set-cookie")).toContain(`${SESSION_COOKIE}=`);
+  });
+
   it("rejects a declared oversized login body before parsing it", async () => {
     const response = await login(
       new Request("http://localhost/api/auth/login", {
@@ -269,14 +299,16 @@ describe("authentication routes", () => {
     expect(viaForwarded.headers.get("set-cookie")).toContain("Secure");
   });
 
-  it("uses forwarded addresses only through an explicitly trusted proxy header", () => {
+  it("uses forwarded addresses only through an explicitly trusted proxy header, and only its own entry", () => {
     const request = new Request("http://localhost", {
       headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" },
     });
     expect(loginClientKey(request)).toBe("direct-client");
 
+    // An appending proxy leaves the client's own entries in front of the one
+    // it wrote, so a forged first entry must not buy a fresh bucket.
     process.env.RADULF_TRUSTED_PROXY_IP_HEADER = "x-forwarded-for";
-    expect(loginClientKey(request)).toBe("203.0.113.7");
+    expect(loginClientKey(request)).toBe("10.0.0.1");
   });
 
   it("expires old failure windows", () => {
@@ -285,11 +317,12 @@ describe("authentication routes", () => {
     expect(isLoginRateLimited("client", 61_001)).toBe(false);
   });
 
-  it("builds logout redirects from the incoming origin and expires the cookie", async () => {
+  it("logout ends every session, redirects from the incoming origin and expires the cookie", async () => {
     const response = await logout(
       new Request("https://radulf.example/api/auth/logout", { method: "POST" }),
     );
 
+    expect(mocks.revokeAllSessions).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://radulf.example/login");
     const cookie = response.headers.get("set-cookie") ?? "";

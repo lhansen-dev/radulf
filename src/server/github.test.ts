@@ -116,6 +116,16 @@ describe("findOpenPullRequest", () => {
       "--limit",
       "1",
     ]);
+    // gh runs git in the worktree itself, so it carries Radulf's host pins.
+    expect(mocks.execFile.mock.calls[0][2]).toMatchObject({
+      env: expect.objectContaining({
+        GIT_CONFIG_COUNT: "4",
+        GIT_CONFIG_KEY_0: "core.hooksPath",
+        GIT_CONFIG_VALUE_0: "/dev/null",
+        GIT_CONFIG_KEY_2: "diff.ignoreSubmodules",
+        GIT_CONFIG_VALUE_2: "all",
+      }),
+    });
   });
 
   it("reports no PR to adopt when gh's list comes back empty", async () => {

@@ -1,4 +1,18 @@
-export default function LoginPage() {
+/** What the login route sends a browser back here with (`?error=`), as a
+ * sentence. An unknown reason shows nothing: the query is anyone's to type. */
+const REFUSALS: Record<string, string> = {
+  invalid: "That password is not right. Try again.",
+  "rate-limited": "Too many attempts. Wait a minute, then try again.",
+  busy: "Too many sign-in attempts are in progress. Try again shortly.",
+};
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string | string[] }>;
+}) {
+  const { error } = await searchParams;
+  const refusal = typeof error === "string" ? REFUSALS[error] : undefined;
   return (
     <div className="flex items-center justify-center min-h-screen">
       <form
@@ -10,6 +24,11 @@ export default function LoginPage() {
         <p className="text-sm text-foreground/60">
           Enter the password to sign in
         </p>
+        {refusal && (
+          <p role="alert" className="w-64 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+            {refusal}
+          </p>
+        )}
         <input
           type="password"
           name="password"

@@ -215,7 +215,7 @@ on the Settings page. See [Providers and models](PROVIDERS.md).
 | State | Meaning | Moved by |
 |-------|---------|----------|
 | **Backlog** | Written but not scheduled. Auto Mode never touches it. | You, on create |
-| **Todo** | The ordered execution queue. Auto Mode pulls from here. | You |
+| **Todo** | The ordered execution queue, which the Work feed calls Queue. Auto Mode pulls from here. | You |
 | **In Progress** | Planning, looping, or evaluating — including revision cycles. | You start it; the orchestrator works it |
 | **In Review** | An evaluator-cleared diff is waiting on your judgment. | Orchestrator |
 | **Needs Attention** | Stalled, capped, errored, merge-conflicted, or waiting on your answers to the planner's questions. | Orchestrator |

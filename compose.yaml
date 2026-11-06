@@ -55,6 +55,10 @@ services:
       HOME: /var/lib/radulf/home
       # This process serves HTTP only; background work belongs to `worker`.
       RADULF_ROLES: web
+      # The publish address, handed in so boot can refuse a bind beyond
+      # loopback while RADULF_AUTH_PASSWORD_HASH is unset (src/server/boot.ts),
+      # the same rule the Makefile applies to a host install.
+      RADULF_BIND: ${RADULF_BIND:-127.0.0.1}
       # pi binds its OAuth callback to 127.0.0.1, which Docker cannot forward
       # to; the published ports above need an interface the host can reach.
       # Exposed to this compose network only while a login is running, and the

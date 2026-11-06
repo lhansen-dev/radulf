@@ -19,11 +19,14 @@ import {
   requestHost,
 } from "@/server/session";
 
-// Match everything except Next.js internals and static assets.
+// Match everything except Next's own static chunks and the favicon. Named
+// paths, not a suffix rule: an extension exemption also skipped every check
+// below for a route such as `/api/cards/<id>/approve-plan.png`, and nothing
+// here serves images by extension (there is no `public/`). `/_next/image`
+// stays covered on purpose: the optimizer is unused, and exempting it left
+// its one reachable surface unauthenticated.
 export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
-  ],
+  matcher: ["/((?!_next/static|favicon\\.ico$).*)"],
 };
 
 export async function proxy(request: NextRequest) {

@@ -24,7 +24,7 @@ import { isDocPath, changedPaths } from "@/shared/docPaths";
 import { errorMessage } from "@/shared/errorMessage";
 import { runTelemetry, type RunTelemetry } from "./harness";
 import { normalizeProvider } from "./providers";
-import { gitRaw, offRunBranchReason, tryGit } from "./git";
+import { gitRaw, offRunBranchReason, stageAll, tryGit } from "./git";
 import { getRepo } from "./repos";
 import { createRunSandbox } from "./sandbox/context";
 import { sandboxDeniesListen } from "./planningService";
@@ -395,7 +395,7 @@ export class EvaluationService {
           db.update(cards).set({ summary }).where(eq(cards.id, cardId)).run();
           emitEvent("card.summarized", { cardId, runId });
         }
-        await tryGit(worktreePath, "add", "-A");
+        await stageAll(worktreePath);
         await tryGit(worktreePath, "commit", "-m", `ralph: evaluation — ${evaluation.verdict}`);
         deps.finishRun(runId, "completed", exitReason, telemetry);
         deps.moveCard(cardId, "evaluating", "review", moveReason);

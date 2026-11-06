@@ -57,6 +57,23 @@ describe("plan critic settings (spec 30)", () => {
   });
 });
 
+describe("alertWebhookUrl", () => {
+  it("accepts blank or an http(s) URL and rejects anything else", () => {
+    expect(validateSettingsPatch({ alertWebhookUrl: "" })).toEqual({ alertWebhookUrl: "" });
+    expect(validateSettingsPatch({ alertWebhookUrl: "https://ntfy.sh/radulf" })).toEqual({
+      alertWebhookUrl: "https://ntfy.sh/radulf",
+    });
+    for (const bad of ["ntfy.sh/radulf", "file:///etc/passwd", "javascript:alert(1)", 42]) {
+      expect(() => validateSettingsPatch({ alertWebhookUrl: bad })).toThrow(/alertWebhookUrl/);
+    }
+  });
+
+  it("reads a webhook stored before validation existed as unset unless it is http(s)", () => {
+    db.insert(settingsTable).values({ key: "alertWebhookUrl", value: JSON.stringify("file:///etc/passwd") }).run();
+    expect(getSettings().alertWebhookUrl).toBe("");
+  });
+});
+
 describe("workerStaleSeconds", () => {
   it("defaults to 120 seconds", () => {
     expect(SETTING_DEFAULTS.workerStaleSeconds).toBe(120);

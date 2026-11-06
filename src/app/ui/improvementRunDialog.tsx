@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import type { CreateImprovementRunRequest } from "@/shared/improvementRunRequests";
 import { api, type Repo } from "./api";
-import { DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
+import { DialogShell, DiscardPrompt, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
 import { errorMessage } from "@/shared/errorMessage";
 
 type BudgetUnit = "minutes" | "hours";
@@ -27,8 +27,9 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
   const [busy, setBusy] = useState(false);
   const dirty = Boolean(focusPrompt || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || budgetAmount !== "30" || budgetUnit !== "minutes");
 
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const requestClose = useCallback(() => {
-    if (dirty && !confirm("Discard this improvement run setup?")) return;
+    if (dirty) { setConfirmingDiscard(true); return; }
     onClose();
   }, [dirty, onClose]);
   async function create() {
@@ -60,17 +61,17 @@ export function ImprovementRunDialog({ repos, onClose, onCreated, defaultRepoId 
       title="Start improvement run"
       closeLabel="Close improvement run setup"
       onRequestClose={requestClose}
-      footer={<>
+      footer={confirmingDiscard ? <DiscardPrompt question="Discard this improvement run setup?" onKeep={() => setConfirmingDiscard(false)} onDiscard={onClose} /> : <>
         <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
         <button type="button" onClick={create} disabled={busy || !repoId || !baseBranch || !budgetValid} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">{busy ? "Starting…" : "Start run"}</button>
       </>}
     >
           {repos.length === 0 ? <p className="text-sm text-foreground/60">Register a repository in <Link href="/settings" className="text-amber-300 underline">Settings</Link> first.</p> : <>
-            <p className="text-sm text-foreground/60">Ralph will repeatedly propose one improvement, drive it through the pipeline with auto-approve, and accumulate every approved change on a new feature branch — until the time budget runs out or three tasks fail in a row.</p>
+            <p className="text-sm text-foreground/60">Radulf will repeatedly propose one improvement, drive it through the pipeline with auto-approve, and accumulate every approved change on a new feature branch — until the time budget runs out or three tasks fail in a row.</p>
             <RepoSelect repos={repos} value={repoId} onChange={(value) => { setRepoId(value); setBranches([]); }} />
             {repoId && <label className="block text-sm text-foreground/70">Base branch<select value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} className={dialogInputCls}>{branches.length === 0 && <option value="">Loading…</option>}{branches.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
             <p className="text-xs text-foreground/40">A new branch is cut off the base branch (<code>ralph/improve-&lt;timestamp&gt;</code>) — every task in this run merges into it, never into the base branch directly.</p>
-            <label className="block text-sm text-foreground/70">Focus (optional)<textarea value={focusPrompt} onChange={(e) => setFocusPrompt(e.target.value)} rows={4} className={`${dialogInputCls} py-2 text-sm`} placeholder="Steer what Ralph should focus on, e.g. 'improve test coverage' or 'clean up the API layer'. Leave blank to let Ralph decide." /></label>
+            <label className="block text-sm text-foreground/70">Focus (optional)<textarea value={focusPrompt} onChange={(e) => setFocusPrompt(e.target.value)} rows={4} className={`${dialogInputCls} py-2 text-sm`} placeholder="Steer what the run should focus on, e.g. 'improve test coverage' or 'clean up the API layer'. Leave blank to let the proposer decide." /></label>
             <div className="grid grid-cols-[1fr_auto] gap-3">
               <label className="text-sm text-foreground/70">Time budget<input type="number" min="1" value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} className={dialogInputCls} /></label>
               <label className="text-sm text-foreground/70">Unit<select value={budgetUnit} onChange={(e) => setBudgetUnit(e.target.value as BudgetUnit)} className={dialogInputCls}><option value="minutes">Minutes</option><option value="hours">Hours</option></select></label>

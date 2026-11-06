@@ -40,6 +40,18 @@ describe("signSession / verifySession", () => {
     }
   });
 
+  it("signs under the revocation epoch, so a cookie from before it no longer verifies", async () => {
+    const cookie = await signSession(Date.now() + SESSION_MAX_AGE_MS);
+    process.env.RADULF_SESSION_EPOCH = String(Date.now());
+    try {
+      expect(await verifySession(cookie)).toBe(false);
+      expect(await verifySession(await signSession(Date.now() + SESSION_MAX_AGE_MS))).toBe(true);
+    } finally {
+      delete process.env.RADULF_SESSION_EPOCH;
+    }
+    expect(await verifySession(cookie)).toBe(true);
+  });
+
   // Regression: these reach the base64 decode, where the expired and
   // past-dated cases above return first. `atob` throws on a stray character,
   // and verifySession runs inside the proxy on EVERY request — so throwing

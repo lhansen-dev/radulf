@@ -36,7 +36,6 @@ beforeEach(() => {
     }
     return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
   }));
-  vi.stubGlobal("confirm", () => true);
 });
 
 const body = (index: number) => JSON.parse(String(calls[index].init?.body));
@@ -78,6 +77,7 @@ describe("SchedulesSection", () => {
     expect(JSON.parse(String(patch.init?.body))).toEqual({ enabled: false });
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete schedule" }));
     await waitFor(() => expect(calls.some((c) => c.init?.method === "DELETE")).toBe(true));
   });
 

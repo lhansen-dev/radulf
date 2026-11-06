@@ -64,6 +64,8 @@ export type CardDetailData = {
     planCritic: number | null;
     criticModel: string | null;
     autoApprove: number;
+    /** Spec 15: approval pushes the branch and opens a pull request. */
+    openPr: number;
     summary: string | null;
     startedAt: string | null;
     createdAt: string;

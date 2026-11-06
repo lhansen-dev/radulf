@@ -1,11 +1,12 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CreateCardRequest } from "@/shared/cardRequests";
 import { api, type Repo } from "./api";
-import { DialogShell, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
+import { DeliveryOptions, DialogShell, DiscardPrompt, EMPTY_ROLE_MODELS, RepoSelect, RoleModelSelects, RunLimitInputs, dialogInputCls, useBranches, useRoleModelOptions } from "./taskDialog";
 import { FolderBrowser } from "./folderBrowser";
+import { DetailsMenu } from "./detailsMenu";
 import type { EpicRunMode } from "@/shared/epics";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -50,6 +51,9 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [description, setDescription] = useState("");
   const [jiraRef, setJiraRef] = useState("");
   const [importing, setImporting] = useState(false);
+  // What a file import had to say, kept on screen until Done: the dialog
+  // used to close behind a browser alert.
+  const [importNotice, setImportNotice] = useState<string[]>([]);
   // Spec 24 decision 8: the imported issue's child issues, each ticked to
   // become a task under this one, and how those tasks should run.
   const [jiraChildren, setJiraChildren] = useState<JiraChild[]>([]);
@@ -70,10 +74,8 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
         json: { ...payload, repoId },
       });
       onCreated();
-      if (result.notes.length > 0) {
-        alert(`Imported ${result.cardIds.length} card(s).\n\n${result.notes.join("\n")}`);
-      }
-      onClose();
+      if (result.notes.length === 0) { onClose(); return; }
+      setImportNotice([`Imported ${result.cardIds.length} card${result.cardIds.length === 1 ? "" : "s"}.`, ...result.notes]);
     } catch (e) {
       setError(e instanceof SyntaxError ? "that file is not JSON Radulf can read" : errorMessage(e));
     } finally {
@@ -109,46 +111,19 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
   const [planCritic, setPlanCritic] = useState<boolean | null>(null);
   const [autoApprove, setAutoApprove] = useState(false);
   const [openPr, setOpenPr] = useState(false);
-  // Spec 15: PR delivery is only offerable when `gh` is installed and
-  // authenticated AND the selected repo has an `origin`. Tagged with the repo
-  // it describes, so a stale answer for the previously selected repo reads as
-  // "unknown" rather than as permission to tick the box.
-  const [prReady, setPrReady] = useState<{ repoId: string; ok: boolean; detail: string | null; hasRemote: boolean | null } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [branches, setBranches] = useBranches(repoId);
   const [selectedBranch, setSelectedBranch] = useState("");
   const [showNewBranch, setShowNewBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
-  const prStatus = prReady && prReady.repoId === repoId ? prReady : null;
-  const prDeliverable = Boolean(prStatus?.ok && prStatus.hasRemote);
-  // Say which of the three preconditions is missing — install a tool, run a
-  // login, and add a remote are three different next actions.
-  const prBlockedReason = prStatus === null || prDeliverable
-    ? null
-    : prStatus.ok
-      ? "This repo has no `origin` remote to open a pull request against."
-      : prStatus.detail;
   const dirty = Boolean(title || description || jiraRef || roleModels.planner || roleModels.loop || roleModels.evaluator || maxIterations || timeoutMinutes || selectedBranch) || reviewPlanBeforeImplementation || grillMe || scopingAuthorsPlan || planCritic !== null || autoApprove || openPr || jiraKey !== null || jiraChildren.length > 0;
 
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const requestClose = useCallback(() => {
-    if (dirty && !confirm("Discard your unsaved task?")) return;
+    if (dirty) { setConfirmingDiscard(true); return; }
     onClose();
   }, [dirty, onClose]);
-  useEffect(() => {
-    if (!repoId) return;
-    let live = true;
-    api<{ ok: boolean; detail: string | null; hasRemote: boolean | null }>(`/api/github/status?repoId=${encodeURIComponent(repoId)}`)
-      .then((status) => {
-        if (!live) return;
-        setPrReady({ repoId, ...status });
-        // Never leave the box ticked for a target that cannot deliver.
-        if (!status.ok || !status.hasRemote) setOpenPr(false);
-      })
-      .catch(() => {});
-    return () => { live = false; };
-  }, [repoId]);
-
   // Spec 17: a rough ask is enough — "Create and scope" opens the card on
   // its scoping thread, where an assistant that reads the repo sharpens it.
   // Spec 24: "Create and break down" opens it asking that thread for the
@@ -200,23 +175,43 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
       title="New task"
       closeLabel="Close new task"
       onRequestClose={requestClose}
-      footer={<>
+      footer={confirmingDiscard ? <DiscardPrompt question="Discard your unsaved task?" onKeep={() => setConfirmingDiscard(false)} onDiscard={onClose} /> : <>
         <span className="mr-auto self-center text-xs text-foreground/45">New tasks go to Backlog</span>
         <button type="button" onClick={requestClose} className="rounded-lg px-4 text-sm text-foreground/60">Cancel</button>
-        {includedChildren.length === 0 && <>
-          <button type="button" onClick={() => create("breakdown")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and break down</button>
-          <button type="button" onClick={() => create("scope")} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">Create and scope</button>
-        </>}
         <button type="button" onClick={() => create()} disabled={busy || !title.trim() || !repoId} className="rounded-lg bg-amber-600 px-5 text-sm font-semibold text-on-accent disabled:opacity-40">
           {busy ? "Creating…" : includedChildren.length > 0 ? `Create epic with ${includedChildren.length} task${includedChildren.length === 1 ? "" : "s"}` : "Create task"}
         </button>
+        {/* The two ways to start rough sit behind the primary action rather
+            than beside it, so a first task is one obvious button. */}
+        {includedChildren.length === 0 && (
+          <DetailsMenu detailsClassName="relative" summaryClassName="grid min-h-11 w-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/10 text-sm text-foreground/80 hover:bg-foreground/15" menuClassName="absolute bottom-12 right-0 z-30 w-64 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-2xl" ariaLabel="More ways to create" summary="▾">
+            <button type="button" onClick={() => create("scope")} disabled={busy || !title.trim() || !repoId} title="Open the card on its scoping thread, where an assistant that reads the repository sharpens a rough ask" className="flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] disabled:opacity-40">Create and scope</button>
+            <button type="button" onClick={() => create("breakdown")} disabled={busy || !title.trim() || !repoId} title="Create the card and ask the scoping assistant for the pieces straight away" className="flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm hover:bg-foreground/[0.06] disabled:opacity-40">Create and break down</button>
+          </DetailsMenu>
+        )}
       </>}
     >
           {repoList.length === 0 ? <div className="space-y-2"><p className="text-sm text-foreground/60">No repositories yet. Browse for one, or register it in <Link href="/settings" className="text-amber-300 underline">Settings</Link>.</p><FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} /></div> : <>
-            <div className="flex items-end gap-2">
-              <label className="block grow text-sm text-foreground/70">Import from Jira<input value={jiraRef} onChange={(e) => setJiraRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void importFromJira(); } }} placeholder="Issue link or key, e.g. DEV-123 (optional)" className={dialogInputCls} /></label>
-              <button type="button" onClick={() => void importFromJira()} disabled={importing || !jiraRef.trim()} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">{importing ? "Importing…" : "Import"}</button>
-            </div>
+            {importNotice.length > 0 && (
+              <div role="status" className="flex flex-col gap-1.5 rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3 text-sm">
+                {importNotice.map((line, index) => <p key={index} className={index === 0 ? "font-medium text-cyan-300" : "text-foreground/75"}>{line}</p>)}
+                <button type="button" onClick={onClose} className="mt-1 self-start rounded-lg bg-foreground/10 px-3 text-sm">Done</button>
+              </div>
+            )}
+            <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={dialogInputCls} required /></label>
+            {/* Folded: most tasks are typed, and the title is where typing
+                starts. An import fills the title and description above. */}
+            <details className="rounded-lg border border-foreground/10 bg-foreground/[0.02]" open={jiraChildren.length > 0 || undefined}>
+              <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium">Import from Jira or a file</summary>
+              <div className="space-y-3 border-t border-foreground/10 p-3">
+                <div className="flex items-end gap-2">
+                  <label className="block grow text-sm text-foreground/70">Import from Jira<input value={jiraRef} onChange={(e) => setJiraRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void importFromJira(); } }} placeholder="Issue link or key, e.g. DEV-123" className={dialogInputCls} /></label>
+                  <button type="button" onClick={() => void importFromJira()} disabled={importing || !jiraRef.trim()} className="rounded-lg bg-foreground/10 px-4 text-sm disabled:opacity-40">{importing ? "Importing…" : "Import"}</button>
+                </div>
+                <label className="block text-sm text-foreground/70">Import an exported file<input type="file" accept="application/json,.json" disabled={importing || !repoId} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importFromFile(file); }} className={`${dialogInputCls} py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-foreground/10 file:px-2 file:py-1 file:text-sm file:text-foreground/80`} /></label>
+                <p className="-mt-1 text-xs text-foreground/45">A card exported from this or another Radulf, with its scoping thread. Its cards go straight to Backlog for the repository selected below.</p>
+              </div>
+            </details>
             {jiraChildren.length > 0 && (
               <fieldset className="rounded-lg border border-cyan-800/40 bg-cyan-950/20 p-3">
                 <legend className="px-1 text-sm font-medium text-cyan-300">{jiraChildren.length} child issue{jiraChildren.length === 1 ? "" : "s"} in Jira</legend>
@@ -241,14 +236,11 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                 </div>
               </fieldset>
             )}
-            <label className="block text-sm text-foreground/70">Import an exported file<input type="file" accept="application/json,.json" disabled={importing || !repoId} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importFromFile(file); }} className={`${dialogInputCls} py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-foreground/10 file:px-2 file:py-1 file:text-sm file:text-foreground/80`} /></label>
-            <p className="-mt-1 text-xs text-foreground/45">A card exported from this or another Radulf, with its scoping thread. Its cards go straight to Backlog for the repository selected below.</p>
-            <label className="block text-sm text-foreground/70">Title<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className={dialogInputCls} required /></label>
             <RepoSelect repos={repoList} value={repoId} onChange={(value) => { if (value === "__add__") { setAddingRepo(true); return; } setRepoId(value); setBranches([]); setSelectedBranch(""); setShowNewBranch(false); setNewBranchName(""); }}><option value="__add__">Add a repository…</option></RepoSelect>
             {addingRepo && <FolderBrowser onPick={registerRepo} onCreate={createRepo} onClone={cloneRepo} onError={setError} />}
             {repoId && <label className="block text-sm text-foreground/70">Branch<select value={selectedBranch} onChange={(e) => { const v = e.target.value; if (v === "__new__") { setShowNewBranch(true); setSelectedBranch(""); } else { setShowNewBranch(false); setSelectedBranch(v); } }} className={dialogInputCls}><option value="">Default branch</option>{branches.map((b) => <option key={b} value={b}>{b}</option>)}<option value="__new__">Add new branch…</option></select></label>}
             {showNewBranch && <div className="flex gap-2"><input value={newBranchName} onChange={(e) => setNewBranchName(e.target.value)} placeholder="Branch name" className="grow rounded-lg border border-foreground/10 bg-foreground/5 px-3 text-sm" /><button type="button" onClick={async () => { const name = newBranchName.trim(); if (!name) return; try { const repo = repoList.find((r) => r.id === repoId); if (!repo) return; await api(`/api/repos/${repoId}/branches`, { json: { name, from: repo.defaultBranch } }); setBranches((prev) => prev.includes(name) ? prev : [...prev, name]); setSelectedBranch(name); setShowNewBranch(false); setNewBranchName(""); } catch (e) { setError(errorMessage(e)); }}} disabled={!newBranchName.trim()} className="rounded-lg bg-foreground/10 px-3 text-sm disabled:opacity-40">Add</button></div>}
-            <label className="block text-sm text-foreground/70">Description and definition of done<textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={7} className={`${dialogInputCls} py-2 text-sm`} placeholder="Describe the outcome, constraints, and how Ralph can verify the work — or start rough and use Create and scope." /></label>
+            <label className="block text-sm text-foreground/70">Description and definition of done<textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={7} className={`${dialogInputCls} py-2 text-sm`} placeholder="Describe the outcome, constraints, and how the work can be verified — or start rough and use Create and scope." /></label>
             <details className="rounded-lg border border-foreground/10 bg-foreground/[0.02]">
               <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium">Advanced</summary>
               <div className="space-y-3 border-t border-foreground/10 p-3">
@@ -271,11 +263,7 @@ export function NewTaskDialog({ repos, onClose, onCreated, defaultRepoId }: { re
                     <option value="off">Off</option>
                   </select>
                 </label>
-                <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="size-4 accent-amber-600" />Auto-approve on evaluator pass (skip human review)</label>
-                {autoApprove && <p className="text-xs text-amber-400/80">The evaluator&rsquo;s approval merges straight to the base branch with no human review. Integrity and merge-conflict checks still run. This card keeps this setting even when the workspace-wide toggle is off.</p>}
-                <label className="flex items-center gap-2 text-sm text-foreground/70"><input type="checkbox" checked={openPr} disabled={!prDeliverable} onChange={(e) => setOpenPr(e.target.checked)} className="size-4 accent-amber-600 disabled:opacity-40" />Open a pull request instead of merging</label>
-                {prBlockedReason && <p className="text-xs text-foreground/45">{prBlockedReason}</p>}
-                {openPr && <p className="text-xs text-foreground/55">On approval the branch is pushed to <code>origin</code> and a pull request is opened against the base branch. Nothing is merged locally, and Radulf never merges the pull request.</p>}
+                <DeliveryOptions repoId={repoId} autoApprove={autoApprove} setAutoApprove={setAutoApprove} openPr={openPr} setOpenPr={setOpenPr} />
               </div>
             </details>
           </>}

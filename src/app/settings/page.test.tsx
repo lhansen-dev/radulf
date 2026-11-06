@@ -27,8 +27,10 @@ describe("SettingsPage", () => {
   let savedSettings: Settings;
   let repositories: Repo[];
   let patch: (settings: Settings) => Response | Promise<Response>;
+  let authEnabled = false;
 
   beforeEach(() => {
+    authEnabled = false;
     window.history.replaceState(null, "", "/settings");
     vi.stubGlobal("scrollTo", vi.fn());
     savedSettings = { ...initialSettings };
@@ -85,6 +87,7 @@ describe("SettingsPage", () => {
         ]
       });
       if (url.startsWith("/api/github/status")) return json({ ok: true, account: "test-user", reason: null, detail: null });
+      if (url === "/api/health") return json({ ok: true, authEnabled });
       throw new Error(`Unexpected request: ${url}`);
     }));
   });
@@ -101,6 +104,8 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("heading", { name: "Planner agent" })).toBeNull();
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Nord" }));
+    // The pick previews at once, before anything is saved.
+    expect(document.documentElement.dataset.theme).toBe("nord");
 
     section("Agents & models");
     const planner = within(screen.getByRole("region", { name: "Planner agent" }));
@@ -122,16 +127,51 @@ describe("SettingsPage", () => {
     expect((screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("puts the saved theme back when Settings is left with an unsaved pick", async () => {
+    render(<SettingsPage />);
+    await screen.findByText("Appearance");
+    fireEvent.click(screen.getByRole("radio", { name: "Nord" }));
+    expect(document.documentElement.dataset.theme).toBe("nord");
+    cleanup();
+    expect(document.documentElement.dataset.theme).toBe(savedSettings.theme);
+  });
+
+  it("saves the workflow switches the Work page's menu flips", async () => {
+    render(<SettingsPage />);
+    await screen.findByText("Workflow");
+    const yolo = screen.getByRole("checkbox", { name: "YOLO mode" }) as HTMLInputElement;
+    expect(yolo.checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: "Auto Mode" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(yolo);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Auto Mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Settings saved ✓");
+    expect(savedSettings).toMatchObject({ yoloMode: true, autoMode: false, autoApprove: false, openPr: false });
+  });
+
+  it("offers Sign out only when a password gates the app", async () => {
+    render(<SettingsPage />);
+    await screen.findByText("Appearance");
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    cleanup();
+
+    authEnabled = true;
+    render(<SettingsPage />);
+    const signOut = await screen.findByRole("button", { name: "Sign out" });
+    // A plain form post, so the route's redirect to /login lands in the browser.
+    expect(signOut.closest("form")?.getAttribute("action")).toBe("/api/auth/logout");
+  });
+
   it("shows a repository removal conflict on that repository's row", async () => {
     repositories = [
       { id: "busy-repo", name: "Busy repo", path: "/tmp/busy", defaultBranch: "main", approvedInstallScripts: "[]", gateCommand: null, createdAt: "2026-09-12" },
     ];
-    vi.stubGlobal("confirm", vi.fn(() => true));
     window.history.replaceState(null, "", "/settings#repos");
     render(<SettingsPage />);
     await screen.findByText("Busy repo");
 
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove repository" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe(
       "cannot remove a repository while one of its tasks is running or merging",

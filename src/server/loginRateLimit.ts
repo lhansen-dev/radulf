@@ -50,7 +50,11 @@ function ensureCapacity() {
 export function loginClientKey(request: Request): string {
   const trustedHeader = process.env.RADULF_TRUSTED_PROXY_IP_HEADER?.trim().toLowerCase();
   if (!trustedHeader) return "direct-client";
-  const value = request.headers.get(trustedHeader)?.split(",")[0]?.trim();
+  // A proxy that appends to the header (nginx's $proxy_add_x_forwarded_for)
+  // leaves whatever the client sent in front of its own entry, so only the
+  // last value is the trusted hop's. A proxy that overwrites the header has
+  // a single value, which is the last one too.
+  const value = request.headers.get(trustedHeader)?.split(",").pop()?.trim();
   return value && value.length <= 128 ? value : "unknown-proxy-client";
 }
 

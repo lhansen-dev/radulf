@@ -21,9 +21,19 @@ updates:
           - minor
           - patch
     # Majors land as their own PRs so the CI break is easy to attribute.
+    ignore:
+      # Types track the Node runtime in .nvmrc, not the newest Node; bump the
+      # major by hand alongside .nvmrc.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
     target-branch: "beta"
     schedule:
       interval: weekly
+    groups:
+      # init and analyze must run the same version or analyze fails.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"

@@ -31,7 +31,36 @@ type ExecGitOptions = { timeoutMs?: number; env?: NodeJS.ProcessEnv };
 // at highest precedence, means no host-side git ever executes anything a
 // repo or a worktree can name. The cost: the operator's own hooks do not run
 // on Radulf's merge commits either. The reviewed diff is the gate for those.
-const HOST_GIT_CONFIG = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+//
+// Host-side git must also never *descend* into a repository the agent made.
+// `git add -A` records a nested checkout (any directory with its own `.git`)
+// as a gitlink, and from then on `git status` and `git diff` in the worktree
+// spawn git inside it to ask whether it is dirty. That child reads the nested
+// repository's own config, which the agent wrote, so a `filter.<x>.clean`
+// command there runs as the server user, outside the sandbox.
+// `diff.ignoreSubmodules=all` stops status and diff from asking;
+// `submodule.recurse=false` stops checkout, fetch and push from recursing even
+// when the operator's global config turns recursion on; and `stageAll` keeps
+// such a gitlink out of every commit Radulf makes in the first place.
+const HOST_GIT_PINS: ReadonlyArray<readonly [string, string]> = [
+  ["core.hooksPath", "/dev/null"],
+  ["core.fsmonitor", "false"],
+  ["diff.ignoreSubmodules", "all"],
+  ["submodule.recurse", "false"],
+];
+const HOST_GIT_CONFIG = HOST_GIT_PINS.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
+
+/** The same pins in the environment form git reads (`GIT_CONFIG_COUNT`), for
+ * a tool that runs git itself inside an agent-written worktree — gh does, for
+ * `pr create`. Replaces any `GIT_CONFIG_*` the server process inherited. */
+export function hostGitConfigEnv(): Record<string, string> {
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(HOST_GIT_PINS.length) };
+  HOST_GIT_PINS.forEach(([key, value], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = key;
+    env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  return env;
+}
 
 /** Remove Git's reusable message path before every trusted host commit. */
 function clearCommitMessagePath(cwd: string): void {
@@ -103,6 +132,43 @@ export async function tryGit(
     const err = e as { stdout?: string; stderr?: string };
     return { ok: false, out: ((err.stdout ?? "") + (err.stderr ?? "")).trim() };
   }
+}
+
+/**
+ * Stage the worktree for a Radulf commit: `git add -A`, then unstage every
+ * gitlink that picked up, so no commit Radulf makes records a repository the
+ * agent created (or re-initialised inside an empty submodule directory). The
+ * nested checkout stays on disk as an untracked directory, which git never
+ * enters. Returns the paths it left out.
+ */
+export async function stageAll(worktree: string): Promise<{ droppedGitlinks: string[] }> {
+  await tryGit(worktree, "add", "-A");
+  // `--raw -z` records are ":<old mode> <new mode> <old sha> <new sha> <status>"
+  // then the path, NUL-separated. `--ignore-submodules=none` overrides the
+  // `diff.ignoreSubmodules=all` pin for this one porcelain call, which must
+  // see the gitlinks it exists to find.
+  const raw = await gitRaw(
+    worktree,
+    "diff",
+    "--cached",
+    "--raw",
+    "-z",
+    "--no-renames",
+    "--ignore-submodules=none",
+  );
+  const fields = raw.split("\0");
+  const droppedGitlinks: string[] = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const [oldMode, newMode] = fields[i].slice(1).split(" ");
+    if (oldMode === "160000" || newMode === "160000") droppedGitlinks.push(fields[i + 1]);
+  }
+  if (droppedGitlinks.length > 0) {
+    await git(worktree, "reset", "-q", "--", ...droppedGitlinks);
+    console.warn(
+      `[git] left nested repositories out of the commit in ${worktree}: ${droppedGitlinks.join(", ")}`,
+    );
+  }
+  return { droppedGitlinks };
 }
 
 /** List local branch names; returns [] when the path is not a git repo. */
@@ -347,6 +413,33 @@ async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }
   return removed;
 }
 
+/** Paths `branch` adds relative to `baseBranch` that already exist in the
+ * checkout. With a clean tree those can only be ignored files. */
+async function ignoredPathsTheBranchAdds(
+  repoPath: string,
+  baseBranch: string,
+  branch: string
+): Promise<string[]> {
+  const added = await gitRaw(
+    repoPath,
+    "diff",
+    "--name-only",
+    "-z",
+    "--no-renames",
+    "--diff-filter=A",
+    baseBranch,
+    branch
+  );
+  return added.split("\0").filter(Boolean).filter((p) => {
+    try {
+      fs.lstatSync(path.join(repoPath, p));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** Merge the ralph branch into the repo's base branch. Always restores the
  * checkout the user's repo was on before the merge — merging must never
  * leave their working copy switched to the base branch.
@@ -379,7 +472,7 @@ export async function mergeBranch(
   const restore = async () => {
     // A detached HEAD ("HEAD") has no branch to restore.
     if (original !== baseBranch && original !== "HEAD") {
-      await tryGit(repoPath, "checkout", original);
+      await tryGit(repoPath, "checkout", "--no-overwrite-ignore", original);
     }
   };
   // A delivery worker can die between `merge --no-commit` and `commit` below,
@@ -422,7 +515,7 @@ export async function mergeBranch(
     return { ok: true, mergeCommit, alreadyMerged: true };
   }
   if (original !== baseBranch) {
-    const co = await tryGit(repoPath, "checkout", baseBranch);
+    const co = await tryGit(repoPath, "checkout", "--no-overwrite-ignore", baseBranch);
     if (!co.ok) return { ok: false, error: `cannot checkout ${baseBranch}: ${co.out}` };
   }
   const dirty = await git(repoPath, "status", "--porcelain");
@@ -431,6 +524,21 @@ export async function mergeBranch(
     return {
       ok: false,
       error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
+    };
+  }
+  // The merge writes into the operator's working tree, and git's default
+  // merge strategy overwrites an ignored file when the branch starts tracking
+  // a path of that name (it disregards --no-overwrite-ignore; only checkout
+  // honours it). A run can un-ignore `.env.local` or `data/` and commit its
+  // own copy, and an improvement run merges with no human review. The tree
+  // is clean at this point, so whatever sits on disk at a path the branch
+  // adds is ignored and the operator's. Refuse rather than overwrite.
+  const clobbered = await ignoredPathsTheBranchAdds(repoPath, baseBranch, branch);
+  if (clobbered.length > 0) {
+    await restore();
+    return {
+      ok: false,
+      error: `merging ${branch} would overwrite ignored files in ${repoPath}: ${clobbered.join(", ")} — move them aside, or take the branch's changes to them out, then press Retry merge`,
     };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before

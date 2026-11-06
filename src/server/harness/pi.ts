@@ -198,7 +198,10 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
   return {
     name: "Local",
     baseUrl: v1Root(s.omlxBaseUrl),
-    apiKey: s.omlxApiKey || "omlx",
+    // A config reference to pi exactly as a header value is (see piLiteral):
+    // unescaped, a stored key that starts with `!` runs as a shell command in
+    // this process, and `$NAME` reads this process's env.
+    apiKey: piLiteral(s.omlxApiKey || "omlx"),
     api: "openai-completions" as const,
     // Sent on every request; a header named Authorization wins over the
     // bearer token pi derives from apiKey.
@@ -223,10 +226,10 @@ export function omlxProviderConfig(model: string, s: Settings, contextWindow?: n
 }
 
 /**
- * pi reads a provider header value as a config reference: `$NAME` is an
- * environment variable and a leading `!` runs a shell command. A header pasted
- * into Settings is a literal, so escape it the way pi documents: `$$` for `$`,
- * `$!` for `!`.
+ * pi reads a provider's api key and header values as config references:
+ * `$NAME` is an environment variable and a leading `!` runs a shell command. A
+ * value pasted into Settings is a literal, so escape it the way pi documents:
+ * `$$` for `$`, `$!` for `!`.
  */
 function piLiteral(value: string): string {
   return value.replace(/\$/g, "$$$$").replace(/^!/, "$!");

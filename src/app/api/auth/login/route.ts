@@ -76,10 +76,27 @@ async function readLimitedBody(
   return body;
 }
 
+/**
+ * Why a login was refused, as the login page's `?error=` reason. A browser
+ * form post is sent back there (303, so the browser GETs the page) because
+ * a JSON body in place of the page is a dead end with no way to retry. An
+ * API client, which sent JSON, gets the status and JSON it can act on.
+ */
+type RefusalReason = "invalid" | "rate-limited" | "busy";
+
+function refuse(request: Request, formPost: boolean, message: string, status: number, reason: RefusalReason) {
+  if (!formPost) return NextResponse.json({ error: message }, { status });
+  const url = new URL("/login", redirectBase(request));
+  url.searchParams.set("error", reason);
+  return NextResponse.redirect(url, 303);
+}
+
 // ── Route ─────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
   const clientKey = loginClientKey(request);
+  const ct = request.headers.get("content-type") ?? "";
+  const formPost = !ct.includes("json");
 
   // Refuse known oversized bodies before parsing or scheduling bcrypt work.
   const contentLength = Number(request.headers.get("content-length"));
@@ -92,10 +109,7 @@ export async function POST(request: Request) {
   // so that mode escalates delay below instead of refusing.
   const shared = usesSharedLoginBucket();
   if (!shared && isLoginRateLimited(clientKey)) {
-    return NextResponse.json(
-      { error: "Too many attempts. Try again later." },
-      { status: 429 },
-    );
+    return refuse(request, formPost, "Too many attempts. Try again later.", 429, "rate-limited");
   }
 
   let bodyBytes: Uint8Array | null | typeof BODY_READ_TIMED_OUT;
@@ -108,10 +122,9 @@ export async function POST(request: Request) {
   if (!bodyBytes) return err("Request body too large", 413);
 
   const bodyText = new TextDecoder().decode(bodyBytes);
-  const ct = request.headers.get("content-type") ?? "";
   let password = "";
   try {
-    if (ct.includes("json")) {
+    if (!formPost) {
       const body: unknown = JSON.parse(bodyText);
       if (typeof body !== "object" || body === null || !("password" in body)) {
         return err("Invalid request body", 400);
@@ -130,17 +143,11 @@ export async function POST(request: Request) {
   // Reading a bounded body can still take several seconds. Recheck here so a
   // client that crossed the failure threshold meanwhile cannot enter bcrypt.
   if (!shared && isLoginRateLimited(clientKey)) {
-    return NextResponse.json(
-      { error: "Too many attempts. Try again later." },
-      { status: 429 },
-    );
+    return refuse(request, formPost, "Too many attempts. Try again later.", 429, "rate-limited");
   }
 
   if (passwordChecksInFlight >= MAX_CONCURRENT_PASSWORD_CHECKS) {
-    return NextResponse.json(
-      { error: "Too many login attempts in progress. Try again shortly." },
-      { status: 503 },
-    );
+    return refuse(request, formPost, "Too many login attempts in progress. Try again shortly.", 503, "busy");
   }
   passwordChecksInFlight++;
 
@@ -161,7 +168,7 @@ export async function POST(request: Request) {
       passwordChecksInFlight--;
       released = true;
       if (escalationMs > 0) await new Promise((r) => setTimeout(r, escalationMs));
-      return err("Invalid password", 401);
+      return refuse(request, formPost, "Invalid password", 401, "invalid");
     }
   } finally {
     if (!released) passwordChecksInFlight--;

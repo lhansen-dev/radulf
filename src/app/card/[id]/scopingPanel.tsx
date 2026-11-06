@@ -205,6 +205,7 @@ export function ScopingPanel({
             <button type="button" onClick={send} disabled={running || !draft.trim()} className={`${buttonCls} bg-foreground/10`}>
               {busy === "send" ? "Thinking…" : "Send"}
             </button>
+            <span className="self-center text-xs text-foreground/35">Ctrl/⌘ Enter sends</span>
             {awaitingAnswer && (
               <button type="button" onClick={answerAndPlan} disabled={running || !draft.trim()} className={`${buttonCls} bg-amber-600 font-medium text-on-accent`}>
                 {busy === "answer" ? "Planning…" : "Answer and plan again"}

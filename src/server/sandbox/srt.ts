@@ -75,6 +75,13 @@ export function credentialBackstopDenylist(): string[] {
   ].map((p) => path.join(HOME, p));
 }
 
+/** Root for per-run private dirs — a sibling of data/ like worktrees/, so the
+ * L1 policy's blanket "deny data/" needs no carve-outs. Read-denied as a whole
+ * below, with each run re-allowing only its own `tmp/` and `cache/`. */
+export function runScratchRoot(): string {
+  return path.join(path.dirname(DATA_DIR), "runtmp");
+}
+
 /** System + toolchain install roots (spec §L1 read-allow table), per platform. */
 export function systemReadRoots(): string[] {
   if (process.platform === "darwin") {
@@ -180,9 +187,21 @@ export function buildFilesystemConfig(opts: {
 }): FilesystemConfig {
   // CLONES_DIR (spec 21) is denied like a repo under $HOME would be; the
   // run's own shared .git is re-allowed for reads through opts.gitCommonDir.
+  // The scratch root holds every concurrent run's tmp and cache, so it is
+  // denied as a whole and this run's own two re-allowed. The server's working
+  // directory is the checkout `.env.local` lives in on a host install, which
+  // only $HOME covered; in the container it is /app.
   const repositoryRoots = [...new Set(opts.repositoryRoots ?? [])];
   const protectedRoots = [
-    ...new Set([HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR, ...repositoryRoots]),
+    ...new Set([
+      HOME,
+      DATA_DIR,
+      WORKTREES_DIR,
+      CLONES_DIR,
+      runScratchRoot(),
+      process.cwd(),
+      ...repositoryRoots,
+    ]),
   ];
   const siblingRepositoryRoots = repositoryRoots.filter(
     (root) => !isInsideOrEqual(path.resolve(opts.worktree), path.resolve(root)),

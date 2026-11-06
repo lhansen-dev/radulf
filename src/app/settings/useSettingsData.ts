@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Repo } from "../ui/api";
 import type { Settings } from "@/server/settings";
 import { errorMessage } from "@/shared/errorMessage";
@@ -36,6 +36,14 @@ export function useSettingsData() {
   }, []);
 
   const dirty = settings !== null && persisted !== null && JSON.stringify(settings) !== JSON.stringify(persisted);
+
+  // A theme picked in Appearance previews on the page before it is saved;
+  // leaving Settings without saving puts the saved theme back.
+  const persistedTheme = useRef<string | null>(null);
+  useEffect(() => { persistedTheme.current = persisted?.theme ?? null; }, [persisted]);
+  useEffect(() => () => {
+    if (persistedTheme.current) document.documentElement.dataset.theme = persistedTheme.current;
+  }, []);
 
   async function save() {
     if (!settings) return;
